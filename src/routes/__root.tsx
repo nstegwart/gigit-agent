@@ -8,10 +8,13 @@ import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 
 import TanStackQueryDevtools from '../integrations/tanstack-query/devtools'
+import { meQueryOptions } from '#/lib/board-query'
+import { meFn } from '#/server/auth-fns'
 
 import appCss from '../styles.css?url'
 
 import type { QueryClient } from '@tanstack/react-query'
+import type { SessionUser } from '#/lib/types'
 
 interface MyRouterContext {
   queryClient: QueryClient
@@ -20,6 +23,12 @@ interface MyRouterContext {
 const THEME_INIT = `(function(){try{var t=localStorage.getItem('cairn-theme');var u=new URLSearchParams(location.search).get('theme');if(u==='dark'||u==='light')t=u;if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();`
 
 export const Route = createRootRouteWithContext<MyRouterContext>()({
+  // Resolve the signed-in human once per navigation; child routes redirect on it.
+  beforeLoad: async ({ context }): Promise<{ me: SessionUser | null }> => {
+    const me = await meFn()
+    context.queryClient.setQueryData(meQueryOptions().queryKey, me)
+    return { me }
+  },
   head: () => ({
     meta: [
       { charSet: 'utf-8' },

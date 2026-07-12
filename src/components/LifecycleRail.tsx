@@ -4,7 +4,7 @@
 // and the mapping checklist nested under the "mapping" stage. Stages are
 // engine/receipt-gated — clicking a non-gated stage advances it (human).
 import { useState } from 'react'
-import { useAdvanceTask, useLifecycle, useTaskLifecycle } from '#/lib/board-query'
+import { useAdvanceTask, useCanEdit, useLifecycle, useTaskLifecycle } from '#/lib/board-query'
 import { deriveCheckpoints, nextEvidence, resolvedReadiness } from '#/lib/readiness'
 import { Icon } from '#/lib/icons'
 import { fmtDate } from '#/lib/format'
@@ -14,6 +14,7 @@ const tone = (s: LifecycleStage) => `tone-${s.color ?? 'indigo'}`
 
 export function LifecycleRail({ taskId, checkpoints, fallbackStage }: { taskId: string; checkpoints?: Array<TaskCheckpoint>; fallbackStage?: string | null }) {
   const cfg = useLifecycle()
+  const canEdit = useCanEdit()
   const { data: lc } = useTaskLifecycle(taskId)
   const advance = useAdvanceTask()
   const [err, setErr] = useState<string | null>(null)
@@ -69,7 +70,7 @@ export function LifecycleRail({ taskId, checkpoints, fallbackStage }: { taskId: 
       <div className="rail">
         {stages.map((s, i) => {
           const state = i < curIdx ? 'done' : i === curIdx ? 'current' : 'todo'
-          const clickable = i !== curIdx && !s.gated && !advance.isPending
+          const clickable = canEdit && i !== curIdx && !s.gated && !advance.isPending
           const isLive = i > milestoneIdx && (readiness[s.key] ?? 0) >= 100
           const pctLabel = isLive ? 'LIVE' : `${readiness[s.key] ?? 0}%`
           const stageHist = history.filter((h) => h.stage === s.key)

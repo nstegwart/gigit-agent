@@ -462,3 +462,22 @@ export interface Model {
   conventions?: Conventions
   activity: Array<ActivityEvent>
 }
+
+// ---- auth: human accounts + per-board visibility ----
+export type Role = 'admin' | 'member'
+/** The signed-in human (from the session cookie). admin sees every board + manages users;
+ *  member sees only the board ids in `boards` and is read-only. */
+export interface SessionUser {
+  id: string
+  username: string
+  role: Role
+  boards: Array<string> // allowed board ids (empty for admin — admin sees all)
+}
+/** An account row for the admin user-management screen. */
+export interface UserRow {
+  id: string
+  username: string
+  role: Role
+  boards: Array<string>
+  createdAt?: string
+}

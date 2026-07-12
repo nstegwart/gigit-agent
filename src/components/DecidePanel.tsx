@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import type { Decision } from '#/lib/types'
-import { useDecideDecision } from '#/lib/board-query'
+import { useCanEdit, useDecideDecision } from '#/lib/board-query'
 
 export function DecidePanel({ decision }: { decision: Decision }) {
   const decide = useDecideDecision()
+  const canEdit = useCanEdit()
   const [text, setText] = useState('')
   const opsi = decision.opsi ?? []
 
@@ -14,7 +15,9 @@ export function DecidePanel({ decision }: { decision: Decision }) {
       </h4>
       <p className="d-q">{decision.teks}</p>
 
-      {opsi.length > 0 ? (
+      {!canEdit ? (
+        <div className="desc">Awaiting an admin decision.</div>
+      ) : opsi.length > 0 ? (
         <div className="decide-opts">
           {opsi.map((opt) => (
             <button

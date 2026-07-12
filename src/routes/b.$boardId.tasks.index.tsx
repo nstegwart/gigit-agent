@@ -7,7 +7,7 @@ import { TasksTable } from '#/components/TasksTable'
 import { RollupBar } from '#/components/RollupBar'
 import { LifecycleEditor } from '#/components/LifecycleEditor'
 import { Icon } from '#/lib/icons'
-import { boardQueryOptions, lifecycleQueryOptions, rollupQueryOptions, tasksQueryOptions, useBoard, useLifecycle, useRollup, useTasks } from '#/lib/board-query'
+import { boardQueryOptions, lifecycleQueryOptions, rollupQueryOptions, tasksQueryOptions, useBoard, useCanEdit, useLifecycle, useRollup, useTasks } from '#/lib/board-query'
 
 export const Route = createFileRoute('/b/$boardId/tasks/')({
   loader: async ({ context, params }) => {
@@ -26,6 +26,7 @@ function View() {
   const m = useBoard()
   const rollup = useRollup()
   const cfg = useLifecycle()
+  const canEdit = useCanEdit()
   const [editRail, setEditRail] = useState(false)
   return (
     <div className="wrap">
@@ -34,14 +35,16 @@ function View() {
           <h2>Tasks</h2>
           <span className="count">{tasks.length}</span>
           <span className="desc">first-class tasks — click a row for the full checkpoint map</span>
-          <button className="rail-edit-btn" onClick={() => setEditRail(true)}>
-            <Icon name="branch" size={13} /> Edit rail
-          </button>
+          {canEdit ? (
+            <button className="rail-edit-btn" onClick={() => setEditRail(true)}>
+              <Icon name="branch" size={13} /> Edit rail
+            </button>
+          ) : null}
         </div>
         <RollupBar />
         <TasksTable tasks={tasks} runsByTask={m.runsByTask} readinessByGroup={rollup.byFeature} milestone={rollup.milestone} cfg={cfg} />
       </section>
-      {editRail ? <LifecycleEditor onClose={() => setEditRail(false)} /> : null}
+      {editRail && canEdit ? <LifecycleEditor onClose={() => setEditRail(false)} /> : null}
     </div>
   )
 }

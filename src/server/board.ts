@@ -26,28 +26,47 @@ import {
 } from './board-store'
 import { advanceTask, computeRollup, readLifecycle, writeLifecycle } from './lifecycle-store'
 import { taskLifecycle } from './tasks-store'
+import { currentUser, requireAdmin, requireView } from './auth'
 
 const board = z.string().min(1)
 
 // ---- boards ----
-export const listBoardsFn = createServerFn({ method: 'GET' }).handler(async () => listBoards())
+// Visibility is enforced here: a member sees only allowlisted boards; admin sees all.
+export const listBoardsFn = createServerFn({ method: 'GET' }).handler(async () => {
+  const me = await currentUser()
+  if (!me) return []
+  const boards = await listBoards()
+  return me.role === 'admin' ? boards : boards.filter((b) => me.boards.includes(b.id))
+})
 
 export const createBoardFn = createServerFn({ method: 'POST' })
   .validator(z.object({ id: z.string(), name: z.string().min(1), description: z.string().optional() }))
-  .handler(async ({ data }) => createBoard(data.id, data.name, data.description))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return createBoard(data.id, data.name, data.description)
+  })
 
 // ---- board data ----
 export const getBoardFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
-  .handler(async ({ data }) => readBoard(data.boardId))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    return readBoard(data.boardId)
+  })
 
 export const toggleTaskFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, featureId: z.string(), index: z.number().int(), done: z.boolean().optional() }))
-  .handler(async ({ data }) => toggleTask(data.boardId, data.featureId, data.index, data.done))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return toggleTask(data.boardId, data.featureId, data.index, data.done)
+  })
 
 export const setFeaturePhaseFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, featureId: z.string(), fase: z.string() }))
-  .handler(async ({ data }) => setFeaturePhase(data.boardId, data.featureId, data.fase))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return setFeaturePhase(data.boardId, data.featureId, data.fase)
+  })
 
 export const upsertRunFn = createServerFn({ method: 'POST' })
   .validator(
@@ -67,23 +86,33 @@ export const upsertRunFn = createServerFn({ method: 'POST' })
     }),
   )
   .handler(async ({ data }) => {
+    await requireAdmin()
     const { boardId, ...run } = data
     return upsertRun(boardId, run as never)
   })
 
 export const setRunStatusFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, id: z.string(), status: z.enum(['running', 'blocked', 'queued', 'done', 'failed']) }))
-  .handler(async ({ data }) => setRunStatus(data.boardId, data.id, data.status))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return setRunStatus(data.boardId, data.id, data.status)
+  })
 
 // ---- design links ----
 export const addDesignLinkFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, scope: z.enum(['project', 'feature']), id: z.string(), label: z.string().optional(), url: z.string() }))
-  .handler(async ({ data }) => addDesignLink(data.boardId, data.scope, data.id, { label: data.label, url: data.url }))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return addDesignLink(data.boardId, data.scope, data.id, { label: data.label, url: data.url })
+  })
 
 // ---- collaboration ----
 export const addCommentFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, featureId: z.string(), author: z.string(), authorType: z.enum(['human', 'agent']).default('human'), text: z.string().min(1) }))
-  .handler(async ({ data }) => addComment(data.boardId, data.featureId, data.author, data.authorType, data.text))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return addComment(data.boardId, data.featureId, data.author, data.authorType, data.text)
+  })
 
 export const openDecisionFn = createServerFn({ method: 'POST' })
   .validator(
@@ -95,42 +124,69 @@ export const openDecisionFn = createServerFn({ method: 'POST' })
       openedBy: z.string().optional(),
     }),
   )
-  .handler(async ({ data }) => openDecision(data.boardId, data.featureId, data.question, data.options, data.openedBy))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return openDecision(data.boardId, data.featureId, data.question, data.options, data.openedBy)
+  })
 
 export const decideDecisionFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, id: z.string(), answer: z.string(), keputusan: z.string().optional(), decidedBy: z.string().optional() }))
-  .handler(async ({ data }) => decideDecision(data.boardId, data.id, data.answer, data.keputusan, data.decidedBy))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return decideDecision(data.boardId, data.id, data.answer, data.keputusan, data.decidedBy)
+  })
 
 export const setBlockedFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, featureId: z.string(), reason: z.string() }))
-  .handler(async ({ data }) => setBlocked(data.boardId, data.featureId, data.reason))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return setBlocked(data.boardId, data.featureId, data.reason)
+  })
 
 export const clearBlockedFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, featureId: z.string() }))
-  .handler(async ({ data }) => clearBlocked(data.boardId, data.featureId))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return clearBlocked(data.boardId, data.featureId)
+  })
 
 // ---- adaptive views: tasks / ops / prod / guide ----
 export const getTasksFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
-  .handler(async ({ data }) => readTasks(data.boardId))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    return readTasks(data.boardId)
+  })
 
 // full single task (heavy 20-point mapping) — detail page only
 export const getTaskFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board, taskId: z.string() }))
-  .handler(async ({ data }) => readTask(data.boardId, data.taskId))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    return readTask(data.boardId, data.taskId)
+  })
 
 // ---- lifecycle engine (read paths for the UI) ----
 export const getLifecycleFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
-  .handler(async ({ data }) => readLifecycle(data.boardId))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    return readLifecycle(data.boardId)
+  })
 
 export const getRollupFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
-  .handler(async ({ data }) => computeRollup(data.boardId))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    return computeRollup(data.boardId)
+  })
 
 export const getTaskLifecycleFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board, taskId: z.string() }))
-  .handler(async ({ data }) => taskLifecycle(data.boardId, data.taskId))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    return taskLifecycle(data.boardId, data.taskId)
+  })
 
 const stageSchema = z.object({
   key: z.string(), label: z.string(), color: z.string().optional(), group: z.string().optional(),
@@ -139,7 +195,10 @@ const stageSchema = z.object({
 })
 export const setLifecycleFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, stages: z.array(stageSchema).min(1) }))
-  .handler(async ({ data }) => writeLifecycle(data.boardId, data.stages))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return writeLifecycle(data.boardId, data.stages)
+  })
 
 export const advanceTaskFn = createServerFn({ method: 'POST' })
   .validator(z.object({
@@ -147,20 +206,35 @@ export const advanceTaskFn = createServerFn({ method: 'POST' })
     evidence: z.record(z.string(), z.any()).optional(), verdict: z.string().optional(), commitSha: z.string().optional(),
     deployReceipt: z.string().optional(), blocker: z.string().optional(), expectedRev: z.number().int().optional(),
   }))
-  .handler(async ({ data }) => advanceTask(data.boardId, data.taskId, data))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return advanceTask(data.boardId, data.taskId, data)
+  })
 
 export const getOpsFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
-  .handler(async ({ data }) => readOps(data.boardId))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    return readOps(data.boardId)
+  })
 
 export const getProdFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
-  .handler(async ({ data }) => readProd(data.boardId))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    return readProd(data.boardId)
+  })
 
 export const getGuideFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
-  .handler(async ({ data }) => readGuide(data.boardId))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    return readGuide(data.boardId)
+  })
 
 export const toggleCheckpointFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, taskId: z.string(), checkpointId: z.string() }))
-  .handler(async ({ data }) => toggleCheckpoint(data.boardId, data.taskId, data.checkpointId))
+  .handler(async ({ data }) => {
+    await requireAdmin()
+    return toggleCheckpoint(data.boardId, data.taskId, data.checkpointId)
+  })

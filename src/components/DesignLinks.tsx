@@ -2,7 +2,7 @@
 import { useState } from 'react'
 
 import { Icon } from '#/lib/icons'
-import { useAddDesignLink } from '#/lib/board-query'
+import { useAddDesignLink, useCanEdit } from '#/lib/board-query'
 import type { FeatureLink } from '#/lib/types'
 
 export function DesignLinks({
@@ -15,6 +15,7 @@ export function DesignLinks({
   links: Array<FeatureLink>
 }) {
   const add = useAddDesignLink()
+  const canEdit = useCanEdit()
   const [url, setUrl] = useState('')
   const [label, setLabel] = useState('')
 
@@ -45,25 +46,28 @@ export function DesignLinks({
           ))}
         </div>
       )}
-      <div className="comment-form">
-        <input
-          className="field"
-          placeholder="https://…"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          disabled={add.isPending}
-        />
-        <input
-          className="field"
-          placeholder="Label (optional)"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          disabled={add.isPending}
-        />
-        <button className="btn" onClick={submit} disabled={add.isPending || !url.trim()}>
-          Add
-        </button>
-      </div>
+      {!links.length && !canEdit ? <div className="empty">No design links.</div> : null}
+      {canEdit ? (
+        <div className="comment-form">
+          <input
+            className="field"
+            placeholder="https://…"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            disabled={add.isPending}
+          />
+          <input
+            className="field"
+            placeholder="Label (optional)"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            disabled={add.isPending}
+          />
+          <button className="btn" onClick={submit} disabled={add.isPending || !url.trim()}>
+            Add
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }

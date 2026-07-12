@@ -10,8 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as McpRouteImport } from './routes/mcp'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as BBoardIdRouteImport } from './routes/b.$boardId'
+import { Route as AdminUsersRouteImport } from './routes/admin.users'
 import { Route as BBoardIdIndexRouteImport } from './routes/b.$boardId.index'
 import { Route as BBoardIdOpsRouteImport } from './routes/b.$boardId.ops'
 import { Route as BBoardIdMapRouteImport } from './routes/b.$boardId.map'
@@ -31,6 +33,11 @@ const McpRoute = McpRouteImport.update({
   path: '/mcp',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -39,6 +46,11 @@ const IndexRoute = IndexRouteImport.update({
 const BBoardIdRoute = BBoardIdRouteImport.update({
   id: '/b/$boardId',
   path: '/b/$boardId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminUsersRoute = AdminUsersRouteImport.update({
+  id: '/admin/users',
+  path: '/admin/users',
   getParentRoute: () => rootRouteImport,
 } as any)
 const BBoardIdIndexRoute = BBoardIdIndexRouteImport.update({
@@ -111,7 +123,9 @@ const BBoardIdFeaturesFeatureIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
+  '/admin/users': typeof AdminUsersRoute
   '/b/$boardId': typeof BBoardIdRouteWithChildren
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
@@ -129,7 +143,9 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
+  '/admin/users': typeof AdminUsersRoute
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
   '/b/$boardId/design': typeof BBoardIdDesignRoute
@@ -147,7 +163,9 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
+  '/admin/users': typeof AdminUsersRoute
   '/b/$boardId': typeof BBoardIdRouteWithChildren
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
@@ -167,7 +185,9 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/login'
     | '/mcp'
+    | '/admin/users'
     | '/b/$boardId'
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
@@ -185,7 +205,9 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/login'
     | '/mcp'
+    | '/admin/users'
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
@@ -202,7 +224,9 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/login'
     | '/mcp'
+    | '/admin/users'
     | '/b/$boardId'
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
@@ -221,7 +245,9 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  LoginRoute: typeof LoginRoute
   McpRoute: typeof McpRoute
+  AdminUsersRoute: typeof AdminUsersRoute
   BBoardIdRoute: typeof BBoardIdRouteWithChildren
 }
 
@@ -232,6 +258,13 @@ declare module '@tanstack/react-router' {
       path: '/mcp'
       fullPath: '/mcp'
       preLoaderRoute: typeof McpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -246,6 +279,13 @@ declare module '@tanstack/react-router' {
       path: '/b/$boardId'
       fullPath: '/b/$boardId'
       preLoaderRoute: typeof BBoardIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/users': {
+      id: '/admin/users'
+      path: '/admin/users'
+      fullPath: '/admin/users'
+      preLoaderRoute: typeof AdminUsersRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/b/$boardId/': {
@@ -380,7 +420,9 @@ const BBoardIdRouteWithChildren = BBoardIdRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  LoginRoute: LoginRoute,
   McpRoute: McpRoute,
+  AdminUsersRoute: AdminUsersRoute,
   BBoardIdRoute: BBoardIdRouteWithChildren,
 }
 export const routeTree = rootRouteImport

@@ -1,14 +1,18 @@
 // Boards home (/) — Trello-style: pick a board (each = its own scope) or create one.
 // Renders bare (no AppShell); the board layout /b/$boardId adds the sidebar chrome.
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
+import { Link, createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 
-import { boardsQueryOptions, useBoards } from '#/lib/board-query'
+import { boardsQueryOptions, useBoards, useCanEdit } from '#/lib/board-query'
 import { BrandMark, Icon } from '#/lib/icons'
 import { createBoardFn } from '#/server/board'
+import { UserMenu } from '#/components/UserMenu'
 
 export const Route = createFileRoute('/')({
+  beforeLoad: ({ context }) => {
+    if (!context.me) throw redirect({ to: '/login' })
+  },
   loader: async ({ context }) => {
     await context.queryClient.ensureQueryData(boardsQueryOptions())
   },
@@ -21,6 +25,7 @@ function slugify(s: string): string {
 
 function Home() {
   const boards = useBoards()
+  const canEdit = useCanEdit()
   const qc = useQueryClient()
   const nav = useNavigate()
   const [name, setName] = useState('')
@@ -48,16 +53,21 @@ function Home() {
             <div className="brand-sub">Agent work board</div>
           </div>
         </div>
-        <button className="btn" onClick={() => setOpen((v) => !v)}>
-          <Icon name="board" /> New board
-        </button>
+        <div className="home-head-actions">
+          {canEdit ? (
+            <button className="btn" onClick={() => setOpen((v) => !v)}>
+              <Icon name="board" /> New board
+            </button>
+          ) : null}
+          <UserMenu />
+        </div>
       </header>
 
       <div className="home-wrap">
         <h1 className="home-title">Boards</h1>
         <p className="home-sub">Each board is its own scope — projects, features, agents, and history. Pick one to open.</p>
 
-        {open ? (
+        {open && canEdit ? (
           <div className="card" style={{ padding: 16, marginBottom: 18 }}>
             <div className="comment-form">
               <input
@@ -89,7 +99,11 @@ function Home() {
               <div className="board-meta"><code>/b/{b.id}</code></div>
             </Link>
           ))}
-          {!boards.length ? <div className="empty">No boards yet — create one.</div> : null}
+          {!boards.length ? (
+            <div className="empty">
+              {canEdit ? 'No boards yet — create one.' : 'No boards assigned yet. Ask an admin to give you access.'}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

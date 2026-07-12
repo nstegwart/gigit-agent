@@ -28,7 +28,19 @@ import {
   toggleCheckpointFn,
   toggleTaskFn,
 } from '#/server/board'
-import type { BoardMeta, GuideData, LifecycleConfig, Model, OpsData, ProdData, RawBoard, Rollup, TasksFile, TaskLifecycleState, WorkTask } from './types'
+import {
+  bootstrapFn,
+  createUserFn,
+  deleteUserFn,
+  listUsersFn,
+  loginFn,
+  logoutFn,
+  meFn,
+  resetPasswordFn,
+  setUserBoardsFn,
+  setUserRoleFn,
+} from '#/server/auth-fns'
+import type { BoardMeta, GuideData, LifecycleConfig, Model, OpsData, ProdData, RawBoard, Role, Rollup, SessionUser, TasksFile, TaskLifecycleState, UserRow, WorkTask } from './types'
 
 const DEFAULT_VIEWS = ['board', 'agents', 'projects', 'features', 'map', 'design', 'decisions', 'log']
 
@@ -219,4 +231,75 @@ export function useDecideDecision() {
 }
 export function useClearBlocked() {
   return useBoardMutation<{ featureId: string }>((p) => clearBlockedFn({ data: p }))
+}
+
+// ---- auth: the signed-in human + user management ----
+export const meQueryOptions = () =>
+  queryOptions<SessionUser | null>({ queryKey: ['me'], queryFn: () => meFn(), staleTime: 60_000 })
+/** The current human (null when anonymous). */
+export function useMe(): SessionUser | null {
+  return useQuery(meQueryOptions()).data ?? null
+}
+/** Edit controls render only for admins — members are read-only. */
+export function useCanEdit(): boolean {
+  return useMe()?.role === 'admin'
+}
+
+export function useLogin() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: { username: string; password: string }) => loginFn({ data: v }),
+    onSuccess: (user) => {
+      qc.setQueryData(meQueryOptions().queryKey, user)
+      void qc.invalidateQueries({ queryKey: ['boards'] })
+    },
+  })
+}
+export function useBootstrap() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: { username: string; password: string }) => bootstrapFn({ data: v }),
+    onSuccess: (user) => {
+      qc.setQueryData(meQueryOptions().queryKey, user)
+      void qc.invalidateQueries({ queryKey: ['boards'] })
+    },
+  })
+}
+export function useLogout() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => logoutFn(),
+    onSuccess: () => {
+      qc.setQueryData(meQueryOptions().queryKey, null)
+      qc.clear()
+    },
+  })
+}
+
+export const usersQueryOptions = () =>
+  queryOptions<Array<UserRow>>({ queryKey: ['users'], queryFn: () => listUsersFn(), staleTime: 5_000 })
+export function useUsers(): Array<UserRow> {
+  return useSuspenseQuery(usersQueryOptions()).data
+}
+function useUsersMutation<V>(send: (v: V) => Promise<Array<UserRow>>) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: send,
+    onSuccess: (rows) => qc.setQueryData(usersQueryOptions().queryKey, rows),
+  })
+}
+export function useCreateUser() {
+  return useUsersMutation((v: { username: string; password: string; role: Role; boards?: Array<string> }) => createUserFn({ data: v }))
+}
+export function useSetUserBoards() {
+  return useUsersMutation((v: { userId: string; boards: Array<string> }) => setUserBoardsFn({ data: v }))
+}
+export function useSetUserRole() {
+  return useUsersMutation((v: { userId: string; role: Role }) => setUserRoleFn({ data: v }))
+}
+export function useDeleteUser() {
+  return useUsersMutation((v: { userId: string }) => deleteUserFn({ data: v }))
+}
+export function useResetPassword() {
+  return useMutation({ mutationFn: (v: { userId: string; password: string }) => resetPasswordFn({ data: v }) })
 }

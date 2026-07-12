@@ -3,11 +3,12 @@
 // Header shows done/total + ProgressBar; each row uses the pre-made .checkpoint classes.
 import { Icon } from '#/lib/icons'
 import { ProgressBar } from '#/components/primitives'
-import { useToggleCheckpoint } from '#/lib/board-query'
+import { useCanEdit, useToggleCheckpoint } from '#/lib/board-query'
 import type { TaskView } from '#/lib/tasks'
 
 export function CheckpointList({ task }: { task: TaskView }) {
   const toggle = useToggleCheckpoint()
+  const canEdit = useCanEdit()
 
   return (
     <div className="card">
@@ -27,10 +28,11 @@ export function CheckpointList({ task }: { task: TaskView }) {
             <div
               key={c.id}
               className={`checkpoint ${c.done ? 'done' : ''}`}
-              role="button"
+              role={canEdit ? 'button' : undefined}
               aria-disabled={toggle.isPending}
+              style={{ cursor: canEdit ? 'pointer' : 'default' }}
               onClick={() => {
-                if (toggle.isPending) return
+                if (!canEdit || toggle.isPending) return
                 toggle.mutate({ taskId: task.id, checkpointId: c.id })
               }}
             >

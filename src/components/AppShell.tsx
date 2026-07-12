@@ -3,6 +3,7 @@ import { useStore } from '@tanstack/react-store'
 import { useEffect, useState, type ReactNode } from 'react'
 
 import { BoardLink } from '#/components/BoardLink'
+import { UserMenu } from '#/components/UserMenu'
 import { BrandMark, Icon, type IconName } from '#/lib/icons'
 import { useBoard, useBoardId, useBoardViews, useBoards } from '#/lib/board-query'
 import { fmtDate } from '#/lib/format'
@@ -153,6 +154,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             />
           </div>
           <ThemeButton />
+          <UserMenu />
         </div>
         <div className="content" id="view">
           {children}

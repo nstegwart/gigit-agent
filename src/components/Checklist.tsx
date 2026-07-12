@@ -2,11 +2,12 @@
 // (docs/plan/assets/app.js). Markup + classes reproduced exactly; rows are clickable
 // to toggle done-state via useToggleTask() (writes data/plan.json, refreshes the board).
 import { Icon } from '#/lib/icons'
-import { useToggleTask } from '#/lib/board-query'
+import { useCanEdit, useToggleTask } from '#/lib/board-query'
 import type { Feature } from '#/lib/types'
 
 export function Checklist({ feature }: { feature: Feature }) {
   const toggle = useToggleTask()
+  const canEdit = useCanEdit()
   const checks = feature.checklist ?? []
   const pct = feature.taskTotal ? Math.round((feature.taskDone / feature.taskTotal) * 100) : 0
   const allDone = feature.taskDone === feature.taskTotal && feature.taskTotal > 0
@@ -31,11 +32,11 @@ export function Checklist({ feature }: { feature: Feature }) {
             <div
               key={index}
               className={`check ${c.done ? 'done' : ''}`}
-              role="button"
+              role={canEdit ? 'button' : undefined}
               aria-disabled={toggle.isPending}
-              style={{ cursor: 'pointer' }}
+              style={{ cursor: canEdit ? 'pointer' : 'default' }}
               onClick={() => {
-                if (toggle.isPending) return
+                if (!canEdit || toggle.isPending) return
                 toggle.mutate({ featureId: feature.id, index })
               }}
             >

@@ -1,13 +1,14 @@
 // Comment thread for a feature — render existing comments + a form to add one.
 import { useState } from 'react'
 
-import { useAddComment } from '#/lib/board-query'
+import { useAddComment, useCanEdit } from '#/lib/board-query'
 import { fmtDate } from '#/lib/format'
 import type { Feature } from '#/lib/types'
 
 export function CommentThread({ feature }: { feature: Feature }) {
   const [text, setText] = useState('')
   const add = useAddComment()
+  const canEdit = useCanEdit()
 
   function submit() {
     const trimmed = text.trim()
@@ -34,21 +35,23 @@ export function CommentThread({ feature }: { feature: Feature }) {
           </div>
         ))
       )}
-      <div className="comment-form">
-        <input
-          className="field"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Add a comment…"
-          disabled={add.isPending}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') submit()
-          }}
-        />
-        <button className="btn" onClick={submit} disabled={add.isPending || !text.trim()}>
-          Comment
-        </button>
-      </div>
+      {canEdit ? (
+        <div className="comment-form">
+          <input
+            className="field"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Add a comment…"
+            disabled={add.isPending}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submit()
+            }}
+          />
+          <button className="btn" onClick={submit} disabled={add.isPending || !text.trim()}>
+            Comment
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }
