@@ -47,6 +47,15 @@ import {
 function jsonText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] }
 }
+/** §4: assignedRunId = only a queued/running assignment; a finished verifier moves to lastRunId/lastVerifierRunId. */
+function runInfo(runs?: Array<{ id: string; status: string; role?: string; verdict?: string | null; updated?: string; started?: string }>) {
+  const rs = runs ?? []
+  const assigned = rs.find((r) => r.status === 'running' || r.status === 'queued')?.id ?? null
+  const sorted = [...rs].sort((a, b) => (b.updated ?? b.started ?? '').localeCompare(a.updated ?? a.started ?? ''))
+  const lastRunId = sorted[0]?.id ?? null
+  const lastVerifierRunId = sorted.find((r) => r.status === 'done' && (!!r.verdict || /verif/i.test(r.role ?? '')))?.id ?? null
+  return { assignedRunId: assigned, lastRunId, lastVerifierRunId }
+}
 const bid = async (boardId?: string) => boardId || (await defaultBoardId())
 const modelOf = async (boardId?: string) => buildModel(await readBoard(await bid(boardId)))
 const BOARD_ARG = { boardId: z.string().optional().describe('Board id (default = the first board)') }
@@ -552,7 +561,9 @@ export function registerBoardTools(server: McpServer): void {
         readinessPercent: stageReadiness(cfg, t.lifecycleStage),
         nextGate: nextStage(cfg, t.lifecycleStage)?.key ?? null,
         nextEvidence: nextEvidence(cfg, t.lifecycleStage),
-        assignedRunId: m.runsByTask[t.id]?.[0]?.id ?? null,
+        blockedReason: t.blockedReason ?? null,
+        lastReceiptAt: t.lastReceiptAt ?? null,
+        ...runInfo(m.runsByTask[t.id]),
         done: t.checkpoints.filter((c) => c.done).length, total: t.checkpoints.length, deps: t.dependencies.length,
       })) })
     },
@@ -574,7 +585,7 @@ export function registerBoardTools(server: McpServer): void {
         readinessPercent: stageReadiness(cfg, stage),
         nextGate: nextStage(cfg, stage)?.key ?? null,
         nextEvidence: nextEvidence(cfg, stage),
-        assignedRunId: m.runsByTask[id]?.[0]?.id ?? null,
+        ...runInfo(m.runsByTask[id]),
         blockedReason: last?.blocker ?? null,
         lastReceiptAt: last?.ts ?? null,
         rev: lc?.rev ?? 0,

@@ -12,7 +12,7 @@ import type { LifecycleHistoryEntry, LifecycleStage, TaskCheckpoint } from '#/li
 
 const tone = (s: LifecycleStage) => `tone-${s.color ?? 'indigo'}`
 
-export function LifecycleRail({ taskId, checkpoints }: { taskId: string; checkpoints?: Array<TaskCheckpoint> }) {
+export function LifecycleRail({ taskId, checkpoints, fallbackStage }: { taskId: string; checkpoints?: Array<TaskCheckpoint>; fallbackStage?: string | null }) {
   const cfg = useLifecycle()
   const { data: lc } = useTaskLifecycle(taskId)
   const advance = useAdvanceTask()
@@ -23,7 +23,7 @@ export function LifecycleRail({ taskId, checkpoints }: { taskId: string; checkpo
   if (!stages.length) return null
 
   const readiness = resolvedReadiness(cfg)
-  const current = lc?.stage ?? null
+  const current = lc?.stage ?? fallbackStage ?? null // SSR-safe: fall back to the light summary's stage
   const curIdx = current ? stages.findIndex((s) => s.key === current) : -1
   const ns = stages[curIdx + 1] ?? null
   const proof = nextEvidence(cfg, current)
@@ -38,8 +38,16 @@ export function LifecycleRail({ taskId, checkpoints }: { taskId: string; checkpo
   // nest the M/R checklist under the CURRENT mapping stage ("Mapping complete"), else the last mapping stage
   const mappingIdx = curIdx >= 0 && (stages[curIdx].group ?? '').toLowerCase() === 'mapping' ? curIdx : lastMappingIdx
   const history = (((lc?.lifecycle as { history?: Array<LifecycleHistoryEntry> } | null)?.history) ?? []) as Array<LifecycleHistoryEntry>
-  const ckDone = (checkpoints ?? []).filter((c) => c.done).length
-  const ckTotal = (checkpoints ?? []).length
+  const cps = checkpoints ?? []
+  const ckTotal = cps.length
+  // §2: R01–R20 are readiness milestones — DERIVED from the proven stage, not manual ticks.
+  // Threshold = the "· N%" in the label, else evenly spread. Done when readyPct reaches it.
+  const cpThreshold = (c: TaskCheckpoint, i: number) => {
+    const m = /·\s*(\d+)\s*%/.exec(c.label ?? '')
+    return m ? Number(m[1]) : ckTotal ? ((i + 1) / ckTotal) * 100 : 0
+  }
+  const cpDone = (c: TaskCheckpoint, i: number) => readyPct >= cpThreshold(c, i)
+  const ckDone = cps.filter((c, i) => cpDone(c, i)).length
 
   const move = (toStage: string) => {
     setErr(null)
@@ -111,13 +119,16 @@ export function LifecycleRail({ taskId, checkpoints }: { taskId: string; checkpo
                   </button>
                   {showCk ? (
                     <div className="rail-ck">
-                      {(checkpoints ?? []).map((c) => (
-                        <div className={`ts-check-item ${c.done ? 'done' : ''}`} key={c.id}>
-                          <span className="ts-box">{c.done ? <Icon name="check" size={10} /> : null}</span>
-                          <span className="ts-check-label">{c.label}</span>
-                          {c.category ? <span className="cp-cat">{c.category}</span> : null}
-                        </div>
-                      ))}
+                      {cps.map((c, ci) => {
+                        const d = cpDone(c, ci)
+                        return (
+                          <div className={`ts-check-item ${d ? 'done' : ''}`} key={c.id}>
+                            <span className="ts-box">{d ? <Icon name="check" size={10} /> : null}</span>
+                            <span className="ts-check-label">{c.label}</span>
+                            {c.category ? <span className="cp-cat">{c.category}</span> : null}
+                          </div>
+                        )
+                      })}
                     </div>
                   ) : null}
                 </div>

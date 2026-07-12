@@ -56,8 +56,9 @@ export function TasksTable({
 
   const readyOf = (t: TaskView) => (cfg ? rowReadiness(cfg, t.lifecycleStage, t.done, t.total) : t.pct)
   const nextOf = (t: TaskView) => (cfg ? nextStage(cfg, t.lifecycleStage)?.key ?? null : null)
-  const runOf = (t: TaskView) => (runsByTask?.[t.id] ?? [])[0] ?? null
-  const assigned = (t: TaskView) => !!runsByTask?.[t.id]?.length
+  // §4: "assigned" = a queued/running run only (a finished verifier is not an assignment)
+  const runOf = (t: TaskView) => (runsByTask?.[t.id] ?? []).find((r) => r.status === 'running' || r.status === 'queued') ?? null
+  const assigned = (t: TaskView) => !!runOf(t)
 
   const projects = useMemo(() => [...new Set(tasks.map((t) => t.projectId).filter(Boolean) as Array<string>)], [tasks])
   const scopes = useMemo(() => [...new Set(tasks.map((t) => t.scope).filter(Boolean) as Array<string>)], [tasks])

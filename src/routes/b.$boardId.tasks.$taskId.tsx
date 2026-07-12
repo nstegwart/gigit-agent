@@ -4,7 +4,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { BoardLink as Link } from '#/components/BoardLink'
 
-import { boardQueryOptions, lifecycleQueryOptions, tasksQueryOptions, useBoard, useLifecycle, useTaskLazy, useTaskLifecycle, useTasks } from '#/lib/board-query'
+import { boardQueryOptions, lifecycleQueryOptions, taskLifecycleQueryOptions, tasksQueryOptions, useBoard, useLifecycle, useTaskLazy, useTaskLifecycle, useTasks } from '#/lib/board-query'
 import { stageReadiness } from '#/lib/readiness'
 import { fmtDate } from '#/lib/format'
 import { Icon } from '#/lib/icons'
@@ -22,6 +22,9 @@ export const Route = createFileRoute('/b/$boardId/tasks/$taskId')({
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(lifecycleQueryOptions(params.boardId)),
+      // hydrate the task's lifecycle server-side so the hero/rail render the real stage
+      // on first paint (not 0% / uninitialized)
+      context.queryClient.ensureQueryData(taskLifecycleQueryOptions(params.boardId, params.taskId)),
     ])
   },
   component: View,
@@ -56,7 +59,8 @@ function View() {
   const total = base.checkpoints.length
   const done = base.checkpoints.filter((c) => c.done).length
   const t = { ...base, total, done, pct: total ? Math.round((done / total) * 100) : 0 }
-  const readyPct = stageReadiness(cfg, lc?.stage)
+  const stage = lc?.stage ?? base.lifecycleStage ?? null // SSR-safe: light summary carries the stage
+  const readyPct = stageReadiness(cfg, stage)
 
   const story = full?.story
   const hasStory = !!(story && (story.userStory || story.currentGap || story.targetScope))
@@ -74,7 +78,7 @@ function View() {
             <h1>{t.title}</h1>
             <div className="detail-sub">
               <span className="chip chip-mono task-id">{t.id}</span>
-              {lc?.stage ? <span className="task-phase">{lc.stage}</span> : t.phase ? <span className="task-phase">{t.phase}</span> : null}
+              {stage ? <span className="task-phase">{stage}</span> : t.phase ? <span className="task-phase">{t.phase}</span> : null}
               {t.projectId ? <span className="chip">{t.projectId}</span> : null}
               {t.scope ? <span className="chip">{t.scope}</span> : null}
             </div>
@@ -85,7 +89,7 @@ function View() {
         </div>
       </div>
 
-      <LifecycleRail taskId={taskId} checkpoints={t.checkpoints} />
+      <LifecycleRail taskId={taskId} checkpoints={t.checkpoints} fallbackStage={stage} />
 
       <TaskSections sections={full?.sections} />
 
