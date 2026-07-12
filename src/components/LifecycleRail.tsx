@@ -1,7 +1,7 @@
 // Delivery lifecycle for a task — the board's configurable rail (mapping → delivery),
 // current stage, and the gated-transition history. Makes clear that "mapping complete"
 // is a stage, NOT a finished task. Stage only advances via advance_task (evidence/verifier).
-import { Fragment, useState } from 'react'
+import { useState } from 'react'
 import { useAdvanceTask, useLifecycle, useTaskLifecycle } from '#/lib/board-query'
 import { Icon } from '#/lib/icons'
 import { fmtDate } from '#/lib/format'
@@ -41,25 +41,21 @@ export function LifecycleRail({ taskId }: { taskId: string }) {
       <div className="rail">
         {stages.map((s, i) => {
           const state = i < curIdx ? 'done' : i === curIdx ? 'current' : 'todo'
-          const groupBreak = i > 0 && (s.group ?? '') !== (stages[i - 1].group ?? '')
           const clickable = i !== curIdx && !s.gated && !advance.isPending
           const cls = `rail-step ${tone(s)} is-${state}${clickable ? ' is-click' : ''}${s.gated && i !== curIdx ? ' is-gated' : ''}`
           const inner = (
             <>
               <span className="rail-dot">{state === 'done' ? <Icon name="check" size={11} /> : null}</span>
-              <span className="rail-name">{s.label}</span>
-              {s.gated ? <Icon name="lock" size={9} className="rail-lock" /> : null}
+              <span className="rail-name">
+                {s.label}
+                {s.gated ? <Icon name="lock" size={11} className="rail-lock" /> : null}
+              </span>
             </>
           )
-          return (
-            <Fragment key={s.key}>
-              {groupBreak ? <span className="rail-div" title={s.group ?? ''} /> : null}
-              {clickable ? (
-                <button type="button" className={cls} onClick={() => move(s.key)} title={`Move to ${s.label}`}>{inner}</button>
-              ) : (
-                <div className={cls} title={s.gated ? 'gated — advance via advance_task with a receipt' : undefined}>{inner}</div>
-              )}
-            </Fragment>
+          return clickable ? (
+            <button key={s.key} type="button" className={cls} onClick={() => move(s.key)} title={`Move to ${s.label}`}>{inner}</button>
+          ) : (
+            <div key={s.key} className={cls} title={s.gated ? 'gated — advance via advance_task with a receipt' : undefined}>{inner}</div>
           )
         })}
       </div>
