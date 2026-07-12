@@ -892,3 +892,13 @@ button.rail-step { cursor: default; }
 .user-pw-row { display: flex; gap: 8px; margin-top: 12px; }
 .user-pw-row .field { max-width: 260px; }
 @media (max-width: 640px) { .user-create-grid { grid-template-columns: 1fr; } }
+
+/* design screens gallery (per-product all-pages catalog) */
+.ds-screens-group { display: flex; flex-direction: column; gap: 6px; }
+.ds-screens-group + .ds-screens-group { margin-top: 8px; }
+.ds-screens-feat { font-size: 11px; font-weight: 650; color: var(--text-dim); text-transform: capitalize; letter-spacing: .01em; }
+.ds-screens { display: flex; flex-wrap: wrap; gap: 6px; }
+.ds-screen { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim); font-size: 11.5px; font-weight: 550; transition: .12s; }
+.ds-screen:hover { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft); }
+.ds-screen-go { color: var(--text-faint); font-size: 10px; }
+.ds-screen:hover .ds-screen-go { color: var(--accent); }

@@ -10,12 +10,28 @@ interface Komponen {
   status?: string
   ket?: string
 }
+interface ScreenPage {
+  nama?: string
+  route?: string
+  status?: string
+  feature?: string
+}
 
 export function Architecture({ project }: { project: Project }) {
   const komponen = (project.komponen ?? []) as Array<Komponen>
   const docs = (project.docs ?? {}) as Record<string, unknown>
   const arsitektur = typeof docs.arsitektur === 'string' ? docs.arsitektur : undefined
   const baseline = Array.isArray(docs.baseline) ? (docs.baseline as Array<string>) : undefined
+  const pages = (Array.isArray(docs.pages) ? docs.pages : []).filter(
+    (p): p is ScreenPage => !!p && typeof p === 'object' && !!(p as ScreenPage).route,
+  )
+  // group screens by feature when present (Personal/RN), else one flat group
+  const grouped = pages.reduce<Record<string, Array<ScreenPage>>>((acc, p) => {
+    const k = p.feature?.trim() || ''
+    ;(acc[k] ??= []).push(p)
+    return acc
+  }, {})
+  const groups = Object.entries(grouped)
 
   const foundation: Array<{ emoji: string; label: string; url?: string }> = [
     { emoji: '🎨', label: 'Design Foundation', url: project.design_foundation },
@@ -23,7 +39,7 @@ export function Architecture({ project }: { project: Project }) {
     { emoji: '📄', label: 'Semua Halaman', url: project.design_pages },
   ].filter((f) => f.url)
 
-  if (komponen.length === 0 && !arsitektur && !baseline && foundation.length === 0) return null
+  if (komponen.length === 0 && !arsitektur && !baseline && foundation.length === 0 && pages.length === 0) return null
 
   return (
     <div className="arch">
@@ -38,6 +54,24 @@ export function Architecture({ project }: { project: Project }) {
               </a>
             ))}
           </div>
+        </div>
+      )}
+      {pages.length > 0 && (
+        <div className="arch-block">
+          <div className="block-label">Screens · {pages.length}</div>
+          {groups.map(([feature, items]) => (
+            <div className="ds-screens-group" key={feature || '_'}>
+              {feature ? <div className="ds-screens-feat">{feature}</div> : null}
+              <div className="ds-screens">
+                {items.map((s, i) => (
+                  <a className="ds-screen" key={s.route ?? i} href={s.route} target="_blank" rel="noopener">
+                    <span className="ds-screen-name">{s.nama || s.route}</span>
+                    <span className="ds-screen-go">↗</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
       {(arsitektur || (baseline && baseline.length > 0)) && (
