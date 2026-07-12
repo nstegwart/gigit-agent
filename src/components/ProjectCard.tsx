@@ -3,12 +3,13 @@ import { BoardLink as Link } from '#/components/BoardLink'
 import { Icon } from '#/lib/icons'
 import { PROJ_STATUS } from '#/lib/format'
 import { ProgressBar } from '#/components/primitives'
-import type { Project } from '#/lib/types'
+import type { GroupReadiness, Project } from '#/lib/types'
 
-export function ProjectCard({ project }: { project: Project }) {
+export function ProjectCard({ project, readiness }: { project: Project; readiness?: GroupReadiness }) {
   const [scls, slbl] = PROJ_STATUS[project.status] ?? ['st-planned', project.status]
   const activeFeatures = project.features.filter((f) => !f.parked)
   const blockedFeatures = project.features.filter((f) => f.blocked)
+  const pct = readiness ? readiness.readinessPercent : project.progress
 
   return (
     <Link to="/projects/$projectId" params={{ projectId: project.id }} className="proj">
@@ -21,10 +22,13 @@ export function ProjectCard({ project }: { project: Project }) {
       </div>
       <div>
         <h3>{project.nama}</h3>
-        <div className="proj-stage">Stage: {project.stage || project.status}</div>
+        <div className="proj-stage">
+          {readiness ? <>Floor: {readiness.floor ?? '—'}</> : <>Stage: {project.stage || project.status}</>}
+        </div>
       </div>
       <div style={{ '--accent': project.color } as React.CSSProperties}>
-        <ProgressBar pct={project.progress} />
+        <ProgressBar pct={pct} right={readiness ? `${pct}% ready` : undefined} />
+        {readiness ? <div className="proj-ready">{readiness.atMilestone}/{readiness.total} production-ready</div> : null}
       </div>
       <div className="proj-meta">
         <span>

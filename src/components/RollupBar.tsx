@@ -1,39 +1,46 @@
-// Board rollup — how many ACTIVE tasks sit at each lifecycle stage, plus HOLD
-// (visible but outside the active denominator). Data from computeRollup (server).
+// Board readiness — overall ready-to-production %, a stacked stage funnel, and a
+// compact legend. All figures come from the server-computed lifecycle rollup
+// (computeRollup) — the single source of truth used across every page.
 import { useRollup } from '#/lib/board-query'
-
-const tone = (color?: string) => `tone-${color ?? 'indigo'}`
 
 export function RollupBar() {
   const r = useRollup()
   if (!r.active && !r.hold) return null
+  const total = r.active || 1
+  const seg = (n: number) => `${(n / total) * 100}%`
+
   return (
-    <div className="rollup">
-      {r.uninitialized ? (
-        <div className="rollup-cell tone-parked is-uninit" title="Active tasks with no lifecycle stage yet — run init_lifecycle">
-          <div className="rollup-n">{r.uninitialized}</div>
-          <div className="rollup-lbl">Uninitialized</div>
-          <div className="rollup-track" />
+    <div className="rup">
+      <div className="rup-head">
+        <div className="rup-pct">
+          <b>{r.readinessPercent}%</b>
+          <span>ready-production</span>
         </div>
-      ) : null}
-      {r.stages.map((s) => {
-        const n = r.counts[s.key] ?? 0
-        const pct = r.active ? Math.round((n / r.active) * 100) : 0
-        return (
-          <div key={s.key} className={`rollup-cell ${tone(s.color)} ${n ? '' : 'is-empty'}`} title={`${n} / ${r.active} active`}>
-            <div className="rollup-n">{n}</div>
-            <div className="rollup-lbl">{s.label}</div>
-            <div className="rollup-track"><span style={{ width: `${pct}%` }} /></div>
-          </div>
-        )
-      })}
-      {r.hold ? (
-        <div className="rollup-cell tone-parked is-hold" title="HOLD — outside the active denominator">
-          <div className="rollup-n">{r.hold}</div>
-          <div className="rollup-lbl">On hold</div>
-          <div className="rollup-track" />
+        <div className="rup-meta">
+          <span><b>{r.active}</b> active</span>
+          {r.milestone ? <span><b>{r.atMilestone}</b>/{r.active} {r.milestone}</span> : null}
+          {r.uninitialized ? <span className="rup-warn"><b>{r.uninitialized}</b> uninit</span> : null}
+          {r.hold ? <span className="rup-muted"><b>{r.hold}</b> on hold</span> : null}
         </div>
-      ) : null}
+      </div>
+
+      <div className="rup-bar" role="img" aria-label={`${r.readinessPercent}% ready`}>
+        {r.stages.map((s) => {
+          const c = r.counts[s.key] ?? 0
+          return c ? <span key={s.key} className={`rup-seg tone-${s.color ?? 'indigo'}`} style={{ width: seg(c) }} title={`${s.label}: ${c}`} /> : null
+        })}
+        {r.uninitialized ? <span className="rup-seg is-uninit" style={{ width: seg(r.uninitialized) }} title={`Uninitialized: ${r.uninitialized}`} /> : null}
+      </div>
+
+      <div className="rup-legend">
+        {r.stages.map((s) => (
+          <span key={s.key} className={`rup-leg tone-${s.color ?? 'indigo'} ${r.counts[s.key] ? '' : 'is-empty'}`}>
+            <span className="rup-dot" />{s.label}<b>{r.counts[s.key] ?? 0}</b>
+          </span>
+        ))}
+        {r.uninitialized ? <span className="rup-leg is-uninit"><span className="rup-dot" />Uninitialized<b>{r.uninitialized}</b></span> : null}
+        {r.hold ? <span className="rup-leg tone-parked"><span className="rup-dot" />On hold<b>{r.hold}</b></span> : null}
+      </div>
     </div>
   )
 }

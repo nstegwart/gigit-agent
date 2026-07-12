@@ -7,7 +7,7 @@ import { TasksTable } from '#/components/TasksTable'
 import { RollupBar } from '#/components/RollupBar'
 import { LifecycleEditor } from '#/components/LifecycleEditor'
 import { Icon } from '#/lib/icons'
-import { boardQueryOptions, lifecycleQueryOptions, rollupQueryOptions, tasksQueryOptions, useBoard, useTasks } from '#/lib/board-query'
+import { boardQueryOptions, lifecycleQueryOptions, rollupQueryOptions, tasksQueryOptions, useBoard, useRollup, useTasks } from '#/lib/board-query'
 
 export const Route = createFileRoute('/b/$boardId/tasks/')({
   loader: async ({ context, params }) => {
@@ -24,6 +24,7 @@ export const Route = createFileRoute('/b/$boardId/tasks/')({
 function View() {
   const { tasks } = useTasks()
   const m = useBoard()
+  const rollup = useRollup()
   const [editRail, setEditRail] = useState(false)
   return (
     <div className="wrap">
@@ -37,7 +38,7 @@ function View() {
           </button>
         </div>
         <RollupBar />
-        <TasksTable tasks={tasks} runsByTask={m.runsByTask} />
+        <TasksTable tasks={tasks} runsByTask={m.runsByTask} readinessByGroup={rollup.byFeature} milestone={rollup.milestone} />
       </section>
       {editRail ? <LifecycleEditor onClose={() => setEditRail(false)} /> : null}
     </div>

@@ -143,6 +143,8 @@ export interface LifecycleStage {
   gated?: boolean // true = only via evidence/verifier receipt, never a manual tick
   requiresEvidence?: Array<string> // e.g. ['commitSha','deployReceipt','testReceipt']
   verifierRole?: string // who may PASS — must differ from the implementer
+  readiness?: number // 0–100 — how ready-to-production this stage means (drives all % rollups)
+  milestone?: boolean // the "ready" gate a rollup counts toward (e.g. PROD_READY); default = first stage with readiness>=100
 }
 export interface LifecycleConfig {
   stages: Array<LifecycleStage>
@@ -169,14 +171,24 @@ export interface TaskLifecycleState {
   implementerRun: string | null
   lifecycle: Json | null // { history: LifecycleHistoryEntry[] }
 }
+export interface GroupReadiness {
+  readinessPercent: number // avg stage-readiness of the group's active tasks
+  floor: string | null // lowest stage key among the group ('UNINITIALIZED' if any)
+  total: number // active tasks in the group
+  atMilestone: number // how many reached the milestone stage (e.g. PROD_READY)
+}
 export interface Rollup {
   stages: Array<LifecycleStage>
-  counts: Record<string, number>
+  counts: Record<string, number> // active tasks per stage
+  readiness: Record<string, number> // readiness% each stage represents (resolved: config or evenly spread)
+  readinessPercent: number // overall avg readiness across active tasks
+  milestone: string | null // the "ready-production" stage key
+  atMilestone: number // active tasks that reached the milestone
   uninitialized: number // active tasks with no lifecycle stage yet (NOT counted as the first stage)
   hold: number
   active: number
-  byProject: Record<string, string>
-  byFeature: Record<string, string>
+  byProject: Record<string, GroupReadiness>
+  byFeature: Record<string, GroupReadiness>
 }
 
 export interface Account {

@@ -4,7 +4,7 @@
 // a stage with a verifierRole cannot be passed by the task's implementer.
 import { readDoc, writeDoc } from './db'
 import { initLifecycle, readAudit, setTaskLifecycle, taskLifecycle, taskStageRows, writeAudit } from './tasks-store'
-import type { LifecycleConfig, LifecycleHistoryEntry, LifecycleStage, Rollup, TaskLifecycle } from '#/lib/types'
+import type { GroupReadiness, LifecycleConfig, LifecycleHistoryEntry, LifecycleStage, Rollup, TaskLifecycle } from '#/lib/types'
 
 const nowISO = () => new Date().toISOString()
 
@@ -115,35 +115,61 @@ export async function advanceTask(boardId: string, taskId: string, inp: AdvanceI
 export async function computeRollup(boardId: string): Promise<Rollup> {
   const cfg = await readLifecycle(boardId)
   const order = cfg.stages.map((s) => s.key)
+  const n = order.length
+  // readiness% per stage: explicit config wins; otherwise spread evenly (last = 100)
+  const readiness: Record<string, number> = {}
+  cfg.stages.forEach((s, i) => { readiness[s.key] = s.readiness ?? (n > 1 ? Math.round((i / (n - 1)) * 100) : 100) })
+  // milestone = flagged stage, else first stage that means 100% ready, else the last stage
+  const milestoneStage = cfg.stages.find((s) => s.milestone) ?? cfg.stages.find((s) => (readiness[s.key] ?? 0) >= 100) ?? cfg.stages[n - 1]
+  const milestone = milestoneStage?.key ?? null
+  const milestoneIdx = milestone ? order.indexOf(milestone) : -1
+
   const rows = await taskStageRows(boardId)
   const isHold = (scope: string | null) => (scope ?? '').toUpperCase() === 'HOLD'
-  // uninitialized (null / unknown stage) sorts BELOW the first stage (idx -1) — it is
-  // NOT silently counted as the first stage.
-  const idx = (k: string | null) => (k == null ? -1 : order.indexOf(k))
+  const idx = (k: string | null) => (k == null ? -1 : order.indexOf(k)) // -1 = uninitialized
+  const readinessOf = (k: string | null) => (k && k in readiness ? readiness[k] : 0)
+
   const counts: Record<string, number> = {}
   for (const k of order) counts[k] = 0
   let hold = 0
   let active = 0
   let uninitialized = 0
+  let sumReadiness = 0
+  let atMilestone = 0
   for (const r of rows) {
     if (isHold(r.scope)) { hold++; continue }
     active++
+    sumReadiness += readinessOf(r.stage)
+    if (milestoneIdx >= 0 && idx(r.stage) >= milestoneIdx) atMilestone++
     if (idx(r.stage) < 0) uninitialized++
     else counts[r.stage as string] = (counts[r.stage as string] ?? 0) + 1
   }
-  // feature/project follow their MOST-BEHIND active task (lowest stage; -1 = uninitialized)
-  const roll = (keyOf: (r: (typeof rows)[number]) => string | null) => {
-    const m: Record<string, number> = {}
+  const readinessPercent = active ? Math.round(sumReadiness / active) : 0
+
+  // per project / feature: avg readiness, most-behind floor, milestone count
+  const roll = (keyOf: (r: (typeof rows)[number]) => string | null): Record<string, GroupReadiness> => {
+    const g: Record<string, { sum: number; total: number; floorIdx: number; atMilestone: number }> = {}
     for (const r of rows) {
       if (isHold(r.scope)) continue
-      const g = keyOf(r)
-      if (!g) continue
-      const si = idx(r.stage)
-      if (!(g in m) || si < m[g]) m[g] = si
+      const key = keyOf(r)
+      if (!key) continue
+      const b = (g[key] ??= { sum: 0, total: 0, floorIdx: Infinity, atMilestone: 0 })
+      b.sum += readinessOf(r.stage)
+      b.total++
+      b.floorIdx = Math.min(b.floorIdx, idx(r.stage))
+      if (milestoneIdx >= 0 && idx(r.stage) >= milestoneIdx) b.atMilestone++
     }
-    return Object.fromEntries(Object.entries(m).map(([g, si]) => [g, si < 0 ? 'UNINITIALIZED' : order[si]]))
+    return Object.fromEntries(Object.entries(g).map(([k, b]) => [k, {
+      readinessPercent: b.total ? Math.round(b.sum / b.total) : 0,
+      floor: b.floorIdx < 0 ? 'UNINITIALIZED' : (order[b.floorIdx] ?? null),
+      total: b.total,
+      atMilestone: b.atMilestone,
+    }]))
   }
-  return { stages: cfg.stages, counts, uninitialized, hold, active, byProject: roll((r) => r.project), byFeature: roll((r) => r.feature) }
+  return {
+    stages: cfg.stages, counts, readiness, readinessPercent, milestone, atMilestone,
+    uninitialized, hold, active, byProject: roll((r) => r.project), byFeature: roll((r) => r.feature),
+  }
 }
 
 /** Bulk-set the stage for a board's tasks (default = the first stage). Atomic UPDATE. */

@@ -135,6 +135,7 @@ export const getTaskLifecycleFn = createServerFn({ method: 'GET' })
 const stageSchema = z.object({
   key: z.string(), label: z.string(), color: z.string().optional(), group: z.string().optional(),
   gated: z.boolean().optional(), requiresEvidence: z.array(z.string()).optional(), verifierRole: z.string().optional(),
+  readiness: z.number().optional(), milestone: z.boolean().optional(),
 })
 export const setLifecycleFn = createServerFn({ method: 'POST' })
   .validator(z.object({ boardId: board, stages: z.array(stageSchema).min(1) }))

@@ -19,7 +19,7 @@ import { MiniAgent, ProgressBar } from '#/components/primitives'
 import { fmtDate } from '#/lib/format'
 import { Icon } from '#/lib/icons'
 import type { TaskView } from '#/lib/tasks'
-import type { Run } from '#/lib/types'
+import type { GroupReadiness, Run } from '#/lib/types'
 import { uiStore } from '#/store/ui'
 
 const col = createColumnHelper<TaskView>()
@@ -30,9 +30,13 @@ const groupKeyOf = (t: TaskView) => t.group || t.featureContractId || 'Other'
 export function TasksTable({
   tasks,
   runsByTask,
+  readinessByGroup,
+  milestone,
 }: {
   tasks: Array<TaskView>
   runsByTask?: Record<string, Array<Run>>
+  readinessByGroup?: Record<string, GroupReadiness>
+  milestone?: string | null
 }) {
   const q = useStore(uiStore, (s) => s.search)
   const [filterProj, setFilterProj] = useState('')
@@ -242,7 +246,8 @@ export function TasksTable({
               const open = isOpen(key)
               const totalSum = grows.reduce((a, r) => a + r.original.total, 0)
               const doneSum = grows.reduce((a, r) => a + r.original.done, 0)
-              const avg = Math.round(grows.reduce((a, r) => a + r.original.pct, 0) / grows.length)
+              const gr = readinessByGroup?.[key]
+              const pct = gr ? gr.readinessPercent : Math.round(grows.reduce((a, r) => a + r.original.pct, 0) / grows.length)
               return (
                 <tbody key={key} className="tgroup-body">
                   <tr className="tgroup" onClick={() => toggleGroup(key)}>
@@ -251,8 +256,14 @@ export function TasksTable({
                         <Icon name="chevL" size={14} className={`tgroup-caret ${open ? 'open' : ''}`} />
                         <span className="tgroup-name">{key}</span>
                         <span className="tgroup-count">{grows.length}</span>
+                        {gr ? (
+                          <span className="tgroup-tags">
+                            <span className="tgroup-floor">floor {gr.floor ?? '—'}</span>
+                            {milestone ? <span className="tgroup-mile">{gr.atMilestone}/{gr.total} {milestone}</span> : null}
+                          </span>
+                        ) : null}
                         <span className="tgroup-prog">
-                          <ProgressBar pct={avg} right={`${doneSum}/${totalSum}`} />
+                          <ProgressBar pct={pct} right={gr ? `${pct}% · ${doneSum}/${totalSum}` : `${doneSum}/${totalSum}`} />
                         </span>
                       </div>
                     </td>

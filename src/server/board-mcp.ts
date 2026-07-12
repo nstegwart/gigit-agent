@@ -403,6 +403,8 @@ export function registerBoardTools(server: McpServer): void {
   const STAGE_OBJ = z.object({
     key: z.string(), label: z.string(), color: z.string().optional(), group: z.string().optional(),
     gated: z.boolean().optional(), requiresEvidence: z.array(z.string()).optional(), verifierRole: z.string().optional(),
+    readiness: z.number().optional().describe('0–100 ready-to-production % this stage represents (drives rollups)'),
+    milestone: z.boolean().optional().describe('mark the "ready-production" gate rollups count toward'),
   })
   server.registerTool(
     'get_lifecycle',
@@ -475,7 +477,13 @@ export function registerBoardTools(server: McpServer): void {
   server.registerTool(
     'upsert_project',
     { title: 'Upsert a project', description: 'Create or update one project (merges by id). Any extra fields pass through.', inputSchema: { ...BOARD_ARG, project: z.object({ id: z.string(), nama: z.string(), status: z.string().optional() }).passthrough() } },
-    async ({ boardId, project }) => { try { const raw = await upsertProject(await bid(boardId), project as never); return jsonText({ ok: true, projects: raw.projects.map((p) => ({ id: p.id, nama: p.nama, status: p.status })) }) } catch (e) { return asErr(e) } },
+    async ({ boardId, project }) => {
+      try {
+        const raw = await upsertProject(await bid(boardId), project as never)
+        const p = raw.projects.find((x) => x.id === (project as { id: string }).id)
+        return jsonText({ ok: true, project: p ?? null, projects: raw.projects.map((x) => x.id) }) // full project incl. passthrough fields
+      } catch (e) { return asErr(e) }
+    },
   )
   server.registerTool(
     'delete_project',

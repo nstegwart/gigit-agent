@@ -3,7 +3,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { BoardLink as Link } from '#/components/BoardLink'
 
-import { boardQueryOptions, tasksQueryOptions, useBoard, useTasks } from '#/lib/board-query'
+import { boardQueryOptions, rollupQueryOptions, tasksQueryOptions, useBoard, useRollup, useTasks } from '#/lib/board-query'
 import { PROJ_STATUS } from '#/lib/format'
 import { Icon } from '#/lib/icons'
 import { Collapsible } from '#/components/Collapsible'
@@ -21,6 +21,7 @@ export const Route = createFileRoute('/b/$boardId/projects/$projectId')({
     await Promise.all([
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
+      context.queryClient.ensureQueryData(rollupQueryOptions(params.boardId)),
     ])
   },
   component: View,
@@ -37,6 +38,7 @@ function BackLink() {
 function View() {
   const m = useBoard()
   const { tasks: allTasks, byId: taskById } = useTasks()
+  const rollup = useRollup()
   const { projectId } = Route.useParams()
   const p = m.projById[projectId]
 
@@ -81,7 +83,8 @@ function View() {
               <span>·</span>
               <span>{activeFeatures.length} active features</span>
               <span>·</span>
-              <span>{p.progress}% avg progress</span>
+              <span><b style={{ color: 'var(--text)' }}>{rollup.byProject[p.id]?.readinessPercent ?? 0}%</b> ready-production</span>
+              {rollup.byProject[p.id] ? <><span>·</span><span>floor {rollup.byProject[p.id].floor ?? '—'}</span></> : null}
             </div>
           </div>
         </div>
@@ -118,7 +121,7 @@ function View() {
             <span className="count">{projTasks.length}</span>
             <span className="desc">tasks in this project</span>
           </div>
-          <TasksTable tasks={projTasks} runsByTask={m.runsByTask} />
+          <TasksTable tasks={projTasks} runsByTask={m.runsByTask} readinessByGroup={rollup.byFeature} milestone={rollup.milestone} />
         </section>
       ) : null}
 
