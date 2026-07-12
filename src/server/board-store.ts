@@ -2,7 +2,8 @@
 // JSON docs in board_docs (kind = plan/runs/design/collab/tasks/accounts); conventions in
 // globals; the board index in boards. Same JSON shapes as before, so buildModel() is
 // unchanged. All functions are async. Imported ONLY by server functions + the MCP route.
-import { db, readDoc, readGlobal, writeDoc } from './db'
+import { createHash } from 'node:crypto'
+import { db, readDoc, readGlobal, writeDoc, writeDocsTx } from './db'
 
 import type {
   ActivityEvent,
@@ -16,12 +17,16 @@ import type {
   DesignOverlay,
   FeatureLink,
   GuideData,
+  GuideSection,
   OpsData,
   ProdData,
+  ProdGate,
   RawBoard,
   RawFeature,
+  RawProject,
   Run,
   TasksFile,
+  WorkTask,
 } from '#/lib/types'
 
 type PlanDoc = Omit<RawBoard, 'runs' | 'conventions' | 'design' | 'collab'>
@@ -273,6 +278,179 @@ export async function toggleCheckpoint(boardId: string, taskId: string, checkpoi
   cp.done = !cp.done
   await writeDoc(boardId, 'tasks', file)
   return file
+}
+
+// ---- write suite: granular upsert/delete + set + bulk snapshot ----
+/** Ensure the array fields the UI/readers assume always exist (tolerant import). */
+function normTask(t: WorkTask): WorkTask {
+  return { ...t, checkpoints: t.checkpoints ?? [], dependencies: t.dependencies ?? [], impacts: t.impacts ?? [] }
+}
+function normFeature(f: RawFeature): RawFeature {
+  return { ...f, checklist: f.checklist ?? [] }
+}
+export async function upsertTask(boardId: string, task: WorkTask): Promise<{ ok: true; id: string; created: boolean; total: number }> {
+  const file = await readTasks(boardId)
+  const i = file.tasks.findIndex((t) => t.id === task.id)
+  if (i >= 0) file.tasks[i] = normTask({ ...file.tasks[i], ...task })
+  else file.tasks.push(normTask(task))
+  await writeDoc(boardId, 'tasks', file)
+  return { ok: true, id: task.id, created: i < 0, total: file.tasks.length }
+}
+export async function deleteTask(boardId: string, taskId: string): Promise<{ ok: true; removed: number; total: number }> {
+  const file = await readTasks(boardId)
+  const before = file.tasks.length
+  file.tasks = file.tasks.filter((t) => t.id !== taskId)
+  await writeDoc(boardId, 'tasks', file)
+  return { ok: true, removed: before - file.tasks.length, total: file.tasks.length }
+}
+export async function upsertFeature(boardId: string, feature: RawFeature): Promise<{ ok: true; id: string; created: boolean; total: number }> {
+  const plan = await readPlan(boardId)
+  const i = plan.features.findIndex((f) => f.id === feature.id)
+  const next = normFeature({ ...feature, updated: feature.updated ?? todayISO() })
+  if (i >= 0) plan.features[i] = normFeature({ ...plan.features[i], ...next })
+  else plan.features.push(next)
+  await writeDoc(boardId, 'plan', plan)
+  return { ok: true, id: feature.id, created: i < 0, total: plan.features.length }
+}
+export async function deleteFeature(boardId: string, featureId: string): Promise<{ ok: true; removed: number; total: number }> {
+  const plan = await readPlan(boardId)
+  const before = plan.features.length
+  plan.features = plan.features.filter((f) => f.id !== featureId)
+  await writeDoc(boardId, 'plan', plan)
+  return { ok: true, removed: before - plan.features.length, total: plan.features.length }
+}
+export async function setProd(boardId: string, prod: ProdData): Promise<ProdData> {
+  await writeDoc(boardId, 'prod', prod)
+  return readProd(boardId)
+}
+export async function setGuide(boardId: string, guide: GuideData): Promise<GuideData> {
+  await writeDoc(boardId, 'guide', guide)
+  return readGuide(boardId)
+}
+export async function replaceAccounts(boardId: string, ops: OpsData): Promise<OpsData> {
+  await writeDoc(boardId, 'accounts', ops)
+  return readOps(boardId)
+}
+
+// ---- bulk snapshot (transactional, dry-run + hash guard) ----
+export interface BoardSnapshot {
+  projects?: Array<RawProject>
+  features?: Array<RawFeature>
+  tasks?: Array<WorkTask>
+  productionGates?: Array<ProdGate>
+  prodMockLabel?: string
+  prodHeadline?: string
+  guide?: Array<GuideSection>
+  accounts?: OpsData
+  runs?: Array<Run>
+}
+interface BoardCounts {
+  projects: number
+  features: number
+  tasks: number
+  productionGates: number
+  guideSections: number
+  accounts: number
+  runs: number
+}
+/** Deterministic stringify (sorted keys) — stable hash regardless of key order. */
+function stableStringify(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`).join(',')}}`
+  }
+  return JSON.stringify(v) ?? 'null'
+}
+async function boardShape(boardId: string) {
+  const [plan, tasks, prod, guide, ops, runsDoc] = await Promise.all([
+    readPlan(boardId), readTasks(boardId), readProd(boardId), readGuide(boardId), readOps(boardId), readRunsDoc(boardId),
+  ])
+  return { plan, tasks, prod, guide, ops, runsDoc }
+}
+function countsOf(s: Awaited<ReturnType<typeof boardShape>>): BoardCounts {
+  return {
+    projects: s.plan.projects.length,
+    features: s.plan.features.length,
+    tasks: s.tasks.tasks.length,
+    productionGates: s.prod.gates.length,
+    guideSections: s.guide.sections.length,
+    accounts: s.ops.accounts.length,
+    runs: s.runsDoc.runs.length,
+  }
+}
+/** 16-char content hash of the 7 board collections — used for optimistic concurrency. */
+export async function boardHash(boardId: string): Promise<string> {
+  const s = await boardShape(boardId)
+  const shape = {
+    projects: s.plan.projects, features: s.plan.features, tasks: s.tasks.tasks,
+    gates: s.prod.gates, guide: s.guide.sections, accounts: s.ops, runs: s.runsDoc.runs,
+  }
+  return createHash('sha256').update(stableStringify(shape)).digest('hex').slice(0, 16)
+}
+export interface SnapshotReceipt {
+  ok: boolean
+  dryRun: boolean
+  boardId: string
+  applied: Array<string>
+  before: BoardCounts
+  after: BoardCounts
+  fromHash: string
+  toHash: string | null
+}
+/** Replace whole collections in one transaction. Only provided fields change;
+ *  replacing an array upserts new + drops stale. dryRun returns the diff without
+ *  writing. expectedHash (from boardHash) guards against concurrent edits. */
+export async function replaceBoardSnapshot(
+  boardId: string,
+  snap: BoardSnapshot,
+  opts: { dryRun?: boolean; expectedHash?: string } = {},
+): Promise<SnapshotReceipt> {
+  const cur = await boardShape(boardId)
+  const before = countsOf(cur)
+  const fromHash = await boardHash(boardId)
+  if (opts.expectedHash && opts.expectedHash !== fromHash) {
+    throw new Error(`hash mismatch: board changed since read (expected ${opts.expectedHash}, current ${fromHash}). Re-read get_board_hash and retry.`)
+  }
+  // build next docs (mutate copies from current)
+  const plan = cur.plan
+  if (snap.projects !== undefined) plan.projects = snap.projects
+  if (snap.features !== undefined) plan.features = snap.features.map(normFeature)
+  const nextTasks = snap.tasks !== undefined ? { tasks: snap.tasks.map(normTask) } : cur.tasks
+  const nextProd: ProdData = {
+    mockLabel: snap.prodMockLabel ?? cur.prod.mockLabel,
+    headline: snap.prodHeadline ?? cur.prod.headline,
+    gates: snap.productionGates ?? cur.prod.gates,
+  }
+  const nextGuide: GuideData = snap.guide !== undefined ? { sections: snap.guide } : cur.guide
+  const nextOps: OpsData = snap.accounts ?? cur.ops
+  const nextRuns = snap.runs !== undefined ? { runs: snap.runs } : cur.runsDoc
+
+  const applied: Array<string> = []
+  const docs: Record<string, unknown> = {}
+  if (snap.projects !== undefined || snap.features !== undefined) { docs.plan = plan; applied.push(snap.projects !== undefined ? 'projects' : '', snap.features !== undefined ? 'features' : '') }
+  if (snap.tasks !== undefined) { docs.tasks = nextTasks; applied.push('tasks') }
+  if (snap.productionGates !== undefined || snap.prodMockLabel !== undefined || snap.prodHeadline !== undefined) { docs.prod = nextProd; applied.push('productionGates') }
+  if (snap.guide !== undefined) { docs.guide = nextGuide; applied.push('guide') }
+  if (snap.accounts !== undefined) { docs.accounts = nextOps; applied.push('accounts') }
+  if (snap.runs !== undefined) { docs.runs = nextRuns; applied.push('runs') }
+  const appliedClean = applied.filter(Boolean)
+
+  const after: BoardCounts = {
+    projects: (snap.projects ?? cur.plan.projects).length,
+    features: (snap.features ?? cur.plan.features).length,
+    tasks: nextTasks.tasks.length,
+    productionGates: nextProd.gates.length,
+    guideSections: nextGuide.sections.length,
+    accounts: nextOps.accounts.length,
+    runs: nextRuns.runs.length,
+  }
+  if (opts.dryRun) {
+    return { ok: true, dryRun: true, boardId, applied: appliedClean, before, after, fromHash, toHash: null }
+  }
+  await writeDocsTx(boardId, docs)
+  const toHash = await boardHash(boardId)
+  return { ok: true, dryRun: false, boardId, applied: appliedClean, before, after, fromHash, toHash }
 }
 
 function todayISO(): string {

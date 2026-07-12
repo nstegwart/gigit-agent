@@ -45,6 +45,26 @@ export async function writeDoc(boardId: string, kind: string, data: unknown): Pr
     JSON.stringify(data),
   ])
 }
+/** Write several docs for a board in ONE transaction — all commit or none. */
+export async function writeDocsTx(boardId: string, docs: Record<string, unknown>): Promise<void> {
+  const conn = await db().getConnection()
+  try {
+    await conn.beginTransaction()
+    for (const [kind, data] of Object.entries(docs)) {
+      await conn.query('REPLACE INTO board_docs (board_id, kind, data) VALUES (?,?,?)', [
+        boardId,
+        kind,
+        JSON.stringify(data),
+      ])
+    }
+    await conn.commit()
+  } catch (e) {
+    await conn.rollback()
+    throw e
+  } finally {
+    conn.release()
+  }
+}
 export async function readGlobal<T>(key: string, fallback: T): Promise<T> {
   const [rows] = await db().query('SELECT data FROM globals WHERE k=?', [key])
   const r = (rows as Array<{ data: unknown }>)[0]

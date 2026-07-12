@@ -8,8 +8,11 @@ import type { Feature } from '#/lib/types'
 import {
   addComment,
   addComponent,
+  boardHash,
   createBoard,
   defaultBoardId,
+  deleteFeature,
+  deleteTask,
   listBoards,
   openDecision,
   readBoard,
@@ -18,11 +21,17 @@ import {
   readOps,
   readProd,
   readTasks,
+  replaceAccounts,
+  replaceBoardSnapshot,
   setBlocked,
   setFeaturePhase,
+  setGuide,
+  setProd,
   setProjectDesign,
   setRunStatus,
   toggleTask,
+  upsertFeature,
+  upsertTask,
   upsertRun,
 } from '#/server/board-store'
 
@@ -235,6 +244,101 @@ export function registerBoardTools(server: McpServer): void {
         return jsonText({ ok: true, project: projectId, komponen: p?.komponen ?? [] })
       } catch (e) {
         return jsonText({ error: (e as Error).message })
+      }
+    },
+  )
+
+  // ---- write suite: upsert/delete task & feature, set prod/guide/accounts, bulk snapshot ----
+  const TASK_OBJ = z.object({ id: z.string(), title: z.string() }).passthrough()
+  const FEATURE_OBJ = z.object({ id: z.string(), nama: z.string(), fase: z.string() }).passthrough()
+  const GATE_OBJ = z.object({ id: z.string(), title: z.string() }).passthrough()
+  const GUIDE_SEC = z.object({ title: z.string(), body: z.string() })
+  const ACCOUNT_OBJ = z.object({ id: z.string(), label: z.string(), status: z.string(), usable: z.boolean() }).passthrough()
+  const OPS_OBJ = z.object({ vault: z.record(z.string(), z.any()).optional(), accounts: z.array(ACCOUNT_OBJ), alert: z.record(z.string(), z.any()).optional() }).passthrough()
+  const asErr = (e: unknown) => jsonText({ error: (e as Error).message })
+
+  server.registerTool(
+    'upsert_task',
+    { title: 'Upsert a task', description: 'Create or update one first-class task (T-… id) with its full mapping. Merges into an existing task of the same id.', inputSchema: { ...BOARD_ARG, task: TASK_OBJ } },
+    async ({ boardId, task }) => {
+      try { return jsonText(await upsertTask(await bid(boardId), task as never)) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'delete_task',
+    { title: 'Delete a task', description: 'Remove a first-class task by id.', inputSchema: { ...BOARD_ARG, id: z.string() } },
+    async ({ boardId, id }) => {
+      try { return jsonText(await deleteTask(await bid(boardId), id)) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'upsert_feature',
+    { title: 'Upsert a feature', description: 'Create or update one feature/feature-contract (checklist card). Merges into an existing feature of the same id.', inputSchema: { ...BOARD_ARG, feature: FEATURE_OBJ } },
+    async ({ boardId, feature }) => {
+      try { return jsonText(await upsertFeature(await bid(boardId), feature as never)) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'delete_feature',
+    { title: 'Delete a feature', description: 'Remove a feature by id.', inputSchema: { ...BOARD_ARG, id: z.string() } },
+    async ({ boardId, id }) => {
+      try { return jsonText(await deleteFeature(await bid(boardId), id)) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'set_prod',
+    { title: 'Set production gates', description: 'Replace the board’s path-to-production gates (G0→G6) plus optional label/headline.', inputSchema: { ...BOARD_ARG, gates: z.array(GATE_OBJ), mockLabel: z.string().optional(), headline: z.string().optional() } },
+    async ({ boardId, gates, mockLabel, headline }) => {
+      try { return jsonText(await setProd(await bid(boardId), { gates: gates as never, mockLabel, headline })) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'set_guide',
+    { title: 'Set board guide', description: 'Replace the board-specific guide sections.', inputSchema: { ...BOARD_ARG, sections: z.array(GUIDE_SEC) } },
+    async ({ boardId, sections }) => {
+      try { return jsonText(await setGuide(await bid(boardId), { sections })) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'replace_accounts',
+    { title: 'Replace agent-account vault', description: 'Replace the ops agent-account vault (accounts + vault summary + alert).', inputSchema: { ...BOARD_ARG, ops: OPS_OBJ } },
+    async ({ boardId, ops }) => {
+      try { return jsonText(await replaceAccounts(await bid(boardId), ops as never)) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'get_board_hash',
+    { title: 'Get board hash', description: 'Content hash of the 7 board collections — read it first, then pass as expectedHash to replace_board_snapshot for safe concurrent writes.', inputSchema: { ...BOARD_ARG } },
+    async ({ boardId }) => {
+      try { const id = await bid(boardId); return jsonText({ boardId: id, hash: await boardHash(id) }) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'replace_board_snapshot',
+    {
+      title: 'Replace board snapshot (bulk)',
+      description:
+        'Atomically replace whole collections in one transaction. Pass only the collections you want to sync — each provided array upserts new records and drops stale ones. Set dryRun:true to preview the before/after counts without writing. Pass expectedHash (from get_board_hash) to refuse the write if the board changed since you read it. Returns an audit receipt with before/after counts and the new hash.',
+      inputSchema: {
+        ...BOARD_ARG,
+        projects: z.array(z.object({ id: z.string(), nama: z.string(), status: z.string() }).passthrough()).optional(),
+        features: z.array(FEATURE_OBJ).optional(),
+        tasks: z.array(TASK_OBJ).optional(),
+        productionGates: z.array(GATE_OBJ).optional(),
+        prodMockLabel: z.string().optional(),
+        prodHeadline: z.string().optional(),
+        guide: z.array(GUIDE_SEC).optional(),
+        accounts: OPS_OBJ.optional(),
+        runs: z.array(z.object({ id: z.string() }).passthrough()).optional(),
+        dryRun: z.boolean().optional().describe('Preview counts, do not write'),
+        expectedHash: z.string().optional().describe('From get_board_hash — write refused on mismatch'),
+      },
+    },
+    async ({ boardId, dryRun, expectedHash, ...snap }) => {
+      try {
+        return jsonText(await replaceBoardSnapshot(await bid(boardId), snap as never, { dryRun, expectedHash }))
+      } catch (e) {
+        return asErr(e)
       }
     },
   )
