@@ -1,0 +1,24 @@
+{
+  "projectName": "gigit-project-orchestration",
+  "mode": "file-router",
+  "typescript": true,
+  "tailwind": true,
+  "packageManager": "pnpm",
+  "git": false,
+  "install": false,
+  "intent": true,
+  "addOnOptions": {},
+  "includeExamples": false,
+  "envVarValues": {},
+  "routerOnly": false,
+  "version": 1,
+  "framework": "react",
+  "chosenAddOns": [
+    "tanstack-query",
+    "table",
+    "form",
+    "store",
+    "mcp",
+    "eslint"
+  ]
+}
