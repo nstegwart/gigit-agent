@@ -123,6 +123,7 @@ export interface WorkTask {
   evidence_path?: string
   history?: Array<string>
   mapping_missing?: Array<string>
+  lifecycleStage?: string | null // current proven lifecycle stage (from the tasks table)
   // object-shaped extras (kept as opaque JSON)
   detail?: Json
   unit_test_plan?: Json
@@ -150,6 +151,7 @@ export interface LifecycleConfig {
   stages: Array<LifecycleStage>
   allowSkip?: boolean // forward jumps that skip stages (default false = strict sequential)
   allowRegression?: boolean // move back to an earlier stage for repair/regression (default true)
+  formulaVersion?: string // readiness formula id, surfaced in get_rollup (e.g. 'mfs-ready-prod-v1')
 }
 export interface LifecycleHistoryEntry {
   stage: string
@@ -178,12 +180,16 @@ export interface GroupReadiness {
   atMilestone: number // how many reached the milestone stage (e.g. PROD_READY)
 }
 export interface Rollup {
+  formulaVersion: string
+  readyStage: string | null // the "100% ready-production" gate (= milestone)
   stages: Array<LifecycleStage>
   counts: Record<string, number> // active tasks per stage
   readiness: Record<string, number> // readiness% each stage represents (resolved: config or evenly spread)
   readinessPercent: number // overall avg readiness across active tasks
-  milestone: string | null // the "ready-production" stage key
+  milestone: string | null // alias of readyStage
   atMilestone: number // active tasks that reached the milestone
+  prodReady: number // active tasks at/after the ready stage
+  liveVerified: number // active tasks past the ready stage (live badge)
   uninitialized: number // active tasks with no lifecycle stage yet (NOT counted as the first stage)
   hold: number
   active: number

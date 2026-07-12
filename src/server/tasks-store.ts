@@ -98,6 +98,7 @@ function lightFromRow(r: Record<string, unknown>): WorkTask {
     status: (s.status as string) ?? null,
     objective: (s.objective as string) ?? null,
     next: (s.next as string) ?? null,
+    lifecycleStage: (r.lifecycle_stage as string) ?? null,
   }
 }
 
@@ -122,7 +123,7 @@ export async function ensureBackfilled(boardId: string): Promise<void> {
 // ---- reads ----
 export async function taskSummaries(boardId: string, projectId?: string): Promise<Array<WorkTask>> {
   await ensureBackfilled(boardId)
-  const sql = `SELECT id, project_id, feature_contract_id, grp, phase, scope, title, updated, summary FROM tasks WHERE board_id=?${projectId ? ' AND project_id=?' : ''}`
+  const sql = `SELECT id, project_id, feature_contract_id, grp, phase, scope, title, updated, lifecycle_stage, summary FROM tasks WHERE board_id=?${projectId ? ' AND project_id=?' : ''}`
   const [rows] = await db().query(sql, projectId ? [boardId, projectId] : [boardId])
   return (rows as Array<Record<string, unknown>>).map(lightFromRow)
 }

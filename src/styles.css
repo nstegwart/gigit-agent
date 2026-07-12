@@ -654,6 +654,24 @@ svg:not([class]) { width: 15px; height: 15px; flex: none; vertical-align: -2px; 
 .ts-table tr:last-child td { border-bottom: 0; }
 .ts-raw { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-dim); background: var(--surface-2); padding: 10px 12px; border-radius: var(--r-sm); overflow-x: auto; }
 
+/* ready-production header (task detail §4) */
+.rp-head { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; padding: 14px 16px; margin: 4px 0 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: linear-gradient(180deg, var(--accent-soft), transparent 90%); }
+.rp-pct { display: flex; align-items: baseline; gap: 8px; flex: none; }
+.rp-pct b { font-size: 28px; font-weight: 760; line-height: 1; letter-spacing: -.02em; color: var(--text); font-variant-numeric: tabular-nums; }
+.rp-pct span { font-size: 11px; font-weight: 550; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; }
+.rp-facts { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-left: auto; }
+.rp-facts > div { display: flex; flex-direction: column; gap: 2px; }
+.rp-k { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint); }
+.rp-v { font-size: 12.5px; font-weight: 600; color: var(--text); font-family: var(--mono); }
+
+/* per-row readiness % + nested mapping checklist */
+.rail-pct { margin-left: auto; font-size: 12px; font-weight: 650; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.rail-pct.is-live { color: var(--ok); font-family: var(--mono); font-size: 11px; }
+.rail-nest { margin: 0 0 2px 44px; }
+.rail-nest-head { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; cursor: pointer; font: inherit; font-size: 11.5px; font-weight: 550; color: var(--text-dim); padding: 4px 0; }
+.rail-nest-head:hover { color: var(--text); }
+.rail-ck { display: flex; flex-direction: column; gap: 6px; padding: 6px 0 10px; }
+
 /* lifecycle rail — vertical phase timeline (task detail) */
 .rail { display: flex; flex-direction: column; margin: 8px 0 2px; }
 .rail-step { position: relative; display: flex; align-items: center; gap: 14px; width: 100%; min-height: 46px; padding: 6px 10px 6px 44px; border: 0; border-radius: var(--r-sm); background: none; text-align: left; font: inherit; color: var(--text-faint); }

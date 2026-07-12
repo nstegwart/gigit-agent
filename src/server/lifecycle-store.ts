@@ -25,7 +25,7 @@ export async function readLifecycle(boardId: string): Promise<LifecycleConfig> {
 export async function writeLifecycle(
   boardId: string,
   stages: Array<LifecycleStage>,
-  opts: { allowSkip?: boolean; allowRegression?: boolean } = {},
+  opts: { allowSkip?: boolean; allowRegression?: boolean; formulaVersion?: string } = {},
 ): Promise<LifecycleConfig> {
   if (!stages.length) throw new Error('lifecycle needs at least one stage')
   const keys = new Set<string>()
@@ -39,6 +39,7 @@ export async function writeLifecycle(
     stages,
     allowSkip: opts.allowSkip ?? prev.allowSkip ?? false,
     allowRegression: opts.allowRegression ?? prev.allowRegression ?? true,
+    formulaVersion: opts.formulaVersion ?? prev.formulaVersion ?? 'v1',
   }
   await writeDoc(boardId, 'lifecycle', cfg)
   await writeAudit(boardId, { ts: nowISO(), action: 'set_lifecycle', detail: { stages: stages.map((s) => s.key), allowSkip: cfg.allowSkip, allowRegression: cfg.allowRegression } })
@@ -136,11 +137,13 @@ export async function computeRollup(boardId: string): Promise<Rollup> {
   let uninitialized = 0
   let sumReadiness = 0
   let atMilestone = 0
+  let liveVerified = 0
   for (const r of rows) {
     if (isHold(r.scope)) { hold++; continue }
     active++
     sumReadiness += readinessOf(r.stage)
     if (milestoneIdx >= 0 && idx(r.stage) >= milestoneIdx) atMilestone++
+    if (milestoneIdx >= 0 && idx(r.stage) > milestoneIdx) liveVerified++
     if (idx(r.stage) < 0) uninitialized++
     else counts[r.stage as string] = (counts[r.stage as string] ?? 0) + 1
   }
@@ -167,7 +170,10 @@ export async function computeRollup(boardId: string): Promise<Rollup> {
     }]))
   }
   return {
+    formulaVersion: cfg.formulaVersion ?? 'v1',
+    readyStage: milestone,
     stages: cfg.stages, counts, readiness, readinessPercent, milestone, atMilestone,
+    prodReady: atMilestone, liveVerified,
     uninitialized, hold, active, byProject: roll((r) => r.project), byFeature: roll((r) => r.feature),
   }
 }

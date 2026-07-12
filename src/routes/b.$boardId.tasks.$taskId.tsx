@@ -4,11 +4,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { BoardLink as Link } from '#/components/BoardLink'
 
-import { boardQueryOptions, lifecycleQueryOptions, tasksQueryOptions, useBoard, useTaskLazy, useTasks } from '#/lib/board-query'
+import { boardQueryOptions, lifecycleQueryOptions, tasksQueryOptions, useBoard, useLifecycle, useTaskLazy, useTaskLifecycle, useTasks } from '#/lib/board-query'
+import { stageReadiness } from '#/lib/readiness'
 import { fmtDate } from '#/lib/format'
 import { Icon } from '#/lib/icons'
 import { EmptyState, ProgressBar } from '#/components/primitives'
-import { CheckpointList } from '#/components/CheckpointList'
 import { LifecycleRail } from '#/components/LifecycleRail'
 import { RunCard } from '#/components/RunCard'
 import { TaskMapping } from '#/components/TaskMapping'
@@ -38,7 +38,9 @@ function BackLink() {
 function View() {
   const { byId } = useTasks() // light summaries — instant shell + dependency titles
   const m = useBoard()
+  const cfg = useLifecycle()
   const { taskId } = Route.useParams()
+  const { data: lc } = useTaskLifecycle(taskId)
   const { data: full, isLoading: loadingFull } = useTaskLazy(taskId) // heavy mapping, lazy
   const agents = m.runsByTask[taskId] ?? []
 
@@ -54,6 +56,7 @@ function View() {
   const total = base.checkpoints.length
   const done = base.checkpoints.filter((c) => c.done).length
   const t = { ...base, total, done, pct: total ? Math.round((done / total) * 100) : 0 }
+  const readyPct = stageReadiness(cfg, lc?.stage)
 
   const story = full?.story
   const hasStory = !!(story && (story.userStory || story.currentGap || story.targetScope))
@@ -71,22 +74,18 @@ function View() {
             <h1>{t.title}</h1>
             <div className="detail-sub">
               <span className="chip chip-mono task-id">{t.id}</span>
-              {t.phase ? <span className="task-phase">{t.phase}</span> : null}
+              {lc?.stage ? <span className="task-phase">{lc.stage}</span> : t.phase ? <span className="task-phase">{t.phase}</span> : null}
               {t.projectId ? <span className="chip">{t.projectId}</span> : null}
               {t.scope ? <span className="chip">{t.scope}</span> : null}
             </div>
-            <div style={{ marginTop: 12, maxWidth: 320 }}>
-              <ProgressBar
-                pct={t.pct}
-                ok={t.pct === 100}
-                right={`${t.done}/${t.total}`}
-              />
+            <div style={{ marginTop: 12, maxWidth: 340 }}>
+              <ProgressBar pct={readyPct} ok={readyPct >= 100} right={`${readyPct}% ready-production`} />
             </div>
           </div>
         </div>
       </div>
 
-      <LifecycleRail taskId={taskId} />
+      <LifecycleRail taskId={taskId} checkpoints={t.checkpoints} />
 
       <TaskSections sections={full?.sections} />
 
@@ -159,8 +158,6 @@ function View() {
               </div>
             </div>
           ) : null}
-
-          <CheckpointList task={t} />
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

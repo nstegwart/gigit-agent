@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 
 import { buildModel } from '#/lib/model'
+import { nextEvidence, nextStage, stageReadiness } from '#/lib/readiness'
 import type { Feature } from '#/lib/types'
 import { advanceTask, computeRollup, initLifecycleStage, readAudit, readLifecycle, writeLifecycle } from '#/server/lifecycle-store'
 import { taskLifecycle } from '#/server/tasks-store'
@@ -413,8 +414,8 @@ export function registerBoardTools(server: McpServer): void {
   )
   server.registerTool(
     'set_lifecycle',
-    { title: 'Set lifecycle rail', description: "Fully (re)configure this board's lifecycle: ordered stages + gate rules. gated:true = reachable only via advance_task with a program-emitted receipt; verifierRole = must be passed by a run other than the implementer. allowSkip (default false) permits forward jumps; allowRegression (default true) permits moving back for repair. Each board owns its own rail.", inputSchema: { ...BOARD_ARG, stages: z.array(STAGE_OBJ).min(1), allowSkip: z.boolean().optional(), allowRegression: z.boolean().optional() } },
-    async ({ boardId, stages, allowSkip, allowRegression }) => { try { return jsonText(await writeLifecycle(await bid(boardId), stages as never, { allowSkip, allowRegression })) } catch (e) { return asErr(e) } },
+    { title: 'Set lifecycle rail', description: "Fully (re)configure this board's lifecycle: ordered stages + gate rules. gated:true = reachable only via advance_task with a program-emitted receipt; verifierRole = must be passed by a run other than the implementer. allowSkip (default false) permits forward jumps; allowRegression (default true) permits moving back for repair. Each board owns its own rail.", inputSchema: { ...BOARD_ARG, stages: z.array(STAGE_OBJ).min(1), allowSkip: z.boolean().optional(), allowRegression: z.boolean().optional(), formulaVersion: z.string().optional() } },
+    async ({ boardId, stages, allowSkip, allowRegression, formulaVersion }) => { try { return jsonText(await writeLifecycle(await bid(boardId), stages as never, { allowSkip, allowRegression, formulaVersion })) } catch (e) { return asErr(e) } },
   )
   server.registerTool(
     'get_task_lifecycle',
@@ -538,20 +539,46 @@ export function registerBoardTools(server: McpServer): void {
   // ---- adaptive views ----
   server.registerTool(
     'list_tasks',
-    { title: 'List tasks', description: "List a board's first-class tasks (T-… ids).", inputSchema: { ...BOARD_ARG, projectId: z.string().optional(), scope: z.string().optional() } },
+    { title: 'List tasks', description: "List a board's first-class tasks (T-… ids) with lifecycle readiness fields (lifecycleStage, readinessPercent, nextGate, nextEvidence, assignedRunId).", inputSchema: { ...BOARD_ARG, projectId: z.string().optional(), scope: z.string().optional() } },
     async ({ boardId, projectId, scope }) => {
-      let tasks = (await readTasks(await bid(boardId))).tasks
+      const id0 = await bid(boardId)
+      const [{ tasks: all }, cfg, m] = await Promise.all([readTasks(id0), readLifecycle(id0), modelOf(id0)])
+      let tasks = all
       if (projectId) tasks = tasks.filter((t) => t.projectId === projectId)
       if (scope) tasks = tasks.filter((t) => t.scope === scope)
-      return jsonText({ tasks: tasks.map((t) => ({ id: t.id, title: t.title, projectId: t.projectId ?? null, phase: t.phase ?? null, scope: t.scope ?? null, done: t.checkpoints.filter((c) => c.done).length, total: t.checkpoints.length, deps: t.dependencies.length })) })
+      return jsonText({ tasks: tasks.map((t) => ({
+        id: t.id, title: t.title, projectId: t.projectId ?? null, phase: t.phase ?? null, scope: t.scope ?? null,
+        lifecycleStage: t.lifecycleStage ?? null,
+        readinessPercent: stageReadiness(cfg, t.lifecycleStage),
+        nextGate: nextStage(cfg, t.lifecycleStage)?.key ?? null,
+        nextEvidence: nextEvidence(cfg, t.lifecycleStage),
+        assignedRunId: m.runsByTask[t.id]?.[0]?.id ?? null,
+        done: t.checkpoints.filter((c) => c.done).length, total: t.checkpoints.length, deps: t.dependencies.length,
+      })) })
     },
   )
   server.registerTool(
     'get_task',
-    { title: 'Get task', description: 'A single task incl checkpoints, deps, story, refs.', inputSchema: { ...BOARD_ARG, id: z.string() } },
+    { title: 'Get task', description: 'A single task incl checkpoints, deps, story, refs, PLUS lifecycle readiness (lifecycleStage, readinessPercent, nextGate, nextEvidence, assignedRunId, blockedReason, lastReceiptAt).', inputSchema: { ...BOARD_ARG, id: z.string() } },
     async ({ boardId, id }) => {
-      const t = await readTask(await bid(boardId), id)
-      return jsonText(t ? { task: t } : { error: `task not found: ${id}` })
+      const bd = await bid(boardId)
+      const t = await readTask(bd, id)
+      if (!t) return jsonText({ error: `task not found: ${id}` })
+      const [cfg, lc, m] = await Promise.all([readLifecycle(bd), taskLifecycle(bd, id), modelOf(bd)])
+      const stage = lc?.stage ?? null
+      const hist = ((lc?.lifecycle as { history?: Array<{ ts?: string; blocker?: string | null }> } | null)?.history) ?? []
+      const last = hist[hist.length - 1]
+      return jsonText({ task: {
+        ...t,
+        lifecycleStage: stage,
+        readinessPercent: stageReadiness(cfg, stage),
+        nextGate: nextStage(cfg, stage)?.key ?? null,
+        nextEvidence: nextEvidence(cfg, stage),
+        assignedRunId: m.runsByTask[id]?.[0]?.id ?? null,
+        blockedReason: last?.blocker ?? null,
+        lastReceiptAt: last?.ts ?? null,
+        rev: lc?.rev ?? 0,
+      } })
     },
   )
   server.registerTool(
