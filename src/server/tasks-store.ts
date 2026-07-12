@@ -229,6 +229,13 @@ export async function setTaskLifecycle(boardId: string, id: string, next: { stag
   const [after] = await db().query('SELECT rev FROM tasks WHERE board_id=? AND id=?', [boardId, id])
   return (after as Array<{ rev: number }>)[0]?.rev ?? 0
 }
+/** Bulk-initialize task stages in ONE atomic UPDATE (backfill/migration). */
+export async function initLifecycle(boardId: string, stage: string, onlyUninitialized = true): Promise<number> {
+  await ensureBackfilled(boardId)
+  const where = onlyUninitialized ? ' AND lifecycle_stage IS NULL' : ''
+  const [r] = await db().query(`UPDATE tasks SET lifecycle_stage=?, rev=rev+1 WHERE board_id=?${where}`, [stage, boardId])
+  return (r as { affectedRows: number }).affectedRows
+}
 /** Per-task (stage, project, feature, scope) — for board/feature/project rollups. */
 export async function taskStageRows(boardId: string): Promise<Array<{ id: string; stage: string | null; project: string | null; feature: string | null; scope: string | null }>> {
   await ensureBackfilled(boardId)

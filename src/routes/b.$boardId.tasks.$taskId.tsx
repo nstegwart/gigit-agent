@@ -12,6 +12,7 @@ import { CheckpointList } from '#/components/CheckpointList'
 import { LifecycleRail } from '#/components/LifecycleRail'
 import { RunCard } from '#/components/RunCard'
 import { TaskMapping } from '#/components/TaskMapping'
+import { TaskSections } from '#/components/TaskSections'
 
 export const Route = createFileRoute('/b/$boardId/tasks/$taskId')({
   // Light summary + board + rail load in the loader; the heavy 20-point mapping
@@ -86,6 +87,8 @@ function View() {
       </div>
 
       <LifecycleRail taskId={taskId} />
+
+      <TaskSections sections={full?.sections} />
 
       <div className="grid-2">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

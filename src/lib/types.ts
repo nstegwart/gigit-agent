@@ -36,6 +36,26 @@ export interface TaskVariant {
   expect?: string
 }
 
+/** An agent-defined content block inside a task ("menu baru"). Fully custom — the
+ *  agent adds/edits/removes these via MCP; the UI renders each by its `type`. */
+export interface TaskSection {
+  id: string
+  type: string // text | callout | fields | list | checklist | table | chips | anchors | variants | links | badges
+  title?: string
+  collapsed?: boolean
+  tone?: string // indigo|amber|green|blue|teal|red|parked
+  body?: string // text / callout
+  fields?: Array<{ k: string; v: string }>
+  items?: Array<string> // list
+  checklist?: Array<{ id?: string; label: string; done?: boolean }>
+  columns?: Array<string> // table header
+  rows?: Array<Array<string>> // table rows
+  chips?: Array<string>
+  anchors?: Array<TaskAnchor>
+  variants?: Array<TaskVariant>
+  links?: Array<{ label?: string; url: string }>
+}
+
 /** First-class task (T-… id) — distinct from the feature checklist `Task` above.
  *  Carries the full 20-point rebuild-mapping. Most fields are optional. */
 export interface WorkTask {
@@ -107,6 +127,8 @@ export interface WorkTask {
   detail?: Json
   unit_test_plan?: Json
   mapping_na?: Json
+  // fully agent-defined content blocks — rendered dynamically on the detail page
+  sections?: Array<TaskSection>
 }
 export interface TasksFile {
   tasks: Array<WorkTask>
@@ -124,6 +146,8 @@ export interface LifecycleStage {
 }
 export interface LifecycleConfig {
   stages: Array<LifecycleStage>
+  allowSkip?: boolean // forward jumps that skip stages (default false = strict sequential)
+  allowRegression?: boolean // move back to an earlier stage for repair/regression (default true)
 }
 export interface LifecycleHistoryEntry {
   stage: string
@@ -148,6 +172,7 @@ export interface TaskLifecycleState {
 export interface Rollup {
   stages: Array<LifecycleStage>
   counts: Record<string, number>
+  uninitialized: number // active tasks with no lifecycle stage yet (NOT counted as the first stage)
   hold: number
   active: number
   byProject: Record<string, string>

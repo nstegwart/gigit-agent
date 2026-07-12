@@ -20,6 +20,9 @@ const WRITE_TOOLS = new Set([
   'add_comment', 'open_decision', 'set_blocked', 'set_project_design', 'add_component',
   'upsert_task', 'delete_task', 'upsert_feature', 'delete_feature', 'set_prod', 'set_guide',
   'replace_accounts', 'replace_board_snapshot', 'set_lifecycle', 'advance_task',
+  'add_task_section', 'set_task_sections', 'update_task_section', 'remove_task_section',
+  'init_lifecycle', 'upsert_project', 'delete_project', 'update_board', 'delete_board',
+  'decide_decision', 'set_queue',
 ])
 function rpcError(status: number, message: string): Response {
   return new Response(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message } }), {

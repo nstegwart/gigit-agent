@@ -5,16 +5,21 @@ import { z } from 'zod'
 
 import { buildModel } from '#/lib/model'
 import type { Feature } from '#/lib/types'
-import { advanceTask, computeRollup, readAudit, readLifecycle, writeLifecycle } from '#/server/lifecycle-store'
+import { advanceTask, computeRollup, initLifecycleStage, readAudit, readLifecycle, writeLifecycle } from '#/server/lifecycle-store'
 import { taskLifecycle } from '#/server/tasks-store'
+import { decideDecision, deleteBoard, deleteProject, setQueue, updateBoard, upsertProject } from '#/server/board-store'
 import {
   addComment,
   addComponent,
+  addTaskSection,
   boardHash,
   createBoard,
   defaultBoardId,
   deleteFeature,
   deleteTask,
+  removeTaskSection,
+  setTaskSections,
+  updateTaskSection,
   listBoards,
   openDecision,
   readBoard,
@@ -274,6 +279,54 @@ export function registerBoardTools(server: McpServer): void {
       try { return jsonText(await deleteTask(await bid(boardId), id)) } catch (e) { return asErr(e) }
     },
   )
+
+  // ---- agent-defined task sections (add ANY content block/"menu" inside a task) ----
+  const SECTION_OBJ = z.object({
+    id: z.string().optional(),
+    type: z.string().describe('text | callout | fields | list | checklist | table | chips | anchors | variants | links | badges (or any custom type — falls back to raw JSON)'),
+    title: z.string().optional(),
+    collapsed: z.boolean().optional(),
+    tone: z.string().optional(),
+    body: z.string().optional(),
+    fields: z.array(z.object({ k: z.string(), v: z.string() })).optional(),
+    items: z.array(z.string()).optional(),
+    checklist: z.array(z.object({ id: z.string().optional(), label: z.string(), done: z.boolean().optional() })).optional(),
+    columns: z.array(z.string()).optional(),
+    rows: z.array(z.array(z.string())).optional(),
+    chips: z.array(z.string()).optional(),
+    anchors: z.array(z.object({ repo: z.string().optional(), file: z.string().optional(), line: z.union([z.string(), z.number()]).optional(), symbol: z.string().optional(), fact: z.string().optional() })).optional(),
+    variants: z.array(z.object({ id: z.string().optional(), when: z.string().optional(), expect: z.string().optional() })).optional(),
+    links: z.array(z.object({ label: z.string().optional(), url: z.string() })).optional(),
+  }).passthrough()
+  server.registerTool(
+    'add_task_section',
+    { title: 'Add a task section', description: 'Append one agent-defined content block ("menu") inside a task — any type/content. id auto-generated if omitted. Renders on the task detail immediately.', inputSchema: { ...BOARD_ARG, taskId: z.string(), section: SECTION_OBJ } },
+    async ({ boardId, taskId, section }) => {
+      try { return jsonText({ ok: true, sections: await addTaskSection(await bid(boardId), taskId, section as never) }) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'set_task_sections',
+    { title: 'Set task sections', description: 'Replace ALL of a task\'s content blocks with this ordered list. Fully defines the task body.', inputSchema: { ...BOARD_ARG, taskId: z.string(), sections: z.array(SECTION_OBJ) } },
+    async ({ boardId, taskId, sections }) => {
+      try { return jsonText({ ok: true, sections: await setTaskSections(await bid(boardId), taskId, sections as never) }) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'update_task_section',
+    { title: 'Update a task section', description: 'Patch one section by id (title/content/collapsed/tone/…).', inputSchema: { ...BOARD_ARG, taskId: z.string(), sectionId: z.string(), patch: SECTION_OBJ.partial() } },
+    async ({ boardId, taskId, sectionId, patch }) => {
+      try { return jsonText({ ok: true, sections: await updateTaskSection(await bid(boardId), taskId, sectionId, patch as never) }) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'remove_task_section',
+    { title: 'Remove a task section', description: 'Delete one section by id.', inputSchema: { ...BOARD_ARG, taskId: z.string(), sectionId: z.string() } },
+    async ({ boardId, taskId, sectionId }) => {
+      try { return jsonText({ ok: true, sections: await removeTaskSection(await bid(boardId), taskId, sectionId) }) } catch (e) { return asErr(e) }
+    },
+  )
+
   server.registerTool(
     'upsert_feature',
     { title: 'Upsert a feature', description: 'Create or update one feature/feature-contract (checklist card). Merges into an existing feature of the same id.', inputSchema: { ...BOARD_ARG, feature: FEATURE_OBJ } },
@@ -378,7 +431,7 @@ export function registerBoardTools(server: McpServer): void {
         ...BOARD_ARG,
         id: z.string(),
         toStage: z.string(),
-        byRunId: z.string().optional().describe('run/agent id performing the transition'),
+        byRunId: z.string().describe('run/agent id performing the transition (required)'),
         role: z.string().optional(),
         evidence: z.record(z.string(), z.any()).optional(),
         verdict: z.string().optional(),
@@ -401,6 +454,45 @@ export function registerBoardTools(server: McpServer): void {
     'list_audit',
     { title: 'List audit log', description: 'Recent audit entries (gate changes + mutations), newest first. Filter by taskId.', inputSchema: { ...BOARD_ARG, taskId: z.string().optional(), limit: z.number().int().optional() } },
     async ({ boardId, taskId, limit }) => { try { return jsonText({ audit: await readAudit(await bid(boardId), { taskId, limit }) }) } catch (e) { return asErr(e) } },
+  )
+  server.registerTool(
+    'init_lifecycle',
+    { title: 'Bulk-init task stages', description: "Set the lifecycle stage for a board's tasks in one atomic UPDATE (default = onlyUninitialized). stage defaults to the rail's first stage.", inputSchema: { ...BOARD_ARG, stage: z.string().optional(), onlyUninitialized: z.boolean().optional() } },
+    async ({ boardId, stage, onlyUninitialized }) => { try { return jsonText(await initLifecycleStage(await bid(boardId), stage, onlyUninitialized ?? true)) } catch (e) { return asErr(e) } },
+  )
+
+  // ---- board / project / queue CRUD (full board management from MCP) ----
+  server.registerTool(
+    'update_board',
+    { title: 'Update a board', description: "Rename a board, change its description, or set which views/tabs it shows.", inputSchema: { boardId: z.string(), name: z.string().optional(), description: z.string().optional(), views: z.array(z.string()).optional() } },
+    async ({ boardId, ...patch }) => { try { return jsonText({ ok: true, boards: await updateBoard(boardId, patch) }) } catch (e) { return asErr(e) } },
+  )
+  server.registerTool(
+    'delete_board',
+    { title: 'Delete a board', description: 'Delete a board and ALL its data (docs, tasks, audit). Irreversible.', inputSchema: { boardId: z.string() } },
+    async ({ boardId }) => { try { return jsonText({ ok: true, boards: await deleteBoard(boardId) }) } catch (e) { return asErr(e) } },
+  )
+  server.registerTool(
+    'upsert_project',
+    { title: 'Upsert a project', description: 'Create or update one project (merges by id). Any extra fields pass through.', inputSchema: { ...BOARD_ARG, project: z.object({ id: z.string(), nama: z.string(), status: z.string().optional() }).passthrough() } },
+    async ({ boardId, project }) => { try { const raw = await upsertProject(await bid(boardId), project as never); return jsonText({ ok: true, projects: raw.projects.map((p) => ({ id: p.id, nama: p.nama, status: p.status })) }) } catch (e) { return asErr(e) } },
+  )
+  server.registerTool(
+    'delete_project',
+    { title: 'Delete a project', description: 'Remove a project by id (its tasks stay; re-point or delete them separately).', inputSchema: { ...BOARD_ARG, id: z.string() } },
+    async ({ boardId, id }) => { try { const raw = await deleteProject(await bid(boardId), id); return jsonText({ ok: true, projects: raw.projects.map((p) => p.id) }) } catch (e) { return asErr(e) } },
+  )
+  server.registerTool(
+    'set_queue',
+    { title: 'Set the work queue', description: 'Set the board queue (now / next feature ids + note).', inputSchema: { ...BOARD_ARG, now: z.array(z.string()).optional(), next: z.array(z.string()).optional(), catatan: z.string().optional() } },
+    async ({ boardId, ...q }) => { try { const raw = await setQueue(await bid(boardId), q); return jsonText({ ok: true, queue: raw.queue ?? null }) } catch (e) { return asErr(e) } },
+  )
+  server.registerTool(
+    'decide_decision',
+    { title: 'Decide an open decision', description: 'Answer/close an open decision (unblocks the feature it gated).', inputSchema: { ...BOARD_ARG, id: z.string(), answer: z.string(), keputusan: z.string().optional(), decidedBy: z.string().optional() } },
+    async ({ boardId, id, answer, keputusan, decidedBy }) => {
+      try { const raw = await decideDecision(await bid(boardId), id, answer, keputusan, decidedBy ?? 'human'); return jsonText({ ok: true, decision: raw.decisions?.find((d) => d.id === id) ?? null }) } catch (e) { return asErr(e) }
+    },
   )
 
   // ---- collaboration ----

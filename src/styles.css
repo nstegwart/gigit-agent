@@ -634,6 +634,22 @@ svg:not([class]) { width: 15px; height: 15px; flex: none; vertical-align: -2px; 
 .tone-red    { --tone: var(--blocked); --tone-bg: var(--blocked-bg); }
 .tone-parked { --tone: var(--parked);  --tone-bg: var(--parked-bg); }
 
+/* agent-defined task sections (dynamic blocks) */
+.ts-text { margin: 0; font-size: 13px; color: var(--text-dim); line-height: 1.62; white-space: pre-wrap; }
+.ts-callout { margin: 0; font-size: 12.5px; line-height: 1.55; padding: 11px 13px; border-radius: var(--r-sm); color: var(--tone, var(--accent)); background: var(--tone-bg, var(--accent-soft)); border: 1px solid color-mix(in srgb, var(--tone, var(--accent)) 26%, transparent); }
+.ts-fields { display: flex; flex-direction: column; }
+.ts-check { display: flex; flex-direction: column; gap: 7px; }
+.ts-check-item { display: flex; align-items: flex-start; gap: 10px; font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+.ts-check-item.done .ts-check-label { color: var(--text-faint); text-decoration: line-through; text-decoration-color: var(--border); }
+.ts-box { width: 17px; height: 17px; border-radius: 5px; border: 1.6px solid var(--border); flex: none; margin-top: 1px; display: grid; place-items: center; color: #fff; }
+.ts-check-item.done .ts-box { background: var(--ok); border-color: var(--ok); }
+.ts-table-wrap { overflow-x: auto; border: 1px solid var(--border-soft); border-radius: var(--r-sm); }
+.ts-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ts-table th { text-align: left; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); padding: 8px 11px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.ts-table td { padding: 8px 11px; border-bottom: 1px solid var(--border-soft); color: var(--text-dim); }
+.ts-table tr:last-child td { border-bottom: 0; }
+.ts-raw { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-dim); background: var(--surface-2); padding: 10px 12px; border-radius: var(--r-sm); overflow-x: auto; }
+
 /* lifecycle rail — vertical phase timeline (task detail) */
 .rail { display: flex; flex-direction: column; margin: 8px 0 2px; }
 .rail-step { position: relative; display: flex; align-items: center; gap: 14px; width: 100%; min-height: 46px; padding: 6px 10px 6px 44px; border: 0; border-radius: var(--r-sm); background: none; text-align: left; font: inherit; color: var(--text-faint); }

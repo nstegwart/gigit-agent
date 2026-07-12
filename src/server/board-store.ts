@@ -2,7 +2,7 @@
 // JSON docs in board_docs (kind = plan/runs/design/collab/tasks/accounts); conventions in
 // globals; the board index in boards. Same JSON shapes as before, so buildModel() is
 // unchanged. All functions are async. Imported ONLY by server functions + the MCP route.
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { db, readDoc, readGlobal, writeDoc, writeDocsTx } from './db'
 import {
   deleteTaskRow,
@@ -13,6 +13,7 @@ import {
   toggleCheckpointRow,
   upsertTaskRow,
 } from './tasks-store'
+import type { TaskSection } from '#/lib/types'
 
 import type {
   ActivityEvent,
@@ -99,6 +100,43 @@ export async function createBoard(
   await writeDoc(id, 'design', { projects: {}, features: {} })
   await writeDoc(id, 'collab', { comments: {}, activity: [] })
   return listBoards()
+}
+
+export async function updateBoard(boardId: string, patch: { name?: string; description?: string; views?: Array<string> }): Promise<Array<BoardMeta>> {
+  const sets: Array<string> = []
+  const vals: Array<unknown> = []
+  if (patch.name !== undefined) { sets.push('name=?'); vals.push(patch.name) }
+  if (patch.description !== undefined) { sets.push('description=?'); vals.push(patch.description) }
+  if (patch.views !== undefined) { sets.push('views=?'); vals.push(JSON.stringify(patch.views)) }
+  if (sets.length) { vals.push(boardId); await db().query(`UPDATE boards SET ${sets.join(', ')} WHERE id=?`, vals) }
+  return listBoards()
+}
+export async function deleteBoard(boardId: string): Promise<Array<BoardMeta>> {
+  await db().query('DELETE FROM board_docs WHERE board_id=?', [boardId])
+  await db().query('DELETE FROM boards WHERE id=?', [boardId])
+  try { await db().query('DELETE FROM tasks WHERE board_id=?', [boardId]) } catch { /* table may not exist */ }
+  try { await db().query('DELETE FROM audit_log WHERE board_id=?', [boardId]) } catch { /* table may not exist */ }
+  return listBoards()
+}
+export async function upsertProject(boardId: string, project: RawProject): Promise<RawBoard> {
+  const plan = await readPlan(boardId)
+  const i = plan.projects.findIndex((p) => p.id === project.id)
+  if (i >= 0) plan.projects[i] = { ...plan.projects[i], ...project }
+  else plan.projects.push(project)
+  await writeDoc(boardId, 'plan', plan)
+  return readBoard(boardId)
+}
+export async function deleteProject(boardId: string, projectId: string): Promise<RawBoard> {
+  const plan = await readPlan(boardId)
+  plan.projects = plan.projects.filter((p) => p.id !== projectId)
+  await writeDoc(boardId, 'plan', plan)
+  return readBoard(boardId)
+}
+export async function setQueue(boardId: string, queue: { now?: Array<string>; next?: Array<string>; catatan?: string }): Promise<RawBoard> {
+  const plan = await readPlan(boardId)
+  plan.queue = { ...(plan.queue ?? {}), ...queue }
+  await writeDoc(boardId, 'plan', plan)
+  return readBoard(boardId)
 }
 
 /** Full raw board = plan + runs + overlays, merged. */
@@ -306,6 +344,41 @@ export async function upsertTask(boardId: string, task: WorkTask, expectedRev?: 
 export async function deleteTask(boardId: string, taskId: string): Promise<{ ok: true; removed: number; total: number }> {
   const removed = await deleteTaskRow(boardId, taskId)
   return { ok: true, removed, total: await taskCount(boardId) }
+}
+// ---- agent-defined task sections (content blocks; lifecycle preserved) ----
+async function loadTask(boardId: string, taskId: string): Promise<WorkTask> {
+  const t = await taskFull(boardId, taskId)
+  if (!t) throw new Error(`task not found: ${taskId}`)
+  return t
+}
+const withId = (s: TaskSection): TaskSection => ({ ...s, id: s.id || `s-${randomUUID().slice(0, 8)}` })
+export async function setTaskSections(boardId: string, taskId: string, sections: Array<TaskSection>): Promise<Array<TaskSection>> {
+  const t = await loadTask(boardId, taskId)
+  t.sections = sections.map(withId)
+  await upsertTaskRow(boardId, normTask(t))
+  return t.sections
+}
+export async function addTaskSection(boardId: string, taskId: string, section: TaskSection): Promise<Array<TaskSection>> {
+  const t = await loadTask(boardId, taskId)
+  t.sections = [...(t.sections ?? []), withId(section)]
+  await upsertTaskRow(boardId, normTask(t))
+  return t.sections
+}
+export async function updateTaskSection(boardId: string, taskId: string, sectionId: string, patch: Partial<TaskSection>): Promise<Array<TaskSection>> {
+  const t = await loadTask(boardId, taskId)
+  const secs = t.sections ?? []
+  const i = secs.findIndex((s) => s.id === sectionId)
+  if (i < 0) throw new Error(`section not found: ${sectionId}`)
+  secs[i] = { ...secs[i], ...patch, id: sectionId }
+  t.sections = secs
+  await upsertTaskRow(boardId, normTask(t))
+  return t.sections
+}
+export async function removeTaskSection(boardId: string, taskId: string, sectionId: string): Promise<Array<TaskSection>> {
+  const t = await loadTask(boardId, taskId)
+  t.sections = (t.sections ?? []).filter((s) => s.id !== sectionId)
+  await upsertTaskRow(boardId, normTask(t))
+  return t.sections
 }
 export async function upsertFeature(boardId: string, feature: RawFeature): Promise<{ ok: true; id: string; created: boolean; total: number }> {
   const plan = await readPlan(boardId)

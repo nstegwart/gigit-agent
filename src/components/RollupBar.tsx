@@ -9,6 +9,13 @@ export function RollupBar() {
   if (!r.active && !r.hold) return null
   return (
     <div className="rollup">
+      {r.uninitialized ? (
+        <div className="rollup-cell tone-parked is-uninit" title="Active tasks with no lifecycle stage yet — run init_lifecycle">
+          <div className="rollup-n">{r.uninitialized}</div>
+          <div className="rollup-lbl">Uninitialized</div>
+          <div className="rollup-track" />
+        </div>
+      ) : null}
       {r.stages.map((s) => {
         const n = r.counts[s.key] ?? 0
         const pct = r.active ? Math.round((n / r.active) * 100) : 0
