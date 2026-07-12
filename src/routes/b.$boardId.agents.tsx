@@ -1,13 +1,14 @@
-// Agents route — typed React port of the prototype `vAgents(m)` view
-// (docs/plan/assets/app.js). Groups every run by status (Running / Blocked /
-// Queued / Done / Failed) into `.runs-grid` sections, with a live count and
-// a per-agent-type summary in the section description. Respects global search.
+// Agents route — who is moving which gate (§6). Top summary (live / blocked /
+// unproductive / done + account capacity), runs grouped by status, each card
+// linking to its task with its current stage → target gate, evidence, verdict,
+// and heartbeat.
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '@tanstack/react-store'
 
-import { boardQueryOptions, tasksQueryOptions, useBoard, useTasks } from '#/lib/board-query'
+import { boardQueryOptions, lifecycleQueryOptions, opsQueryOptions, tasksQueryOptions, useBoard, useLifecycle, useOps, useTasks } from '#/lib/board-query'
+import { nextStage, stageReadiness } from '#/lib/readiness'
 import { uiStore } from '#/store/ui'
-import { RunCard } from '#/components/RunCard'
+import { RunCard, type RunTaskInfo } from '#/components/RunCard'
 import { EmptyState } from '#/components/primitives'
 import type { Run } from '#/lib/types'
 
@@ -16,6 +17,8 @@ export const Route = createFileRoute('/b/$boardId/agents')({
     await Promise.all([
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
+      context.queryClient.ensureQueryData(lifecycleQueryOptions(params.boardId)),
+      context.queryClient.ensureQueryData(opsQueryOptions(params.boardId)),
     ])
   },
   component: View,
@@ -32,21 +35,34 @@ const GROUPS: Array<[string, Run['status']]> = [
 function View() {
   const m = useBoard()
   const { byId: taskById } = useTasks()
+  const cfg = useLifecycle()
+  const ops = useOps()
   const q = useStore(uiStore, (s) => s.search).toLowerCase()
 
-  let runs = m.runs
-  if (q) {
-    runs = runs.filter((r) =>
-      `${r.agent} ${r.task} ${r.model} ${r.agentType} ${r.effort}`.toLowerCase().includes(q),
-    )
+  const info = (r: Run): RunTaskInfo | undefined => {
+    const t = r.taskId ? taskById[r.taskId] : null
+    if (!t) return undefined
+    return { stage: t.lifecycleStage ?? null, nextGate: nextStage(cfg, t.lifecycleStage)?.key ?? null, readinessPercent: stageReadiness(cfg, t.lifecycleStage) }
   }
 
-  const groups = GROUPS.map(([t, s]) => [t, runs.filter((r) => r.status === s)] as [string, Run[]]).filter(
-    (g) => g[1].length,
-  )
+  let runs = m.runs
+  if (q) runs = runs.filter((r) => `${r.agent} ${r.task} ${r.model} ${r.agentType} ${r.effort}`.toLowerCase().includes(q))
+  const groups = GROUPS.map(([t, s]) => [t, runs.filter((r) => r.status === s)] as [string, Array<Run>]).filter((g) => g[1].length)
 
-  const byType: Record<string, number> = {}
-  for (const r of m.runs) byType[r.agentType] = (byType[r.agentType] ?? 0) + 1
+  const live = m.runningAgents.length
+  const blocked = m.runs.filter((r) => r.status === 'blocked').length
+  const done = m.runs.filter((r) => r.status === 'done').length
+  const unproductive = m.runs.filter((r) => r.status === 'running' && (!r.taskId || (!r.targetGate && !r.verdict))).length
+  const usable = ops.accounts.filter((a) => a.usable).length
+  const limited = ops.accounts.filter((a) => !a.usable).length
+
+  const tiles: Array<[string, number | string, string]> = [
+    ['Live runs', live, 'ok'],
+    ['Blocked', blocked, blocked ? 'warn' : ''],
+    ['Unproductive', unproductive, unproductive ? 'blocked' : ''],
+    ['Done', done, ''],
+    ['Accounts usable', `${usable}/${usable + limited}`, limited ? 'warn' : 'ok'],
+  ]
 
   return (
     <div className="wrap">
@@ -54,36 +70,30 @@ function View() {
         <div className="sec-head">
           <h2>Agents</h2>
           <span className="count">{m.runs.length}</span>
-          <span className="live">
-            <span className="blink" />
-            {m.runningAgents.length} live
-          </span>
-          <span className="desc">
-            {Object.entries(byType)
-              .map(([t, n]) => `${n} ${t}`)
-              .join(' · ')}
-          </span>
+          <span className="live"><span className="blink" />{live} live</span>
+          <span className="desc">who is moving which gate — not the source of progress</span>
         </div>
+
+        <div className="agsum">
+          {tiles.map(([lbl, val, tone]) => (
+            <div className={`agsum-tile ${tone ? `t-${tone}` : ''}`} key={lbl}>
+              <div className="agsum-n">{val}</div>
+              <div className="agsum-l">{lbl}</div>
+            </div>
+          ))}
+        </div>
+
         {groups.length ? (
           groups.map(([t, rs]) => (
             <div key={t}>
               <div className="queue-rail" style={{ marginTop: 8 }}>
-                <span
-                  className={`queue-lbl ${t === 'Running' ? 'ql-now' : t === 'Blocked' || t === 'Failed' ? 'ql-blocked' : 'ql-next'}`}
-                >
-                  {t}
-                </span>
+                <span className={`queue-lbl ${t === 'Running' ? 'ql-now' : t === 'Blocked' || t === 'Failed' ? 'ql-blocked' : 'ql-next'}`}>{t}</span>
                 <span className="line" />
                 <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>{rs.length}</span>
               </div>
               <div className="runs-grid" style={{ marginBottom: 16 }}>
                 {rs.map((r) => (
-                  <RunCard
-                    key={r.id}
-                    run={r}
-                    model={m}
-                    taskTitle={r.taskId ? taskById[r.taskId]?.title : undefined}
-                  />
+                  <RunCard key={r.id} run={r} model={m} taskTitle={r.taskId ? taskById[r.taskId]?.title : undefined} taskInfo={info(r)} />
                 ))}
               </div>
             </div>

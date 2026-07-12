@@ -143,10 +143,10 @@ export function registerBoardTools(server: McpServer): void {
   )
   server.registerTool(
     'upsert_run',
-    { title: 'Register or update an agent run', description: 'The write path an agent uses to report itself.', inputSchema: { ...BOARD_ARG, id: z.string(), agent: z.string().optional(), agentType: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), task: z.string().optional(), feature: z.string().optional(), taskId: z.string().optional(), project: z.string().optional(), status: z.enum(['running', 'blocked', 'queued', 'done', 'failed']).optional() } },
+    { title: 'Register or update an agent run', description: 'The write path an agent uses to report itself. Call at launch, heartbeat, material transition, terminal verdict, and rotation. targetGate/evidencePath/verdict make the run productive on the agents board.', inputSchema: { ...BOARD_ARG, id: z.string(), agent: z.string().optional(), role: z.string().optional(), agentType: z.string().optional(), model: z.string().optional(), effort: z.string().optional(), task: z.string().optional(), feature: z.string().optional(), taskId: z.string().optional(), account: z.string().optional(), project: z.string().optional(), status: z.enum(['running', 'blocked', 'queued', 'done', 'failed']).optional(), targetGate: z.string().optional(), evidencePath: z.string().optional(), verdict: z.string().optional(), note: z.string().optional() } },
     async ({ boardId, ...rest }) => {
       const patch: Parameters<typeof upsertRun>[1] = { id: rest.id }
-      for (const k of ['agent', 'agentType', 'model', 'effort', 'task', 'feature', 'taskId', 'project', 'status'] as const) {
+      for (const k of ['agent', 'role', 'agentType', 'model', 'effort', 'task', 'feature', 'taskId', 'account', 'project', 'status', 'targetGate', 'evidencePath', 'verdict', 'note'] as const) {
         if (rest[k] !== undefined) (patch as Record<string, unknown>)[k] = rest[k]
       }
       const raw = await upsertRun(await bid(boardId), patch)

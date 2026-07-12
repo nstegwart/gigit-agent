@@ -316,8 +316,11 @@ export interface Run {
   project?: string | null
   status: RunStatus
   started?: string
-  updated?: string
+  updated?: string // last heartbeat
   note?: string
+  targetGate?: string | null // the lifecycle stage this run is driving toward
+  evidencePath?: string | null // where its proof lands
+  verdict?: string | null // terminal receipt/verdict (PASS/FAIL/…)
 }
 
 export interface DecisionOption {
