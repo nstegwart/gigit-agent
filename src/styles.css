@@ -400,6 +400,27 @@ svg:not([class]) { width: 15px; height: 15px; flex: none; vertical-align: -2px; 
 .ftable .t-name { font-weight: 550; }
 .ftable .t-id { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
 
+/* route loading state */
+.page-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; min-height: 55vh; color: var(--text-faint); }
+.page-loading-txt { font-size: 12.5px; font-weight: 500; letter-spacing: .01em; }
+.spinner { width: 26px; height: 26px; border-radius: 50%; border: 2.5px solid var(--border); border-top-color: var(--accent); animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* collapsible task groups */
+.tgroup { cursor: pointer; }
+.tgroup > td { padding: 0 !important; background: var(--surface-2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border) !important; }
+.tgroup:hover > td { background: var(--surface-3); }
+.tgroup-body:first-child .tgroup > td { border-top: 0; }
+.tgroup-in { display: flex; align-items: center; gap: 10px; padding: 9px 14px; }
+.tgroup-caret { color: var(--text-faint); transition: transform .16s ease; flex: none; }
+.tgroup-caret.open { transform: rotate(-90deg); }
+.tgroup-name { font-size: 12.5px; font-weight: 650; letter-spacing: -.01em; font-family: var(--mono); color: var(--text); }
+.tgroup-count { font-size: 11px; font-weight: 600; color: var(--text-dim); background: var(--surface); border: 1px solid var(--border); padding: 1px 8px; border-radius: 20px; }
+.tgroup-prog { margin-left: auto; width: 190px; max-width: 42%; }
+.grp-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 550; color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); border-radius: 20px; padding: 5px 12px; cursor: pointer; }
+.grp-toggle:hover { color: var(--text); border-color: var(--text-faint); background: var(--surface); }
+.grp-toggle-n { font-size: 10.5px; color: var(--text-faint); background: var(--surface); border-radius: 10px; padding: 0 6px; }
+
 /* decisions */
 .decision { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); padding: 15px 16px; margin-bottom: 10px; box-shadow: var(--shadow-sm); }
 .decision-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }

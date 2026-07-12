@@ -4,7 +4,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { BoardLink as Link } from '#/components/BoardLink'
 
-import { boardQueryOptions, tasksQueryOptions, useBoard, useTasks } from '#/lib/board-query'
+import { boardQueryOptions, taskQueryOptions, tasksQueryOptions, useBoard, useTask, useTasks } from '#/lib/board-query'
 import { fmtDate } from '#/lib/format'
 import { Icon } from '#/lib/icons'
 import { EmptyState, ProgressBar } from '#/components/primitives'
@@ -15,6 +15,7 @@ import { TaskMapping } from '#/components/TaskMapping'
 export const Route = createFileRoute('/b/$boardId/tasks/$taskId')({
   loader: async ({ context, params }) => {
     await Promise.all([
+      context.queryClient.ensureQueryData(taskQueryOptions(params.boardId, params.taskId)),
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),
     ])
@@ -31,13 +32,13 @@ function BackLink() {
 }
 
 function View() {
-  const { byId } = useTasks()
+  const { byId } = useTasks() // light summaries — for dependency titles
   const m = useBoard()
   const { taskId } = Route.useParams()
-  const t = byId[taskId]
+  const full = useTask(taskId) // one full row incl. the heavy 20-point mapping
   const agents = m.runsByTask[taskId] ?? []
 
-  if (!t) {
+  if (!full) {
     return (
       <>
         <BackLink />
@@ -45,6 +46,9 @@ function View() {
       </>
     )
   }
+  const total = full.checkpoints.length
+  const done = full.checkpoints.filter((c) => c.done).length
+  const t = { ...full, total, done, pct: total ? Math.round((done / total) * 100) : 0 }
 
   const story = t.story
   const hasStory = !!(story && (story.userStory || story.currentGap || story.targetScope))

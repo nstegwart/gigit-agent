@@ -15,6 +15,7 @@ import {
   readGuide,
   readOps,
   readProd,
+  readTask,
   readTasks,
   setBlocked,
   setFeaturePhase,
@@ -110,6 +111,11 @@ export const clearBlockedFn = createServerFn({ method: 'POST' })
 export const getTasksFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
   .handler(async ({ data }) => readTasks(data.boardId))
+
+// full single task (heavy 20-point mapping) — detail page only
+export const getTaskFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ boardId: board, taskId: z.string() }))
+  .handler(async ({ data }) => readTask(data.boardId, data.taskId))
 
 export const getOpsFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))

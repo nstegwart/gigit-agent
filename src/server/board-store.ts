@@ -4,6 +4,15 @@
 // unchanged. All functions are async. Imported ONLY by server functions + the MCP route.
 import { createHash } from 'node:crypto'
 import { db, readDoc, readGlobal, writeDoc, writeDocsTx } from './db'
+import {
+  deleteTaskRow,
+  replaceTaskRows,
+  taskCount,
+  taskFull,
+  taskSummaries,
+  toggleCheckpointRow,
+  upsertTaskRow,
+} from './tasks-store'
 
 import type {
   ActivityEvent,
@@ -254,8 +263,16 @@ export async function addComponent(boardId: string, projectId: string, komponen:
 }
 
 // ---- adaptive views: tasks / ops / prod / guide ----
-export function readTasks(boardId: string): Promise<TasksFile> {
-  return readDoc<TasksFile>(boardId, 'tasks', { tasks: [] })
+// Tasks live in the `tasks` table (row per task). List reads return LIGHT summaries
+// (no heavy 20-point mapping); the detail page pulls one full row via readTask().
+export async function readTasks(boardId: string): Promise<TasksFile> {
+  return { tasks: await taskSummaries(boardId) }
+}
+export async function readTaskSummaries(boardId: string, projectId?: string): Promise<Array<WorkTask>> {
+  return taskSummaries(boardId, projectId)
+}
+export function readTask(boardId: string, id: string): Promise<WorkTask | null> {
+  return taskFull(boardId, id)
 }
 export async function readOps(boardId: string): Promise<OpsData> {
   const o = await readDoc<Partial<OpsData>>(boardId, 'accounts', { vault: {}, accounts: [] })
@@ -270,14 +287,8 @@ export async function readGuide(boardId: string): Promise<GuideData> {
   return { sections: g.sections ?? [] }
 }
 export async function toggleCheckpoint(boardId: string, taskId: string, checkpointId: string): Promise<TasksFile> {
-  const file = await readTasks(boardId)
-  const task = file.tasks.find((t) => t.id === taskId)
-  if (!task) throw new Error(`task not found: ${taskId}`)
-  const cp = task.checkpoints.find((c) => c.id === checkpointId)
-  if (!cp) throw new Error(`checkpoint not found: ${checkpointId}`)
-  cp.done = !cp.done
-  await writeDoc(boardId, 'tasks', file)
-  return file
+  await toggleCheckpointRow(boardId, taskId, checkpointId)
+  return { tasks: await taskSummaries(boardId) }
 }
 
 // ---- write suite: granular upsert/delete + set + bulk snapshot ----
@@ -289,19 +300,12 @@ function normFeature(f: RawFeature): RawFeature {
   return { ...f, checklist: f.checklist ?? [] }
 }
 export async function upsertTask(boardId: string, task: WorkTask): Promise<{ ok: true; id: string; created: boolean; total: number }> {
-  const file = await readTasks(boardId)
-  const i = file.tasks.findIndex((t) => t.id === task.id)
-  if (i >= 0) file.tasks[i] = normTask({ ...file.tasks[i], ...task })
-  else file.tasks.push(normTask(task))
-  await writeDoc(boardId, 'tasks', file)
-  return { ok: true, id: task.id, created: i < 0, total: file.tasks.length }
+  const created = await upsertTaskRow(boardId, normTask(task))
+  return { ok: true, id: task.id, created, total: await taskCount(boardId) }
 }
 export async function deleteTask(boardId: string, taskId: string): Promise<{ ok: true; removed: number; total: number }> {
-  const file = await readTasks(boardId)
-  const before = file.tasks.length
-  file.tasks = file.tasks.filter((t) => t.id !== taskId)
-  await writeDoc(boardId, 'tasks', file)
-  return { ok: true, removed: before - file.tasks.length, total: file.tasks.length }
+  const removed = await deleteTaskRow(boardId, taskId)
+  return { ok: true, removed, total: await taskCount(boardId) }
 }
 export async function upsertFeature(boardId: string, feature: RawFeature): Promise<{ ok: true; id: string; created: boolean; total: number }> {
   const plan = await readPlan(boardId)
@@ -416,7 +420,7 @@ export async function replaceBoardSnapshot(
   const plan = cur.plan
   if (snap.projects !== undefined) plan.projects = snap.projects
   if (snap.features !== undefined) plan.features = snap.features.map(normFeature)
-  const nextTasks = snap.tasks !== undefined ? { tasks: snap.tasks.map(normTask) } : cur.tasks
+  const nextTaskRows = snap.tasks !== undefined ? snap.tasks.map(normTask) : null // tasks live in their own table
   const nextProd: ProdData = {
     mockLabel: snap.prodMockLabel ?? cur.prod.mockLabel,
     headline: snap.prodHeadline ?? cur.prod.headline,
@@ -429,7 +433,7 @@ export async function replaceBoardSnapshot(
   const applied: Array<string> = []
   const docs: Record<string, unknown> = {}
   if (snap.projects !== undefined || snap.features !== undefined) { docs.plan = plan; applied.push(snap.projects !== undefined ? 'projects' : '', snap.features !== undefined ? 'features' : '') }
-  if (snap.tasks !== undefined) { docs.tasks = nextTasks; applied.push('tasks') }
+  if (nextTaskRows !== null) applied.push('tasks') // tasks go to the tasks table, not a doc
   if (snap.productionGates !== undefined || snap.prodMockLabel !== undefined || snap.prodHeadline !== undefined) { docs.prod = nextProd; applied.push('productionGates') }
   if (snap.guide !== undefined) { docs.guide = nextGuide; applied.push('guide') }
   if (snap.accounts !== undefined) { docs.accounts = nextOps; applied.push('accounts') }
@@ -439,7 +443,7 @@ export async function replaceBoardSnapshot(
   const after: BoardCounts = {
     projects: (snap.projects ?? cur.plan.projects).length,
     features: (snap.features ?? cur.plan.features).length,
-    tasks: nextTasks.tasks.length,
+    tasks: nextTaskRows ? nextTaskRows.length : cur.tasks.tasks.length,
     productionGates: nextProd.gates.length,
     guideSections: nextGuide.sections.length,
     accounts: nextOps.accounts.length,
@@ -448,7 +452,8 @@ export async function replaceBoardSnapshot(
   if (opts.dryRun) {
     return { ok: true, dryRun: true, boardId, applied: appliedClean, before, after, fromHash, toHash: null }
   }
-  await writeDocsTx(boardId, docs)
+  if (Object.keys(docs).length) await writeDocsTx(boardId, docs)
+  if (nextTaskRows !== null) await replaceTaskRows(boardId, nextTaskRows)
   const toHash = await boardHash(boardId)
   return { ok: true, dryRun: false, boardId, applied: appliedClean, before, after, fromHash, toHash }
 }

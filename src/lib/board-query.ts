@@ -16,13 +16,14 @@ import {
   getGuideFn,
   getOpsFn,
   getProdFn,
+  getTaskFn,
   getTasksFn,
   listBoardsFn,
   openDecisionFn,
   toggleCheckpointFn,
   toggleTaskFn,
 } from '#/server/board'
-import type { BoardMeta, GuideData, Model, OpsData, ProdData, RawBoard, TasksFile } from './types'
+import type { BoardMeta, GuideData, Model, OpsData, ProdData, RawBoard, TasksFile, WorkTask } from './types'
 
 const DEFAULT_VIEWS = ['board', 'agents', 'projects', 'features', 'map', 'design', 'decisions', 'log']
 
@@ -71,6 +72,8 @@ export function useBoardViews(): Array<string> {
 // ---- adaptive view queries ----
 export const tasksQueryOptions = (boardId: string) =>
   queryOptions<TasksFile>({ queryKey: ['tasks', boardId], queryFn: () => getTasksFn({ data: { boardId } }), staleTime: 5_000 })
+export const taskQueryOptions = (boardId: string, taskId: string) =>
+  queryOptions<WorkTask | null>({ queryKey: ['task', boardId, taskId], queryFn: () => getTaskFn({ data: { boardId, taskId } }), staleTime: 5_000 })
 export const opsQueryOptions = (boardId: string) =>
   queryOptions<OpsData>({ queryKey: ['ops', boardId], queryFn: () => getOpsFn({ data: { boardId } }), staleTime: 5_000 })
 export const prodQueryOptions = (boardId: string) =>
@@ -82,6 +85,10 @@ export function useTasks() {
   const boardId = useBoardId()
   const { data } = useSuspenseQuery(tasksQueryOptions(boardId))
   return useMemo(() => buildTasks(data.tasks), [data])
+}
+export function useTask(taskId: string): WorkTask | null {
+  const boardId = useBoardId()
+  return useSuspenseQuery(taskQueryOptions(boardId, taskId)).data
 }
 export function useOps(): OpsData {
   const boardId = useBoardId()

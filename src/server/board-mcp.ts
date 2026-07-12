@@ -20,6 +20,7 @@ import {
   readGuide,
   readOps,
   readProd,
+  readTask,
   readTasks,
   replaceAccounts,
   replaceBoardSnapshot,
@@ -390,7 +391,7 @@ export function registerBoardTools(server: McpServer): void {
     'get_task',
     { title: 'Get task', description: 'A single task incl checkpoints, deps, story, refs.', inputSchema: { ...BOARD_ARG, id: z.string() } },
     async ({ boardId, id }) => {
-      const t = (await readTasks(await bid(boardId))).tasks.find((x) => x.id === id)
+      const t = await readTask(await bid(boardId), id)
       return jsonText(t ? { task: t } : { error: `task not found: ${id}` })
     },
   )
