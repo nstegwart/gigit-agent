@@ -84,7 +84,7 @@ export async function advanceTask(boardId: string, taskId: string, inp: AdvanceI
     // a gated stage can only be reached with a program-emitted receipt, never a bare manual set
     if (stage.gated) {
       for (const need of stage.requiresEvidence ?? []) {
-        if (!(need in receipt)) throw new Error(`stage ${stage.key} is evidence-gated: missing "${need}" (pass it in evidence/commitSha/deployReceipt)`)
+        if (!(need in receipt)) throw new Error(`stage ${stage.key} is evidence-gated: missing "${need}" — pass evidence:{"${need}": "..."} (commitSha/deployReceipt are shortcuts only for those exact keys)`)
       }
       if (stage.verifierRole) {
         if (!inp.verdict) throw new Error(`stage ${stage.key} is verifier-gated: a verdict is required (the verifier's PASS)`)
