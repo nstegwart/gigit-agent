@@ -1,7 +1,7 @@
 // Shared readiness math — one formula for server (get_rollup / list_tasks) and UI
 // (LifecycleRail / TasksTable). Readiness% of a stage = its configured `readiness`,
 // else evenly spread across the rail (last = 100).
-import type { LifecycleConfig, LifecycleStage } from './types'
+import type { LifecycleConfig, LifecycleStage, TaskCheckpoint } from './types'
 
 export function resolvedReadiness(cfg: LifecycleConfig): Record<string, number> {
   const n = cfg.stages.length
@@ -26,6 +26,18 @@ export function rowReadiness(cfg: LifecycleConfig, key: string | null | undefine
 export function nextStage(cfg: LifecycleConfig, key: string | null | undefined): LifecycleStage | null {
   const i = stageIndex(cfg, key)
   return cfg.stages[i + 1] ?? null
+}
+/** The readiness threshold a checkpoint represents — the "· N%" in its label, else evenly spread. */
+export function checkpointThreshold(c: { label?: string }, i: number, total: number): number {
+  const m = /·\s*(\d+)\s*%/.exec(c.label ?? '')
+  return m ? Number(m[1]) : total ? ((i + 1) / total) * 100 : 0
+}
+/** Lifecycle-DERIVED checkpoint state — R01..Rn are done when the proven-stage readiness
+ *  reaches their threshold (§2). One source for the UI (rail) and MCP (derivedCheckpoints). */
+export function deriveCheckpoints(readyPct: number, checkpoints: Array<TaskCheckpoint>) {
+  const total = checkpoints.length
+  const items = checkpoints.map((c, i) => ({ ...c, done: readyPct >= checkpointThreshold(c, i, total) }))
+  return { checkpoints: items, done: items.filter((c) => c.done).length, total }
 }
 /** What proof unlocks the next gate — evidence keys, or the verifier requirement. */
 export function nextEvidence(cfg: LifecycleConfig, key: string | null | undefined): Array<string> {

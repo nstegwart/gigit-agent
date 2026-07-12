@@ -4,7 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 
 import { buildModel } from '#/lib/model'
-import { nextEvidence, nextStage, stageReadiness } from '#/lib/readiness'
+import { deriveCheckpoints, nextEvidence, nextStage, stageReadiness } from '#/lib/readiness'
 import type { Feature } from '#/lib/types'
 import { advanceTask, computeRollup, initLifecycleStage, readAudit, readLifecycle, writeLifecycle } from '#/server/lifecycle-store'
 import { taskLifecycle } from '#/server/tasks-store'
@@ -565,6 +565,7 @@ export function registerBoardTools(server: McpServer): void {
         lastReceiptAt: t.lastReceiptAt ?? null,
         ...runInfo(m.runsByTask[t.id]),
         done: t.checkpoints.filter((c) => c.done).length, total: t.checkpoints.length, deps: t.dependencies.length,
+        derivedDone: deriveCheckpoints(stageReadiness(cfg, t.lifecycleStage), t.checkpoints).done, // lifecycle-derived (§2)
       })) })
     },
   )
@@ -589,6 +590,8 @@ export function registerBoardTools(server: McpServer): void {
         blockedReason: last?.blocker ?? null,
         lastReceiptAt: last?.ts ?? null,
         rev: lc?.rev ?? 0,
+        // lifecycle-derived checkpoint state (§2) — raw .checkpoints keeps the stored flags
+        derivedCheckpoints: deriveCheckpoints(stageReadiness(cfg, stage), t.checkpoints ?? []),
       } })
     },
   )

@@ -5,7 +5,7 @@
 // engine/receipt-gated — clicking a non-gated stage advances it (human).
 import { useState } from 'react'
 import { useAdvanceTask, useLifecycle, useTaskLifecycle } from '#/lib/board-query'
-import { nextEvidence, resolvedReadiness } from '#/lib/readiness'
+import { deriveCheckpoints, nextEvidence, resolvedReadiness } from '#/lib/readiness'
 import { Icon } from '#/lib/icons'
 import { fmtDate } from '#/lib/format'
 import type { LifecycleHistoryEntry, LifecycleStage, TaskCheckpoint } from '#/lib/types'
@@ -40,14 +40,9 @@ export function LifecycleRail({ taskId, checkpoints, fallbackStage }: { taskId: 
   const history = (((lc?.lifecycle as { history?: Array<LifecycleHistoryEntry> } | null)?.history) ?? []) as Array<LifecycleHistoryEntry>
   const cps = checkpoints ?? []
   const ckTotal = cps.length
-  // §2: R01–R20 are readiness milestones — DERIVED from the proven stage, not manual ticks.
-  // Threshold = the "· N%" in the label, else evenly spread. Done when readyPct reaches it.
-  const cpThreshold = (c: TaskCheckpoint, i: number) => {
-    const m = /·\s*(\d+)\s*%/.exec(c.label ?? '')
-    return m ? Number(m[1]) : ckTotal ? ((i + 1) / ckTotal) * 100 : 0
-  }
-  const cpDone = (c: TaskCheckpoint, i: number) => readyPct >= cpThreshold(c, i)
-  const ckDone = cps.filter((c, i) => cpDone(c, i)).length
+  // §2: R01–R20 are readiness milestones — DERIVED from the proven stage (shared with MCP).
+  const dc = deriveCheckpoints(readyPct, cps)
+  const ckDone = dc.done
 
   const move = (toStage: string) => {
     setErr(null)
@@ -120,7 +115,7 @@ export function LifecycleRail({ taskId, checkpoints, fallbackStage }: { taskId: 
                   {showCk ? (
                     <div className="rail-ck">
                       {cps.map((c, ci) => {
-                        const d = cpDone(c, ci)
+                        const d = dc.checkpoints[ci].done
                         return (
                           <div className={`ts-check-item ${d ? 'done' : ''}`} key={c.id}>
                             <span className="ts-box">{d ? <Icon name="check" size={10} /> : null}</span>
