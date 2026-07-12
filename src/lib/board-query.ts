@@ -1,7 +1,7 @@
 // TanStack Query wiring, boardId-scoped. queryKey ['board', boardId] holds the raw
 // board; useBoard() reads the current route's boardId and builds the derived Model.
 // Mutations write the returned raw board straight back into the cache.
-import { queryOptions, useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
+import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useMemo } from 'react'
 
@@ -15,15 +15,18 @@ import {
   getBoardFn,
   getGuideFn,
   getOpsFn,
+  getLifecycleFn,
   getProdFn,
+  getRollupFn,
   getTaskFn,
+  getTaskLifecycleFn,
   getTasksFn,
   listBoardsFn,
   openDecisionFn,
   toggleCheckpointFn,
   toggleTaskFn,
 } from '#/server/board'
-import type { BoardMeta, GuideData, Model, OpsData, ProdData, RawBoard, TasksFile, WorkTask } from './types'
+import type { BoardMeta, GuideData, LifecycleConfig, Model, OpsData, ProdData, RawBoard, Rollup, TasksFile, TaskLifecycleState, WorkTask } from './types'
 
 const DEFAULT_VIEWS = ['board', 'agents', 'projects', 'features', 'map', 'design', 'decisions', 'log']
 
@@ -74,6 +77,12 @@ export const tasksQueryOptions = (boardId: string) =>
   queryOptions<TasksFile>({ queryKey: ['tasks', boardId], queryFn: () => getTasksFn({ data: { boardId } }), staleTime: 5_000 })
 export const taskQueryOptions = (boardId: string, taskId: string) =>
   queryOptions<WorkTask | null>({ queryKey: ['task', boardId, taskId], queryFn: () => getTaskFn({ data: { boardId, taskId } }), staleTime: 5_000 })
+export const lifecycleQueryOptions = (boardId: string) =>
+  queryOptions<LifecycleConfig>({ queryKey: ['lifecycle', boardId], queryFn: () => getLifecycleFn({ data: { boardId } }), staleTime: 30_000 })
+export const rollupQueryOptions = (boardId: string) =>
+  queryOptions<Rollup>({ queryKey: ['rollup', boardId], queryFn: () => getRollupFn({ data: { boardId } }), staleTime: 5_000 })
+export const taskLifecycleQueryOptions = (boardId: string, taskId: string) =>
+  queryOptions<TaskLifecycleState | null>({ queryKey: ['task-lc', boardId, taskId], queryFn: () => getTaskLifecycleFn({ data: { boardId, taskId } }), staleTime: 5_000 })
 export const opsQueryOptions = (boardId: string) =>
   queryOptions<OpsData>({ queryKey: ['ops', boardId], queryFn: () => getOpsFn({ data: { boardId } }), staleTime: 5_000 })
 export const prodQueryOptions = (boardId: string) =>
@@ -89,6 +98,23 @@ export function useTasks() {
 export function useTask(taskId: string): WorkTask | null {
   const boardId = useBoardId()
   return useSuspenseQuery(taskQueryOptions(boardId, taskId)).data
+}
+/** Non-blocking full-task fetch — the heavy 20-point mapping loads after first paint. */
+export function useTaskLazy(taskId: string) {
+  const boardId = useBoardId()
+  return useQuery(taskQueryOptions(boardId, taskId))
+}
+export function useLifecycle(): LifecycleConfig {
+  const boardId = useBoardId()
+  return useSuspenseQuery(lifecycleQueryOptions(boardId)).data
+}
+export function useRollup(): Rollup {
+  const boardId = useBoardId()
+  return useSuspenseQuery(rollupQueryOptions(boardId)).data
+}
+export function useTaskLifecycle(taskId: string) {
+  const boardId = useBoardId()
+  return useQuery(taskLifecycleQueryOptions(boardId, taskId))
 }
 export function useOps(): OpsData {
   const boardId = useBoardId()

@@ -112,6 +112,48 @@ export interface TasksFile {
   tasks: Array<WorkTask>
 }
 
+// ---- lifecycle engine (per-board configurable rail) ----
+export interface LifecycleStage {
+  key: string
+  label: string
+  color?: string // tone: indigo|amber|green|blue|teal|red|parked
+  group?: string // 'mapping' | 'delivery' | custom bucket
+  gated?: boolean // true = only via evidence/verifier receipt, never a manual tick
+  requiresEvidence?: Array<string> // e.g. ['commitSha','deployReceipt','testReceipt']
+  verifierRole?: string // who may PASS — must differ from the implementer
+}
+export interface LifecycleConfig {
+  stages: Array<LifecycleStage>
+}
+export interface LifecycleHistoryEntry {
+  stage: string
+  byRunId?: string
+  role?: string
+  blocker?: string | null
+  ts: string
+  verdict?: string
+  evidence?: Record<string, Json>
+  commitSha?: string
+  deployReceipt?: string
+}
+export interface TaskLifecycle {
+  history: Array<LifecycleHistoryEntry>
+}
+export interface TaskLifecycleState {
+  stage: string | null
+  rev: number
+  implementerRun: string | null
+  lifecycle: Json | null // { history: LifecycleHistoryEntry[] }
+}
+export interface Rollup {
+  stages: Array<LifecycleStage>
+  counts: Record<string, number>
+  hold: number
+  active: number
+  byProject: Record<string, string>
+  byFeature: Record<string, string>
+}
+
 export interface Account {
   id: string
   label: string

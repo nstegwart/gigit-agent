@@ -5,6 +5,8 @@ import { z } from 'zod'
 
 import { buildModel } from '#/lib/model'
 import type { Feature } from '#/lib/types'
+import { advanceTask, computeRollup, readAudit, readLifecycle, writeLifecycle } from '#/server/lifecycle-store'
+import { taskLifecycle } from '#/server/tasks-store'
 import {
   addComment,
   addComponent,
@@ -260,9 +262,9 @@ export function registerBoardTools(server: McpServer): void {
 
   server.registerTool(
     'upsert_task',
-    { title: 'Upsert a task', description: 'Create or update one first-class task (T-… id) with its full mapping. Merges into an existing task of the same id.', inputSchema: { ...BOARD_ARG, task: TASK_OBJ } },
-    async ({ boardId, task }) => {
-      try { return jsonText(await upsertTask(await bid(boardId), task as never)) } catch (e) { return asErr(e) }
+    { title: 'Upsert a task', description: 'Create or update one first-class task (T-… id) with its full mapping. Merges into an existing task of the same id. Lifecycle state is preserved (use advance_task to move stage). Pass expectedRev (from get_task) for optimistic-lock safety against concurrent writers.', inputSchema: { ...BOARD_ARG, task: TASK_OBJ, expectedRev: z.number().int().optional() } },
+    async ({ boardId, task, expectedRev }) => {
+      try { return jsonText(await upsertTask(await bid(boardId), task as never, expectedRev)) } catch (e) { return asErr(e) }
     },
   )
   server.registerTool(
@@ -342,6 +344,63 @@ export function registerBoardTools(server: McpServer): void {
         return asErr(e)
       }
     },
+  )
+
+  // ---- lifecycle engine (per-board configurable rail + evidence-gated transitions) ----
+  const STAGE_OBJ = z.object({
+    key: z.string(), label: z.string(), color: z.string().optional(), group: z.string().optional(),
+    gated: z.boolean().optional(), requiresEvidence: z.array(z.string()).optional(), verifierRole: z.string().optional(),
+  })
+  server.registerTool(
+    'get_lifecycle',
+    { title: 'Get lifecycle rail', description: "This board's lifecycle stages + gate rules. Each board defines its own rail; read this before advance_task.", inputSchema: { ...BOARD_ARG } },
+    async ({ boardId }) => { try { return jsonText(await readLifecycle(await bid(boardId))) } catch (e) { return asErr(e) } },
+  )
+  server.registerTool(
+    'set_lifecycle',
+    { title: 'Set lifecycle rail', description: "Configure this board's lifecycle stages (ordered). A stage with gated:true can only be reached via advance_task with a program-emitted receipt; verifierRole means it must be passed by a run other than the implementer.", inputSchema: { ...BOARD_ARG, stages: z.array(STAGE_OBJ).min(1) } },
+    async ({ boardId, stages }) => { try { return jsonText(await writeLifecycle(await bid(boardId), stages as never)) } catch (e) { return asErr(e) } },
+  )
+  server.registerTool(
+    'get_task_lifecycle',
+    { title: 'Get task lifecycle', description: 'Current stage, rev (for optimistic lock), implementer run, and stage history for one task.', inputSchema: { ...BOARD_ARG, id: z.string() } },
+    async ({ boardId, id }) => {
+      try { const lc = await taskLifecycle(await bid(boardId), id); return jsonText(lc ?? { error: `task not found: ${id}` }) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'advance_task',
+    {
+      title: 'Advance task lifecycle',
+      description:
+        "Move a task to a stage on this board's rail. Gated stages REQUIRE a program-emitted receipt (evidence/commitSha/deployReceipt) — no manual ticking of FUNCTIONAL/PROD_READY/LIVE. A stage with a verifierRole is refused if byRunId equals the implementer (independent verification). Pass expectedRev (from get_task_lifecycle) to prevent a concurrent lost update. Every transition is written to the audit log.",
+      inputSchema: {
+        ...BOARD_ARG,
+        id: z.string(),
+        toStage: z.string(),
+        byRunId: z.string().optional().describe('run/agent id performing the transition'),
+        role: z.string().optional(),
+        evidence: z.record(z.string(), z.any()).optional(),
+        verdict: z.string().optional(),
+        commitSha: z.string().optional(),
+        deployReceipt: z.string().optional(),
+        blocker: z.string().optional(),
+        expectedRev: z.number().int().optional(),
+      },
+    },
+    async ({ boardId, id, ...inp }) => {
+      try { return jsonText(await advanceTask(await bid(boardId), id, inp as never)) } catch (e) { return asErr(e) }
+    },
+  )
+  server.registerTool(
+    'get_rollup',
+    { title: 'Get lifecycle rollup', description: 'Active task count per lifecycle stage, HOLD count (outside the active denominator), and per-project / per-feature rollup (each follows its most-behind active task).', inputSchema: { ...BOARD_ARG } },
+    async ({ boardId }) => { try { return jsonText(await computeRollup(await bid(boardId))) } catch (e) { return asErr(e) } },
+  )
+  server.registerTool(
+    'list_audit',
+    { title: 'List audit log', description: 'Recent audit entries (gate changes + mutations), newest first. Filter by taskId.', inputSchema: { ...BOARD_ARG, taskId: z.string().optional(), limit: z.number().int().optional() } },
+    async ({ boardId, taskId, limit }) => { try { return jsonText({ audit: await readAudit(await bid(boardId), { taskId, limit }) }) } catch (e) { return asErr(e) } },
   )
 
   // ---- collaboration ----

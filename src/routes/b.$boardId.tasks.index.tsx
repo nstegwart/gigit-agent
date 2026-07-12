@@ -3,13 +3,15 @@
 import { createFileRoute } from '@tanstack/react-router'
 
 import { TasksTable } from '#/components/TasksTable'
-import { boardQueryOptions, tasksQueryOptions, useBoard, useTasks } from '#/lib/board-query'
+import { RollupBar } from '#/components/RollupBar'
+import { boardQueryOptions, rollupQueryOptions, tasksQueryOptions, useBoard, useTasks } from '#/lib/board-query'
 
 export const Route = createFileRoute('/b/$boardId/tasks/')({
   loader: async ({ context, params }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),
+      context.queryClient.ensureQueryData(rollupQueryOptions(params.boardId)),
     ])
   },
   component: View,
@@ -26,6 +28,7 @@ function View() {
           <span className="count">{tasks.length}</span>
           <span className="desc">first-class tasks — click a row for the full checkpoint map</span>
         </div>
+        <RollupBar />
         <TasksTable tasks={tasks} runsByTask={m.runsByTask} />
       </section>
     </div>

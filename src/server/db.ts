@@ -14,6 +14,8 @@ function fromEnvFile(key: string): string | undefined {
   }
 }
 const env = (key: string, fallback?: string) => process.env[key] ?? fromEnvFile(key) ?? fallback
+/** Read a config value from process.env with a .env fallback (server-only). */
+export const envVar = (key: string): string | undefined => env(key)
 
 let pool: mysql.Pool | null = null
 export function db(): mysql.Pool {

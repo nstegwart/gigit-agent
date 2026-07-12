@@ -4,20 +4,23 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { BoardLink as Link } from '#/components/BoardLink'
 
-import { boardQueryOptions, taskQueryOptions, tasksQueryOptions, useBoard, useTask, useTasks } from '#/lib/board-query'
+import { boardQueryOptions, lifecycleQueryOptions, tasksQueryOptions, useBoard, useTaskLazy, useTasks } from '#/lib/board-query'
 import { fmtDate } from '#/lib/format'
 import { Icon } from '#/lib/icons'
 import { EmptyState, ProgressBar } from '#/components/primitives'
 import { CheckpointList } from '#/components/CheckpointList'
+import { LifecycleRail } from '#/components/LifecycleRail'
 import { RunCard } from '#/components/RunCard'
 import { TaskMapping } from '#/components/TaskMapping'
 
 export const Route = createFileRoute('/b/$boardId/tasks/$taskId')({
+  // Light summary + board + rail load in the loader; the heavy 20-point mapping
+  // (~MBs) is fetched lazily on the client so first paint is instant.
   loader: async ({ context, params }) => {
     await Promise.all([
-      context.queryClient.ensureQueryData(taskQueryOptions(params.boardId, params.taskId)),
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),
+      context.queryClient.ensureQueryData(lifecycleQueryOptions(params.boardId)),
     ])
   },
   component: View,
@@ -32,27 +35,28 @@ function BackLink() {
 }
 
 function View() {
-  const { byId } = useTasks() // light summaries — for dependency titles
+  const { byId } = useTasks() // light summaries — instant shell + dependency titles
   const m = useBoard()
   const { taskId } = Route.useParams()
-  const full = useTask(taskId) // one full row incl. the heavy 20-point mapping
+  const { data: full, isLoading: loadingFull } = useTaskLazy(taskId) // heavy mapping, lazy
   const agents = m.runsByTask[taskId] ?? []
 
-  if (!full) {
+  const base = full ?? byId[taskId] // render the shell from the light summary immediately
+  if (!base) {
     return (
       <>
         <BackLink />
-        <EmptyState icon="alert">Task not found.</EmptyState>
+        {loadingFull ? <EmptyState icon="clock">Loading…</EmptyState> : <EmptyState icon="alert">Task not found.</EmptyState>}
       </>
     )
   }
-  const total = full.checkpoints.length
-  const done = full.checkpoints.filter((c) => c.done).length
-  const t = { ...full, total, done, pct: total ? Math.round((done / total) * 100) : 0 }
+  const total = base.checkpoints.length
+  const done = base.checkpoints.filter((c) => c.done).length
+  const t = { ...base, total, done, pct: total ? Math.round((done / total) * 100) : 0 }
 
-  const story = t.story
+  const story = full?.story
   const hasStory = !!(story && (story.userStory || story.currentGap || story.targetScope))
-  const refs = t.refs
+  const refs = full?.refs
   const api = refs?.api ?? []
   const pages = refs?.pages ?? []
   const hasRefs = !!(refs && (refs.evidence || api.length || pages.length))
@@ -80,6 +84,8 @@ function View() {
           </div>
         </div>
       </div>
+
+      <LifecycleRail taskId={taskId} />
 
       <div className="grid-2">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -296,7 +302,17 @@ function View() {
         </div>
       </div>
 
-      <TaskMapping task={t} />
+      {full ? (
+        <TaskMapping task={t} />
+      ) : loadingFull ? (
+        <section className="section">
+          <div className="sec-head"><h2>Rebuild mapping</h2><span className="desc">loading…</span></div>
+          <div className="map-skeleton">
+            <span className="spinner" />
+            <span className="page-loading-txt">Loading the 20-point mapping…</span>
+          </div>
+        </section>
+      ) : null}
     </>
   )
 }

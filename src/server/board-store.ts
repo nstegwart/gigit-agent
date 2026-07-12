@@ -299,9 +299,9 @@ function normTask(t: WorkTask): WorkTask {
 function normFeature(f: RawFeature): RawFeature {
   return { ...f, checklist: f.checklist ?? [] }
 }
-export async function upsertTask(boardId: string, task: WorkTask): Promise<{ ok: true; id: string; created: boolean; total: number }> {
-  const created = await upsertTaskRow(boardId, normTask(task))
-  return { ok: true, id: task.id, created, total: await taskCount(boardId) }
+export async function upsertTask(boardId: string, task: WorkTask, expectedRev?: number): Promise<{ ok: true; id: string; created: boolean; rev: number; total: number }> {
+  const { created, rev } = await upsertTaskRow(boardId, normTask(task), { expectedRev })
+  return { ok: true, id: task.id, created, rev, total: await taskCount(boardId) }
 }
 export async function deleteTask(boardId: string, taskId: string): Promise<{ ok: true; removed: number; total: number }> {
   const removed = await deleteTaskRow(boardId, taskId)

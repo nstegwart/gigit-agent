@@ -632,6 +632,36 @@ svg:not([class]) { width: 15px; height: 15px; flex: none; vertical-align: -2px; 
 .tone-blue   { --tone: var(--info);    --tone-bg: var(--info-bg); }
 .tone-teal   { --tone: var(--done);    --tone-bg: var(--done-bg); }
 .tone-red    { --tone: var(--blocked); --tone-bg: var(--blocked-bg); }
+.tone-parked { --tone: var(--parked);  --tone-bg: var(--parked-bg); }
+
+/* lifecycle rail (task detail) */
+.rail { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 2px; }
+.rail-step { display: inline-flex; align-items: center; gap: 8px; padding: 7px 13px; border: 1px solid var(--border); border-radius: 22px; background: var(--surface); font-size: 12px; font-weight: 550; color: var(--text-faint); white-space: nowrap; }
+.rail-step.is-done { color: var(--tone, var(--accent)); border-color: color-mix(in srgb, var(--tone, var(--accent)) 34%, transparent); background: var(--tone-bg, var(--accent-soft)); }
+.rail-step.is-current { color: var(--text); border-color: var(--tone, var(--accent)); box-shadow: 0 0 0 2px var(--tone-bg, var(--accent-soft)); font-weight: 680; }
+.rail-dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; flex: none; border: 2px solid currentColor; }
+.rail-step.is-done .rail-dot { background: var(--tone, var(--accent)); border-color: var(--tone, var(--accent)); color: #fff; }
+.rail-lock { opacity: .55; }
+.rail-div { width: 1px; height: 22px; background: var(--border); margin: 0 5px; flex: none; }
+.rail-note { display: flex; align-items: center; gap: 9px; margin: 13px 0 0; font-size: 12.5px; color: var(--warn); background: var(--warn-bg); border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent); border-radius: var(--r-sm); padding: 10px 13px; line-height: 1.5; }
+.lc-history { display: flex; flex-direction: column; gap: 2px; margin-top: 14px; }
+.lc-entry { display: flex; align-items: center; gap: 10px; padding: 8px 2px; border-bottom: 1px solid var(--border-soft); font-size: 12px; }
+.lc-entry:last-child { border-bottom: 0; }
+.lc-stage { font-weight: 650; color: var(--text); font-family: var(--mono); font-size: 11px; }
+.lc-verdict { color: var(--ok); font-weight: 600; }
+.lc-run { color: var(--text-dim); font-family: var(--mono); font-size: 11px; }
+.lc-ts { margin-left: auto; color: var(--text-faint); font-size: 11px; white-space: nowrap; }
+.map-skeleton { display: flex; align-items: center; gap: 12px; padding: 28px; color: var(--text-faint); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); }
+
+/* lifecycle rollup (board) */
+.rollup { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 16px; }
+.rollup-cell { flex: 1 1 100px; min-width: 92px; padding: 11px 13px; border: 1px solid var(--border); border-left: 3px solid var(--tone, var(--accent)); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow-sm); }
+.rollup-cell.is-empty { opacity: .55; }
+.rollup-cell.is-hold { border-left-style: dashed; }
+.rollup-n { font-size: 20px; font-weight: 750; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+.rollup-lbl { font-size: 11px; color: var(--text-dim); margin-top: 4px; font-weight: 550; }
+.rollup-track { height: 3px; border-radius: 3px; background: var(--surface-3); margin-top: 8px; overflow: hidden; }
+.rollup-track span { display: block; height: 100%; border-radius: 3px; background: var(--tone, var(--accent)); }
 
 .map { margin-top: 8px; }
 .map-head { display: flex; align-items: center; gap: 14px; padding: 16px 18px; margin-bottom: 14px; background: linear-gradient(180deg, var(--accent-soft), transparent 90%); border: 1px solid var(--border); border-radius: var(--r-lg); }

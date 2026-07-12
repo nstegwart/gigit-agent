@@ -24,6 +24,8 @@ import {
   toggleTask,
   upsertRun,
 } from './board-store'
+import { computeRollup, readLifecycle } from './lifecycle-store'
+import { taskLifecycle } from './tasks-store'
 
 const board = z.string().min(1)
 
@@ -116,6 +118,19 @@ export const getTasksFn = createServerFn({ method: 'GET' })
 export const getTaskFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board, taskId: z.string() }))
   .handler(async ({ data }) => readTask(data.boardId, data.taskId))
+
+// ---- lifecycle engine (read paths for the UI) ----
+export const getLifecycleFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ boardId: board }))
+  .handler(async ({ data }) => readLifecycle(data.boardId))
+
+export const getRollupFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ boardId: board }))
+  .handler(async ({ data }) => computeRollup(data.boardId))
+
+export const getTaskLifecycleFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ boardId: board, taskId: z.string() }))
+  .handler(async ({ data }) => taskLifecycle(data.boardId, data.taskId))
 
 export const getOpsFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
