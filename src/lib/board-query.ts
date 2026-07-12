@@ -21,6 +21,8 @@ import {
   getTaskFn,
   getTaskLifecycleFn,
   getTasksFn,
+  advanceTaskFn,
+  setLifecycleFn,
   listBoardsFn,
   openDecisionFn,
   toggleCheckpointFn,
@@ -136,6 +138,39 @@ export function useToggleCheckpoint() {
       toggleCheckpointFn({ data: { ...v, boardId } }),
     onSuccess: (file) => {
       qc.setQueryData(tasksQueryOptions(boardId).queryKey, file)
+    },
+  })
+}
+export function useSetLifecycle() {
+  const qc = useQueryClient()
+  const boardId = useBoardId()
+  return useMutation({
+    mutationFn: (stages: LifecycleConfig['stages']) => setLifecycleFn({ data: { boardId, stages } }),
+    onSuccess: (cfg) => {
+      qc.setQueryData(lifecycleQueryOptions(boardId).queryKey, cfg)
+      void qc.invalidateQueries({ queryKey: ['rollup', boardId] })
+    },
+  })
+}
+export interface AdvancePayload {
+  taskId: string
+  toStage: string
+  byRunId?: string
+  verdict?: string
+  commitSha?: string
+  deployReceipt?: string
+  evidence?: Record<string, unknown>
+  blocker?: string
+  expectedRev?: number
+}
+export function useAdvanceTask() {
+  const qc = useQueryClient()
+  const boardId = useBoardId()
+  return useMutation({
+    mutationFn: (v: AdvancePayload) => advanceTaskFn({ data: { ...v, boardId } }),
+    onSuccess: (_r, v) => {
+      void qc.invalidateQueries({ queryKey: ['task-lc', boardId, v.taskId] })
+      void qc.invalidateQueries({ queryKey: ['rollup', boardId] })
     },
   })
 }

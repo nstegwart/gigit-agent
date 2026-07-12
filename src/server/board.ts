@@ -24,7 +24,7 @@ import {
   toggleTask,
   upsertRun,
 } from './board-store'
-import { computeRollup, readLifecycle } from './lifecycle-store'
+import { advanceTask, computeRollup, readLifecycle, writeLifecycle } from './lifecycle-store'
 import { taskLifecycle } from './tasks-store'
 
 const board = z.string().min(1)
@@ -131,6 +131,22 @@ export const getRollupFn = createServerFn({ method: 'GET' })
 export const getTaskLifecycleFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board, taskId: z.string() }))
   .handler(async ({ data }) => taskLifecycle(data.boardId, data.taskId))
+
+const stageSchema = z.object({
+  key: z.string(), label: z.string(), color: z.string().optional(), group: z.string().optional(),
+  gated: z.boolean().optional(), requiresEvidence: z.array(z.string()).optional(), verifierRole: z.string().optional(),
+})
+export const setLifecycleFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ boardId: board, stages: z.array(stageSchema).min(1) }))
+  .handler(async ({ data }) => writeLifecycle(data.boardId, data.stages))
+
+export const advanceTaskFn = createServerFn({ method: 'POST' })
+  .validator(z.object({
+    boardId: board, taskId: z.string(), toStage: z.string(), byRunId: z.string().optional(), role: z.string().optional(),
+    evidence: z.record(z.string(), z.any()).optional(), verdict: z.string().optional(), commitSha: z.string().optional(),
+    deployReceipt: z.string().optional(), blocker: z.string().optional(), expectedRev: z.number().int().optional(),
+  }))
+  .handler(async ({ data }) => advanceTask(data.boardId, data.taskId, data))
 
 export const getOpsFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
