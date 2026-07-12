@@ -108,7 +108,7 @@ export async function advanceTask(boardId: string, taskId: string, inp: AdvanceI
   history.push(entry)
   // first non-verifier run to touch the task becomes its implementer (for later verifier≠implementer checks)
   const newImplementer = !implementer && inp.byRunId && !stage.verifierRole ? inp.byRunId : undefined
-  const rev = await setTaskLifecycle(boardId, taskId, { stage: inp.toStage, implementerRun: newImplementer, history: { history }, expectedRev: inp.expectedRev })
+  const rev = await setTaskLifecycle(boardId, taskId, { stage: inp.toStage, implementerRun: newImplementer, history: { history }, blockedReason: inp.blocker ?? null, lastReceiptAt: entry.ts, expectedRev: inp.expectedRev })
   await writeAudit(boardId, { ts: entry.ts, actor: inp.byRunId ?? null, action: 'advance', taskId, fromStage, toStage: inp.toStage, detail: { verdict: inp.verdict, receipt, blocker: inp.blocker } })
   return { ok: true as const, taskId, fromStage, stage: inp.toStage, rev, implementer: newImplementer ?? implementer ?? null }
 }
@@ -157,16 +157,17 @@ export async function computeRollup(boardId: string): Promise<Rollup> {
 
   // per project / feature: avg readiness, most-behind floor, milestone + per-stage counts
   const roll = (keyOf: (r: (typeof rows)[number]) => string | null): Record<string, GroupReadiness> => {
-    const g: Record<string, { sum: number; total: number; floorIdx: number; atMilestone: number; counts: Record<string, number>; uninitialized: number }> = {}
+    const g: Record<string, { sum: number; total: number; floorIdx: number; atMilestone: number; counts: Record<string, number>; uninitialized: number; blocked: number }> = {}
     for (const r of rows) {
       if (isHold(r.scope)) continue
       const key = keyOf(r)
       if (!key) continue
-      const b = (g[key] ??= { sum: 0, total: 0, floorIdx: Infinity, atMilestone: 0, counts: {}, uninitialized: 0 })
+      const b = (g[key] ??= { sum: 0, total: 0, floorIdx: Infinity, atMilestone: 0, counts: {}, uninitialized: 0, blocked: 0 })
       b.sum += rowReadiness(r)
       b.total++
       b.floorIdx = Math.min(b.floorIdx, idx(r.stage))
       if (milestoneIdx >= 0 && idx(r.stage) >= milestoneIdx) b.atMilestone++
+      if (r.blocked) b.blocked++
       if (idx(r.stage) < 0) b.uninitialized++
       else b.counts[r.stage as string] = (b.counts[r.stage as string] ?? 0) + 1
     }
@@ -177,6 +178,7 @@ export async function computeRollup(boardId: string): Promise<Rollup> {
       atMilestone: b.atMilestone,
       counts: b.counts,
       uninitialized: b.uninitialized,
+      blocked: b.blocked,
     }]))
   }
   return {

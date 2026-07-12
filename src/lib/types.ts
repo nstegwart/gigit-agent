@@ -124,6 +124,8 @@ export interface WorkTask {
   history?: Array<string>
   mapping_missing?: Array<string>
   lifecycleStage?: string | null // current proven lifecycle stage (from the tasks table)
+  blockedReason?: string | null // current blocker (set on repair/fail, cleared on forward)
+  lastReceiptAt?: string | null // timestamp of the last lifecycle transition
   // object-shaped extras (kept as opaque JSON)
   detail?: Json
   unit_test_plan?: Json
@@ -180,6 +182,7 @@ export interface GroupReadiness {
   atMilestone: number // how many reached the milestone stage (e.g. PROD_READY)
   counts: Record<string, number> // active tasks per stage within the group
   uninitialized: number // group's active tasks with no stage yet
+  blocked: number // group's active tasks with a blocker
 }
 export interface Rollup {
   formulaVersion: string

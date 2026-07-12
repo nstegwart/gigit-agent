@@ -30,7 +30,11 @@ export function ProjectCard({ project, readiness }: { project: Project; readines
         <ProgressBar pct={pct} right={readiness ? `${pct}% ready` : undefined} />
         {readiness ? (
           <>
-            <div className="proj-ready">{readiness.atMilestone}/{readiness.total} production-ready</div>
+            <div className="proj-ready">
+              {readiness.atMilestone}/{readiness.total} production-ready
+              {readiness.blocked ? <> · <span style={{ color: 'var(--blocked)' }}>{readiness.blocked} blocked</span></> : null}
+              {' · '}{Math.max(0, readiness.total - readiness.atMilestone - readiness.blocked)} ready to work
+            </div>
             <div className="proj-stages">
               {Object.entries(readiness.counts).filter(([, n]) => n).map(([k, n]) => (
                 <span className="proj-stage-c" key={k}>{k}<b>{n}</b></span>

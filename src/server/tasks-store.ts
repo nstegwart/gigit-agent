@@ -36,6 +36,8 @@ async function buildSchema(): Promise<void> {
   await addCol('ALTER TABLE tasks ADD COLUMN implementer_run VARCHAR(160) NULL')
   await addCol('ALTER TABLE tasks ADD COLUMN rev INT NOT NULL DEFAULT 0')
   await addCol('ALTER TABLE tasks ADD COLUMN lifecycle JSON NULL')
+  await addCol('ALTER TABLE tasks ADD COLUMN blocked_reason VARCHAR(400) NULL')
+  await addCol('ALTER TABLE tasks ADD COLUMN last_receipt_at VARCHAR(40) NULL')
   await addCol('ALTER TABLE tasks ADD KEY idx_stage (board_id, lifecycle_stage)')
   await db().query(`CREATE TABLE IF NOT EXISTS audit_log (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -99,6 +101,8 @@ function lightFromRow(r: Record<string, unknown>): WorkTask {
     objective: (s.objective as string) ?? null,
     next: (s.next as string) ?? null,
     lifecycleStage: (r.lifecycle_stage as string) ?? null,
+    blockedReason: (r.blocked_reason as string) ?? null,
+    lastReceiptAt: (r.last_receipt_at as string) ?? null,
   }
 }
 
@@ -123,7 +127,7 @@ export async function ensureBackfilled(boardId: string): Promise<void> {
 // ---- reads ----
 export async function taskSummaries(boardId: string, projectId?: string): Promise<Array<WorkTask>> {
   await ensureBackfilled(boardId)
-  const sql = `SELECT id, project_id, feature_contract_id, grp, phase, scope, title, updated, lifecycle_stage, summary FROM tasks WHERE board_id=?${projectId ? ' AND project_id=?' : ''}`
+  const sql = `SELECT id, project_id, feature_contract_id, grp, phase, scope, title, updated, lifecycle_stage, blocked_reason, last_receipt_at, summary FROM tasks WHERE board_id=?${projectId ? ' AND project_id=?' : ''}`
   const [rows] = await db().query(sql, projectId ? [boardId, projectId] : [boardId])
   return (rows as Array<Record<string, unknown>>).map(lightFromRow)
 }
@@ -213,18 +217,20 @@ export async function taskLifecycle(boardId: string, id: string): Promise<TaskLi
   if (!r) return null
   return { stage: (r.lifecycle_stage as string) ?? null, rev: (r.rev as number) ?? 0, implementerRun: (r.implementer_run as string) ?? null, lifecycle: (r.lifecycle as Json) ?? null }
 }
-export async function setTaskLifecycle(boardId: string, id: string, next: { stage: string; implementerRun?: string | null; history: unknown; expectedRev?: number }): Promise<number> {
+export async function setTaskLifecycle(boardId: string, id: string, next: { stage: string; implementerRun?: string | null; history: unknown; blockedReason?: string | null; lastReceiptAt?: string | null; expectedRev?: number }): Promise<number> {
   await ensureBackfilled(boardId)
+  const setCols = 'lifecycle_stage=?, implementer_run=COALESCE(?, implementer_run), lifecycle=?, blocked_reason=?, last_receipt_at=?, rev=rev+1'
+  const vals = [next.stage, next.implementerRun ?? null, JSON.stringify(next.history), next.blockedReason ?? null, next.lastReceiptAt ?? null]
   if (next.expectedRev !== undefined) {
     const [r] = await db().query(
-      'UPDATE tasks SET lifecycle_stage=?, implementer_run=COALESCE(?, implementer_run), lifecycle=?, rev=rev+1 WHERE board_id=? AND id=? AND rev=?',
-      [next.stage, next.implementerRun ?? null, JSON.stringify(next.history), boardId, id, next.expectedRev],
+      `UPDATE tasks SET ${setCols} WHERE board_id=? AND id=? AND rev=?`,
+      [...vals, boardId, id, next.expectedRev],
     )
     if ((r as { affectedRows: number }).affectedRows === 0) throw new Error(`rev mismatch on ${id}: expected ${next.expectedRev}. Re-read and retry.`)
   } else {
     await db().query(
-      'UPDATE tasks SET lifecycle_stage=?, implementer_run=COALESCE(?, implementer_run), lifecycle=?, rev=rev+1 WHERE board_id=? AND id=?',
-      [next.stage, next.implementerRun ?? null, JSON.stringify(next.history), boardId, id],
+      `UPDATE tasks SET ${setCols} WHERE board_id=? AND id=?`,
+      [...vals, boardId, id],
     )
   }
   const [after] = await db().query('SELECT rev FROM tasks WHERE board_id=? AND id=?', [boardId, id])
@@ -237,16 +243,16 @@ export async function initLifecycle(boardId: string, stage: string, onlyUninitia
   const [r] = await db().query(`UPDATE tasks SET lifecycle_stage=?, rev=rev+1 WHERE board_id=?${where}`, [stage, boardId])
   return (r as { affectedRows: number }).affectedRows
 }
-/** Per-task (stage, project, feature, scope, mapping-checkpoint progress) — for rollups. */
-export async function taskStageRows(boardId: string): Promise<Array<{ id: string; stage: string | null; project: string | null; feature: string | null; scope: string | null; ckDone: number; ckTotal: number }>> {
+/** Per-task (stage, project, feature, scope, mapping progress, blocked) — for rollups. */
+export async function taskStageRows(boardId: string): Promise<Array<{ id: string; stage: string | null; project: string | null; feature: string | null; scope: string | null; ckDone: number; ckTotal: number; blocked: boolean }>> {
   await ensureBackfilled(boardId)
-  const [rows] = await db().query('SELECT id, lifecycle_stage, project_id, feature_contract_id, scope, summary FROM tasks WHERE board_id=?', [boardId])
+  const [rows] = await db().query('SELECT id, lifecycle_stage, project_id, feature_contract_id, scope, blocked_reason, summary FROM tasks WHERE board_id=?', [boardId])
   return (rows as Array<Record<string, unknown>>).map((r) => {
     const cps = (((r.summary ?? {}) as { checkpoints?: Array<{ done?: boolean }> }).checkpoints) ?? []
     return {
       id: r.id as string, stage: (r.lifecycle_stage as string) ?? null,
       project: (r.project_id as string) ?? null, feature: (r.feature_contract_id as string) ?? null, scope: (r.scope as string) ?? null,
-      ckDone: cps.filter((c) => c.done).length, ckTotal: cps.length,
+      ckDone: cps.filter((c) => c.done).length, ckTotal: cps.length, blocked: !!r.blocked_reason,
     }
   })
 }

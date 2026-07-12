@@ -201,6 +201,28 @@ function View() {
                   </span>
                 </div>
               ) : null}
+              {(() => {
+                const f = (full ?? {}) as Record<string, unknown>
+                const hash = (f.canonicalSha ?? f.sourceSha ?? f.canonicalHash ?? f.sourceHash ?? f.sha) as string | undefined
+                return hash ? (
+                  <div className="meta-row">
+                    <span className="k">Source hash</span>
+                    <span className="v"><span className="chip chip-mono">{hash}</span></span>
+                  </div>
+                ) : null
+              })()}
+              {lc?.rev != null ? (
+                <div className="meta-row">
+                  <span className="k">Revision</span>
+                  <span className="v" style={{ fontVariantNumeric: 'tabular-nums' }}>{lc.rev}</span>
+                </div>
+              ) : null}
+              {lc?.implementerRun ? (
+                <div className="meta-row">
+                  <span className="k">Owner run</span>
+                  <span className="v"><span className="chip chip-mono">{lc.implementerRun}</span></span>
+                </div>
+              ) : null}
               {t.updated ? (
                 <div className="meta-row">
                   <span className="k">Updated</span>

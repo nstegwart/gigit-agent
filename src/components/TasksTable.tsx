@@ -45,6 +45,9 @@ export function TasksTable({
   const [filterProj, setFilterProj] = useState('')
   const [filterScope, setFilterScope] = useState('')
   const [filterStage, setFilterStage] = useState('')
+  const [filterFC, setFilterFC] = useState('')
+  const [filterGate, setFilterGate] = useState('')
+  const [filterFlag, setFilterFlag] = useState('') // '' | blocked | stale | assigned | unassigned
   const [sorting, setSorting] = useState<SortingState>([{ id: 'readiness', desc: false }])
   const navigate = useNavigate()
   const boardId = useBoardId()
@@ -54,22 +57,26 @@ export function TasksTable({
   const readyOf = (t: TaskView) => (cfg ? rowReadiness(cfg, t.lifecycleStage, t.done, t.total) : t.pct)
   const nextOf = (t: TaskView) => (cfg ? nextStage(cfg, t.lifecycleStage)?.key ?? null : null)
   const runOf = (t: TaskView) => (runsByTask?.[t.id] ?? [])[0] ?? null
+  const assigned = (t: TaskView) => !!runsByTask?.[t.id]?.length
 
-  const projects = useMemo(
-    () => [...new Set(tasks.map((t) => t.projectId).filter(Boolean) as Array<string>)],
-    [tasks],
-  )
-  const scopes = useMemo(
-    () => [...new Set(tasks.map((t) => t.scope).filter(Boolean) as Array<string>)],
-    [tasks],
-  )
+  const projects = useMemo(() => [...new Set(tasks.map((t) => t.projectId).filter(Boolean) as Array<string>)], [tasks])
+  const scopes = useMemo(() => [...new Set(tasks.map((t) => t.scope).filter(Boolean) as Array<string>)], [tasks])
+  const fcs = useMemo(() => [...new Set(tasks.map((t) => t.featureContractId).filter(Boolean) as Array<string>)].sort(), [tasks])
+  const gates = useMemo(() => cfg?.stages.map((s) => s.key) ?? [], [cfg])
 
   const rows = useMemo(() => {
     const Q = q.toLowerCase()
+    const staleBefore = Date.now() - 7 * 864e5
     let out = tasks.slice()
     if (filterProj) out = out.filter((t) => t.projectId === filterProj)
     if (filterScope) out = out.filter((t) => t.scope === filterScope)
-    if (filterStage) out = out.filter((t) => (filterStage === '__uninit__' ? !t.lifecycleStage : filterStage === '__unassigned__' ? !(runsByTask?.[t.id]?.length) : t.lifecycleStage === filterStage))
+    if (filterStage) out = out.filter((t) => (filterStage === '__uninit__' ? !t.lifecycleStage : t.lifecycleStage === filterStage))
+    if (filterFC) out = out.filter((t) => t.featureContractId === filterFC)
+    if (filterGate) out = out.filter((t) => nextOf(t) === filterGate)
+    if (filterFlag === 'blocked') out = out.filter((t) => t.blockedReason)
+    else if (filterFlag === 'stale') out = out.filter((t) => t.updated && Date.parse(t.updated) < staleBefore)
+    else if (filterFlag === 'assigned') out = out.filter((t) => assigned(t))
+    else if (filterFlag === 'unassigned') out = out.filter((t) => !assigned(t))
     if (Q)
       out = out.filter((t) =>
         `${t.title} ${t.id} ${t.projectId ?? ''} ${t.group ?? ''} ${t.lifecycleStage ?? ''} ${t.featureContractId ?? ''}`
@@ -77,7 +84,8 @@ export function TasksTable({
           .includes(Q),
       )
     return out
-  }, [tasks, filterProj, filterScope, filterStage, q, runsByTask])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks, filterProj, filterScope, filterStage, filterFC, filterGate, filterFlag, q, runsByTask, cfg])
 
   const columns = useMemo(
     () => [
@@ -96,7 +104,12 @@ export function TasksTable({
         header: 'Stage',
         cell: ({ row }) => {
           const s = row.original.lifecycleStage
-          return s ? <span className="chip chip-mono">{s}</span> : <span className="t-id">uninit</span>
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+              {s ? <span className="chip chip-mono">{s}</span> : <span className="t-id">uninit</span>}
+              {row.original.blockedReason ? <span className="t-blocked" title={row.original.blockedReason}><Icon name="lock" size={9} /> blocked</span> : null}
+            </div>
+          )
         },
       }),
       col.display({
@@ -139,9 +152,9 @@ export function TasksTable({
           )
         },
       }),
-      col.accessor((t) => t.updated ?? '', {
-        id: 'updated',
-        header: 'Updated',
+      col.accessor((t) => t.lastReceiptAt ?? t.updated ?? '', {
+        id: 'receipt',
+        header: 'Last receipt',
         cell: ({ getValue }) => (
           <span style={{ fontSize: 11.5, color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>
             {getValue() ? fmtDate(getValue()) : '—'}
@@ -217,9 +230,21 @@ export function TasksTable({
             <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 4px' }} />
             {chip('', 'All stages', filterStage === '', () => setFilterStage(''))}
             {cfg.stages.map((s) => chip(s.key, s.key, filterStage === s.key, () => setFilterStage(s.key)))}
-            {chip('__unassigned__', 'unassigned', filterStage === '__unassigned__', () => setFilterStage('__unassigned__'))}
           </>
         ) : null}
+        {fcs.length ? (
+          <select className="tf-select" value={filterFC} onChange={(e) => setFilterFC(e.target.value)}>
+            <option value="">All FCs</option>
+            {fcs.map((f) => <option key={f} value={f}>{f}</option>)}
+          </select>
+        ) : null}
+        {gates.length ? (
+          <select className="tf-select" value={filterGate} onChange={(e) => setFilterGate(e.target.value)}>
+            <option value="">Any next gate</option>
+            {gates.map((g) => <option key={g} value={g}>→ {g}</option>)}
+          </select>
+        ) : null}
+        {(['blocked', 'stale', 'assigned', 'unassigned'] as const).map((f) => chip(f, f, filterFlag === f, () => setFilterFlag(filterFlag === f ? '' : f)))}
         {!single && !searching && (
           <button type="button" className="grp-toggle" onClick={allExpanded ? collapseAll : expandAll}>
             <Icon name="layers" size={13} />
