@@ -3,7 +3,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { BoardLink as Link } from '#/components/BoardLink'
 
-import { boardQueryOptions, rollupQueryOptions, tasksQueryOptions, useBoard, useRollup, useTasks } from '#/lib/board-query'
+import { boardQueryOptions, lifecycleQueryOptions, rollupQueryOptions, tasksQueryOptions, useBoard, useLifecycle, useRollup, useTasks } from '#/lib/board-query'
 import { PROJ_STATUS } from '#/lib/format'
 import { Icon } from '#/lib/icons'
 import { Collapsible } from '#/components/Collapsible'
@@ -22,6 +22,7 @@ export const Route = createFileRoute('/b/$boardId/projects/$projectId')({
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(rollupQueryOptions(params.boardId)),
+      context.queryClient.ensureQueryData(lifecycleQueryOptions(params.boardId)),
     ])
   },
   component: View,
@@ -39,6 +40,7 @@ function View() {
   const m = useBoard()
   const { tasks: allTasks, byId: taskById } = useTasks()
   const rollup = useRollup()
+  const cfg = useLifecycle()
   const { projectId } = Route.useParams()
   const p = m.projById[projectId]
 
@@ -121,7 +123,7 @@ function View() {
             <span className="count">{projTasks.length}</span>
             <span className="desc">tasks in this project</span>
           </div>
-          <TasksTable tasks={projTasks} runsByTask={m.runsByTask} readinessByGroup={rollup.byFeature} milestone={rollup.milestone} />
+          <TasksTable tasks={projTasks} runsByTask={m.runsByTask} readinessByGroup={rollup.byFeature} milestone={rollup.milestone} cfg={cfg} />
         </section>
       ) : null}
 

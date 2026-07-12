@@ -129,6 +129,12 @@ export async function computeRollup(boardId: string): Promise<Rollup> {
   const isHold = (scope: string | null) => (scope ?? '').toUpperCase() === 'HOLD'
   const idx = (k: string | null) => (k == null ? -1 : order.indexOf(k)) // -1 = uninitialized
   const readinessOf = (k: string | null) => (k && k in readiness ? readiness[k] : 0)
+  // §1: while at the first (MAPPING) stage with readiness 0, derive 0–9 from M01–M20
+  const firstKey = order[0]
+  const rowReadiness = (r: { stage: string | null; ckDone: number; ckTotal: number }) =>
+    r.stage === firstKey && (readiness[firstKey] ?? 0) === 0 && r.ckTotal
+      ? Math.min(9, Math.round((r.ckDone / r.ckTotal) * 9))
+      : readinessOf(r.stage)
 
   const counts: Record<string, number> = {}
   for (const k of order) counts[k] = 0
@@ -141,7 +147,7 @@ export async function computeRollup(boardId: string): Promise<Rollup> {
   for (const r of rows) {
     if (isHold(r.scope)) { hold++; continue }
     active++
-    sumReadiness += readinessOf(r.stage)
+    sumReadiness += rowReadiness(r)
     if (milestoneIdx >= 0 && idx(r.stage) >= milestoneIdx) atMilestone++
     if (milestoneIdx >= 0 && idx(r.stage) > milestoneIdx) liveVerified++
     if (idx(r.stage) < 0) uninitialized++
@@ -149,24 +155,28 @@ export async function computeRollup(boardId: string): Promise<Rollup> {
   }
   const readinessPercent = active ? Math.round(sumReadiness / active) : 0
 
-  // per project / feature: avg readiness, most-behind floor, milestone count
+  // per project / feature: avg readiness, most-behind floor, milestone + per-stage counts
   const roll = (keyOf: (r: (typeof rows)[number]) => string | null): Record<string, GroupReadiness> => {
-    const g: Record<string, { sum: number; total: number; floorIdx: number; atMilestone: number }> = {}
+    const g: Record<string, { sum: number; total: number; floorIdx: number; atMilestone: number; counts: Record<string, number>; uninitialized: number }> = {}
     for (const r of rows) {
       if (isHold(r.scope)) continue
       const key = keyOf(r)
       if (!key) continue
-      const b = (g[key] ??= { sum: 0, total: 0, floorIdx: Infinity, atMilestone: 0 })
-      b.sum += readinessOf(r.stage)
+      const b = (g[key] ??= { sum: 0, total: 0, floorIdx: Infinity, atMilestone: 0, counts: {}, uninitialized: 0 })
+      b.sum += rowReadiness(r)
       b.total++
       b.floorIdx = Math.min(b.floorIdx, idx(r.stage))
       if (milestoneIdx >= 0 && idx(r.stage) >= milestoneIdx) b.atMilestone++
+      if (idx(r.stage) < 0) b.uninitialized++
+      else b.counts[r.stage as string] = (b.counts[r.stage as string] ?? 0) + 1
     }
     return Object.fromEntries(Object.entries(g).map(([k, b]) => [k, {
       readinessPercent: b.total ? Math.round(b.sum / b.total) : 0,
       floor: b.floorIdx < 0 ? 'UNINITIALIZED' : (order[b.floorIdx] ?? null),
       total: b.total,
       atMilestone: b.atMilestone,
+      counts: b.counts,
+      uninitialized: b.uninitialized,
     }]))
   }
   return {

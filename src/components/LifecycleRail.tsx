@@ -18,6 +18,7 @@ export function LifecycleRail({ taskId, checkpoints }: { taskId: string; checkpo
   const advance = useAdvanceTask()
   const [err, setErr] = useState<string | null>(null)
   const [showCk, setShowCk] = useState(false)
+  const [openRows, setOpenRows] = useState<Set<string>>(new Set())
   const stages = cfg.stages
   if (!stages.length) return null
 
@@ -68,7 +69,10 @@ export function LifecycleRail({ taskId, checkpoints }: { taskId: string; checkpo
           const clickable = i !== curIdx && !s.gated && !advance.isPending
           const isLive = i > milestoneIdx && (readiness[s.key] ?? 0) >= 100
           const pctLabel = isLive ? 'LIVE' : `${readiness[s.key] ?? 0}%`
-          const cls = `rail-step ${tone(s)} is-${state}${clickable ? ' is-click' : ''}${s.gated && i !== curIdx ? ' is-gated' : ''}`
+          const stageHist = history.filter((h) => h.stage === s.key)
+          const req = [...(s.requiresEvidence ?? []), ...(s.verifierRole ? [`${s.verifierRole} verdict`] : [])]
+          const hasDetail = !clickable && (req.length > 0 || stageHist.length > 0)
+          const cls = `rail-step ${tone(s)} is-${state}${clickable ? ' is-click' : ''}${hasDetail ? ' is-click' : ''}${s.gated && i !== curIdx ? ' is-gated' : ''}`
           const inner = (
             <>
               <span className="rail-dot">{state === 'done' ? <Icon name="check" size={11} /> : null}</span>
@@ -80,9 +84,25 @@ export function LifecycleRail({ taskId, checkpoints }: { taskId: string; checkpo
             <div key={s.key}>
               {clickable ? (
                 <button type="button" className={cls} onClick={() => move(s.key)} title={`Move to ${s.label}`}>{inner}</button>
+              ) : hasDetail ? (
+                <button type="button" className={cls} onClick={() => setOpenRows((p) => { const n = new Set(p); if (n.has(s.key)) n.delete(s.key); else n.add(s.key); return n })}>{inner}</button>
               ) : (
-                <div className={cls} title={s.gated ? 'gated — advance via advance_task with a receipt' : undefined}>{inner}</div>
+                <div className={cls}>{inner}</div>
               )}
+              {hasDetail && openRows.has(s.key) ? (
+                <div className="rail-detail">
+                  {req.length ? <div className="rail-req">Required proof: {req.join(', ')}</div> : null}
+                  {i > curIdx && s.gated ? <div className="rail-lockreason"><Icon name="lock" size={11} /> Locked — advance from {stages[i - 1]?.label ?? '—'} with a program-emitted receipt (advance_task)</div> : null}
+                  {stageHist.map((h, hi) => (
+                    <div className="rail-hist" key={hi}>
+                      {h.verdict ? <span className="lc-verdict">{h.verdict}</span> : null}
+                      {h.byRunId ? <span className="lc-run">{h.byRunId}</span> : null}
+                      {h.commitSha ? <span className="chip chip-mono">{h.commitSha.slice(0, 10)}</span> : null}
+                      <span className="lc-ts">{fmtDate(h.ts)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {i === mappingIdx && ckTotal ? (
                 <div className="rail-nest">
                   <button type="button" className="rail-nest-head" onClick={() => setShowCk((v) => !v)}>

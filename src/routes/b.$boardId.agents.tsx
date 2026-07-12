@@ -50,17 +50,18 @@ function View() {
   const groups = GROUPS.map(([t, s]) => [t, runs.filter((r) => r.status === s)] as [string, Array<Run>]).filter((g) => g[1].length)
 
   const live = m.runningAgents.length
-  const blocked = m.runs.filter((r) => r.status === 'blocked').length
-  const done = m.runs.filter((r) => r.status === 'done').length
+  const now = Date.now()
+  const stalled = m.runningAgents.filter((r) => r.updated && now - Date.parse(r.updated) > 15 * 60 * 1000).length
   const unproductive = m.runs.filter((r) => r.status === 'running' && (!r.taskId || (!r.targetGate && !r.verdict))).length
+  const receipts = m.runs.filter((r) => r.verdict && r.updated && new Date(r.updated).toDateString() === new Date(now).toDateString()).length
   const usable = ops.accounts.filter((a) => a.usable).length
   const limited = ops.accounts.filter((a) => !a.usable).length
 
   const tiles: Array<[string, number | string, string]> = [
     ['Live runs', live, 'ok'],
-    ['Blocked', blocked, blocked ? 'warn' : ''],
+    ['Stalled', stalled, stalled ? 'warn' : ''],
     ['Unproductive', unproductive, unproductive ? 'blocked' : ''],
-    ['Done', done, ''],
+    ['Receipts today', receipts, ''],
     ['Accounts usable', `${usable}/${usable + limited}`, limited ? 'warn' : 'ok'],
   ]
 

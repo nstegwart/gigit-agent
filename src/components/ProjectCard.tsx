@@ -28,7 +28,17 @@ export function ProjectCard({ project, readiness }: { project: Project; readines
       </div>
       <div style={{ '--accent': project.color } as React.CSSProperties}>
         <ProgressBar pct={pct} right={readiness ? `${pct}% ready` : undefined} />
-        {readiness ? <div className="proj-ready">{readiness.atMilestone}/{readiness.total} production-ready</div> : null}
+        {readiness ? (
+          <>
+            <div className="proj-ready">{readiness.atMilestone}/{readiness.total} production-ready</div>
+            <div className="proj-stages">
+              {Object.entries(readiness.counts).filter(([, n]) => n).map(([k, n]) => (
+                <span className="proj-stage-c" key={k}>{k}<b>{n}</b></span>
+              ))}
+              {readiness.uninitialized ? <span className="proj-stage-c is-uninit">uninit<b>{readiness.uninitialized}</b></span> : null}
+            </div>
+          </>
+        ) : null}
       </div>
       <div className="proj-meta">
         <span>

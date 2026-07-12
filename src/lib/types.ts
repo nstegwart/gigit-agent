@@ -178,6 +178,8 @@ export interface GroupReadiness {
   floor: string | null // lowest stage key among the group ('UNINITIALIZED' if any)
   total: number // active tasks in the group
   atMilestone: number // how many reached the milestone stage (e.g. PROD_READY)
+  counts: Record<string, number> // active tasks per stage within the group
+  uninitialized: number // group's active tasks with no stage yet
 }
 export interface Rollup {
   formulaVersion: string

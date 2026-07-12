@@ -18,8 +18,9 @@ import { useBoardId } from '#/lib/board-query'
 import { MiniAgent, ProgressBar } from '#/components/primitives'
 import { fmtDate } from '#/lib/format'
 import { Icon } from '#/lib/icons'
+import { nextStage, rowReadiness } from '#/lib/readiness'
 import type { TaskView } from '#/lib/tasks'
-import type { GroupReadiness, Run } from '#/lib/types'
+import type { GroupReadiness, LifecycleConfig, Run } from '#/lib/types'
 import { uiStore } from '#/store/ui'
 
 const col = createColumnHelper<TaskView>()
@@ -32,20 +33,27 @@ export function TasksTable({
   runsByTask,
   readinessByGroup,
   milestone,
+  cfg,
 }: {
   tasks: Array<TaskView>
   runsByTask?: Record<string, Array<Run>>
   readinessByGroup?: Record<string, GroupReadiness>
   milestone?: string | null
+  cfg?: LifecycleConfig
 }) {
   const q = useStore(uiStore, (s) => s.search)
   const [filterProj, setFilterProj] = useState('')
   const [filterScope, setFilterScope] = useState('')
-  const [sorting, setSorting] = useState<SortingState>([{ id: 'progress', desc: true }])
+  const [filterStage, setFilterStage] = useState('')
+  const [sorting, setSorting] = useState<SortingState>([{ id: 'readiness', desc: false }])
   const navigate = useNavigate()
   const boardId = useBoardId()
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
   const [touched, setTouched] = useState(false)
+
+  const readyOf = (t: TaskView) => (cfg ? rowReadiness(cfg, t.lifecycleStage, t.done, t.total) : t.pct)
+  const nextOf = (t: TaskView) => (cfg ? nextStage(cfg, t.lifecycleStage)?.key ?? null : null)
+  const runOf = (t: TaskView) => (runsByTask?.[t.id] ?? [])[0] ?? null
 
   const projects = useMemo(
     () => [...new Set(tasks.map((t) => t.projectId).filter(Boolean) as Array<string>)],
@@ -61,14 +69,15 @@ export function TasksTable({
     let out = tasks.slice()
     if (filterProj) out = out.filter((t) => t.projectId === filterProj)
     if (filterScope) out = out.filter((t) => t.scope === filterScope)
+    if (filterStage) out = out.filter((t) => (filterStage === '__uninit__' ? !t.lifecycleStage : filterStage === '__unassigned__' ? !(runsByTask?.[t.id]?.length) : t.lifecycleStage === filterStage))
     if (Q)
       out = out.filter((t) =>
-        `${t.title} ${t.id} ${t.projectId ?? ''} ${t.group ?? ''} ${t.phase ?? ''}`
+        `${t.title} ${t.id} ${t.projectId ?? ''} ${t.group ?? ''} ${t.lifecycleStage ?? ''} ${t.featureContractId ?? ''}`
           .toLowerCase()
           .includes(Q),
       )
     return out
-  }, [tasks, filterProj, filterScope, q])
+  }, [tasks, filterProj, filterScope, filterStage, q, runsByTask])
 
   const columns = useMemo(
     () => [
@@ -82,53 +91,39 @@ export function TasksTable({
           </div>
         ),
       }),
-      col.accessor((t) => t.group ?? '', {
-        id: 'group',
-        header: 'Group',
-        cell: ({ getValue }) => (getValue() ? <span className="chip">{getValue()}</span> : <span className="t-id">—</span>),
+      col.accessor((t) => t.lifecycleStage ?? '', {
+        id: 'stage',
+        header: 'Stage',
+        cell: ({ row }) => {
+          const s = row.original.lifecycleStage
+          return s ? <span className="chip chip-mono">{s}</span> : <span className="t-id">uninit</span>
+        },
       }),
-      col.accessor((t) => t.phase ?? '', {
-        id: 'phase',
-        header: 'Phase',
-        cell: ({ getValue }) => (getValue() ? <span className="task-phase">{getValue()}</span> : null),
+      col.display({
+        id: 'nextgate',
+        header: 'Next gate',
+        cell: ({ row }) => {
+          const ng = nextOf(row.original)
+          return ng ? <span className="t-id" style={{ color: 'var(--accent)' }}>{ng}</span> : <span className="t-id">—</span>
+        },
       }),
       col.accessor((t) => t.projectId ?? '', {
         id: 'project',
         header: 'Project',
         cell: ({ getValue }) => (getValue() ? <span className="chip chip-mono">{getValue()}</span> : <span className="t-id">—</span>),
       }),
-      ...(runsByTask
-        ? [
-            col.display({
-              id: 'agents',
-              header: 'Agents',
-              cell: ({ row }) => {
-                const rs = (runsByTask[row.original.id] ?? []).filter((r) => r.status === 'running')
-                if (!rs.length) return <span className="t-id">—</span>
-                return (
-                  <div style={{ display: 'flex' }}>
-                    {rs.map((r) => (
-                      <MiniAgent key={r.id} run={r} />
-                    ))}
-                  </div>
-                )
-              },
-            }),
-          ]
-        : []),
-      col.accessor((t) => t.pct, {
-        id: 'progress',
-        header: 'Progress',
-        cell: ({ row }) => <ProgressBar pct={row.original.pct} />,
-      }),
       col.display({
-        id: 'ceklis',
-        header: 'Checkpoints',
-        cell: ({ row }) => (
-          <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--text-dim)' }}>
-            {row.original.done}/{row.original.total}
-          </span>
-        ),
+        id: 'run',
+        header: 'Run',
+        cell: ({ row }) => {
+          const r = runOf(row.original)
+          return r ? <MiniAgent run={r} /> : <span className="t-id">—</span>
+        },
+      }),
+      col.accessor((t) => readyOf(t), {
+        id: 'readiness',
+        header: 'Readiness',
+        cell: ({ row }) => { const p = readyOf(row.original); return <ProgressBar pct={p} ok={p >= 100} right={`${p}%`} /> },
       }),
       col.display({
         id: 'impact',
@@ -138,9 +133,7 @@ export function TasksTable({
           if (!im.length) return <span className="t-id">—</span>
           return (
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-              <span className="chip" style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {im[0]}
-              </span>
+              <span className="chip" style={{ maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{im[0]}</span>
               {im.length > 1 ? <span className="chip">+{im.length - 1}</span> : null}
             </div>
           )
@@ -156,7 +149,8 @@ export function TasksTable({
         ),
       }),
     ],
-    [runsByTask],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runsByTask, cfg],
   )
 
   const table = useReactTable({
@@ -218,6 +212,14 @@ export function TasksTable({
         )}
         {scopes.length > 0 && chip('', 'All scopes', filterScope === '', () => setFilterScope(''))}
         {scopes.map((s) => chip(s, s, filterScope === s, () => setFilterScope(s)))}
+        {cfg?.stages.length ? (
+          <>
+            <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 4px' }} />
+            {chip('', 'All stages', filterStage === '', () => setFilterStage(''))}
+            {cfg.stages.map((s) => chip(s.key, s.key, filterStage === s.key, () => setFilterStage(s.key)))}
+            {chip('__unassigned__', 'unassigned', filterStage === '__unassigned__', () => setFilterStage('__unassigned__'))}
+          </>
+        ) : null}
         {!single && !searching && (
           <button type="button" className="grp-toggle" onClick={allExpanded ? collapseAll : expandAll}>
             <Icon name="layers" size={13} />
@@ -232,7 +234,7 @@ export function TasksTable({
             {table.getHeaderGroups().map((hg) => (
               <tr key={hg.id}>
                 {hg.headers.map((h) => (
-                  <th key={h.id} style={h.column.id === 'progress' ? { width: 140 } : undefined}>
+                  <th key={h.id} style={h.column.id === 'readiness' ? { width: 150 } : undefined}>
                     {h.isPlaceholder ? null : flexRender(h.column.columnDef.header, h.getContext())}
                   </th>
                 ))}

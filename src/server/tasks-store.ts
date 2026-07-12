@@ -237,14 +237,18 @@ export async function initLifecycle(boardId: string, stage: string, onlyUninitia
   const [r] = await db().query(`UPDATE tasks SET lifecycle_stage=?, rev=rev+1 WHERE board_id=?${where}`, [stage, boardId])
   return (r as { affectedRows: number }).affectedRows
 }
-/** Per-task (stage, project, feature, scope) — for board/feature/project rollups. */
-export async function taskStageRows(boardId: string): Promise<Array<{ id: string; stage: string | null; project: string | null; feature: string | null; scope: string | null }>> {
+/** Per-task (stage, project, feature, scope, mapping-checkpoint progress) — for rollups. */
+export async function taskStageRows(boardId: string): Promise<Array<{ id: string; stage: string | null; project: string | null; feature: string | null; scope: string | null; ckDone: number; ckTotal: number }>> {
   await ensureBackfilled(boardId)
-  const [rows] = await db().query('SELECT id, lifecycle_stage, project_id, feature_contract_id, scope FROM tasks WHERE board_id=?', [boardId])
-  return (rows as Array<Record<string, unknown>>).map((r) => ({
-    id: r.id as string, stage: (r.lifecycle_stage as string) ?? null,
-    project: (r.project_id as string) ?? null, feature: (r.feature_contract_id as string) ?? null, scope: (r.scope as string) ?? null,
-  }))
+  const [rows] = await db().query('SELECT id, lifecycle_stage, project_id, feature_contract_id, scope, summary FROM tasks WHERE board_id=?', [boardId])
+  return (rows as Array<Record<string, unknown>>).map((r) => {
+    const cps = (((r.summary ?? {}) as { checkpoints?: Array<{ done?: boolean }> }).checkpoints) ?? []
+    return {
+      id: r.id as string, stage: (r.lifecycle_stage as string) ?? null,
+      project: (r.project_id as string) ?? null, feature: (r.feature_contract_id as string) ?? null, scope: (r.scope as string) ?? null,
+      ckDone: cps.filter((c) => c.done).length, ckTotal: cps.length,
+    }
+  })
 }
 
 // ---- audit log ----
