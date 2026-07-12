@@ -9,6 +9,8 @@ import tailwindcss from '@tailwindcss/vite'
 const config = defineConfig({
   resolve: { tsconfigPaths: true },
   plugins: [devtools(), tailwindcss(), tanstackStart(), viteReact()],
+  // served behind an nginx reverse proxy (task-manager.mfsdev.net) — allow the proxied Host
+  preview: { allowedHosts: true },
 })
 
 export default config
