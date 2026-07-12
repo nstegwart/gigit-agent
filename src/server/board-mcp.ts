@@ -411,8 +411,8 @@ export function registerBoardTools(server: McpServer): void {
   )
   server.registerTool(
     'set_lifecycle',
-    { title: 'Set lifecycle rail', description: "Configure this board's lifecycle stages (ordered). A stage with gated:true can only be reached via advance_task with a program-emitted receipt; verifierRole means it must be passed by a run other than the implementer.", inputSchema: { ...BOARD_ARG, stages: z.array(STAGE_OBJ).min(1) } },
-    async ({ boardId, stages }) => { try { return jsonText(await writeLifecycle(await bid(boardId), stages as never)) } catch (e) { return asErr(e) } },
+    { title: 'Set lifecycle rail', description: "Fully (re)configure this board's lifecycle: ordered stages + gate rules. gated:true = reachable only via advance_task with a program-emitted receipt; verifierRole = must be passed by a run other than the implementer. allowSkip (default false) permits forward jumps; allowRegression (default true) permits moving back for repair. Each board owns its own rail.", inputSchema: { ...BOARD_ARG, stages: z.array(STAGE_OBJ).min(1), allowSkip: z.boolean().optional(), allowRegression: z.boolean().optional() } },
+    async ({ boardId, stages, allowSkip, allowRegression }) => { try { return jsonText(await writeLifecycle(await bid(boardId), stages as never, { allowSkip, allowRegression })) } catch (e) { return asErr(e) } },
   )
   server.registerTool(
     'get_task_lifecycle',

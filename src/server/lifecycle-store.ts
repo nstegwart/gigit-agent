@@ -22,7 +22,11 @@ export async function readLifecycle(boardId: string): Promise<LifecycleConfig> {
   const c = await readDoc<LifecycleConfig>(boardId, 'lifecycle', DEFAULT_LIFECYCLE)
   return c?.stages?.length ? c : DEFAULT_LIFECYCLE
 }
-export async function writeLifecycle(boardId: string, stages: Array<LifecycleStage>): Promise<LifecycleConfig> {
+export async function writeLifecycle(
+  boardId: string,
+  stages: Array<LifecycleStage>,
+  opts: { allowSkip?: boolean; allowRegression?: boolean } = {},
+): Promise<LifecycleConfig> {
   if (!stages.length) throw new Error('lifecycle needs at least one stage')
   const keys = new Set<string>()
   for (const s of stages) {
@@ -30,9 +34,14 @@ export async function writeLifecycle(boardId: string, stages: Array<LifecycleSta
     if (keys.has(s.key)) throw new Error(`duplicate stage key: ${s.key}`)
     keys.add(s.key)
   }
-  const cfg: LifecycleConfig = { stages }
+  const prev = await readLifecycle(boardId) // preserve flags not being changed
+  const cfg: LifecycleConfig = {
+    stages,
+    allowSkip: opts.allowSkip ?? prev.allowSkip ?? false,
+    allowRegression: opts.allowRegression ?? prev.allowRegression ?? true,
+  }
   await writeDoc(boardId, 'lifecycle', cfg)
-  await writeAudit(boardId, { ts: nowISO(), action: 'set_lifecycle', detail: { stages: stages.map((s) => s.key) } })
+  await writeAudit(boardId, { ts: nowISO(), action: 'set_lifecycle', detail: { stages: stages.map((s) => s.key), allowSkip: cfg.allowSkip, allowRegression: cfg.allowRegression } })
   return cfg
 }
 
