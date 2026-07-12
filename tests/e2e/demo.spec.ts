@@ -14,7 +14,7 @@ test('boards home lists the demo board and it opens', async ({ page }) => {
 test('demo board shows every adaptive view + real content', async ({ page }) => {
   await page.goto('/b/demo/')
   // full showcase nav
-  for (const label of ['Board', 'Agents', 'Features', 'Tasks', 'Accounts', 'Production', 'Guide']) {
+  for (const label of ['Board', 'Agents', 'Features', 'Tasks', 'Accounts']) {
     await expect(page.locator('.nav-item .lbl', { hasText: new RegExp(`^${label}$`) })).toBeVisible()
   }
   // features table
@@ -26,9 +26,6 @@ test('demo board shows every adaptive view + real content', async ({ page }) => 
   // ops accounts (vault tiles)
   await page.goto('/b/demo/ops')
   await expect(page.locator('.account-card').first()).toBeVisible()
-  // prod gates
-  await page.goto('/b/demo/prod')
-  await expect(page.getByText('G0', { exact: true })).toBeVisible()
 })
 
 test('MCP serves the demo board', async ({ request }) => {

@@ -6,7 +6,17 @@
       "name": "Acme Notes (demo)",
       "description": "A synthetic showcase board — every Cairn view with fake data.",
       "createdAt": "2026-07-12",
-      "views": ["board", "agents", "projects", "features", "map", "tasks", "ops", "prod", "guide", "decisions", "log"]
+      "views": [
+        "board",
+        "agents",
+        "projects",
+        "features",
+        "map",
+        "tasks",
+        "ops",
+        "decisions",
+        "log"
+      ]
     }
   ]
 }

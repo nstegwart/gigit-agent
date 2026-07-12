@@ -13,11 +13,9 @@ import { Route as McpRouteImport } from './routes/mcp'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as BBoardIdRouteImport } from './routes/b.$boardId'
 import { Route as BBoardIdIndexRouteImport } from './routes/b.$boardId.index'
-import { Route as BBoardIdProdRouteImport } from './routes/b.$boardId.prod'
 import { Route as BBoardIdOpsRouteImport } from './routes/b.$boardId.ops'
 import { Route as BBoardIdMapRouteImport } from './routes/b.$boardId.map'
 import { Route as BBoardIdLogRouteImport } from './routes/b.$boardId.log'
-import { Route as BBoardIdGuideRouteImport } from './routes/b.$boardId.guide'
 import { Route as BBoardIdDesignRouteImport } from './routes/b.$boardId.design'
 import { Route as BBoardIdDecisionsRouteImport } from './routes/b.$boardId.decisions'
 import { Route as BBoardIdAgentsRouteImport } from './routes/b.$boardId.agents'
@@ -48,11 +46,6 @@ const BBoardIdIndexRoute = BBoardIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => BBoardIdRoute,
 } as any)
-const BBoardIdProdRoute = BBoardIdProdRouteImport.update({
-  id: '/prod',
-  path: '/prod',
-  getParentRoute: () => BBoardIdRoute,
-} as any)
 const BBoardIdOpsRoute = BBoardIdOpsRouteImport.update({
   id: '/ops',
   path: '/ops',
@@ -66,11 +59,6 @@ const BBoardIdMapRoute = BBoardIdMapRouteImport.update({
 const BBoardIdLogRoute = BBoardIdLogRouteImport.update({
   id: '/log',
   path: '/log',
-  getParentRoute: () => BBoardIdRoute,
-} as any)
-const BBoardIdGuideRoute = BBoardIdGuideRouteImport.update({
-  id: '/guide',
-  path: '/guide',
   getParentRoute: () => BBoardIdRoute,
 } as any)
 const BBoardIdDesignRoute = BBoardIdDesignRouteImport.update({
@@ -128,11 +116,9 @@ export interface FileRoutesByFullPath {
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
   '/b/$boardId/design': typeof BBoardIdDesignRoute
-  '/b/$boardId/guide': typeof BBoardIdGuideRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
   '/b/$boardId/map': typeof BBoardIdMapRoute
   '/b/$boardId/ops': typeof BBoardIdOpsRoute
-  '/b/$boardId/prod': typeof BBoardIdProdRoute
   '/b/$boardId/': typeof BBoardIdIndexRoute
   '/b/$boardId/features/$featureId': typeof BBoardIdFeaturesFeatureIdRoute
   '/b/$boardId/projects/$projectId': typeof BBoardIdProjectsProjectIdRoute
@@ -147,11 +133,9 @@ export interface FileRoutesByTo {
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
   '/b/$boardId/design': typeof BBoardIdDesignRoute
-  '/b/$boardId/guide': typeof BBoardIdGuideRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
   '/b/$boardId/map': typeof BBoardIdMapRoute
   '/b/$boardId/ops': typeof BBoardIdOpsRoute
-  '/b/$boardId/prod': typeof BBoardIdProdRoute
   '/b/$boardId': typeof BBoardIdIndexRoute
   '/b/$boardId/features/$featureId': typeof BBoardIdFeaturesFeatureIdRoute
   '/b/$boardId/projects/$projectId': typeof BBoardIdProjectsProjectIdRoute
@@ -168,11 +152,9 @@ export interface FileRoutesById {
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
   '/b/$boardId/design': typeof BBoardIdDesignRoute
-  '/b/$boardId/guide': typeof BBoardIdGuideRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
   '/b/$boardId/map': typeof BBoardIdMapRoute
   '/b/$boardId/ops': typeof BBoardIdOpsRoute
-  '/b/$boardId/prod': typeof BBoardIdProdRoute
   '/b/$boardId/': typeof BBoardIdIndexRoute
   '/b/$boardId/features/$featureId': typeof BBoardIdFeaturesFeatureIdRoute
   '/b/$boardId/projects/$projectId': typeof BBoardIdProjectsProjectIdRoute
@@ -190,11 +172,9 @@ export interface FileRouteTypes {
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
-    | '/b/$boardId/guide'
     | '/b/$boardId/log'
     | '/b/$boardId/map'
     | '/b/$boardId/ops'
-    | '/b/$boardId/prod'
     | '/b/$boardId/'
     | '/b/$boardId/features/$featureId'
     | '/b/$boardId/projects/$projectId'
@@ -209,11 +189,9 @@ export interface FileRouteTypes {
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
-    | '/b/$boardId/guide'
     | '/b/$boardId/log'
     | '/b/$boardId/map'
     | '/b/$boardId/ops'
-    | '/b/$boardId/prod'
     | '/b/$boardId'
     | '/b/$boardId/features/$featureId'
     | '/b/$boardId/projects/$projectId'
@@ -229,11 +207,9 @@ export interface FileRouteTypes {
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
-    | '/b/$boardId/guide'
     | '/b/$boardId/log'
     | '/b/$boardId/map'
     | '/b/$boardId/ops'
-    | '/b/$boardId/prod'
     | '/b/$boardId/'
     | '/b/$boardId/features/$featureId'
     | '/b/$boardId/projects/$projectId'
@@ -279,13 +255,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BBoardIdIndexRouteImport
       parentRoute: typeof BBoardIdRoute
     }
-    '/b/$boardId/prod': {
-      id: '/b/$boardId/prod'
-      path: '/prod'
-      fullPath: '/b/$boardId/prod'
-      preLoaderRoute: typeof BBoardIdProdRouteImport
-      parentRoute: typeof BBoardIdRoute
-    }
     '/b/$boardId/ops': {
       id: '/b/$boardId/ops'
       path: '/ops'
@@ -305,13 +274,6 @@ declare module '@tanstack/react-router' {
       path: '/log'
       fullPath: '/b/$boardId/log'
       preLoaderRoute: typeof BBoardIdLogRouteImport
-      parentRoute: typeof BBoardIdRoute
-    }
-    '/b/$boardId/guide': {
-      id: '/b/$boardId/guide'
-      path: '/guide'
-      fullPath: '/b/$boardId/guide'
-      preLoaderRoute: typeof BBoardIdGuideRouteImport
       parentRoute: typeof BBoardIdRoute
     }
     '/b/$boardId/design': {
@@ -384,11 +346,9 @@ interface BBoardIdRouteChildren {
   BBoardIdAgentsRoute: typeof BBoardIdAgentsRoute
   BBoardIdDecisionsRoute: typeof BBoardIdDecisionsRoute
   BBoardIdDesignRoute: typeof BBoardIdDesignRoute
-  BBoardIdGuideRoute: typeof BBoardIdGuideRoute
   BBoardIdLogRoute: typeof BBoardIdLogRoute
   BBoardIdMapRoute: typeof BBoardIdMapRoute
   BBoardIdOpsRoute: typeof BBoardIdOpsRoute
-  BBoardIdProdRoute: typeof BBoardIdProdRoute
   BBoardIdIndexRoute: typeof BBoardIdIndexRoute
   BBoardIdFeaturesFeatureIdRoute: typeof BBoardIdFeaturesFeatureIdRoute
   BBoardIdProjectsProjectIdRoute: typeof BBoardIdProjectsProjectIdRoute
@@ -402,11 +362,9 @@ const BBoardIdRouteChildren: BBoardIdRouteChildren = {
   BBoardIdAgentsRoute: BBoardIdAgentsRoute,
   BBoardIdDecisionsRoute: BBoardIdDecisionsRoute,
   BBoardIdDesignRoute: BBoardIdDesignRoute,
-  BBoardIdGuideRoute: BBoardIdGuideRoute,
   BBoardIdLogRoute: BBoardIdLogRoute,
   BBoardIdMapRoute: BBoardIdMapRoute,
   BBoardIdOpsRoute: BBoardIdOpsRoute,
-  BBoardIdProdRoute: BBoardIdProdRoute,
   BBoardIdIndexRoute: BBoardIdIndexRoute,
   BBoardIdFeaturesFeatureIdRoute: BBoardIdFeaturesFeatureIdRoute,
   BBoardIdProjectsProjectIdRoute: BBoardIdProjectsProjectIdRoute,

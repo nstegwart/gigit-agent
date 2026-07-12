@@ -1,8 +1,9 @@
-// E2E for the Batch 5 adaptive-view surface: the /mcp JSON-RPC tools that back
-// the Tasks / Ops / Prod / Guide views (list_tasks, get_task, list_accounts,
-// get_prod, get_guide) plus the UI routes those tools feed for the
-// "mfs-rebuild" board (/b/mfs-rebuild/tasks, /tasks/$taskId, /ops, /prod,
-// /guide). Read-only throughout: every call uses a read tool or a plain
+// E2E for the Batch 5 adaptive-view surface: the /mcp JSON-RPC tools
+// (list_tasks, get_task, list_accounts, get_prod, get_guide) plus the UI routes
+// those tools feed for the "mfs-rebuild" board (/b/mfs-rebuild/tasks,
+// /tasks/$taskId, /ops). The Prod/Guide UI views were removed from the app, so
+// only their MCP tools (get_prod/get_guide) are exercised here — no /prod or
+// /guide UI routes remain. Read-only throughout: every call uses a read tool or a plain
 // navigation/click (no checkpoint toggling, no filter state persisted across
 // tests), so nothing mutates data/boards/mfs-rebuild/*.json — nothing to
 // restore.
@@ -328,46 +329,13 @@ test.describe('Ops view (UI) — /b/mfs-rebuild/ops', () => {
   })
 })
 
-test.describe('Prod view (UI) — /b/mfs-rebuild/prod', () => {
-  test('shows the mock banner and all 7 gates G0..G6', async ({ page }) => {
-    await page.goto(`/b/${BOARD_ID}/prod`)
-
-    await expect(page.getByRole('heading', { level: 2, name: 'Path to production' })).toBeVisible()
-    await expect(page.locator('.mock-banner')).toBeVisible()
-
-    const gates = page.locator('.gate')
-    await expect(gates.first()).toBeVisible()
-    expect(await gates.count()).toBe(7)
-
-    const ids = await page.locator('.gate .gate-id').allInnerTexts()
-    expect(ids).toEqual(['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6'])
-
-    await expect(gates.first().locator('.gate-title')).not.toBeEmpty()
-  })
-})
-
-test.describe('Guide view (UI) — /b/mfs-rebuild/guide', () => {
-  test('renders guide sections with title and body', async ({ page }) => {
-    await page.goto(`/b/${BOARD_ID}/guide`)
-
-    await expect(page.getByRole('heading', { level: 2, name: 'Guide' })).toBeVisible()
-
-    const sections = page.locator('.guide-sec')
-    await expect(sections.first()).toBeVisible()
-    expect(await sections.count()).toBeGreaterThanOrEqual(1)
-
-    await expect(sections.first().locator('h3')).toHaveText('Stage')
-    await expect(sections.first().locator('p')).not.toBeEmpty()
-  })
-})
-
 test.describe('Adaptive nav — mfs-rebuild board shows only its enabled views', () => {
-  test('sidebar exposes Tasks/Accounts/Production/Guide but not Features/Map/Design', async ({
+  test('sidebar exposes Tasks/Accounts but not Features/Map/Design', async ({
     page,
   }) => {
     await page.goto(`/b/${BOARD_ID}/tasks`)
 
-    for (const label of ['Tasks', 'Accounts', 'Production', 'Guide']) {
+    for (const label of ['Tasks', 'Accounts']) {
       await expect(page.locator('.nav-item', { hasText: label })).toBeVisible()
     }
     for (const label of ['Features', 'Map', 'Design']) {

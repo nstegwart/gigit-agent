@@ -39,8 +39,6 @@ const NAV: Array<NavItem | { sep: true; label: string }> = [
   { id: 'log', label: 'Log', icon: 'log', to: '/log', match: (p) => p.startsWith('/log'), count: (n) => n.log },
   { sep: true, label: 'Ops' },
   { id: 'ops', label: 'Accounts', icon: 'users', to: '/ops', match: (p) => p.startsWith('/ops') },
-  { id: 'prod', label: 'Production', icon: 'flag', to: '/prod', match: (p) => p.startsWith('/prod') },
-  { id: 'guide', label: 'Guide', icon: 'inbox', to: '/guide', match: (p) => p.startsWith('/guide') },
 ]
 
 const SECTION_TITLE: Record<string, string> = {
@@ -98,13 +96,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="app">
       <aside className="sidebar">
-        <div className="brand">
+        <Link to="/" className="brand" title="All boards">
           <BrandMark />
           <div>
             <div className="brand-name">{BRAND}</div>
             <div className="brand-sub">Agent work board</div>
           </div>
-        </div>
+        </Link>
 
         <BoardSwitcher boardId={boardId} />
 

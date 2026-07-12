@@ -1,9 +1,9 @@
-// E2E for the Batch 5 adaptive views on the "mfs-rebuild" board: Tasks, Ops
-// (agent-account vault), Prod (path-to-production gates), Guide.
+// E2E for the Batch 5 adaptive views on the "mfs-rebuild" board: Tasks and Ops
+// (agent-account vault). The Prod/Guide UI views were removed from the app, so
+// their UI tests are gone; the get_prod/get_guide MCP tools live in mcp-views.spec.ts.
 //
-// Board data: data/boards/mfs-rebuild/{tasks,accounts,prod,guide}.json.
-// Real seed: 21 vault accounts / 7 usable / 14 at limit; 7 production gates
-// G0..G6; 3 guide sections; 44 WorkTasks (T-AFF-*).
+// Board data: data/boards/mfs-rebuild/{tasks,accounts}.json.
+// Real seed: 21 vault accounts / 7 usable / 14 at limit; 44 WorkTasks (T-AFF-*).
 //
 // Only the "checkpoint toggle" test mutates data (tasks.json) — it toggles a
 // known-unchecked checkpoint on, verifies persistence across reload, then
@@ -59,60 +59,6 @@ test.describe('Ops (agent accounts) view', () => {
     // below the threshold, so the banner should be absent; this proves the
     // component reads real vault numbers rather than always rendering it.
     await expect(page.locator('.alert-banner')).toHaveCount(0)
-  })
-})
-
-test.describe('Prod (path to production) view', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto(`${BOARD}/prod`)
-  })
-
-  test('header, mock banner and headline render', async ({ page }) => {
-    await expect(page.getByRole('heading', { level: 2, name: 'Path to production' })).toBeVisible()
-    await expect(page.locator('.mock-banner')).toContainText('MOCK')
-    await expect(page.locator('.mock-banner')).toContainText('preview desain')
-  })
-
-  test('all seeded gates G0..G6 render with title and body', async ({ page }) => {
-    const gates = page.locator('.gate')
-    expect(await gates.count()).toBe(7)
-
-    for (const id of ['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6']) {
-      const gate = page.locator('.gate', { has: page.locator('.gate-id', { hasText: id }) })
-      await expect(gate).toBeVisible()
-      await expect(gate.locator('.gate-title')).not.toBeEmpty()
-    }
-  })
-
-  test('a gate exposes meaning and a "done when" meta line', async ({ page }) => {
-    const g1 = page.locator('.gate', { has: page.locator('.gate-id', { hasText: 'G1' }) })
-    await expect(g1.locator('.gate-meaning')).toContainText('Feature Contract')
-    await expect(g1.locator('.gate-meta')).toContainText('done when:')
-  })
-})
-
-test.describe('Guide view', () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto(`${BOARD}/guide`)
-  })
-
-  test('header renders and all seeded guide sections show title + body', async ({ page }) => {
-    await expect(page.getByRole('heading', { level: 2, name: 'Guide' })).toBeVisible()
-
-    const sections = page.locator('.guide-sec')
-    expect(await sections.count()).toBe(3)
-
-    const titles = await sections.locator('h3').allInnerTexts()
-    expect(titles).toEqual(expect.arrayContaining(['Stage', 'Golden template', 'Rule']))
-
-    for (let i = 0; i < (await sections.count()); i++) {
-      await expect(sections.nth(i).locator('h3')).not.toBeEmpty()
-      await expect(sections.nth(i).locator('p')).not.toBeEmpty()
-    }
-
-    // Content sanity: the "Stage" section calls out the LOCAL ONLY status cap.
-    const stage = sections.filter({ has: page.locator('h3', { hasText: 'Stage' }) })
-    await expect(stage.locator('p')).toContainText('LOCAL ONLY')
   })
 })
 

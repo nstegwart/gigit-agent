@@ -3,8 +3,8 @@
 // (AppShell.NAV + the adaptive `visible` filter). Boards without a "board" view
 // redirect their bare `/b/<id>/` index to the first enabled view.
 //   - ibils     views: board, agents, projects, features, map, design, decisions, log
-//   - mfs-rebuild views: tasks, ops, prod, guide, projects, agents  (NO board/features/map)
-// Sidebar labels: ops -> "Accounts", prod -> "Production" (see AppShell.NAV).
+//   - mfs-rebuild views: tasks, ops, projects, agents  (NO board/features/map)
+// Sidebar labels: ops -> "Accounts" (see AppShell.NAV).
 import { expect, test, type Locator, type Page } from '@playwright/test'
 
 // A sidebar nav item selected by its exact `.lbl` text (stable across trailing-slash
@@ -31,18 +31,16 @@ test.describe('adaptive sidebar nav', () => {
     await expect(navItem(page, 'Production')).toHaveCount(0)
   })
 
-  test('mfs-rebuild board shows Tasks/Accounts/Production/Guide, hides Features/Map', async ({
+  test('mfs-rebuild board shows Tasks/Accounts, hides Features/Map', async ({
     page,
   }) => {
     await page.goto('/b/mfs-rebuild/projects')
 
     await expect(page.locator('.sidebar')).toBeVisible()
 
-    // mfs-rebuild enables tasks/ops/prod/guide -> all four tabs render.
+    // mfs-rebuild enables tasks/ops -> those tabs render.
     await expect(navItem(page, 'Tasks')).toBeVisible()
     await expect(navItem(page, 'Accounts')).toBeVisible()
-    await expect(navItem(page, 'Production')).toBeVisible()
-    await expect(navItem(page, 'Guide')).toBeVisible()
 
     // mfs-rebuild does NOT enable features/map -> those tabs absent.
     await expect(navItem(page, 'Features')).toHaveCount(0)
