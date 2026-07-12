@@ -94,7 +94,7 @@ test.describe('/mcp batch-2 tools', () => {
       branch: string
       worktree: string
       repo?: string
-    }>(request, 'get_workspace', { featureId: 'f4-m2-produk' })
+    }>(request, 'get_workspace', { boardId: 'ibils', featureId: 'f4-m2-produk' })
 
     expect(payload.featureId).toBe('f4-m2-produk')
     expect(payload.branch).toContain('feature/')

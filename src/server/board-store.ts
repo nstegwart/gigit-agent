@@ -37,7 +37,8 @@ const runsPath = (b: string) => path.join(boardDir(b), 'runs.json')
 const designPath = (b: string) => path.join(boardDir(b), 'design.json')
 const collabPath = (b: string) => path.join(boardDir(b), 'collab.json')
 const conventionsPath = () => path.join(dataRoot(), 'conventions.json')
-const boardsIndexPath = () => path.join(dataRoot(), 'boards.json')
+const boardsIndexPath = () => path.join(dataRoot(), 'boards.json') // committed (demo)
+const boardsLocalPath = () => path.join(dataRoot(), 'boards.local.json') // git-ignored (private)
 const tasksPath = (b: string) => path.join(boardDir(b), 'tasks.json')
 const accountsPath = (b: string) => path.join(boardDir(b), 'accounts.json')
 const prodPath = (b: string) => path.join(boardDir(b), 'prod.json')
@@ -65,13 +66,21 @@ interface BoardsIndex {
   boards: Array<BoardMeta>
   [k: string]: unknown
 }
-function readIndex(): BoardsIndex {
+function readIndexFile(p: string): Array<BoardMeta> {
   try {
-    const idx = readJSON<Partial<BoardsIndex>>(boardsIndexPath())
-    return { boards: idx.boards ?? [] }
+    return readJSON<Partial<BoardsIndex>>(p).boards ?? []
   } catch {
-    return { boards: [] }
+    return []
   }
+}
+/** Merge the committed demo index (boards.json) with the git-ignored private one
+ *  (boards.local.json). Local entries override/extend the committed ones by id. */
+function readIndex(): BoardsIndex {
+  const byId = new Map<string, BoardMeta>()
+  for (const b of [...readIndexFile(boardsIndexPath()), ...readIndexFile(boardsLocalPath())]) {
+    byId.set(b.id, b)
+  }
+  return { boards: [...byId.values()] }
 }
 export function listBoards(): Array<BoardMeta> {
   return readIndex().boards
@@ -113,10 +122,11 @@ export function createBoard(
   writeJSON(runsPath(id), { runs: [] })
   writeJSON(designPath(id), { projects: {}, features: {} })
   writeJSON(collabPath(id), { comments: {}, activity: [] })
-  const idx = readIndex()
-  idx.boards.push({ id, name, description, createdAt: todayISO(), views: views ?? DEFAULT_VIEWS })
-  writeJSON(boardsIndexPath(), idx)
-  return idx.boards
+  // new boards are private by default → the git-ignored local index (not the committed demo one)
+  const local: BoardsIndex = { boards: readIndexFile(boardsLocalPath()) }
+  local.boards.push({ id, name, description, createdAt: todayISO(), views: views ?? DEFAULT_VIEWS })
+  writeJSON(boardsLocalPath(), local)
+  return readIndex().boards
 }
 
 // ---- per-board readers ----

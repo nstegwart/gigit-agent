@@ -32,9 +32,12 @@ beforeAll(async () => {
   for (const file of ['plan.json', 'runs.json', 'design.json', 'collab.json']) {
     fs.copyFileSync(path.join(repoIbils, file), path.join(tmpIbils, file))
   }
-  for (const file of ['conventions.json', 'boards.json']) {
-    fs.copyFileSync(path.join(repoData, file), path.join(tmpDir, file))
-  }
+  fs.copyFileSync(path.join(repoData, 'conventions.json'), path.join(tmpDir, 'conventions.json'))
+  // write a temp index that lists the ibils board (the committed boards.json is demo-only)
+  fs.writeFileSync(
+    path.join(tmpDir, 'boards.json'),
+    JSON.stringify({ boards: [{ id: 'ibils', name: 'Ibils', views: ['board'] }] }),
+  )
 
   // 2. Point the store at the temp copy BEFORE importing it.
   process.env.CAIRN_DATA_DIR = tmpDir

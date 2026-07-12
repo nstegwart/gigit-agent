@@ -1,0 +1,12 @@
+{
+  "_note": "Committed board index — the public demo board. Your private boards live in data/boards.local.json (git-ignored) and are merged in at read time.",
+  "boards": [
+    {
+      "id": "demo",
+      "name": "Acme Notes (demo)",
+      "description": "A synthetic showcase board — every Cairn view with fake data.",
+      "createdAt": "2026-07-12",
+      "views": ["board", "agents", "projects", "features", "map", "tasks", "ops", "prod", "guide", "decisions", "log"]
+    }
+  ]
+}

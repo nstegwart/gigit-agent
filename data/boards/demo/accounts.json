@@ -1,0 +1,64 @@
+{
+  "vault": {
+    "generatedAt": "2026-07-12T09:00:00Z",
+    "provider": "grok",
+    "sessionsPerAccount": 10,
+    "minWorkers": 10,
+    "maxWorkers": 40,
+    "accountCount": 4,
+    "usableCount": 2,
+    "limitCount": 2,
+    "capacityNote": "min 10 · max 40 (demo)"
+  },
+  "accounts": [
+    {
+      "id": "demo-1",
+      "label": "demo-1@example.com",
+      "provider": "grok",
+      "status": "USABLE",
+      "usable": true,
+      "slotsInUse": 1,
+      "slotsCapacity": 10,
+      "reason": null,
+      "detail": "slots 1/10"
+    },
+    {
+      "id": "demo-2",
+      "label": "demo-2@example.com",
+      "provider": "grok",
+      "status": "USABLE",
+      "usable": true,
+      "slotsInUse": 0,
+      "slotsCapacity": 10,
+      "reason": null,
+      "detail": "slots 0/10"
+    },
+    {
+      "id": "demo-3",
+      "label": "demo-3@example.com",
+      "provider": "grok",
+      "status": "LIMIT",
+      "usable": false,
+      "slotsInUse": 0,
+      "slotsCapacity": 10,
+      "reason": "rate limit",
+      "detail": "exhausted — cool 6h"
+    },
+    {
+      "id": "demo-4",
+      "label": "demo-4@example.com",
+      "provider": "grok",
+      "status": "LIMIT",
+      "usable": false,
+      "slotsInUse": 0,
+      "slotsCapacity": 10,
+      "reason": "billing",
+      "detail": "billing hold"
+    }
+  ],
+  "alert": {
+    "lowThreshold": 3,
+    "email": "ops@example.com",
+    "enabled": true
+  }
+}

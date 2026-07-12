@@ -1,0 +1,360 @@
+{
+  "updated": "2026-07-12",
+  "fase_label": {
+    "backlog": "Backlog",
+    "spec": "Spec",
+    "design": "Design",
+    "review-owner": "Review",
+    "build": "Build",
+    "qa": "QA",
+    "uat": "UAT",
+    "done": "Done"
+  },
+  "fase_persen": {
+    "backlog": 0,
+    "spec": 15,
+    "design": 35,
+    "review-owner": 45,
+    "build": 65,
+    "qa": 80,
+    "uat": 90,
+    "done": 100
+  },
+  "projects": [
+    {
+      "id": "web",
+      "nama": "Acme Notes — Web",
+      "status": "live",
+      "tracks": [
+        "web"
+      ],
+      "stage": "live",
+      "ringkas": "Cross-platform notes app: fast capture, sync, sharing.",
+      "komponen": [
+        {
+          "nama": "Web app",
+          "jenis": "web",
+          "stack": "React",
+          "status": "live",
+          "ket": "SPA — editor + sync"
+        },
+        {
+          "nama": "API",
+          "jenis": "backend",
+          "stack": "Node",
+          "status": "live",
+          "ket": "REST + realtime sync"
+        }
+      ],
+      "docs": {
+        "arsitektur": "React SPA → Node API → Postgres; realtime via WebSocket.",
+        "baseline": [
+          "Web app live",
+          "API + sync live",
+          "Postgres"
+        ]
+      }
+    },
+    {
+      "id": "mobile",
+      "nama": "Acme Notes — Mobile",
+      "status": "planned",
+      "tracks": [
+        "mobile"
+      ],
+      "stage": "spec",
+      "ringkas": "iOS + Android client reusing the sync engine.",
+      "komponen": [
+        {
+          "nama": "Mobile app",
+          "jenis": "mobile",
+          "stack": "React Native",
+          "status": "planned",
+          "ket": "iOS + Android"
+        }
+      ]
+    }
+  ],
+  "features": [
+    {
+      "id": "realtime-sync",
+      "nama": "Realtime sync engine",
+      "kelompok": "core",
+      "track": "web",
+      "tier": "Free",
+      "fase": "qa",
+      "impact": [
+        "Web",
+        "API"
+      ],
+      "updated": "2026-07-12",
+      "catatan": "CRDT-based merge; offline queue.",
+      "checklist": [
+        {
+          "teks": "CRDT model",
+          "done": true
+        },
+        {
+          "teks": "Offline queue",
+          "done": true
+        },
+        {
+          "teks": "Conflict resolver",
+          "done": true
+        },
+        {
+          "teks": "WebSocket channel",
+          "done": true
+        },
+        {
+          "teks": "Load test 5k clients",
+          "done": false
+        }
+      ],
+      "deps": [],
+      "branch": "feature/realtime-sync"
+    },
+    {
+      "id": "sharing",
+      "nama": "Share notes + permissions",
+      "kelompok": "core",
+      "track": "web",
+      "tier": "Premium",
+      "fase": "build",
+      "impact": [
+        "Web",
+        "API"
+      ],
+      "updated": "2026-07-12",
+      "catatan": "Roles: viewer/editor. Link + email.",
+      "checklist": [
+        {
+          "teks": "Permission model",
+          "done": true
+        },
+        {
+          "teks": "Share link",
+          "done": true
+        },
+        {
+          "teks": "Email invite",
+          "done": false
+        },
+        {
+          "teks": "Revoke access",
+          "done": false
+        }
+      ],
+      "deps": [
+        "realtime-sync"
+      ],
+      "branch": "feature/sharing"
+    },
+    {
+      "id": "search",
+      "nama": "Full-text search",
+      "kelompok": "core",
+      "track": "web",
+      "tier": "Free",
+      "fase": "build",
+      "impact": [
+        "Web",
+        "API"
+      ],
+      "updated": "2026-07-11",
+      "checklist": [
+        {
+          "teks": "Index pipeline",
+          "done": true
+        },
+        {
+          "teks": "Query API",
+          "done": false
+        },
+        {
+          "teks": "Highlight + rank",
+          "done": false
+        }
+      ],
+      "deps": [],
+      "branch": "feature/search"
+    },
+    {
+      "id": "ai-summarize",
+      "nama": "AI: summarize + tag",
+      "kelompok": "ai",
+      "track": "web",
+      "tier": "Premium",
+      "fase": "design",
+      "impact": [
+        "Web",
+        "Eksternal (LLM)"
+      ],
+      "updated": "2026-07-11",
+      "catatan": "Summarize long notes; auto-tag.",
+      "checklist": [
+        {
+          "teks": "Prompt design",
+          "done": true
+        },
+        {
+          "teks": "Provider layer",
+          "done": false
+        },
+        {
+          "teks": "Cost guard",
+          "done": false
+        },
+        {
+          "teks": "UI surface",
+          "done": false
+        }
+      ],
+      "deps": [
+        "search"
+      ],
+      "blocked": "Waiting on decision D2 (which LLM provider)",
+      "branch": "feature/ai-summarize"
+    },
+    {
+      "id": "billing",
+      "nama": "Premium billing",
+      "kelompok": "growth",
+      "track": "web",
+      "tier": "Premium",
+      "fase": "backlog",
+      "impact": [
+        "Web",
+        "Eksternal (Stripe)"
+      ],
+      "updated": "2026-07-10",
+      "checklist": [
+        {
+          "teks": "Stripe checkout",
+          "done": false
+        },
+        {
+          "teks": "Webhook entitlements",
+          "done": false
+        },
+        {
+          "teks": "Trial + dunning",
+          "done": false
+        }
+      ],
+      "deps": [
+        "sharing"
+      ]
+    },
+    {
+      "id": "mobile-mvp",
+      "nama": "Mobile MVP (capture + sync)",
+      "kelompok": "core",
+      "track": "mobile",
+      "tier": "Free",
+      "fase": "spec",
+      "impact": [
+        "Mobile",
+        "API"
+      ],
+      "updated": "2026-07-10",
+      "bucket": "nanti",
+      "checklist": [
+        {
+          "teks": "Screen map",
+          "done": false
+        },
+        {
+          "teks": "Auth",
+          "done": false
+        },
+        {
+          "teks": "Capture",
+          "done": false
+        },
+        {
+          "teks": "Sync bridge",
+          "done": false
+        }
+      ],
+      "deps": [
+        "realtime-sync"
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "teks": "Sync model — CRDT vs OT?",
+      "status": "decided",
+      "keputusan": "CRDT (simpler offline merge).",
+      "tanggal_putus": "2026-07-08"
+    },
+    {
+      "id": "D2",
+      "teks": "Which LLM provider for AI summarize?",
+      "status": "open",
+      "opsi": [
+        {
+          "key": "a",
+          "label": "OpenAI",
+          "rekomendasi": true
+        },
+        {
+          "key": "b",
+          "label": "Anthropic"
+        },
+        {
+          "key": "c",
+          "label": "Local model"
+        }
+      ],
+      "featureId": "ai-summarize",
+      "openedBy": "grok-ai-spike"
+    },
+    {
+      "id": "D3",
+      "teks": "Ship v0?",
+      "status": "open",
+      "opsi": [
+        {
+          "key": "a",
+          "label": "Yes"
+        },
+        {
+          "key": "b",
+          "label": "No"
+        }
+      ],
+      "featureId": "f4-m2-produk",
+      "openedBy": "agent"
+    }
+  ],
+  "log": [
+    {
+      "tanggal": "2026-07-12",
+      "teks": "Sharing feature: permission model + share link done. Search indexing wired."
+    },
+    {
+      "tanggal": "2026-07-11",
+      "teks": "Realtime sync passed 5k-client load test → QA. AI summarize blocked on provider decision (D2)."
+    },
+    {
+      "tanggal": "2026-07-10",
+      "teks": "Billing + mobile MVP scoped into backlog."
+    }
+  ],
+  "queue": {
+    "now": [
+      "sharing",
+      "search",
+      "realtime-sync"
+    ],
+    "next": [
+      "ai-summarize",
+      "billing"
+    ],
+    "catatan": "Ship sharing + search; unblock AI once provider is chosen."
+  },
+  "docs": []
+}

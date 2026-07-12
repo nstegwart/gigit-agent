@@ -1,0 +1,13 @@
+{
+  "comments": {},
+  "activity": [
+    {
+      "ts": "2026-07-12T03:23:44.295Z",
+      "actor": "agent",
+      "actorType": "agent",
+      "kind": "decision",
+      "text": "opened D3: Ship v0?",
+      "featureId": "f4-m2-produk"
+    }
+  ]
+}

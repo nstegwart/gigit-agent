@@ -1,0 +1,32 @@
+{
+  "_note": "Agent playbook + workspace conventions. Generic + editable. Exposed over MCP (resource cairn://playbook + tool get_conventions/get_workspace) so an agent that connects instantly knows the rules.",
+  "brand": "Cairn",
+  "branch": {
+    "feature": "feature/<slug>",
+    "fix": "fix/<slug>",
+    "chore": "chore/<slug>",
+    "note": "One branch per feature. <slug> = short kebab-case of the feature (e.g. feature/ai-whatsapp)."
+  },
+  "worktree": {
+    "path": "worktrees/<repo>--<slug>",
+    "note": "One git worktree per feature; remove it after merge. Marker WORKTREE_OK in a command = standing owner approval."
+  },
+  "commit": "Conventional commits, one per verified unit of work.",
+  "merge": "Live repo: worktree+branch -> merge -> delete worktree. Planned repos: work on develop, merge to main on release.",
+  "usage": [
+    "Read first: list_queue() = what is active now / next; get_feature(id) = the task list + who is on it.",
+    "Claim your work: upsert_run({id, agentType, model, effort, task, feature, status:'running'}) so humans see who is on what, on which model, at what effort.",
+    "Report progress: toggle_task({featureId, index}) ONLY with program-emitted evidence. append_activity for milestones.",
+    "Need a human call or blocked: open_decision({featureId, question, options}) or set_blocked({featureId, reason}). Never fake done.",
+    "Leave a note for the human or another agent: add_comment({featureId, author, text}).",
+    "Finish: set your run status to 'done'."
+  ],
+  "deploy": "Project-specific. Ibils Personal = GitHub Actions self-hosted runner; never manual server rebuild; never deploy from develop.",
+  "status_grades": ["NOT READY", "LOCAL ONLY", "FUNCTIONAL", "DONE", "10/10"],
+  "repos": {
+    "ibils-personal": "ibils-budget-tracker",
+    "ibils-business": "ibils-business",
+    "cs-ai-service": "ibils-customer-service",
+    "qurasi": "qurasi"
+  }
+}

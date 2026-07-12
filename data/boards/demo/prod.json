@@ -1,0 +1,34 @@
+{
+  "mockLabel": "Demo data — not a real release",
+  "headline": "Ship sharing + search to production once QA is green.",
+  "gates": [
+    {
+      "id": "G0",
+      "title": "Scope lock",
+      "meaning": "Sharing + search only this cycle.",
+      "agent": "Respect scope",
+      "doneWhen": "Scope stable"
+    },
+    {
+      "id": "G1",
+      "title": "Feature complete",
+      "meaning": "All checklist items done.",
+      "agent": "Close checklists",
+      "doneWhen": "sharing + search 100%"
+    },
+    {
+      "id": "G2",
+      "title": "QA green",
+      "meaning": "E2E + load pass.",
+      "agent": "Run suites",
+      "doneWhen": "0 failing"
+    },
+    {
+      "id": "G3",
+      "title": "Rollout",
+      "meaning": "Flag → 10% → 100%.",
+      "agent": "Staged rollout",
+      "doneWhen": "100% + stable 24h"
+    }
+  ]
+}

@@ -18,6 +18,7 @@ async function openDecision(request: APIRequestContext): Promise<void> {
       params: {
         name: 'open_decision',
         arguments: {
+          boardId: 'ibils',
           featureId: FEATURE_ID,
           question: QUESTION,
           options: [

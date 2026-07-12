@@ -16,5 +16,12 @@ test-results
 playwright-report
 .playwright
 
-# private board data — not published
-data/
+# board data: publish ONLY the demo board + committed index + conventions.
+# your private boards (boards.local.json + their dirs) stay local.
+data/*
+!data/boards
+!data/boards.json
+!data/conventions.json
+data/boards/*
+!data/boards/demo
+data/boards.local.json

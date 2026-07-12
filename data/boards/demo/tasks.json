@@ -1,0 +1,133 @@
+{
+  "tasks": [
+    {
+      "id": "T-AI-PROVIDER-EVAL",
+      "title": "Evaluate LLM providers for summarize",
+      "projectId": "web",
+      "group": "AI",
+      "phase": "Spike",
+      "scope": "active",
+      "updated": "2026-07-11",
+      "objective": "Pick a provider by cost + quality on a 20-note eval set.",
+      "next": "Owner decides D2.",
+      "dependencies": [],
+      "impacts": [
+        "ai-summarize"
+      ],
+      "mappingPct": 60,
+      "status": "in_progress",
+      "checkpoints": [
+        {
+          "id": "c-set",
+          "label": "Build 20-note eval set",
+          "category": "prep",
+          "done": true
+        },
+        {
+          "id": "c-openai",
+          "label": "Run OpenAI",
+          "category": "eval",
+          "done": true
+        },
+        {
+          "id": "c-anthropic",
+          "label": "Run Anthropic",
+          "category": "eval",
+          "done": false
+        },
+        {
+          "id": "c-cost",
+          "label": "Cost/quality table",
+          "category": "eval",
+          "done": false
+        }
+      ],
+      "story": {
+        "userStory": "As a user I want auto-summaries that are accurate + cheap.",
+        "currentGap": "No provider chosen; cost unknown.",
+        "targetScope": "summarize endpoint + provider layer"
+      },
+      "refs": {
+        "evidence": "evidence/ai-provider-eval/",
+        "api": [
+          "POST /ai/summarize"
+        ],
+        "pages": [
+          "/notes/:id"
+        ]
+      }
+    },
+    {
+      "id": "T-SYNC-CONFLICT",
+      "title": "Conflict resolver hardening",
+      "projectId": "web",
+      "group": "Core",
+      "phase": "QA",
+      "scope": "active",
+      "updated": "2026-07-12",
+      "objective": "Deterministic merge under concurrent edits.",
+      "next": "Fuzz test 1k ops.",
+      "dependencies": [],
+      "impacts": [
+        "realtime-sync"
+      ],
+      "status": "in_progress",
+      "checkpoints": [
+        {
+          "id": "s1",
+          "label": "Merge invariants",
+          "category": "core",
+          "done": true
+        },
+        {
+          "id": "s2",
+          "label": "Fuzz harness",
+          "category": "test",
+          "done": true
+        },
+        {
+          "id": "s3",
+          "label": "1k-op fuzz green",
+          "category": "test",
+          "done": false
+        }
+      ],
+      "story": {},
+      "refs": {}
+    },
+    {
+      "id": "T-SEARCH-RANK",
+      "title": "Search ranking + highlight",
+      "projectId": "web",
+      "group": "Core",
+      "phase": "Build",
+      "scope": "active",
+      "updated": "2026-07-11",
+      "objective": "Rank by relevance + recency; highlight matches.",
+      "next": "Ship behind flag.",
+      "dependencies": [
+        "T-SYNC-CONFLICT"
+      ],
+      "impacts": [
+        "search"
+      ],
+      "status": "in_progress",
+      "checkpoints": [
+        {
+          "id": "r1",
+          "label": "BM25 ranking",
+          "category": "core",
+          "done": true
+        },
+        {
+          "id": "r2",
+          "label": "Highlight spans",
+          "category": "ui",
+          "done": false
+        }
+      ],
+      "story": {},
+      "refs": {}
+    }
+  ]
+}

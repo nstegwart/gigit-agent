@@ -1,0 +1,12 @@
+{
+  "sections": [
+    {
+      "title": "How to use this board",
+      "body": "Board = active queue. Features hold checklists; Tasks hold checkpoints. Agents claim work via upsert_run, report via toggle_task, and open a decision when blocked."
+    },
+    {
+      "title": "Conventions",
+      "body": "One branch per feature (feature/<slug>), one worktree per feature. Evidence before done. Ship behind a flag."
+    }
+  ]
+}

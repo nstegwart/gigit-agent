@@ -1,0 +1,70 @@
+{
+  "runs": [
+    {
+      "id": "run-demo-orchestrator",
+      "agent": "claude-orchestrator",
+      "role": "Orchestrator",
+      "agentType": "claude",
+      "model": "claude-opus-4-8",
+      "effort": "high",
+      "task": "Coordinate the sharing + search push",
+      "feature": null,
+      "taskId": null,
+      "project": "web",
+      "account": null,
+      "status": "running",
+      "started": "2026-07-12T09:00:00Z",
+      "updated": "2026-07-12T09:40:00Z",
+      "note": "Main thread."
+    },
+    {
+      "id": "run-demo-sharing",
+      "agent": "grok-sharing",
+      "role": "Worker",
+      "agentType": "grok",
+      "model": "grok-4.5",
+      "effort": "high",
+      "task": "Share link + email invite",
+      "feature": "sharing",
+      "taskId": null,
+      "project": "web",
+      "account": "demo-1@example.com",
+      "status": "running",
+      "started": "2026-07-12T09:05:00Z",
+      "updated": "2026-07-12T09:38:00Z"
+    },
+    {
+      "id": "run-demo-search",
+      "agent": "codex-search",
+      "role": "Worker",
+      "agentType": "codex",
+      "model": "gpt-5.3-codex-spark",
+      "effort": "xhigh",
+      "task": "Query API + ranking",
+      "feature": "search",
+      "taskId": null,
+      "project": "web",
+      "account": null,
+      "status": "running",
+      "started": "2026-07-12T09:10:00Z",
+      "updated": "2026-07-12T09:35:00Z"
+    },
+    {
+      "id": "run-demo-ai-spike",
+      "agent": "grok-ai-spike",
+      "role": "Worker",
+      "agentType": "grok",
+      "model": "grok-4.5",
+      "effort": "medium",
+      "task": "AI summarize provider spike",
+      "feature": "ai-summarize",
+      "taskId": "T-AI-PROVIDER-EVAL",
+      "project": "web",
+      "account": "demo-2@example.com",
+      "status": "blocked",
+      "started": "2026-07-11T14:00:00Z",
+      "updated": "2026-07-11T15:20:00Z",
+      "note": "Opened D2 — needs owner decision."
+    }
+  ]
+}
