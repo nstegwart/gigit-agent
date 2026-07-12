@@ -23,7 +23,21 @@ export interface TaskCheckpoint {
   category?: string | null
   done: boolean
 }
-/** First-class task (T-… id) — distinct from the feature checklist `Task` above. */
+export interface TaskAnchor {
+  repo?: string
+  file?: string
+  line?: string | number
+  symbol?: string
+  fact?: string
+}
+export interface TaskVariant {
+  id?: string
+  when?: string
+  expect?: string
+}
+
+/** First-class task (T-… id) — distinct from the feature checklist `Task` above.
+ *  Carries the full 20-point rebuild-mapping. Most fields are optional. */
 export interface WorkTask {
   id: string
   title: string
@@ -42,6 +56,57 @@ export interface WorkTask {
   checkpoints: Array<TaskCheckpoint>
   story?: { userStory?: string | null; currentGap?: string | null; targetScope?: string | null }
   refs?: { evidence?: string | null; api?: Array<string>; pages?: Array<string> }
+  // ---- 20-point mapping (optional) ----
+  actor?: string
+  nodeIds?: Array<string>
+  user_story?: string
+  repository?: string
+  unlocked?: boolean
+  forbidden_scope?: Array<string>
+  unlock_conditions?: Array<string>
+  blockers?: Array<string>
+  // legacy + target
+  legacy_contract?: string
+  legacy_anchors?: Array<TaskAnchor>
+  rebuild_anchors?: Array<TaskAnchor>
+  current_gap?: string
+  target_scope?: string
+  target_files_or_discovery_scope?: Array<string>
+  // journey / api / rules
+  page_routes?: Array<string>
+  api_endpoints?: Array<string>
+  inputs_outputs?: Array<string>
+  logic_rules?: Array<string>
+  state_lifecycle?: Array<string>
+  outcome_variants?: Array<string>
+  // data / callers / side effects
+  sales_table_fields?: Array<string>
+  data_migration?: string
+  callers_consumers?: Array<string>
+  blast_radius?: Array<string>
+  compatibility?: Array<string>
+  regression_matrix?: Array<string>
+  side_effects_readback?: Array<string>
+  // provider / geo
+  provider_variants?: Array<TaskVariant>
+  geo_variants?: Array<TaskVariant>
+  // reliability / security / migration
+  compensation_idempotency?: Array<string>
+  security_perf?: Array<string>
+  rollback?: string
+  // acceptance / evidence
+  implementation_steps?: Array<string>
+  acceptance?: Array<string>
+  acceptance_criteria?: Array<string>
+  proof_required?: Array<string>
+  evidence?: Array<string>
+  evidence_path?: string
+  history?: Array<string>
+  mapping_missing?: Array<string>
+  // object-shaped extras (kept as opaque JSON)
+  detail?: Json
+  unit_test_plan?: Json
+  mapping_na?: Json
 }
 export interface TasksFile {
   tasks: Array<WorkTask>

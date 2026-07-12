@@ -10,6 +10,7 @@ import { Icon } from '#/lib/icons'
 import { EmptyState, ProgressBar } from '#/components/primitives'
 import { CheckpointList } from '#/components/CheckpointList'
 import { RunCard } from '#/components/RunCard'
+import { TaskMapping } from '#/components/TaskMapping'
 
 export const Route = createFileRoute('/b/$boardId/tasks/$taskId')({
   loader: async ({ context, params }) => {
@@ -290,6 +291,8 @@ function View() {
           ) : null}
         </div>
       </div>
+
+      <TaskMapping task={t} />
     </>
   )
 }

@@ -208,6 +208,46 @@ export async function clearBlocked(boardId: string, featureId: string, by = 'hum
   return readBoard(boardId)
 }
 
+// ---- system design upload (komponen catalog / architecture / design-system links / pages) ----
+export interface ProjectDesignPatch {
+  arsitektur?: string
+  baseline?: Array<string>
+  komponen?: Array<Record<string, unknown>>
+  foundationUrl?: string
+  componentsUrl?: string
+  pagesUrl?: string
+  pages?: Array<Record<string, unknown>>
+}
+export async function setProjectDesign(boardId: string, projectId: string, patch: ProjectDesignPatch): Promise<RawBoard> {
+  const plan = await readPlan(boardId)
+  const p = plan.projects.find((x) => x.id === projectId) as Record<string, unknown> | undefined
+  if (!p) throw new Error(`project not found: ${projectId}`)
+  if (patch.komponen !== undefined) p.komponen = patch.komponen
+  if (patch.foundationUrl !== undefined) p.design_foundation = patch.foundationUrl
+  if (patch.componentsUrl !== undefined) p.design_components = patch.componentsUrl
+  if (patch.pagesUrl !== undefined) p.design_pages = patch.pagesUrl
+  if (patch.arsitektur !== undefined || patch.baseline !== undefined || patch.pages !== undefined) {
+    const docs = { ...((p.docs as Record<string, unknown>) ?? {}) }
+    if (patch.arsitektur !== undefined) docs.arsitektur = patch.arsitektur
+    if (patch.baseline !== undefined) docs.baseline = patch.baseline
+    if (patch.pages !== undefined) docs.pages = patch.pages
+    p.docs = docs
+  }
+  await writeDoc(boardId, 'plan', plan)
+  return readBoard(boardId)
+}
+/** Append one component to a project's catalog. */
+export async function addComponent(boardId: string, projectId: string, komponen: Record<string, unknown>): Promise<RawBoard> {
+  const plan = await readPlan(boardId)
+  const p = plan.projects.find((x) => x.id === projectId) as Record<string, unknown> | undefined
+  if (!p) throw new Error(`project not found: ${projectId}`)
+  const list = (Array.isArray(p.komponen) ? p.komponen : []) as Array<Record<string, unknown>>
+  list.push(komponen)
+  p.komponen = list
+  await writeDoc(boardId, 'plan', plan)
+  return readBoard(boardId)
+}
+
 // ---- adaptive views: tasks / ops / prod / guide ----
 export function readTasks(boardId: string): Promise<TasksFile> {
   return readDoc<TasksFile>(boardId, 'tasks', { tasks: [] })

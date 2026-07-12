@@ -7,6 +7,7 @@ import { buildModel } from '#/lib/model'
 import type { Feature } from '#/lib/types'
 import {
   addComment,
+  addComponent,
   createBoard,
   defaultBoardId,
   listBoards,
@@ -19,6 +20,7 @@ import {
   readTasks,
   setBlocked,
   setFeaturePhase,
+  setProjectDesign,
   setRunStatus,
   toggleTask,
   upsertRun,
@@ -173,7 +175,67 @@ export function registerBoardTools(server: McpServer): void {
       const p = projectId ? m.projById[projectId] : null
       if (!p) return jsonText({ error: 'pass projectId or featureId' })
       const docs = p.docs as Record<string, unknown> | undefined
-      return jsonText({ project: p.id, komponen: p.komponen ?? [], arsitektur: docs?.arsitektur ?? null, baseline: docs?.baseline ?? null, design: p.design })
+      return jsonText({ project: p.id, komponen: p.komponen ?? [], arsitektur: docs?.arsitektur ?? null, baseline: docs?.baseline ?? null, pages: docs?.pages ?? null, design: p.design, design_foundation: p.design_foundation ?? null, design_components: p.design_components ?? null, design_pages: p.design_pages ?? null })
+    },
+  )
+  server.registerTool(
+    'set_project_design',
+    {
+      title: 'Upload system design',
+      description:
+        "Upload/replace a project's system design: component catalog (komponen), architecture note (arsitektur), baseline bullets, design-system links (foundation/components/pages URLs), and the all-pages catalog (pages). Only the fields you pass are changed.",
+      inputSchema: {
+        ...BOARD_ARG,
+        projectId: z.string(),
+        arsitektur: z.string().optional().describe('Architecture / system-design prose'),
+        baseline: z.array(z.string()).optional().describe('Baseline / foundation bullets'),
+        komponen: z
+          .array(z.object({ nama: z.string(), jenis: z.string().optional(), stack: z.string().optional(), status: z.string().optional(), ket: z.string().optional() }).passthrough())
+          .optional()
+          .describe('Full component catalog (replaces existing)'),
+        foundationUrl: z.string().optional().describe('Design-system foundation page URL'),
+        componentsUrl: z.string().optional().describe('Design-system components page URL'),
+        pagesUrl: z.string().optional().describe('Design-system pages/screens page URL'),
+        pages: z
+          .array(z.object({ nama: z.string(), route: z.string().optional(), status: z.string().optional(), ket: z.string().optional() }).passthrough())
+          .optional()
+          .describe('All-pages catalog (replaces existing)'),
+      },
+    },
+    async ({ boardId, projectId, ...patch }) => {
+      try {
+        const raw = await setProjectDesign(await bid(boardId), projectId, patch)
+        const p = raw.projects.find((x) => x.id === projectId)
+        const docs = p?.docs as Record<string, unknown> | undefined
+        return jsonText({ ok: true, project: projectId, komponen: p?.komponen ?? [], arsitektur: docs?.arsitektur ?? null, baseline: docs?.baseline ?? null, pages: docs?.pages ?? null, design_foundation: p?.design_foundation ?? null, design_components: p?.design_components ?? null, design_pages: p?.design_pages ?? null })
+      } catch (e) {
+        return jsonText({ error: (e as Error).message })
+      }
+    },
+  )
+  server.registerTool(
+    'add_component',
+    {
+      title: 'Add a component',
+      description: "Append one entry to a project's component catalog (komponen).",
+      inputSchema: {
+        ...BOARD_ARG,
+        projectId: z.string(),
+        nama: z.string(),
+        jenis: z.string().optional(),
+        stack: z.string().optional(),
+        status: z.string().optional(),
+        ket: z.string().optional(),
+      },
+    },
+    async ({ boardId, projectId, ...komponen }) => {
+      try {
+        const raw = await addComponent(await bid(boardId), projectId, komponen)
+        const p = raw.projects.find((x) => x.id === projectId)
+        return jsonText({ ok: true, project: projectId, komponen: p?.komponen ?? [] })
+      } catch (e) {
+        return jsonText({ error: (e as Error).message })
+      }
     },
   )
 
