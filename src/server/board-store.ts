@@ -537,3 +537,169 @@ function todayISO(): string {
 function nowISO(): string {
   return new Date().toISOString()
 }
+
+// =============================================================================
+// C2 control-plane state interfaces (injected / persistable; memory for tests).
+// Compatible extension: does not alter board_doc plan/runs shapes or invent DDL.
+// C1 migration tables (control_plane_run_plans, entity_revisions, …) are the
+// persistence contract for later DB wiring.
+// =============================================================================
+
+/** Deterministic clock injection for unit tests and SLA math. */
+export interface ControlPlaneClock {
+  nowMs(): number
+  nowISO(): string
+}
+
+export function createSystemClock(): ControlPlaneClock {
+  return {
+    nowMs: () => Date.now(),
+    nowISO: () => new Date().toISOString(),
+  }
+}
+
+export function createFakeClock(startMs = Date.parse('2026-07-13T10:00:00.000Z')): ControlPlaneClock & {
+  advance(ms: number): void
+  set(ms: number): void
+} {
+  let t = startMs
+  return {
+    nowMs: () => t,
+    nowISO: () => new Date(t).toISOString(),
+    advance(ms: number) {
+      t += ms
+    },
+    set(ms: number) {
+      t = ms
+    },
+  }
+}
+
+export type ControlPlaneAuditKind =
+  | 'PLAN_PUBLISHED'
+  | 'PLAN_SUPERSEDED'
+  | 'RUN_REGISTERED'
+  | 'RUN_FIRST_LIVE'
+  | 'RUN_MATERIAL_PROGRESS'
+  | 'RUN_STALLED'
+  | 'RUN_RECOVERED'
+  | 'RUN_FENCED'
+  | 'RUN_SUPERSEDED'
+  | 'RUN_TERMINAL'
+  | 'LOCK_ACQUIRED'
+  | 'LOCK_RELEASED'
+  | 'LOCK_SUPERSEDED'
+  | 'ACCOUNT_SYNC'
+  | 'ACCOUNT_SYNC_STALE'
+  | 'DECISION_OPENED'
+  | 'DECISION_RESOLVED'
+  | 'DECISION_REJECTED'
+  | 'DECISION_SNOOZED'
+  | 'RECONCILER_DRY_RUN'
+  | 'RECONCILER_APPLY'
+  | 'POLICY_CHANGE'
+
+export interface ControlPlaneAuditEvent {
+  eventId: string
+  boardId: string
+  kind: ControlPlaneAuditKind
+  atMs: number
+  atISO: string
+  actorId: string | null
+  subjectType: string
+  subjectId: string
+  detail: Record<string, unknown>
+  /** Heartbeats must NOT create one of these per tick (AC-OPS-04). */
+  material: true
+}
+
+/**
+ * Shared atomic helpers for C2 records. Implementations may back onto C1 tables
+ * later; memory impl is the unit-test surface.
+ */
+export interface ControlPlaneBoardState {
+  boardId: string
+  boardRev: number
+  /** Blocks new dispatch when account sync is stale (usableCapacity=0). */
+  dispatchBlocked: boolean
+  dispatchBlockedReason: string | null
+}
+
+export interface ControlPlaneAtomicStore {
+  getBoardState(boardId: string): Promise<ControlPlaneBoardState>
+  setBoardState(state: ControlPlaneBoardState): Promise<void>
+  bumpBoardRev(boardId: string): Promise<number>
+  appendAudit(ev: Omit<ControlPlaneAuditEvent, 'eventId'> & { eventId?: string }): Promise<ControlPlaneAuditEvent>
+  listAudit(boardId: string): Promise<Array<ControlPlaneAuditEvent>>
+  withBoardLock<T>(boardId: string, fn: () => Promise<T> | T): Promise<T>
+}
+
+/** In-memory atomic board/audit store for C2 unit tests. */
+export function createMemoryControlPlaneAtomicStore(
+  seed: Array<ControlPlaneBoardState> = [],
+): ControlPlaneAtomicStore & {
+  auditSnapshot(): Array<ControlPlaneAuditEvent>
+} {
+  const boards = new Map<string, ControlPlaneBoardState>()
+  const audit: Array<ControlPlaneAuditEvent> = []
+  const chains = new Map<string, Promise<unknown>>()
+  for (const s of seed) boards.set(s.boardId, { ...s })
+
+  return {
+    auditSnapshot() {
+      return audit.map((e) => ({ ...e, detail: { ...e.detail } }))
+    },
+    async getBoardState(boardId) {
+      return (
+        boards.get(boardId) ?? {
+          boardId,
+          boardRev: 0,
+          dispatchBlocked: false,
+          dispatchBlockedReason: null,
+        }
+      )
+    },
+    async setBoardState(state) {
+      boards.set(state.boardId, { ...state })
+    },
+    async bumpBoardRev(boardId) {
+      const cur = await this.getBoardState(boardId)
+      const next = { ...cur, boardRev: cur.boardRev + 1 }
+      boards.set(boardId, next)
+      return next.boardRev
+    },
+    async appendAudit(ev) {
+      const event: ControlPlaneAuditEvent = {
+        eventId: ev.eventId ?? `aud-${randomUUID()}`,
+        boardId: ev.boardId,
+        kind: ev.kind,
+        atMs: ev.atMs,
+        atISO: ev.atISO,
+        actorId: ev.actorId,
+        subjectType: ev.subjectType,
+        subjectId: ev.subjectId,
+        detail: { ...ev.detail },
+        material: true,
+      }
+      audit.push(event)
+      return event
+    },
+    async listAudit(boardId) {
+      return audit.filter((e) => e.boardId === boardId).map((e) => ({ ...e, detail: { ...e.detail } }))
+    },
+    async withBoardLock(boardId, fn) {
+      const prev = chains.get(boardId) ?? Promise.resolve()
+      let release!: () => void
+      const gate = new Promise<void>((r) => {
+        release = r
+      })
+      chains.set(boardId, prev.then(() => gate))
+      await prev
+      try {
+        return await fn()
+      } finally {
+        release()
+      }
+    },
+  }
+}
