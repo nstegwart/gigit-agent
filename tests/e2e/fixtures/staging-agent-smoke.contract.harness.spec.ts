@@ -122,6 +122,70 @@ test.describe('staging-agent-smoke contract (no server)', () => {
     present.bearer = ''
   })
 
+  test('dual principal: root prefers STAGING_ROOT_BEARER_TOKEN; agent required fail-closed', async () => {
+    const s = await loadSmokeLib()
+    const rootSecret = `root-${'r'.repeat(40)}`
+    const agentSecret = `agent-${'a'.repeat(40)}`
+
+    const preferred = s.resolveRootTokenRef({
+      STAGING_ROOT_BEARER_TOKEN: rootSecret,
+      STAGING_BEARER_TOKEN: 'legacy-fallback',
+    })
+    expect(preferred.ok).toBe(true)
+    expect(preferred.tokenRef).toBe('STAGING_ROOT_BEARER_TOKEN')
+    expect(JSON.stringify(preferred.meta)).not.toContain(rootSecret)
+    preferred.bearer = ''
+
+    const legacy = s.resolveRootTokenRef({ STAGING_BEARER_TOKEN: rootSecret })
+    expect(legacy.ok).toBe(true)
+    expect(legacy.tokenRef).toBe('STAGING_BEARER_TOKEN')
+    legacy.bearer = ''
+
+    const missingAgent = s.resolveDualPrincipalTokens(
+      { STAGING_ROOT_BEARER_TOKEN: rootSecret },
+      { requireAgent: true, requireAgentId: true },
+    )
+    expect(missingAgent.ok).toBe(false)
+    expect(missingAgent.code).toBe('MISSING_AGENT_BEARER')
+
+    const missingId = s.resolveDualPrincipalTokens(
+      {
+        STAGING_ROOT_BEARER_TOKEN: rootSecret,
+        STAGING_AGENT_BEARER_TOKEN: agentSecret,
+      },
+      { requireAgent: true, requireAgentId: true },
+    )
+    expect(missingId.ok).toBe(false)
+    expect(missingId.code).toBe('MISSING_AGENT_ID')
+
+    const dual = s.resolveDualPrincipalTokens(
+      {
+        STAGING_ROOT_BEARER_TOKEN: rootSecret,
+        STAGING_AGENT_BEARER_TOKEN: agentSecret,
+        STAGING_AGENT_ID: 'staging-agent-1',
+      },
+      { requireAgent: true, requireAgentId: true },
+    )
+    expect(dual.ok).toBe(true)
+    expect(dual.root.tokenRef).toBe('STAGING_ROOT_BEARER_TOKEN')
+    expect(dual.agent.tokenRef).toBe('STAGING_AGENT_BEARER_TOKEN')
+    expect(dual.agentId).toBe('staging-agent-1')
+    expect(JSON.stringify(dual.meta)).not.toContain(rootSecret)
+    expect(JSON.stringify(dual.meta)).not.toContain(agentSecret)
+    if (dual.root) dual.root.bearer = ''
+    if (dual.agent) dual.agent.bearer = ''
+
+    // Role tool gates are distinct (root publish/get_next/sync; agent register/heartbeat)
+    expect(s.ROOT_REQUIRED_MCP_TOOLS).toEqual(
+      expect.arrayContaining(['publish_dispatch_plan', 'get_next', 'sync_accounts']),
+    )
+    expect(s.AGENT_REQUIRED_MCP_TOOLS).toEqual(
+      expect.arrayContaining(['register_run', 'heartbeat_run']),
+    )
+    expect(s.ROOT_REQUIRED_MCP_TOOLS).not.toContain('register_run')
+    expect(s.ROOT_REQUIRED_MCP_TOOLS).not.toContain('heartbeat_run')
+  })
+
   test('full self-test suite passes (mock MCP lifecycle)', async () => {
     const s = await loadSmokeLib()
     const result = await s.runStagingAgentSmokeSelfTests()

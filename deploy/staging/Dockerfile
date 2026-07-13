@@ -15,11 +15,14 @@ RUN corepack enable && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 WORKDIR /app
 
 FROM base AS deps
-COPY package.json pnpm-lock.yaml .npmrc ./
+# pnpm-workspace.yaml carries allowBuilds (pnpm 11 project settings). Must be present
+# before install or ERR_PNPM_IGNORED_BUILDS fails on reviewed packages (e.g. unrs-resolver).
+COPY package.json pnpm-lock.yaml .npmrc pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
 # App source + assets required for vite / tanstack start production build.
+# pnpm-workspace.yaml already present from deps (allowBuilds for any reinstall path).
 COPY tsconfig.json vite.config.ts ./
 COPY public ./public
 COPY src ./src
@@ -50,6 +53,7 @@ LABEL cairn.env="staging"
 LABEL cairn.deployed_sha="${CAIRN_DEPLOYED_SHA}"
 
 WORKDIR /app
+# Full tree from build includes package.json, lockfile, pnpm-workspace.yaml, node_modules, dist.
 COPY --from=build /app /app
 
 # Synthetic staging seeder sources only (no dirty data/** board dumps).
