@@ -11,7 +11,9 @@ Isolated **app + MySQL** Docker Compose source for the staging release root.
 | DB container | `cairn-tm-v3-mysql` |
 | App image | `cairn-tm-v3-app:<FULL_SHA>` |
 | Data mode | **synthetic fixtures only** |
-| Health | `GET /api/healthz` (auth required; unauth → **401** means process is up) |
+| Health (liveness) | Unauth `GET /api/healthz` → **401** (or 503 while deps/schema fail) proves listen; Docker health accepts 401\|200\|503 |
+| Release PASS | Authenticated `GET /api/healthz` → **200** with `deployedSha` / `schemaVersion` / migration history / required tables. **503 and container-healthy are NOT release PASS.** |
+| Schema pins | `CAIRN_SCHEMA_VERSION` + `CAIRN_MIGRATION_LATEST` **required** in `.env` (compose fails closed; no silent 003 default). Current latest: **006** |
 | TLS | none (private loopback only) |
 
 This package is **staging-only**. It does not define or reference a production deploy path.
@@ -154,14 +156,18 @@ Re-running deploy rebuilds/recreates as needed; it is safe to repeat.
 # or:
 $COMPOSE ps
 curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:33211/api/healthz
-# expect: 401 while stack is healthy but unauthenticated
+# LIVENESS only: expect 401 while stack is up but unauthenticated
+# 503 = process listening but release readiness failed — NOT PASS
+# Docker compose "healthy" also means liveness only (accepts 401|200|503)
 ```
 
-Authenticated health (after synthetic token is set):
+Authenticated health = **only** release acceptance (after synthetic token is set):
 
 ```bash
 curl -sS -H "Authorization: Bearer $STAGING_TOKEN" http://127.0.0.1:33211/api/healthz
-# Gate: schemaVersion/status, deployedSha == RELEASE_SHA, mysql dependency up
+# RELEASE PASS gate: HTTP 200 + schemaVersion/status match pins (006),
+# deployedSha == RELEASE_SHA, migration history/required tables (incl. stage-evidence), mysql up
+# HTTP 503 here = FAIL (never treat container-healthy or unauth 503 as release PASS)
 ```
 
 ### Stop (keep MySQL volume)

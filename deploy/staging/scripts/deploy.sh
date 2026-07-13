@@ -21,4 +21,6 @@ compose up -d --remove-orphans
 echo "==> status"
 compose ps
 echo "DEPLOY_OK release_sha=${RELEASE_SHA} bind=127.0.0.1:33211->3210 db=cairn_tm_v3_staging container=cairn-tm-v3-mysql"
-echo "Next: wait for healthy, then GET http://127.0.0.1:33211/api/healthz (auth required; unauth expect 401)."
+echo "NOTE: compose 'healthy' is LIVENESS only (unauth healthz 401|200|503). 503 is NOT release PASS."
+echo "RELEASE acceptance: authenticated GET /api/healthz → HTTP 200 with deployedSha/schemaVersion/migration history + required tables."
+echo "Next: wait for container healthy (listen), then auth probe http://127.0.0.1:33211/api/healthz (unauth expect 401)."

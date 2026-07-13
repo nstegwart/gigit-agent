@@ -7,7 +7,10 @@
 #   database      : cairn_tm_v3_staging
 #   db container  : cairn-tm-v3-mysql
 #   data mode     : synthetic fixtures only
-#   health        : GET /api/healthz (authenticated; unauth → 401 proves listen)
+#   health        : container liveness = unauth /api/healthz 401|200|503 (listen)
+#                   RELEASE PASS ≠ container healthy: requires authenticated
+#                   GET /api/healthz → 200 with SHA/schema/history/table proof.
+#                   503 means process is up but release readiness FAILED — never PASS.
 #
 # Secrets: untracked env file next to this compose file (copy env.staging.example → .env).
 # Do not commit .env. Do not point this stack at non-staging databases.
@@ -81,10 +84,15 @@ services:
       CAIRN_ALLOW_REMOTE_DB: "1"
       CAIRN_DEPLOYED_SHA: ${RELEASE_SHA}
       CAIRN_EXPECTED_SHA: ${RELEASE_SHA}
-      CAIRN_SCHEMA_VERSION: ${CAIRN_SCHEMA_VERSION:-003}
-      CAIRN_MIGRATION_LATEST: ${CAIRN_MIGRATION_LATEST:-003}
+      # Fail-closed schema pins — no silent :-003 (or any stale default). schema006 deploy
+      # must set both in deploy/staging/.env (see env.staging.example current latest 006).
+      CAIRN_SCHEMA_VERSION: ${CAIRN_SCHEMA_VERSION:?set CAIRN_SCHEMA_VERSION in deploy/staging/.env (current latest 006)}
+      CAIRN_MIGRATION_LATEST: ${CAIRN_MIGRATION_LATEST:?set CAIRN_MIGRATION_LATEST in deploy/staging/.env (current latest 006)}
     networks:
       - cairn-tm-v3-net
+    # LIVENESS only (Docker health). Accepts 401 (auth required), 200 (ready), 503
+    # (process up but schema/SHA/deps unhealthy). 503 MUST NOT be treated as release PASS —
+    # deploy acceptance is authenticated GET /api/healthz → 200 + SHA/schema/history/table.
     healthcheck:
       test:
         [

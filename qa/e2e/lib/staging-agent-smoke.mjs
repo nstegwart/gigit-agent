@@ -281,13 +281,13 @@ export function resolveExpectedSha(env = process.env, opts = {}) {
 }
 
 export function resolveExpectedSchema(env = process.env) {
-  // Explicit env wins. Default is latest migration schema (005).
+  // Explicit env wins. Default is latest migration schema (006).
   // Do not fall back to MANIFEST.schemaVersionExpected when it lags behind
-  // the registered manifest (allow-list consumer alignment after 004/005).
+  // the registered manifest (allow-list consumer alignment after 004/005/006).
   return (
     env.SCHEMA_VERSION?.trim() ||
     env.CAIRN_SCHEMA_VERSION?.trim() ||
-    '005'
+    '006'
   )
 }
 
@@ -1289,13 +1289,13 @@ export function createStagingSmokeMockFetch(opts = {}) {
         status: 'ok',
         service: 'cairn-task-manager',
         deployedSha: expectedSha,
-        schema: { version: '005', match: true },
+        schema: { version: '006', match: true },
         release: { sha: expectedSha, match: true },
         migration: {
           status: 'READY',
-          appliedVersions: ['000', '001', '002', '003', '004', '005'],
-          expectedLatestVersion: '005',
-          schemaVersion: '005',
+          appliedVersions: ['000', '001', '002', '003', '004', '005', '006'],
+          expectedLatestVersion: '006',
+          schemaVersion: '006',
         },
         canonicalSnapshotId: pin.canonicalSnapshotId,
         boardRev: pin.boardRev,
@@ -1600,7 +1600,7 @@ export async function runStagingAgentSmokeSelfTests() {
       tokenRef: 'SYNTH_ROOT_SELF_TEST',
       principalMeta: root.principalMeta,
       expectedSha,
-      expectedSchema: '005',
+      expectedSchema: '006',
       fetchImpl,
       runtimePin: {
         ok: true,
@@ -1651,7 +1651,7 @@ export async function runStagingAgentSmokeSelfTests() {
         ids,
         bearer: root.bearer,
         expectedSha,
-        expectedSchema: '005',
+        expectedSchema: '006',
         fetchImpl: f2,
         runtimePin: {
           ok: true,
@@ -1692,7 +1692,7 @@ export async function runStagingAgentSmokeSelfTests() {
         ids,
         bearer: root.bearer,
         expectedSha: 'd'.repeat(40),
-        expectedSchema: '005',
+        expectedSchema: '006',
         fetchImpl: f3,
         skipPinCheck: true,
         failClosed: true,
@@ -1839,7 +1839,7 @@ export async function runStagingAgentSmokeSelfTests() {
         rootTokenRef: 'SYNTH_ROOT_SELF_TEST',
         agentTokenRef: 'SYNTH_AGENT_SELF_TEST',
         expectedSha,
-        expectedSchema: '005',
+        expectedSchema: '006',
         fetchImpl: dualFetch,
         runtimePin: {
           ok: true,
@@ -1994,7 +1994,7 @@ export async function runStagingAgentSmokeSelfTests() {
         bearer: root.bearer,
         tokenRef: 'SYNTH_ROOT_SELF_TEST',
         expectedSha,
-        expectedSchema: '005',
+        expectedSchema: '006',
         fetchImpl: fStaleOk,
         runtimePin: {
           ok: true,
@@ -2067,7 +2067,7 @@ export async function runStagingAgentSmokeSelfTests() {
         ids: idsStale2,
         bearer: root.bearer,
         expectedSha,
-        expectedSchema: '005',
+        expectedSchema: '006',
         fetchImpl: fStale2,
         runtimePin: {
           ok: true,
@@ -2119,7 +2119,7 @@ export async function runStagingAgentSmokeSelfTests() {
         ids: idsChain,
         bearer: root.bearer,
         expectedSha,
-        expectedSchema: '005',
+        expectedSchema: '006',
         fetchImpl: fChain,
         runtimePin: {
           ok: true,

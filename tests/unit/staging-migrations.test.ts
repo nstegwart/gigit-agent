@@ -144,13 +144,13 @@ describe('mysql migration config + authority', () => {
     await exec.close()
   })
 
-  it('manifestLatestVersion is 005', () => {
-    expect(manifestLatestVersion()).toBe('005')
+  it('manifestLatestVersion is 006', () => {
+    expect(manifestLatestVersion()).toBe('006')
   })
 
-  it('manifest includes 004 and 005 after 003 with REVERSIBLE classification', () => {
+  it('manifest includes 004/005/006 after 003 with REVERSIBLE classification', () => {
     const loaded = loadMigrationManifest(cwd)
-    expect(loaded.map((m) => m.version)).toEqual(['000', '001', '002', '003', '004', '005'])
+    expect(loaded.map((m) => m.version)).toEqual(['000', '001', '002', '003', '004', '005', '006'])
     expect(loaded.map((m) => m.filename)).toEqual([
       '000_baseline_core.sql',
       '001_control_plane_expand.sql',
@@ -158,15 +158,22 @@ describe('mysql migration config + authority', () => {
       '003_control_plane_backfill.sql',
       '004_control_data_persistence.sql',
       '005_control_plane_runtime_persistence.sql',
+      '006_stage_evidence_receipts.sql',
     ])
     const m004 = loaded.find((m) => m.version === '004')!
     const m005 = loaded.find((m) => m.version === '005')!
+    const m006 = loaded.find((m) => m.version === '006')!
     expect(m004.classification).toBe('REVERSIBLE')
     expect(m005.classification).toBe('REVERSIBLE')
+    expect(m006.classification).toBe('REVERSIBLE')
     expect(m004.sha256).toMatch(/^[a-f0-9]{64}$/)
     expect(m005.sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(m006.sha256).toMatch(/^[a-f0-9]{64}$/)
     expect(m004.statements.length).toBeGreaterThan(0)
     expect(m005.statements.length).toBeGreaterThan(0)
+    expect(m006.statements.length).toBeGreaterThan(0)
+    // 006 registered exactly once
+    expect(loaded.filter((m) => m.version === '006')).toHaveLength(1)
   })
 })
 
@@ -224,7 +231,7 @@ describe('migrate CLI parse + mapping loader', () => {
     })
     expect(result.exitCode).toBe(0)
     expect(result.plan?.status).toBe('READY')
-    expect(result.plan?.orderedVersions).toEqual(['000', '001', '002', '003', '004', '005'])
+    expect(result.plan?.orderedVersions).toEqual(['000', '001', '002', '003', '004', '005', '006'])
     expect(result.plan?.items.map((i) => i.version)).toEqual([
       '000',
       '001',
@@ -232,18 +239,21 @@ describe('migrate CLI parse + mapping loader', () => {
       '003',
       '004',
       '005',
+      '006',
     ])
     expect(result.plan?.items.every((i) => i.action === 'APPLY')).toBe(true)
+    expect(result.plan?.items.filter((i) => i.version === '006')).toHaveLength(1)
   })
 
-  it('help text documents plan range 000..005', async () => {
+  it('help text documents plan range 000..006', async () => {
     const result = await runMigrateCli(['--help'], {
       log: () => {},
       logErr: () => {},
     })
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toMatch(/Plan migrations 000\.\.005/)
+    expect(result.stdout).toMatch(/Plan migrations 000\.\.006/)
     expect(result.stdout).not.toMatch(/Plan migrations 001\.\.003/)
+    expect(result.stdout).not.toMatch(/Plan migrations 000\.\.005[^.0-9]/)
   })
 })
 
@@ -289,7 +299,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
     })
     expect(schema.status).toBe('UNKNOWN')
     expect(schema.schemaVersion).toBe('')
-    expect(schema.expectedLatestVersion).toBe('005')
+    expect(schema.expectedLatestVersion).toBe('006')
     expect(schema.appliedVersions).toEqual([])
   })
 
@@ -316,11 +326,11 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       },
     })
     expect(schema.status).toBe('IDEMPOTENT_NOOP')
-    expect(schema.schemaVersion).toBe('005')
-    expect(schema.appliedVersions).toEqual(['000', '001', '002', '003', '004', '005'])
+    expect(schema.schemaVersion).toBe('006')
+    expect(schema.appliedVersions).toEqual(['000', '001', '002', '003', '004', '005', '006'])
   })
 
-  it('plan/apply/idempotency for 004+005 without real DB (memory executor)', async () => {
+  it('plan/apply/idempotency for 004+005+006 without real DB (memory executor)', async () => {
     const loaded = loadMigrationManifest(cwd)
     const through003 = loaded
       .filter((m) => m.version <= '003')
@@ -339,7 +349,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       mode: 'plan',
     })
     expect(planPending.status).toBe('READY')
-    expect(planPending.orderedVersions).toEqual(['000', '001', '002', '003', '004', '005'])
+    expect(planPending.orderedVersions).toEqual(['000', '001', '002', '003', '004', '005', '006'])
     const byVersion = Object.fromEntries(planPending.items.map((i) => [i.version, i.action]))
     expect(byVersion['000']).toBe('SKIP_ALREADY_APPLIED')
     expect(byVersion['001']).toBe('SKIP_ALREADY_APPLIED')
@@ -347,6 +357,8 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
     expect(byVersion['003']).toBe('SKIP_ALREADY_APPLIED')
     expect(byVersion['004']).toBe('APPLY')
     expect(byVersion['005']).toBe('APPLY')
+    expect(byVersion['006']).toBe('APPLY')
+    expect(planPending.items.filter((i) => i.version === '006')).toHaveLength(1)
 
     const exec = createMemoryMigrationExecutor(through003)
     const first = await applyMigrations({
@@ -357,7 +369,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       lifecycleMapping: SAFE_MAPPING,
     })
     expect(first.ok).toBe(true)
-    expect(first.applied).toEqual(['004', '005'])
+    expect(first.applied).toEqual(['004', '005', '006'])
     expect(first.skipped).toEqual(['000', '001', '002', '003'])
     expect(exec.history.map((h) => h.version)).toEqual([
       '000',
@@ -366,8 +378,9 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       '003',
       '004',
       '005',
+      '006',
     ])
-    for (const v of ['004', '005'] as const) {
+    for (const v of ['004', '005', '006'] as const) {
       const hist = exec.history.find((h) => h.version === v)!
       const man = loaded.find((m) => m.version === v)!
       expect(hist.sha256).toBe(man.sha256)
@@ -375,6 +388,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       expect(hist.filename).toBe(man.filename)
     }
     expect(exec.statements.length).toBeGreaterThan(0)
+    expect(exec.statements.some((s) => /control_plane_stage_evidence_receipts/i.test(s))).toBe(true)
 
     const second = await applyMigrations({
       host: '127.0.0.1',
@@ -385,7 +399,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
     })
     expect(second.ok).toBe(true)
     expect(second.applied).toEqual([])
-    expect(second.skipped).toEqual(['000', '001', '002', '003', '004', '005'])
+    expect(second.skipped).toEqual(['000', '001', '002', '003', '004', '005', '006'])
     expect(second.plan.status).toBe('IDEMPOTENT_NOOP')
   })
 
@@ -410,7 +424,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
 // Disposable local MySQL integration (skip when unreachable)
 // ---------------------------------------------------------------------------
 
-const EXPECTED_VERSIONS = ['000', '001', '002', '003', '004', '005'] as const
+const EXPECTED_VERSIONS = ['000', '001', '002', '003', '004', '005', '006'] as const
 
 type ItCtx = {
   /** Pre-existing BASE_DDL path (legacy tables present, empty schema_migrations). */
@@ -580,7 +594,7 @@ describe('disposable local MySQL migration integration', () => {
         expect(h.sha256).toBe(m.sha256)
       }
 
-      // Prove core + expand tables exist after greenfield apply
+      // Prove core + expand + stage-evidence (006) tables exist after greenfield apply
       // createMysqlMigrationExecutor.query returns rows only (not [rows, fields])
       const tables = (await exec.query(
         `SELECT TABLE_NAME AS t FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY t`,
@@ -588,8 +602,31 @@ describe('disposable local MySQL migration integration', () => {
       )) as Array<{ t: string }>
       const names = tables.map((r) => r.t)
       expect(names).toEqual(
-        expect.arrayContaining(['boards', 'tasks', 'board_docs', 'audit_log', 'schema_migrations']),
+        expect.arrayContaining([
+          'boards',
+          'tasks',
+          'board_docs',
+          'audit_log',
+          'schema_migrations',
+          'control_plane_stage_evidence_receipts',
+        ]),
       )
+
+      // 006 history row checksum matches manifest
+      const h006 = history.find((h) => h.version === '006')!
+      const m006 = loaded.find((x) => x.version === '006')!
+      expect(h006).toBeDefined()
+      expect(h006.sha256).toBe(m006.sha256)
+      expect(h006.filename).toBe('006_stage_evidence_receipts.sql')
+      expect(h006.classification).toBe('REVERSIBLE')
+
+      // Physical table probe (information_schema count) — history alone is insufficient
+      const stageEv = (await exec.query(
+        `SELECT COUNT(*) AS c FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'control_plane_stage_evidence_receipts'`,
+        [itCtx.greenfieldDatabase],
+      )) as Array<{ c: number }>
+      expect(Number(stageEv[0]!.c)).toBe(1)
 
       const second = await applyMigrations({
         host: itCtx.host,
@@ -602,6 +639,14 @@ describe('disposable local MySQL migration integration', () => {
       expect(second.applied).toEqual([])
       expect(second.skipped).toEqual([...EXPECTED_VERSIONS])
       expect(second.plan.status).toBe('IDEMPOTENT_NOOP')
+
+      // Re-apply no-op must not drop physical stage-evidence table
+      const stageEvAfter = (await exec.query(
+        `SELECT COUNT(*) AS c FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'control_plane_stage_evidence_receipts'`,
+        [itCtx.greenfieldDatabase],
+      )) as Array<{ c: number }>
+      expect(Number(stageEvAfter[0]!.c)).toBe(1)
     } finally {
       await exec.close()
     }
@@ -675,10 +720,22 @@ describe('disposable local MySQL migration integration', () => {
         cwd,
         executor: exec,
       })
-      expect(schema.schemaVersion).toBe('005')
+      expect(schema.schemaVersion).toBe('006')
       expect(schema.status).toBe('IDEMPOTENT_NOOP')
       expect(schema.appliedVersions).toEqual([...EXPECTED_VERSIONS])
-      expect(schema.expectedLatestVersion).toBe('005')
+      expect(schema.expectedLatestVersion).toBe('006')
+
+      // Physical control_plane_stage_evidence_receipts after 006 (history alone insufficient)
+      const stageEv = (await exec.query(
+        `SELECT COUNT(*) AS c FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'control_plane_stage_evidence_receipts'`,
+        [itCtx.baseDdlDatabase],
+      )) as Array<{ c: number }>
+      expect(Number(stageEv[0]!.c)).toBe(1)
+      const h006 = history.find((h) => h.version === '006')!
+      const m006 = loaded.find((x) => x.version === '006')!
+      expect(h006.sha256).toBe(m006.sha256)
+      expect(h006.filename).toBe('006_stage_evidence_receipts.sql')
 
       const second = await applyMigrations({
         host: itCtx.host,
@@ -691,6 +748,13 @@ describe('disposable local MySQL migration integration', () => {
       expect(second.applied).toEqual([])
       expect(second.skipped).toEqual([...EXPECTED_VERSIONS])
       expect(second.plan.status).toBe('IDEMPOTENT_NOOP')
+      // No-op re-apply keeps physical stage-evidence table
+      const stageEvNoop = (await exec.query(
+        `SELECT COUNT(*) AS c FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'control_plane_stage_evidence_receipts'`,
+        [itCtx.baseDdlDatabase],
+      )) as Array<{ c: number }>
+      expect(Number(stageEvNoop[0]!.c)).toBe(1)
 
       // Fail-closed checksum mismatch
       await exec.query(
@@ -777,6 +841,14 @@ describe('disposable local MySQL migration integration', () => {
       const history = exec.listApplied ? await exec.listApplied() : []
       expect(history.map((h) => h.version)).toEqual([...EXPECTED_VERSIONS])
 
+      // 006 physical stage-evidence table on partial recovery path
+      const stageEv = (await exec.query(
+        `SELECT COUNT(*) AS c FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'control_plane_stage_evidence_receipts'`,
+        [itCtx.partialDatabase],
+      )) as Array<{ c: number }>
+      expect(Number(stageEv[0]!.c)).toBe(1)
+
       const second = await applyMigrations({
         host: itCtx.host,
         hostClass: 'LOCAL',
@@ -792,6 +864,120 @@ describe('disposable local MySQL migration integration', () => {
     }
   }, 60_000)
 
+  it('006 history corresponds to physical stage-evidence table + checksum + rerun no-op', async () => {
+    if (!itCtx.available) {
+      console.warn(
+        'SKIP disposable MySQL integration (006 physical table): local MySQL not reachable — not claiming table proof',
+      )
+      return
+    }
+
+    // Dedicated path: empty DB → full apply → assert 006 ↔ physical table binding
+    const dbName = `cairn_migrate_006phys_${process.pid}_${Date.now()}`
+    const admin = await openAdminConn()
+    try {
+      await admin.query(
+        `CREATE DATABASE \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      )
+    } finally {
+      await admin.end()
+    }
+
+    const exec = createMysqlMigrationExecutor({
+      host: itCtx.host,
+      database: dbName,
+      appliedBy: 'staging-migrations-006-physical',
+    })
+    try {
+      await exec.ping()
+      const first = await applyMigrations({
+        host: itCtx.host,
+        hostClass: 'LOCAL',
+        cwd,
+        executor: exec,
+        lifecycleMapping: SAFE_MAPPING,
+      })
+      expect(first.ok).toBe(true)
+      expect(first.applied).toEqual([...EXPECTED_VERSIONS])
+      expect(first.applied).toContain('006')
+
+      const history = exec.listApplied ? await exec.listApplied() : []
+      expect(history.map((h) => h.version)).toEqual([...EXPECTED_VERSIONS])
+      const loaded = loadMigrationManifest(cwd)
+      const h006 = history.find((h) => h.version === '006')!
+      const m006 = loaded.find((m) => m.version === '006')!
+      expect(h006.sha256).toBe(m006.sha256)
+      expect(h006.filename).toBe(m006.filename)
+      expect(h006.classification).toBe('REVERSIBLE')
+
+      // Physical table must exist — this is the gap closed by this repair
+      const phys = (await exec.query(
+        `SELECT TABLE_NAME AS t, TABLE_TYPE AS ty FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'control_plane_stage_evidence_receipts'`,
+        [dbName],
+      )) as Array<{ t: string; ty: string }>
+      expect(phys).toHaveLength(1)
+      expect(phys[0]!.t).toBe('control_plane_stage_evidence_receipts')
+
+      // Column shape smoke (primary key columns from 006 SQL)
+      const cols = (await exec.query(
+        `SELECT COLUMN_NAME AS c FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'control_plane_stage_evidence_receipts'
+         ORDER BY ORDINAL_POSITION`,
+        [dbName],
+      )) as Array<{ c: string }>
+      const colNames = cols.map((r) => r.c)
+      expect(colNames).toEqual(
+        expect.arrayContaining([
+          'board_id',
+          'receipt_id',
+          'task_id',
+          'to_stage',
+          'receipt_hash',
+          'emitting_run_id',
+        ]),
+      )
+
+      // Rerun no-op
+      const second = await applyMigrations({
+        host: itCtx.host,
+        hostClass: 'LOCAL',
+        cwd,
+        executor: exec,
+        lifecycleMapping: SAFE_MAPPING,
+      })
+      expect(second.ok).toBe(true)
+      expect(second.applied).toEqual([])
+      expect(second.skipped).toEqual([...EXPECTED_VERSIONS])
+      expect(second.plan.status).toBe('IDEMPOTENT_NOOP')
+
+      const physAfter = (await exec.query(
+        `SELECT COUNT(*) AS c FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'control_plane_stage_evidence_receipts'`,
+        [dbName],
+      )) as Array<{ c: number }>
+      expect(Number(physAfter[0]!.c)).toBe(1)
+
+      const schema = await readMigrationSchemaState({
+        host: itCtx.host,
+        hostClass: 'LOCAL',
+        cwd,
+        executor: exec,
+      })
+      expect(schema.schemaVersion).toBe('006')
+      expect(schema.status).toBe('IDEMPOTENT_NOOP')
+      expect(schema.appliedVersions).toContain('006')
+    } finally {
+      await exec.close()
+      const cleanup = await openAdminConn()
+      try {
+        await cleanup.query(`DROP DATABASE IF EXISTS \`${dbName}\``)
+      } finally {
+        await cleanup.end()
+      }
+    }
+  }, 60_000)
+
   it('CLI status against disposable BASE_DDL DB reports schema readback', async () => {
     if (!itCtx.available) return
     // CHECKSUM_MISMATCH exit 2 after tamper in BASE_DDL test is still valid CLI behavior
@@ -801,7 +987,7 @@ describe('disposable local MySQL migration integration', () => {
     )
     expect([0, 2]).toContain(result.exitCode)
     expect(result.schema).toBeDefined()
-    expect(result.schema!.expectedLatestVersion).toBe('005')
+    expect(result.schema!.expectedLatestVersion).toBe('006')
     if (result.schema!.status !== 'CHECKSUM_MISMATCH') {
       expect(result.schema!.appliedVersions.length).toBeGreaterThan(0)
     }

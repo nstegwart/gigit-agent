@@ -682,7 +682,7 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
     expect(evaled.unhealthyReasons).toEqual([])
   })
 
-  it('requiredTablesForAppliedVersions covers 004/005 probes only', () => {
+  it('requiredTablesForAppliedVersions covers 004/005/006 probes', () => {
     expect(requiredTablesForAppliedVersions(['000', '001', '002', '003'])).toEqual([])
     expect(requiredTablesForAppliedVersions(['000', '001', '002', '003', '004'])).toEqual([
       ...REQUIRED_TABLES_BY_MIGRATION['004'],
@@ -691,6 +691,152 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
       ...REQUIRED_TABLES_BY_MIGRATION['004'],
       ...REQUIRED_TABLES_BY_MIGRATION['005'],
     ])
+    expect(
+      requiredTablesForAppliedVersions(['000', '001', '002', '003', '004', '005', '006']),
+    ).toEqual([
+      ...REQUIRED_TABLES_BY_MIGRATION['004'],
+      ...REQUIRED_TABLES_BY_MIGRATION['005'],
+      ...REQUIRED_TABLES_BY_MIGRATION['006'],
+    ])
+    expect(REQUIRED_TABLES_BY_MIGRATION['006']).toEqual([
+      'control_plane_stage_evidence_receipts',
+    ])
+  })
+
+  // Current-latest schema 006: fail-closed when history claims 006 but stage-evidence table absent;
+  // healthy only when required tables (incl. control_plane_stage_evidence_receipts) are up.
+  const expected006: HealthExpected = {
+    deployedSha: 'd01d6d0aba17cc0aec23f3e4f8ad26229eac249f',
+    schemaVersion: '006',
+  }
+  const healthy006: HealthObserved = {
+    deployedSha: 'd01d6d0aba17cc0aec23f3e4f8ad26229eac249f',
+    schemaVersion: '006',
+    migration: {
+      status: 'READY',
+      appliedVersions: ['000', '001', '002', '003', '004', '005', '006'],
+      expectedLatestVersion: '006',
+      schemaVersion: '006',
+    },
+    snapshot: {
+      canonicalSnapshotId: 'snap-1',
+      boardRev: 10,
+      lifecycleRev: 5,
+    },
+    dependencies: [
+      { name: 'mysql', status: 'up' },
+      { name: 'mcp', status: 'up' },
+      { name: 'schema-required-tables', status: 'up' },
+    ],
+    serviceName: 'cairn-task-manager',
+  }
+
+  it('history 006 but control_plane_stage_evidence_receipts missing => unhealthy (fail-closed)', () => {
+    // loadObserved clears schemaVersion when required 006 table is missing.
+    const missing006Table: HealthObserved = {
+      ...healthy006,
+      schemaVersion: '',
+      migration: {
+        status: 'PENDING',
+        appliedVersions: ['000', '001', '002', '003', '004', '005', '006'],
+        expectedLatestVersion: '006',
+        schemaVersion: '',
+      },
+      dependencies: [
+        { name: 'mysql', status: 'up' },
+        { name: 'mcp', status: 'up' },
+        {
+          name: 'schema-required-tables',
+          status: 'down',
+          detail: 'missing:control_plane_stage_evidence_receipts',
+        },
+      ],
+    }
+    const evaled = evaluateHealthStatus(expected006, missing006Table)
+    expect(evaled.status).toBe('unhealthy')
+    expect(evaled.schemaMatch).toBe(false)
+    expect(evaled.unhealthyReasons).toContain('SCHEMA_VERSION_MISMATCH')
+    expect(evaled.unhealthyReasons).toContain('DEPENDENCY_DOWN:schema-required-tables')
+  })
+
+  it('all required (006 history + stage-evidence table up) => healthy', () => {
+    const evaled = evaluateHealthStatus(expected006, healthy006)
+    expect(evaled.status).toBe('ok')
+    expect(evaled.schemaMatch).toBe(true)
+    expect(evaled.releaseMatch).toBe(true)
+    expect(evaled.unhealthyReasons).toEqual([])
+  })
+
+  it('injected history 006 + stage-evidence table missing → 503 unhealthy', async () => {
+    const prev = getHealthzDeps()
+    try {
+      setHealthzDeps({
+        authGuard: allowAllHealthGuard(),
+        loadExpected: () => expected006,
+        loadObserved: () => ({
+          ...healthy006,
+          schemaVersion: '',
+          migration: {
+            status: 'PENDING',
+            appliedVersions: ['000', '001', '002', '003', '004', '005', '006'],
+            expectedLatestVersion: '006',
+            schemaVersion: '',
+          },
+          dependencies: [
+            { name: 'mysql', status: 'up' },
+            {
+              name: 'schema-required-tables',
+              status: 'down',
+              detail: 'missing:control_plane_stage_evidence_receipts',
+            },
+          ],
+        }),
+      })
+      const res = await healthzGetHandler(new Request('http://local/api/healthz'))
+      expect(res.status).toBe(503)
+      const body = await res.json()
+      expect(body.status).toBe('unhealthy')
+      expect(body.unhealthyReasons).toContain('SCHEMA_VERSION_MISMATCH')
+      expect(body.unhealthyReasons).toContain('DEPENDENCY_DOWN:schema-required-tables')
+      // Public payload maps deps to name+status only (detail is operator-side on observed).
+      expect(
+        body.dependencies?.some(
+          (d: { name: string; status: string }) =>
+            d.name === 'schema-required-tables' && d.status === 'down',
+        ),
+      ).toBe(true)
+    } finally {
+      setHealthzDeps(prev)
+    }
+  })
+
+  it('injected all-required healthy 006 path → 200 ok', async () => {
+    const prev = getHealthzDeps()
+    try {
+      setHealthzDeps({
+        authGuard: allowAllHealthGuard(),
+        loadExpected: () => expected006,
+        loadObserved: () => healthy006,
+      })
+      const res = await healthzGetHandler(new Request('http://local/api/healthz'))
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.status).toBe('ok')
+      expect(body.schema.version).toBe('006')
+      expect(body.schema.match).toBe(true)
+      expect(body.migration.appliedVersions).toEqual([
+        '000',
+        '001',
+        '002',
+        '003',
+        '004',
+        '005',
+        '006',
+      ])
+      expect(body.migration.expectedLatestVersion).toBe('006')
+    } finally {
+      setHealthzDeps(prev)
+    }
   })
 
   it('unhealthy 503 on release SHA mismatch', async () => {

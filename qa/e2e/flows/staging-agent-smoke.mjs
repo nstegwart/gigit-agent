@@ -13,7 +13,7 @@
  *   STAGING_BEARER_TOKEN_REF    env NAME holding bearer (optional; default candidates)
  *   STAGING_BEARER_TOKEN | STAGING_BEARER | CAIRN_MCP_BEARER
  *   EXPECTED_SHA | FULL_SHA     fail-closed vs healthz.deployedSha when set
- *   SCHEMA_VERSION              default from MANIFEST (005)
+ *   SCHEMA_VERSION              default latest registered schema (006)
  *   STAGING_ALLOW_WEAK_PIN=1    only if healthz lacks pin fields (not for SHA)
  *   STAGING_BIND_LIVE_BOARD_REV=1  rebind expectedBoardRev from runtime pin
  *

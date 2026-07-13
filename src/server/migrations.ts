@@ -209,6 +209,14 @@ export const MIGRATION_MANIFEST: ReadonlyArray<MigrationEntry> = [
     description:
       'Control-plane runtime persistence: dispatch plans, V3 runs, locks, account sync, reconciler, retention; additive tables only',
   },
+  {
+    version: '006',
+    filename: '006_stage_evidence_receipts.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '006_stage_evidence_receipts.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'Immutable programmatic stage-evidence receipt registry (control_plane_stage_evidence_receipts); additive table only',
+  },
 ] as const
 
 export function sha256Hex(content: string | Buffer): string {
