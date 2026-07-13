@@ -1,0 +1,11 @@
+{
+  "runIdPrefix": "run-synth-stg-smoke",
+  "agentIdPrefix": "agent-synth-stg-smoke",
+  "model": "synth-staging-agent-model",
+  "effort": "medium",
+  "initialState": "RUNNING",
+  "maskedAccountRef": "acc_synth_stg_001",
+  "targetGate": "SPEC_READY",
+  "taskId": "task-staging-next-1",
+  "collisionScopeLockIds": ["scope:task-staging-next-1"]
+}

@@ -451,11 +451,106 @@ export function planMigrations(opts: PlanOptions = {}): MigrationPlanResult {
 }
 
 /**
- * Dry-run: plan + statement parse only. Does not open a real DB.
- * When executor provided, optionally records dry_run history rows (test/staging).
+ * Resolve applied history: explicit `applied` wins; else `executor.listApplied()`; else [].
+ * Keeps planMigrations sync while allowing real MySQL executors to supply checksum history.
+ */
+export async function resolveAppliedHistory(
+  opts: PlanOptions & { executor?: MigrationSqlExecutor } = {},
+): Promise<Array<MigrationHistoryRow>> {
+  if (opts.applied !== undefined) return opts.applied
+  if (opts.executor?.listApplied) return opts.executor.listApplied()
+  return []
+}
+
+/** Latest version declared by the on-disk manifest (e.g. "003"). Empty if none. */
+export function manifestLatestVersion(): string {
+  const last = MIGRATION_MANIFEST[MIGRATION_MANIFEST.length - 1]
+  return last?.version ?? ''
+}
+
+/**
+ * Schema/version readback suitable for /api/healthz (applied list + plan status + schemaVersion).
+ * Never invents READY/schema when history is empty — returns UNKNOWN + empty schemaVersion.
+ */
+export interface MigrationSchemaReadback {
+  host: string
+  hostClass: DbHostClass
+  applyAllowed: boolean
+  appliedVersions: Array<string>
+  /** Latest applied version string, or "" when unproven. */
+  schemaVersion: string
+  expectedLatestVersion: string
+  status: MigrationPlanResult['status'] | 'UNKNOWN'
+  history: Array<MigrationHistoryRow>
+  plan: MigrationPlanResult | null
+}
+
+export async function readMigrationSchemaState(
+  opts: PlanOptions & { executor: MigrationSqlExecutor },
+): Promise<MigrationSchemaReadback> {
+  const host = opts.host ?? configuredDbHost()
+  const hostClass = opts.hostClass ?? classifyDbHost(host)
+  const applyAllowed = migrationApplyAllowed(hostClass)
+  const expectedLatestVersion = manifestLatestVersion()
+  let history: Array<MigrationHistoryRow> = []
+  try {
+    history = await resolveAppliedHistory(opts)
+  } catch {
+    return {
+      host,
+      hostClass,
+      applyAllowed,
+      appliedVersions: [],
+      schemaVersion: '',
+      expectedLatestVersion,
+      status: 'UNKNOWN',
+      history: [],
+      plan: null,
+    }
+  }
+  if (history.length === 0) {
+    return {
+      host,
+      hostClass,
+      applyAllowed,
+      appliedVersions: [],
+      schemaVersion: '',
+      expectedLatestVersion,
+      status: 'UNKNOWN',
+      history: [],
+      plan: null,
+    }
+  }
+  const plan = planMigrations({
+    ...opts,
+    host,
+    hostClass,
+    applied: history,
+    mode: opts.mode ?? 'status',
+  })
+  const appliedVersions = history.map((h) => h.version)
+  return {
+    host,
+    hostClass,
+    applyAllowed,
+    appliedVersions,
+    schemaVersion: appliedVersions[appliedVersions.length - 1] ?? '',
+    expectedLatestVersion,
+    status: plan.status,
+    history,
+    plan,
+  }
+}
+
+/**
+ * Dry-run: plan + statement parse only. Does not execute migration SQL.
+ * Loads applied history from executor.listApplied when `applied` omitted.
+ * When executor.recordApplied provided, optionally records dry_run history rows (test/staging).
+ * Real MySQL CLI dry-run should pass a read-only executor (no recordApplied) so history is not written.
  */
 export async function dryRunMigrations(opts: PlanOptions & { executor?: MigrationSqlExecutor } = {}): Promise<MigrationPlanResult> {
-  const plan = planMigrations({ ...opts, mode: 'dry-run' })
+  const applied = await resolveAppliedHistory(opts)
+  const plan = planMigrations({ ...opts, applied, mode: 'dry-run' })
   if (plan.status === 'BLOCKED' || plan.status === 'CHECKSUM_MISMATCH') return plan
   // Validate every statement is non-empty after parse (already done in load)
   const loaded = loadMigrationManifest(opts.cwd ?? process.cwd())
@@ -488,11 +583,14 @@ export async function dryRunMigrations(opts: PlanOptions & { executor?: Migratio
 
 /**
  * Apply migrations through an injected executor. Refuses PRODUCTION / UNKNOWN_REMOTE.
+ * Loads applied history from executor.listApplied when `applied` omitted (real MySQL path).
  * Requires approved lifecycle mapping (IDENTITY/RENAME/LEGACY_ONLY only) before any SQL/history write.
  * Tolerates MySQL errno 1060 (duplicate column) and 1061 (duplicate key) for idempotent expand.
+ * No destructive down migration path exists.
  */
 export async function applyMigrations(opts: PlanOptions & { executor: MigrationSqlExecutor }): Promise<MigrationApplyResult> {
-  const plan = planMigrations({ ...opts, mode: 'apply' })
+  const appliedHistory = await resolveAppliedHistory(opts)
+  const plan = planMigrations({ ...opts, applied: appliedHistory, mode: 'apply' })
   if (plan.status === 'BLOCKED') {
     return {
       ok: false,
@@ -595,6 +693,17 @@ export async function applyMigrations(opts: PlanOptions & { executor: MigrationS
 
 export function migrationStatus(opts: PlanOptions = {}): MigrationPlanResult {
   return planMigrations({ ...opts, mode: 'status' })
+}
+
+/**
+ * Async status that loads checksum history from executor when present.
+ * Prefer this for MySQL CLI / health-adjacent callers.
+ */
+export async function migrationStatusAsync(
+  opts: PlanOptions & { executor?: MigrationSqlExecutor } = {},
+): Promise<MigrationPlanResult> {
+  const applied = await resolveAppliedHistory(opts)
+  return planMigrations({ ...opts, applied, mode: 'status' })
 }
 
 /**

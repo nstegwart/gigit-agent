@@ -1,0 +1,7 @@
+{
+  "canonicalSnapshotId": "synth-staging-smoke-snap-001",
+  "canonicalHash": "b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890abcdef12",
+  "boardRev": 1,
+  "lifecycleRev": 1,
+  "note": "Authority pin for synthetic staging seed. taskHash is computed from MANIFEST.taskIds at load time."
+}

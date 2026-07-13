@@ -16,7 +16,12 @@
     "check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "migrate": "node src/server/migrate-runner.mjs",
+    "migrate:plan": "node src/server/migrate-runner.mjs plan",
+    "migrate:dry-run": "node src/server/migrate-runner.mjs dry-run",
+    "migrate:apply": "node src/server/migrate-runner.mjs apply",
+    "migrate:status": "node src/server/migrate-runner.mjs status"
   },
   "dependencies": {
     "@faker-js/faker": "^10.3.0",

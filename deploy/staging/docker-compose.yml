@@ -1,0 +1,108 @@
+# Isolated staging stack: app + MySQL for cairn-taskmanager-v3 (TM-P0).
+#
+# RESOLVED_TARGET:
+#   release root  : /opt/mfs/staging/cairn-taskmanager-v3
+#   source path   : /opt/mfs/staging/cairn-taskmanager-v3/source
+#   bind          : 127.0.0.1:33211 -> app:3210
+#   database      : cairn_tm_v3_staging
+#   db container  : cairn-tm-v3-mysql
+#   data mode     : synthetic fixtures only
+#   health        : GET /api/healthz (authenticated; unauth → 401 proves listen)
+#
+# Secrets: untracked env file next to this compose file (copy env.staging.example → .env).
+# Do not commit .env. Do not point this stack at non-staging databases.
+#
+# Run from the release source checkout (repo root containing package.json):
+#   sudo docker compose -f deploy/staging/docker-compose.yml --env-file deploy/staging/.env up -d
+
+name: cairn-tm-v3-staging
+
+services:
+  cairn-tm-v3-mysql:
+    image: mysql:8.4
+    container_name: cairn-tm-v3-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: cairn_tm_v3_staging
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in deploy/staging/.env}
+      MYSQL_USER: ${CAIRN_DB_USER:?set CAIRN_DB_USER in deploy/staging/.env}
+      MYSQL_PASSWORD: ${CAIRN_DB_PASSWORD:?set CAIRN_DB_PASSWORD in deploy/staging/.env}
+    volumes:
+      - cairn-tm-v3-mysql-data:/var/lib/mysql
+    networks:
+      - cairn-tm-v3-net
+    # No host port publish — MySQL is reachable only on the internal compose network.
+    healthcheck:
+      # Official image helper; does not embed passwords in the compose file.
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    labels:
+      cairn.stack: cairn-tm-v3
+      cairn.env: staging
+      cairn.role: mysql
+
+  cairn-tm-v3-app:
+    build:
+      context: ../..
+      dockerfile: deploy/staging/Dockerfile
+      args:
+        CAIRN_DEPLOYED_SHA: ${RELEASE_SHA:?set RELEASE_SHA to the full git SHA of this release}
+    image: cairn-tm-v3-app:${RELEASE_SHA}
+    container_name: cairn-tm-v3-app
+    restart: unless-stopped
+    depends_on:
+      cairn-tm-v3-mysql:
+        condition: service_healthy
+    ports:
+      # Loopback-only on the host (NO_TLS_PRIVATE_LOOPBACK_ONLY).
+      - "127.0.0.1:33211:3210"
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      # Override / pin staging identity regardless of .env mistakes.
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3210"
+      CAIRN_ENV: staging
+      CAIRN_DB_HOST: cairn-tm-v3-mysql
+      CAIRN_DB_PORT: "3306"
+      CAIRN_DB_NAME: cairn_tm_v3_staging
+      CAIRN_STAGING_DB_HOSTS: cairn-tm-v3-mysql
+      # Required for non-loopback Docker DNS host (see src/server/db.ts assertHostAllowed).
+      CAIRN_ALLOW_REMOTE_DB: "1"
+      CAIRN_DEPLOYED_SHA: ${RELEASE_SHA}
+      CAIRN_EXPECTED_SHA: ${RELEASE_SHA}
+      CAIRN_SCHEMA_VERSION: ${CAIRN_SCHEMA_VERSION:-003}
+      CAIRN_MIGRATION_LATEST: ${CAIRN_MIGRATION_LATEST:-003}
+    networks:
+      - cairn-tm-v3-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3210/api/healthz').then(r=>process.exit(r.status===401||r.status===200||r.status===503?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    labels:
+      cairn.stack: cairn-tm-v3
+      cairn.env: staging
+      cairn.role: app
+      cairn.deployed_sha: ${RELEASE_SHA}
+
+networks:
+  cairn-tm-v3-net:
+    name: cairn-tm-v3-net
+    driver: bridge
+
+volumes:
+  cairn-tm-v3-mysql-data:
+    name: cairn-tm-v3-mysql-data

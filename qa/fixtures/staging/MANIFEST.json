@@ -1,0 +1,77 @@
+{
+  "fixtureId": "staging-agent-mcp-smoke-v1",
+  "version": 1,
+  "purpose": "Synthetic staging board + agent MCP lifecycle smoke (no production-derived data)",
+  "boardId": "mfs-rebuild",
+  "schemaVersionExpected": "003",
+  "healthzSchema": "MFS_HEALTHZ_V1",
+  "syntheticOnly": true,
+  "productionDerived": false,
+  "expiryPolicy": "ephemeral-smoke-ids-per-run; fixtures durable in repo",
+  "pin": {
+    "canonicalSnapshotId": "synth-staging-smoke-snap-001",
+    "canonicalHash": "b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890abcdef12",
+    "boardRev": 1,
+    "lifecycleRev": 1
+  },
+  "taskIds": [
+    "task-staging-next-1",
+    "task-staging-queued-1",
+    "task-staging-blocked-1"
+  ],
+  "requiredMcpTools": [
+    "tools/list",
+    "publish_dispatch_plan",
+    "get_next",
+    "sync_accounts",
+    "register_run",
+    "heartbeat_run",
+    "list_tasks",
+    "get_rollup",
+    "list_audit",
+    "get_task_lifecycle"
+  ],
+  "sensitiveWriteTools": [
+    "publish_dispatch_plan",
+    "sync_accounts",
+    "register_run",
+    "heartbeat_run"
+  ],
+  "counts": {
+    "tasks": 3,
+    "accounts": 2,
+    "dispatchItems": 1
+  },
+  "cleanup": {
+    "idPrefix": "synth-stg-smoke-",
+    "rules": [
+      "All planId/runId/idempotencyKey/agentId for a run MUST include the unique smokeRunId",
+      "Never reuse production run or plan ids",
+      "After smoke: set_run_status done when authorized; else mark residual RECONCILE_RUN",
+      "Do not DELETE board rows unless operator explicitly restores disposable snapshot",
+      "Never print or persist bearer tokens / CAIRN_BEARER_PRINCIPALS_JSON values"
+    ],
+    "reconcileIf": [
+      "STALE_REVISION on publish/register",
+      "register_run succeeded but heartbeat denied",
+      "tunnel dropped mid-lifecycle"
+    ]
+  },
+  "envContract": {
+    "STAGING_URL": "SSH-tunneled base e.g. http://127.0.0.1:33211 (required for --real)",
+    "BOARD_ID": "defaults to MANIFEST.boardId",
+    "EXPECTED_SHA": "40-char release SHA; fail-closed vs healthz.deployedSha when set",
+    "STAGING_BEARER_TOKEN_REF": "env var NAME holding bearer (default STAGING_BEARER_TOKEN); never log value",
+    "STAGING_BEARER_TOKEN": "authorized bearer secret (memory only)",
+    "STAGING_BEARER": "alias for STAGING_BEARER_TOKEN",
+    "CAIRN_MCP_BEARER": "fallback bearer env",
+    "SCHEMA_VERSION": "optional schema marker override (default MANIFEST.schemaVersionExpected)"
+  },
+  "failClosed": [
+    "pin/revision/hash mismatch",
+    "EXPECTED_SHA set and healthz deployedSha mismatch",
+    "unauth sensitive write not denied",
+    "missing required tool in tools/list",
+    "missing authorized token reference for --real"
+  ]
+}

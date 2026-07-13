@@ -1,0 +1,19 @@
+{
+  "planIdPrefix": "plan-synth-stg-smoke",
+  "planVersion": 1,
+  "stage": "ACTIVE",
+  "ttlHours": 6,
+  "items": [
+    {
+      "rank": 1,
+      "taskId": "task-staging-next-1",
+      "targetGate": "SPEC_READY",
+      "role": "Worker",
+      "selectionReason": "SYNTH staging: sole NEXT candidate for agent MCP smoke",
+      "priorityPortfolioId": "STAGING_SMOKE",
+      "expectedEntityRev": 0,
+      "collisionScopeLockIds": ["scope:task-staging-next-1"],
+      "dependencyProof": { "satisfied": true, "refs": [] }
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "idPrefix": "synth-stg-smoke-",
+  "rules": [
+    {
+      "id": "unique-ids",
+      "action": "REQUIRE",
+      "detail": "Every planId, runId, agentId, and idempotencyKey MUST embed smokeRunId"
+    },
+    {
+      "id": "no-prod-ids",
+      "action": "FORBID",
+      "detail": "Never reuse production plan/run/account ids"
+    },
+    {
+      "id": "no-credential-persist",
+      "action": "FORBID",
+      "detail": "Never write bearer/token/secret to receipts, logs, or fixtures"
+    },
+    {
+      "id": "run-terminal",
+      "action": "PREFER",
+      "detail": "After successful heartbeat, call set_run_status done when authorized"
+    },
+    {
+      "id": "snapshot-restore",
+      "action": "OPERATOR",
+      "detail": "Board-wide cleanup is operator disposable-snapshot restore — not smoke default"
+    },
+    {
+      "id": "reconcile-on-partial",
+      "action": "REPORT",
+      "detail": "Partial lifecycle leaves residual_gaps: RECONCILE_RUN with runId meta only"
+    }
+  ],
+  "reconcileIf": [
+    "STALE_REVISION",
+    "PIN_PARITY_MISMATCH",
+    "RELEASE_SHA_MISMATCH",
+    "HEARTBEAT_DENIED_AFTER_REGISTER",
+    "TUNNEL_DROPPED"
+  ]
+}

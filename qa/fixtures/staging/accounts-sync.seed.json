@@ -1,0 +1,34 @@
+{
+  "trigger": "ORCHESTRATOR_LAUNCH",
+  "accounts": [
+    {
+      "maskedAccountId": "acc_synth_stg_001",
+      "status": "ACTIVE",
+      "providerKind": "GROK",
+      "effectiveInUse": 0,
+      "effectiveCap": 3,
+      "physicalSlotsDisplay": "0/3",
+      "adaptiveQuotaState": "healthy",
+      "reason": null
+    },
+    {
+      "maskedAccountId": "acc_synth_stg_002",
+      "status": "quarantine",
+      "providerKind": "SPARK",
+      "effectiveInUse": 0,
+      "effectiveCap": 2,
+      "physicalSlotsDisplay": "0/2",
+      "adaptiveQuotaState": "quarantined",
+      "reason": "SYNTH: fail-closed quarantine example — never real credentials"
+    }
+  ],
+  "forbiddenAccountFields": [
+    "token",
+    "secret",
+    "password",
+    "authorization",
+    "apiKey",
+    "api_key",
+    "credential"
+  ]
+}

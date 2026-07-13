@@ -15,7 +15,9 @@ Shared TypeScript fixtures: `tests/e2e/fixtures/**`. This tree holds **promoted 
 | `CAIRN_E2E_USERNAME`               | for auth flows | Synthetic local/staging user — **never commit**                                                                                                                                                                                                   |
 | `CAIRN_E2E_PASSWORD`               | for auth flows | Synthetic — **never commit**                                                                                                                                                                                                                      |
 | `BOARD_ID`                         | no             | `mfs-rebuild` (deterministic harness) / `ibils` (legacy defaults)                                                                                                                                                                                 |
-| `STAGING_URL`                      | no             | defaults to `WEB_BASE`                                                                                                                                                                                                                            |
+| `STAGING_URL`                      | no             | defaults to `WEB_BASE`; **required for** `staging-agent-smoke --real` (SSH tunnel e.g. `http://127.0.0.1:33211`)                                                                                                                                  |
+| `STAGING_BEARER_TOKEN` / `STAGING_BEARER` / `CAIRN_MCP_BEARER` | real smoke | Authorized bearer for staging MCP/health — **never commit/print**. Optional `STAGING_BEARER_TOKEN_REF` = env **name** to read.                                                                                                                     |
+| `EXPECTED_SHA`                     | real smoke     | 40-char release SHA; fail-closed vs `/api/healthz` `deployedSha` when set                                                                                                                                                                         |
 | `FULL_SHA`                         | harness full   | **40-char Git SHA**. Harness `--full` resolves `FULL_SHA` → `GIT_SHA` → `git rev-parse HEAD` and **fail-closes** if unresolved. Piecewise/dry tools may still see `UNKNOWN_SHA` only when `require` is off. Never claim a run with `UNKNOWN_SHA`. |
 | `SCHEMA_VERSION`                   | no             | `TM_UI_CONTRACT_V1`                                                                                                                                                                                                                               |
 | `CAIRN_E2E_SKIP_WEBSERVER`         | no             | `1` skips Playwright auto-`preview`                                                                                                                                                                                                               |
@@ -105,14 +107,45 @@ node qa/e2e/flows/deterministic-control-center-harness.mjs --skip-axe-fail --kee
 | Projects, Features, Agents, Ops, legacy log/tasks                                                                          | 1440 + 390   | secondary                                     |
 | Session denial / public redaction canaries / sticky Decision / raw STALE / ONGOING fields / focus / reduced motion / touch | probes       | fail-closed verdicts; bare context for denial |
 
+## Staging agent MCP smoke (synthetic fixture + remote tunnel)
+
+Reusable **agent-operable** MCP lifecycle against SSH-tunneled staging (or contract self-test without a server).
+
+**Fixtures (synthetic only):** `qa/fixtures/staging/**` — `MANIFEST.json`, pin, dispatch/accounts/agent seeds, cleanup rules, pure `contract.mjs`.
+
+**Library:** `qa/e2e/lib/staging-agent-smoke.mjs` (reuses `control-plane-bootstrap.mjs` MCP JSON-RPC + redaction).
+
+**Flow:**
+
+```bash
+# Contract / self-test (no server, no credentials)
+node qa/e2e/flows/staging-agent-smoke.mjs --self-test
+# alias
+node qa/e2e/flows/staging-agent-smoke.mjs --contract
+
+# Real remote (tunnel must serve STAGING_URL; bearer via env ref only)
+export STAGING_URL=http://127.0.0.1:33211
+export BOARD_ID=mfs-rebuild
+export EXPECTED_SHA=<40-char release sha>   # fail-closed vs healthz
+export STAGING_BEARER_TOKEN='…'             # never commit/print
+node qa/e2e/flows/staging-agent-smoke.mjs --real
+```
+
+**Real sequence (fail-closed):** unauth `/api/healthz` → 401; auth healthz SHA/schema; unauth sensitive MCP deny; `tools/list`; `publish_dispatch_plan` → `get_next` → `sync_accounts` → `register_run` → `heartbeat_run`; readback `list_tasks` / `get_rollup` / `list_audit` / `get_task_lifecycle`; unique `synth-stg-smoke-*` ids + cleanup/reconcile rules. Pin/revision/hash mismatch → non-zero exit.
+
+**Playwright contract:** `tests/e2e/fixtures/staging-agent-smoke.contract.harness.spec.ts` (`harness-contract` project).
+
 ## Flow index
 
 | Flow                      | Path                                             | Auth                 | Purpose                                                              |
 | ------------------------- | ------------------------------------------------ | -------------------- | -------------------------------------------------------------------- |
 | **Deterministic harness** | `flows/deterministic-control-center-harness.mjs` | bootstrap synth      | Full isolated lifecycle (C3-R2D)                                     |
+| **Staging agent MCP smoke** | `flows/staging-agent-smoke.mjs`                | bearer env ref       | Real staging MCP lifecycle + `--self-test` contract                  |
+| Staging fixtures          | `qa/fixtures/staging/**`                         | n/a                  | Synthetic MANIFEST/pin/seeds/cleanup (no prod data)                  |
 | Isolated seed             | `fixtures/seed/seed-isolated.mjs`                | n/a                  | Unique MySQL + pins                                                  |
 | Fixture contract (pure)   | `fixtures/seed/control-center-fixture.mjs`       | n/a                  | Overlays/receipts/taskHash/scenarios                                 |
 | Control-plane bootstrap   | `lib/control-plane-bootstrap.mjs`                | MCP + synthetic ROOT | Authorized dispatch + account-sync; pin fail-close; bearer redaction |
+| Staging agent smoke lib   | `lib/staging-agent-smoke.mjs`                    | MCP + token ref      | Health SHA/schema, unauth deny, register/heartbeat lifecycle         |
 | Auth login → storageState | `flows/auth-login.mjs`                           | env creds            | Write `fixtures/storage/admin.json`                                  |
 | Overview / mission        | `flows/overview-mission.mjs`                     | storageState         | Board shell                                                          |
 | Control center IA         | `flows/control-center.mjs`                       | storageState         | Overview/Work/Priority/Evidence                                      |
@@ -153,13 +186,16 @@ qa/e2e/
   lib/                      env, auth, auth-assert, capture-guard, axe, zoom, keyboard,
                             overflow, screenshot-manifest, db-iso, server-lifecycle, routes-matrix,
                             probe-fail-close (C3-R3H pure evaluators),
-                            control-plane-bootstrap (MCP dispatch + account-sync)
+                            control-plane-bootstrap (MCP dispatch + account-sync),
+                            staging-agent-smoke (remote staging MCP lifecycle)
   fixtures/
     storage/                generated storageState (gitignored JSON)
     seed/                   isolated seed + pure fixture contract
-  flows/                    promoted entrypoints
+  flows/                    promoted entrypoints (incl. staging-agent-smoke)
   manifests/                screenshot-manifest.schema.json + latest collector output
   out/screenshots|axe|runtime/   capture artifacts (local, gitignored)
+
+qa/fixtures/staging/        synthetic staging MANIFEST + pin + seeds + contract.mjs
 ```
 
 ## TypeScript fixtures (Playwright import surface)
