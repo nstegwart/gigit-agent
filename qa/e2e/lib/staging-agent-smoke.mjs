@@ -3,10 +3,19 @@
  *
  * Modes:
  *  - contract / --self-test: pure fixture + mocked MCP lifecycle (no server)
- *  - --real: SSH-tunneled STAGING_URL + authorized bearer env reference
+ *  - --real: SSH-tunneled STAGING_URL + dual-principal bearers (ROOT + AGENT)
+ *
+ * Dual-principal (real mode, fail-closed):
+ *  - STAGING_ROOT_BEARER_TOKEN (legacy fallback: STAGING_BEARER_TOKEN|STAGING_BEARER|CAIRN_MCP_BEARER)
+ *    → initialize/tools/list (root set), publish_dispatch_plan, get_next, sync_accounts, list_audit
+ *  - STAGING_AGENT_BEARER_TOKEN (required in --real)
+ *    → initialize/tools/list (agent set), register_run, heartbeat_run, assigned reads, set_run_status
+ *  - STAGING_AGENT_ID required in --real so ownRun matches principal.agentId
+ *
+ * tools/list is gated per role — never demand all MCP tools from a single token.
+ * Never prints or persists credentials; errors name token refs only.
  *
  * Reuses qa/e2e/lib/control-plane-bootstrap.mjs MCP helpers + redaction.
- * Never prints or persists credentials.
  */
 import crypto from 'node:crypto'
 import {
@@ -50,34 +59,68 @@ export class StagingAgentSmokeError extends Error {
   }
 }
 
-/** Env var names that may hold bearer material — values never logged. */
-export const BEARER_ENV_CANDIDATES = Object.freeze([
+/**
+ * ROOT principal env candidates (preferred first).
+ * STAGING_ROOT_BEARER_TOKEN is canonical; legacy STAGING_BEARER_TOKEN etc. fall back for root ops only.
+ * Values never logged — only tokenRef names appear in errors/receipts.
+ */
+export const ROOT_BEARER_ENV_CANDIDATES = Object.freeze([
+  'STAGING_ROOT_BEARER_TOKEN',
   'STAGING_BEARER_TOKEN',
   'STAGING_BEARER',
   'CAIRN_MCP_BEARER',
 ])
 
-/**
- * Resolve authorized token by reference (env name), never log the secret.
- * STAGING_BEARER_TOKEN_REF overrides which env name is read.
- * @returns {{ ok: true, tokenRef: string, bearer: string } | { ok: false, tokenRef: string|null, reason: string }}
- */
-export function resolveAuthorizedTokenRef(env = process.env) {
-  const explicitRef = env.STAGING_BEARER_TOKEN_REF?.trim()
-  const candidates = explicitRef
-    ? [explicitRef, ...BEARER_ENV_CANDIDATES.filter((c) => c !== explicitRef)]
-    : [...BEARER_ENV_CANDIDATES]
+/** AGENT principal env candidates — required for --real dual-principal smoke. */
+export const AGENT_BEARER_ENV_CANDIDATES = Object.freeze(['STAGING_AGENT_BEARER_TOKEN'])
 
-  for (const name of candidates) {
+/**
+ * @deprecated Use ROOT_BEARER_ENV_CANDIDATES. Kept as alias for root resolution BC.
+ * Does NOT include STAGING_AGENT_BEARER_TOKEN (agent is separate).
+ */
+export const BEARER_ENV_CANDIDATES = ROOT_BEARER_ENV_CANDIDATES
+
+/**
+ * Tools ROOT_ORCHESTRATOR (default scopes, no run:write) must list for smoke.
+ * Intentionally omits register_run / heartbeat_run (AGENT evidence tools).
+ */
+export const ROOT_REQUIRED_MCP_TOOLS = Object.freeze([
+  'publish_dispatch_plan',
+  'get_next',
+  'sync_accounts',
+  'list_tasks',
+  'get_rollup',
+  'list_audit',
+  'get_task_lifecycle',
+])
+
+/**
+ * Tools AGENT (run:write + reads) must list for smoke.
+ * Omits publish_dispatch_plan / sync_accounts / list_audit (ROOT-only scopes/roles).
+ */
+export const AGENT_REQUIRED_MCP_TOOLS = Object.freeze([
+  'register_run',
+  'heartbeat_run',
+  'list_tasks',
+  'get_rollup',
+  'get_task_lifecycle',
+])
+
+function resolveBearerFromCandidates(env, candidates, explicitRef, roleLabel) {
+  const list = explicitRef
+    ? [explicitRef, ...candidates.filter((c) => c !== explicitRef)]
+    : [...candidates]
+  for (const name of list) {
     const val = env[name]
     if (typeof val === 'string' && val.trim().length > 0) {
       return {
         ok: true,
         tokenRef: name,
         bearer: val.trim(),
-        // public meta only
+        roleLabel,
         meta: {
           tokenRef: name,
+          roleLabel,
           present: true,
           secretByteLength: Buffer.byteLength(val.trim(), 'utf8'),
         },
@@ -86,10 +129,120 @@ export function resolveAuthorizedTokenRef(env = process.env) {
   }
   return {
     ok: false,
-    tokenRef: explicitRef || BEARER_ENV_CANDIDATES[0],
-    reason: `missing authorized bearer — set one of ${candidates.join('|')} (value never logged)`,
-    meta: { tokenRef: explicitRef || BEARER_ENV_CANDIDATES[0], present: false },
+    tokenRef: explicitRef || candidates[0],
+    bearer: null,
+    roleLabel,
+    reason: `missing ${roleLabel} bearer — set one of ${list.join('|')} (value never logged)`,
+    meta: { tokenRef: explicitRef || candidates[0], roleLabel, present: false },
   }
+}
+
+/**
+ * Resolve ROOT principal bearer by env name. Never log the secret.
+ * Prefers STAGING_ROOT_BEARER_TOKEN; falls back to legacy STAGING_BEARER_TOKEN etc.
+ * STAGING_ROOT_BEARER_TOKEN_REF or STAGING_BEARER_TOKEN_REF overrides candidate order.
+ */
+export function resolveRootTokenRef(env = process.env) {
+  const explicitRef =
+    env.STAGING_ROOT_BEARER_TOKEN_REF?.trim() || env.STAGING_BEARER_TOKEN_REF?.trim()
+  return resolveBearerFromCandidates(env, ROOT_BEARER_ENV_CANDIDATES, explicitRef, 'ROOT')
+}
+
+/**
+ * Resolve AGENT principal bearer. Real mode requires this separately from ROOT.
+ * STAGING_AGENT_BEARER_TOKEN_REF may override the env name.
+ */
+export function resolveAgentTokenRef(env = process.env) {
+  const explicitRef = env.STAGING_AGENT_BEARER_TOKEN_REF?.trim()
+  return resolveBearerFromCandidates(env, AGENT_BEARER_ENV_CANDIDATES, explicitRef, 'AGENT')
+}
+
+/**
+ * Dual-principal resolution for real smoke.
+ * @param {object} [opts]
+ * @param {boolean} [opts.requireAgent=true] fail closed when agent bearer missing
+ * @param {boolean} [opts.requireAgentId=true] fail closed when STAGING_AGENT_ID missing (ownRun)
+ * @returns {{
+ *   ok: boolean,
+ *   code?: string,
+ *   reason?: string,
+ *   root: object,
+ *   agent: object,
+ *   agentId: string|null,
+ *   dual: boolean,
+ *   meta: object
+ * }}
+ */
+export function resolveDualPrincipalTokens(env = process.env, opts = {}) {
+  const requireAgent = opts.requireAgent !== false
+  const requireAgentId = opts.requireAgentId !== false
+  const root = resolveRootTokenRef(env)
+  const agent = resolveAgentTokenRef(env)
+  const agentIdRaw = env.STAGING_AGENT_ID?.trim() || null
+
+  if (!root.ok) {
+    return {
+      ok: false,
+      code: 'MISSING_ROOT_BEARER',
+      reason: root.reason,
+      root,
+      agent,
+      agentId: agentIdRaw,
+      dual: false,
+      meta: { root: root.meta, agent: agent.meta, agentIdPresent: Boolean(agentIdRaw) },
+    }
+  }
+  if (requireAgent && !agent.ok) {
+    return {
+      ok: false,
+      code: 'MISSING_AGENT_BEARER',
+      reason:
+        agent.reason ||
+        'missing STAGING_AGENT_BEARER_TOKEN — real dual-principal smoke fail-closed (value never logged)',
+      root,
+      agent,
+      agentId: agentIdRaw,
+      dual: false,
+      meta: { root: root.meta, agent: agent.meta, agentIdPresent: Boolean(agentIdRaw) },
+    }
+  }
+  if (requireAgent && requireAgentId && agent.ok && !agentIdRaw) {
+    return {
+      ok: false,
+      code: 'MISSING_AGENT_ID',
+      reason:
+        'missing STAGING_AGENT_ID — must equal CAIRN AGENT principal agentId/actorId for ownRun (value is an id, not a secret)',
+      root,
+      agent,
+      agentId: null,
+      dual: Boolean(agent.ok),
+      meta: { root: root.meta, agent: agent.meta, agentIdPresent: false },
+    }
+  }
+
+  return {
+    ok: true,
+    root,
+    agent,
+    agentId: agentIdRaw,
+    dual: Boolean(agent.ok && agent.bearer),
+    meta: {
+      root: root.meta,
+      agent: agent.meta,
+      agentIdPresent: Boolean(agentIdRaw),
+      dual: Boolean(agent.ok && agent.bearer),
+    },
+  }
+}
+
+/**
+ * Legacy single-token resolver → ROOT candidates only (BC for harness / flow).
+ * Prefer resolveRootTokenRef / resolveDualPrincipalTokens for new code.
+ * STAGING_BEARER_TOKEN_REF overrides which env name is read among root candidates.
+ * @returns {{ ok: true, tokenRef: string, bearer: string } | { ok: false, tokenRef: string|null, reason: string }}
+ */
+export function resolveAuthorizedTokenRef(env = process.env) {
+  return resolveRootTokenRef(env)
 }
 
 export function resolveSmokeBoardId(env = process.env) {
@@ -362,8 +515,13 @@ export async function probeToolsList(baseUrl, opts = {}) {
 /**
  * Full agent lifecycle smoke (real or mocked fetch).
  * Steps: health unauth → health auth SHA/schema → unauth sensitive deny →
- * tools/list → publish → get_next → sync → register → heartbeat →
+ * tools/list (per role when dual) → publish → get_next → sync → register → heartbeat →
  * list_tasks / get_rollup / list_audit / get_task_lifecycle readback.
+ *
+ * Dual principal (opts.agentBearer set, or opts.dualPrincipal):
+ *  - rootBearer/bearer: ROOT ops (publish, get_next, sync, list_audit, root tools/list)
+ *  - agentBearer: AGENT ops (register, heartbeat, agent tools/list, agent reads, set_run_status)
+ * Single bearer (self-test / legacy mock): all steps use opts.bearer.
  */
 export async function runStagingAgentLifecycleSmoke(opts = {}) {
   const baseUrl = opts.baseUrl
@@ -375,24 +533,45 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
   const pin = opts.pin ?? loadStagingPin()
   const ids = opts.ids ?? buildSyntheticSmokeIds({ boardId })
   const now = opts.now ?? new Date().toISOString()
-  const bearer = opts.bearer ?? null
+  // Dual-principal: prefer explicit root/agent; legacy single opts.bearer = root for all steps
+  const rootBearer = opts.rootBearer ?? opts.bearer ?? null
+  const agentBearer = opts.agentBearer ?? null
+  const dualPrincipal = Boolean(opts.dualPrincipal || (rootBearer && agentBearer))
+  const bearer = rootBearer // legacy alias used for health / pin probes
   const secrets = []
-  if (bearer) secrets.push(bearer)
+  if (rootBearer) secrets.push(rootBearer)
+  if (agentBearer) secrets.push(agentBearer)
   if (opts.extraSecrets) secrets.push(...opts.extraSecrets)
 
   const fetchImpl = opts.fetchImpl
-  const mcpOpts = { bearer, fetchImpl, secrets }
+  const rootMcpOpts = { bearer: rootBearer, fetchImpl, secrets }
+  const agentMcpOpts = {
+    bearer: agentBearer || rootBearer,
+    fetchImpl,
+    secrets,
+  }
+  // When dual: agent ops MUST use agent bearer (never fall back to root for evidence tools)
+  const agentOpsOpts = dualPrincipal
+    ? { bearer: agentBearer, fetchImpl, secrets }
+    : agentMcpOpts
   const expectedSha = opts.expectedSha ?? null
   const expectedSchema = opts.expectedSchema ?? resolveExpectedSchema()
   const skipPinCheck = opts.skipPinCheck === true
   const requireBearer = opts.requireBearer !== false
+  // Real mode always requires AGENT principal (fail-closed). Self-test may use single mock bearer.
+  const requireAgentBearer =
+    opts.requireAgentBearer === true ||
+    (opts.mode === 'real' && opts.requireDualPrincipal !== false)
 
   const receipt = {
     ok: false,
     mode: opts.mode ?? 'real',
     boardId,
     smokeRunId: ids.smokeRunId,
-    tokenRef: opts.tokenRef ?? null,
+    tokenRef: opts.tokenRef ?? opts.rootTokenRef ?? null,
+    rootTokenRef: opts.rootTokenRef ?? opts.tokenRef ?? null,
+    agentTokenRef: opts.agentTokenRef ?? null,
+    dualPrincipal,
     principalMeta: opts.principalMeta ?? null,
     ids: {
       planId: ids.planId,
@@ -411,7 +590,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     steps: {},
     residuals: [],
     cleanup: {
-      rulesApplied: ['unique-ids', 'no-credential-persist'],
+      rulesApplied: ['unique-ids', 'no-credential-persist', dualPrincipal ? 'dual-principal' : 'single-bearer'],
       reconcile: null,
     },
   }
@@ -430,8 +609,19 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     return redactSecretsDeep(receipt, secrets)
   }
 
-  if (requireBearer && !bearer) {
-    return fail('bearer', 'MISSING_BEARER', 'authorized bearer required for lifecycle smoke')
+  if (requireBearer && !rootBearer) {
+    return fail(
+      'bearer',
+      'MISSING_ROOT_BEARER',
+      'authorized ROOT bearer required (token ref STAGING_ROOT_BEARER_TOKEN|STAGING_BEARER_TOKEN; value never logged)',
+    )
+  }
+  if (requireAgentBearer && !agentBearer) {
+    return fail(
+      'bearer',
+      'MISSING_AGENT_BEARER',
+      'STAGING_AGENT_BEARER_TOKEN required for dual-principal real smoke (value never logged)',
+    )
   }
 
   // 0) unauth health → expect 401 (or unreachable)
@@ -532,31 +722,105 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     }
   }
 
-  // 3) tools/list
+  // 3) tools/list — per role when dual; single-token legacy demands full MANIFEST set
   {
-    const listed = await probeToolsList(baseUrl, { bearer, fetchImpl })
-    receipt.steps.toolsList = listed
-    if (!listed.ok) {
-      return fail('tools_list', listed.code || 'TOOLS_LIST_FAIL', JSON.stringify(listed.missing))
+    if (dualPrincipal) {
+      const rootRequired =
+        opts.rootRequiredTools ?? ROOT_REQUIRED_MCP_TOOLS
+      const agentRequired =
+        opts.agentRequiredTools ?? AGENT_REQUIRED_MCP_TOOLS
+      const rootListed = await probeToolsList(baseUrl, {
+        bearer: rootBearer,
+        fetchImpl,
+        requiredTools: rootRequired,
+        id: 70001,
+      })
+      const agentListed = await probeToolsList(baseUrl, {
+        bearer: agentBearer,
+        fetchImpl,
+        requiredTools: agentRequired,
+        id: 70002,
+      })
+      // Also initialize each principal (tools/list gate already exercised; init is handshake)
+      receipt.steps.toolsListRoot = rootListed
+      receipt.steps.toolsListAgent = agentListed
+      receipt.steps.toolsList = {
+        ok: rootListed.ok && agentListed.ok,
+        dualPrincipal: true,
+        root: {
+          ok: rootListed.ok,
+          toolCount: rootListed.toolCount,
+          missing: rootListed.missing,
+          code: rootListed.code,
+          tokenRef: opts.rootTokenRef ?? receipt.rootTokenRef,
+        },
+        agent: {
+          ok: agentListed.ok,
+          toolCount: agentListed.toolCount,
+          missing: agentListed.missing,
+          code: agentListed.code,
+          tokenRef: opts.agentTokenRef ?? receipt.agentTokenRef,
+        },
+      }
+      if (!rootListed.ok) {
+        return fail(
+          'tools_list_root',
+          rootListed.code || 'TOOLS_LIST_ROOT_MISSING',
+          JSON.stringify({
+            tokenRef: opts.rootTokenRef ?? 'ROOT',
+            missing: rootListed.missing,
+          }),
+        )
+      }
+      if (!agentListed.ok) {
+        return fail(
+          'tools_list_agent',
+          agentListed.code || 'TOOLS_LIST_AGENT_MISSING',
+          JSON.stringify({
+            tokenRef: opts.agentTokenRef ?? 'AGENT',
+            missing: agentListed.missing,
+          }),
+        )
+      }
+    } else {
+      const listed = await probeToolsList(baseUrl, {
+        bearer: rootBearer,
+        fetchImpl,
+        requiredTools: opts.requiredTools,
+      })
+      receipt.steps.toolsList = listed
+      if (!listed.ok) {
+        return fail('tools_list', listed.code || 'TOOLS_LIST_FAIL', JSON.stringify(listed.missing))
+      }
     }
   }
 
-  // Optional initialize
+  // Optional initialize (ROOT; AGENT init when dual)
   if (opts.initialize !== false) {
     try {
       receipt.steps.initialize = await mcpInitialize(baseUrl, {
-        ...mcpOpts,
+        ...rootMcpOpts,
         id: 90001,
       })
     } catch (e) {
       receipt.steps.initialize = { ok: false, error: String(e?.message || e) }
+    }
+    if (dualPrincipal && agentBearer) {
+      try {
+        receipt.steps.initializeAgent = await mcpInitialize(baseUrl, {
+          ...agentOpsOpts,
+          id: 90002,
+        })
+      } catch (e) {
+        receipt.steps.initializeAgent = { ok: false, error: String(e?.message || e) }
+      }
     }
   }
 
   // Pin parity before publish
   let runtimePin =
     opts.runtimePin ??
-    (await probeRuntimePin(baseUrl, { bearer, fetchImpl, secrets }))
+    (await probeRuntimePin(baseUrl, { bearer: rootBearer, fetchImpl, secrets }))
   receipt.steps.runtimePin = redactSecretsDeep(
     {
       ok: runtimePin?.ok ?? null,
@@ -607,8 +871,9 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     })
   }
 
+  // 4) publish_dispatch_plan — ROOT only
   const publishRaw = await mcpToolsCall(baseUrl, 'publish_dispatch_plan', dispatch, {
-    ...mcpOpts,
+    ...rootMcpOpts,
     id: 91001,
   })
   receipt.steps.publishDispatch = sanitizeMcpCallResult(publishRaw, secrets)
@@ -627,12 +892,12 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
       ? publishedBoardRev
       : dispatch.expectedBoardRev
 
-  // 5) get_next
+  // 5) get_next — ROOT (board:read; least-privilege would allow agent, prefer root for dispatch path)
   const getNextRaw = await mcpToolsCall(
     baseUrl,
     'get_next',
     { boardId },
-    { ...mcpOpts, id: 91002 },
+    { ...rootMcpOpts, id: 91002 },
   )
   receipt.steps.getNext = sanitizeMcpCallResult(getNextRaw, secrets)
   const nextItems =
@@ -661,7 +926,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     )
   }
 
-  // 6) sync_accounts (CAS against post-publish board rev)
+  // 6) sync_accounts — ROOT only
   const syncArgs = buildAccountSyncArgs({
     pin,
     ids,
@@ -670,7 +935,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     sourceRevision: pin.boardRev,
   })
   const syncRaw = await mcpToolsCall(baseUrl, 'sync_accounts', syncArgs, {
-    ...mcpOpts,
+    ...rootMcpOpts,
     id: 91003,
   })
   receipt.steps.syncAccounts = sanitizeMcpCallResult(syncRaw, secrets)
@@ -683,7 +948,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     return fail('sync_accounts', 'SYNC_FAIL', detail)
   }
 
-  // 7) register_run
+  // 7) register_run — AGENT principal (ownRun matches ids.agentId / STAGING_AGENT_ID)
   const regArgs = buildRegisterRunArgs({
     pin,
     ids,
@@ -691,7 +956,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     expectedBoardRev: postPublishRev,
   })
   const regRaw = await mcpToolsCall(baseUrl, 'register_run', regArgs, {
-    ...mcpOpts,
+    ...agentOpsOpts,
     id: 91004,
   })
   receipt.steps.registerRun = sanitizeMcpCallResult(regRaw, secrets)
@@ -706,6 +971,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
       ok: toolJsonOk(regRaw),
       runId: regArgs.runId,
       agentId: regArgs.agentId,
+      principal: dualPrincipal ? 'AGENT' : 'SINGLE',
       hasFence: Boolean(fencingToken),
       entityRev: regEntityRev,
       boardRev: regRaw.toolJson?.boardRev ?? postPublishRev,
@@ -721,7 +987,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     return fail('register_run', 'REGISTER_FAIL', detail)
   }
 
-  // 8) heartbeat_run
+  // 8) heartbeat_run — AGENT principal
   if (!fencingToken && opts.requireFencing !== false) {
     receipt.cleanup.reconcile = 'RECONCILE_RUN_NO_FENCE'
     return fail('heartbeat_run', 'MISSING_FENCING_TOKEN', 'register_run returned no fencingToken')
@@ -737,7 +1003,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     materialProgressAt: now,
   }
   const hbRaw = await mcpToolsCall(baseUrl, 'heartbeat_run', hbArgs, {
-    ...mcpOpts,
+    ...agentOpsOpts,
     id: 91005,
   })
   receipt.steps.heartbeatRun = sanitizeMcpCallResult(hbRaw, secrets)
@@ -751,15 +1017,17 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     return fail('heartbeat_run', 'HEARTBEAT_FAIL', detail)
   }
 
-  // 9) readback: list_tasks / get_rollup / list_audit / get_task_lifecycle
+  // 9) readback — least-privilege: agent for task/board reads; ROOT for list_audit (audit:read)
   const readback = {}
-  for (const [tool, args, id] of [
-    ['list_tasks', { boardId }, 92001],
-    ['get_rollup', { boardId }, 92002],
-    ['list_audit', { boardId, limit: 20 }, 92003],
-    ['get_task_lifecycle', { boardId, id: regArgs.taskId }, 92004],
-  ]) {
-    const raw = await mcpToolsCall(baseUrl, tool, args, { ...mcpOpts, id })
+  const readbackPlan = [
+    ['list_tasks', { boardId }, 92001, 'agent'],
+    ['get_rollup', { boardId }, 92002, 'agent'],
+    ['list_audit', { boardId, limit: 20 }, 92003, 'root'],
+    ['get_task_lifecycle', { boardId, id: regArgs.taskId }, 92004, 'agent'],
+  ]
+  for (const [tool, args, id, role] of readbackPlan) {
+    const callOpts = role === 'root' || !dualPrincipal ? rootMcpOpts : agentOpsOpts
+    const raw = await mcpToolsCall(baseUrl, tool, args, { ...callOpts, id })
     const san = sanitizeMcpCallResult(raw, secrets)
     const ok =
       raw.ok &&
@@ -771,6 +1039,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
       httpStatus: raw.httpStatus,
       code: san.code,
       hasToolJson: Boolean(raw.toolJson),
+      principal: dualPrincipal ? (role === 'root' ? 'ROOT' : 'AGENT') : 'SINGLE',
     }
   }
   receipt.steps.readback = readback
@@ -783,14 +1052,14 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     )
   }
 
-  // Optional cleanup: set_run_status done (best-effort; residual if denied)
+  // Optional cleanup: set_run_status done via AGENT when dual (ownRun); else single bearer
   if (opts.attemptRunDone !== false) {
     try {
       const doneRaw = await mcpToolsCall(
         baseUrl,
         'set_run_status',
         { boardId, id: regArgs.runId, status: 'done' },
-        { ...mcpOpts, id: 93001 },
+        { ...agentOpsOpts, id: 93001 },
       )
       receipt.steps.setRunStatus = sanitizeMcpCallResult(doneRaw, secrets)
       if (!toolJsonOk(doneRaw) && !isMcpToolProgrammaticOk(doneRaw)) {
@@ -799,7 +1068,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
           baseUrl,
           'set_run_status',
           { boardId, runId: regArgs.runId, status: 'done' },
-          { ...mcpOpts, id: 93002 },
+          { ...agentOpsOpts, id: 93002 },
         )
         receipt.steps.setRunStatus = sanitizeMcpCallResult(done2, secrets)
         if (!toolJsonOk(done2)) {
@@ -829,6 +1098,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
 
 /**
  * Mock fetch implementing full MCP lifecycle for --self-test / contract mode.
+ * Dual-principal: pass rootBearer + agentBearer to split tools/list per role (RBAC-faithful).
  */
 export function createStagingSmokeMockFetch(opts = {}) {
   const pin = opts.pin ?? loadStagingPin()
@@ -837,6 +1107,9 @@ export function createStagingSmokeMockFetch(opts = {}) {
   const calls = []
   const expectedSha = opts.expectedSha ?? 'a'.repeat(40)
   const fencingToken = opts.fencingToken ?? `fence-mock-${crypto.randomBytes(4).toString('hex')}`
+  const dualRootBearer = opts.rootBearer ?? null
+  const dualAgentBearer = opts.agentBearer ?? null
+  const dualMock = Boolean(dualRootBearer && dualAgentBearer)
   let boardRev = pin.boardRev
   // Derive NEXT task id from canonical dispatch-plan fixture (not a stale hardcode).
   const nextTaskId =
@@ -857,11 +1130,26 @@ export function createStagingSmokeMockFetch(opts = {}) {
       result: { content: [{ type: 'text', text: JSON.stringify(obj) }] },
     })
 
+  const extractBearer = (authHeader) => {
+    const m = String(authHeader || '').match(/^Bearer\s+(\S+)/i)
+    return m ? m[1] : null
+  }
+
+  /** Role for dual mock: which principal presented the bearer. */
+  const resolveMockRole = (authHeader) => {
+    if (!dualMock) return 'single'
+    const tok = extractBearer(authHeader)
+    if (tok && tok === dualAgentBearer) return 'agent'
+    if (tok && tok === dualRootBearer) return 'root'
+    return 'unknown'
+  }
+
   const fetchImpl = async (url, init = {}) => {
     const u = String(url)
     const method = (init.method || 'GET').toUpperCase()
     const auth = init.headers?.authorization || init.headers?.Authorization || ''
     const hasAuth = /^Bearer\s+\S+/i.test(auth)
+    const mockRole = resolveMockRole(auth)
 
     if (u.includes('/api/healthz')) {
       if (!hasAuth) {
@@ -898,13 +1186,17 @@ export function createStagingSmokeMockFetch(opts = {}) {
       method: body.method,
       name: body.params?.name ?? null,
       hasAuth,
+      mockRole,
     })
 
     if (body.method === 'initialize') {
       return jsonRes({
         jsonrpc: '2.0',
         id: body.id,
-        result: { protocolVersion: '2025-06-18', serverInfo: { name: 'cairn-board' } },
+        result: {
+          protocolVersion: '2025-06-18',
+          serverInfo: { name: 'cairn-board', mockRole },
+        },
       })
     }
     if (body.method === 'notifications/initialized') {
@@ -921,11 +1213,17 @@ export function createStagingSmokeMockFetch(opts = {}) {
           401,
         )
       }
-      const names = loadStagingManifest().requiredMcpTools.filter((t) => t !== 'tools/list')
-      // plus set_run_status for cleanup
-      const tools = [...new Set([...names, 'set_run_status', 'list_runs'])].map((name) => ({
-        name,
-      }))
+      // Dual mock: RBAC-faithful split (ROOT no register/heartbeat; AGENT no publish/sync/audit)
+      let names
+      if (dualMock && mockRole === 'root') {
+        names = [...ROOT_REQUIRED_MCP_TOOLS, 'set_run_status', 'list_runs', 'upsert_run']
+      } else if (dualMock && mockRole === 'agent') {
+        names = [...AGENT_REQUIRED_MCP_TOOLS, 'set_run_status', 'list_runs', 'get_next']
+      } else {
+        names = loadStagingManifest().requiredMcpTools.filter((t) => t !== 'tools/list')
+        names = [...new Set([...names, 'set_run_status', 'list_runs'])]
+      }
+      const tools = [...new Set(names)].map((name) => ({ name }))
       return jsonRes({ jsonrpc: '2.0', id: body.id, result: { tools } })
     }
 
@@ -948,6 +1246,39 @@ export function createStagingSmokeMockFetch(opts = {}) {
           },
           401,
         )
+      }
+
+      // Dual mock RBAC: deny role-wrong tool calls (mirrors real listability/auth)
+      if (dualMock) {
+        const rootOnly = ['publish_dispatch_plan', 'sync_accounts', 'list_audit']
+        const agentOnly = ['register_run', 'heartbeat_run']
+        if (rootOnly.includes(name) && mockRole !== 'root') {
+          return toolText(body.id, {
+            ok: false,
+            code: 'FORBIDDEN_ROLE',
+            message: `${name} requires ROOT principal`,
+          })
+        }
+        if (agentOnly.includes(name) && mockRole !== 'agent') {
+          return toolText(body.id, {
+            ok: false,
+            code: 'AUTHORIZATION_REQUIRED',
+            message: `${name} requires AGENT principal (run:write)`,
+          })
+        }
+        if (
+          agentOnly.includes(name) &&
+          mockRole === 'agent' &&
+          ids?.agentId &&
+          args.agentId &&
+          args.agentId !== ids.agentId
+        ) {
+          return toolText(body.id, {
+            ok: false,
+            code: 'OWN_RUN_ONLY',
+            message: 'AGENT own assigned run only',
+          })
+        }
       }
 
       if (name === 'publish_dispatch_plan') {
@@ -1234,7 +1565,7 @@ export async function runStagingAgentSmokeSelfTests() {
     ok('unauth-sensitive-denied', deny.ok === true)
   }
 
-  // Missing bearer fail-close
+  // Missing ROOT bearer fail-close
   {
     let missing = false
     try {
@@ -1250,9 +1581,194 @@ export async function runStagingAgentSmokeSelfTests() {
     } catch (e) {
       missing =
         e instanceof StagingAgentSmokeError &&
-        (e.code === 'MISSING_BEARER' || /bearer/i.test(e.message))
+        (e.code === 'MISSING_BEARER' ||
+          e.code === 'MISSING_ROOT_BEARER' ||
+          /bearer/i.test(e.message))
     }
     ok('missing-bearer-fail-close', missing)
+  }
+
+  // Dual-principal token resolution contract
+  {
+    const secretRoot = `root-sec-${'r'.repeat(24)}`
+    const secretAgent = `agent-sec-${'a'.repeat(24)}`
+    const preferRoot = resolveRootTokenRef({
+      STAGING_ROOT_BEARER_TOKEN: secretRoot,
+      STAGING_BEARER_TOKEN: 'legacy-should-not-win',
+    })
+    ok(
+      'root-token-prefers-STAGING_ROOT_BEARER_TOKEN',
+      preferRoot.ok &&
+        preferRoot.tokenRef === 'STAGING_ROOT_BEARER_TOKEN' &&
+        !JSON.stringify(preferRoot.meta).includes(secretRoot),
+    )
+    preferRoot.bearer = ''
+
+    const legacyRoot = resolveRootTokenRef({ STAGING_BEARER_TOKEN: secretRoot })
+    ok(
+      'root-token-legacy-fallback-STAGING_BEARER_TOKEN',
+      legacyRoot.ok && legacyRoot.tokenRef === 'STAGING_BEARER_TOKEN',
+    )
+    legacyRoot.bearer = ''
+
+    const missingAgent = resolveDualPrincipalTokens(
+      { STAGING_ROOT_BEARER_TOKEN: secretRoot },
+      { requireAgent: true, requireAgentId: true },
+    )
+    ok(
+      'dual-missing-agent-fail-closed',
+      missingAgent.ok === false && missingAgent.code === 'MISSING_AGENT_BEARER',
+    )
+
+    const missingAgentId = resolveDualPrincipalTokens(
+      {
+        STAGING_ROOT_BEARER_TOKEN: secretRoot,
+        STAGING_AGENT_BEARER_TOKEN: secretAgent,
+      },
+      { requireAgent: true, requireAgentId: true },
+    )
+    ok(
+      'dual-missing-agent-id-fail-closed',
+      missingAgentId.ok === false && missingAgentId.code === 'MISSING_AGENT_ID',
+    )
+
+    const dualOk = resolveDualPrincipalTokens(
+      {
+        STAGING_ROOT_BEARER_TOKEN: secretRoot,
+        STAGING_AGENT_BEARER_TOKEN: secretAgent,
+        STAGING_AGENT_ID: 'agent-principal-1',
+      },
+      { requireAgent: true, requireAgentId: true },
+    )
+    ok(
+      'dual-resolve-ok-meta-no-secrets',
+      dualOk.ok === true &&
+        dualOk.root.tokenRef === 'STAGING_ROOT_BEARER_TOKEN' &&
+        dualOk.agent.tokenRef === 'STAGING_AGENT_BEARER_TOKEN' &&
+        dualOk.agentId === 'agent-principal-1' &&
+        !JSON.stringify(dualOk.meta).includes(secretRoot) &&
+        !JSON.stringify(dualOk.meta).includes(secretAgent),
+    )
+    if (dualOk.root) dualOk.root.bearer = ''
+    if (dualOk.agent) dualOk.agent.bearer = ''
+  }
+
+  // Dual-principal happy mock lifecycle (ROOT tools ≠ AGENT tools; ops use correct token)
+  {
+    const dualIds = buildSyntheticSmokeIds({
+      smokeRunId: 'dualtest01',
+      boardId: 'mfs-rebuild',
+    })
+    const agent = createSyntheticAgentPrincipal({
+      boardId: 'mfs-rebuild',
+      agentId: dualIds.agentId,
+    })
+    const dualSecrets = [root.bearer, agent.bearer]
+    const {
+      fetchImpl: dualFetch,
+      calls: dualCalls,
+    } = createStagingSmokeMockFetch({
+      pin,
+      ids: dualIds,
+      expectedSha,
+      rootBearer: root.bearer,
+      agentBearer: agent.bearer,
+    })
+    let dualHappy
+    try {
+      dualHappy = await runStagingAgentLifecycleSmoke({
+        baseUrl: 'http://127.0.0.1:9',
+        mode: 'self-test',
+        boardId: 'mfs-rebuild',
+        pin,
+        ids: dualIds,
+        rootBearer: root.bearer,
+        agentBearer: agent.bearer,
+        dualPrincipal: true,
+        rootTokenRef: 'SYNTH_ROOT_SELF_TEST',
+        agentTokenRef: 'SYNTH_AGENT_SELF_TEST',
+        expectedSha,
+        expectedSchema: '003',
+        fetchImpl: dualFetch,
+        runtimePin: {
+          ok: true,
+          httpStatus: 200,
+          canonicalSnapshotId: pin.canonicalSnapshotId,
+          canonicalHash: pin.canonicalHash,
+          boardRev: pin.boardRev,
+          lifecycleRev: pin.lifecycleRev,
+          taskHash: pin.taskHash,
+        },
+        skipPinCheck: false,
+        now: '2026-07-13T00:00:00.000Z',
+        failClosed: true,
+        requireAgentBearer: true,
+      })
+      ok('dual-happy-lifecycle-ok', dualHappy.ok === true && dualHappy.dualPrincipal === true)
+      ok(
+        'dual-happy-no-secret-leak',
+        !JSON.stringify(dualHappy).includes(root.bearer) &&
+          !JSON.stringify(dualHappy).includes(agent.bearer),
+      )
+      ok(
+        'dual-root-tools-gate',
+        dualHappy.steps?.toolsListRoot?.ok === true &&
+          (dualHappy.steps?.toolsListRoot?.missing ?? []).length === 0 &&
+          ['publish_dispatch_plan', 'get_next', 'sync_accounts'].every(
+            (t) => ROOT_REQUIRED_MCP_TOOLS.includes(t),
+          ),
+      )
+      ok(
+        'dual-agent-tools-gate',
+        dualHappy.steps?.toolsListAgent?.ok === true &&
+          (dualHappy.steps?.toolsListAgent?.missing ?? []).length === 0 &&
+          ['register_run', 'heartbeat_run'].every((t) =>
+            AGENT_REQUIRED_MCP_TOOLS.includes(t),
+          ),
+      )
+      // Ops token roles from mock call log (authorized calls only; unauth probes share tool names)
+      const roleFor = (name) =>
+        dualCalls.find((c) => c.name === name && c.hasAuth)?.mockRole
+      ok(
+        'dual-ops-correct-token',
+        roleFor('publish_dispatch_plan') === 'root' &&
+          roleFor('get_next') === 'root' &&
+          roleFor('sync_accounts') === 'root' &&
+          roleFor('register_run') === 'agent' &&
+          roleFor('heartbeat_run') === 'agent',
+      )
+      ok(
+        'dual-register-own-agentId',
+        dualHappy.steps?.registerRunMeta?.agentId === dualIds.agentId &&
+          dualHappy.steps?.registerRunMeta?.principal === 'AGENT',
+      )
+    } catch (e) {
+      ok('dual-happy-lifecycle-ok', false, String(e?.message || e))
+    }
+    // Real-mode without agent bearer must fail closed
+    {
+      let agentMissing = false
+      try {
+        await runStagingAgentLifecycleSmoke({
+          baseUrl: 'http://127.0.0.1:9',
+          mode: 'real',
+          bearer: root.bearer,
+          agentBearer: null,
+          requireBearer: true,
+          failClosed: true,
+          skipPinCheck: true,
+          initialize: false,
+          fetchImpl: async () => ({ ok: false, status: 500, text: async () => '' }),
+        })
+      } catch (e) {
+        agentMissing =
+          e instanceof StagingAgentSmokeError &&
+          (e.code === 'MISSING_AGENT_BEARER' || /STAGING_AGENT_BEARER/i.test(e.message))
+      }
+      ok('real-mode-missing-agent-fail-closed', agentMissing)
+    }
+    agent.bearer = ''
+    dualSecrets.length = 0
   }
 
   // Redaction of secrets in sanitize path
@@ -1290,23 +1806,36 @@ export async function runStagingAgentSmokeSelfTests() {
 }
 
 /**
- * Real remote staging entry (SSH tunnel). Fail-closed when unreachable / pin / SHA mismatch.
+ * Real remote staging entry (SSH tunnel). Dual-principal fail-closed.
+ * Requires STAGING_ROOT_BEARER_TOKEN (or legacy STAGING_BEARER_TOKEN) + STAGING_AGENT_BEARER_TOKEN + STAGING_AGENT_ID.
  */
 export async function runRealStagingAgentSmoke(opts = {}) {
   const env = opts.env ?? process.env
   const baseUrl = (opts.baseUrl ?? resolveStagingUrl()).replace(/\/$/, '')
   const boardId = opts.boardId ?? resolveSmokeBoardId(env)
-  const token = resolveAuthorizedTokenRef(env)
-  if (!token.ok) {
-    throw new StagingAgentSmokeError(token.reason, {
-      code: 'MISSING_BEARER',
-      tokenRef: token.tokenRef,
+
+  const dual = resolveDualPrincipalTokens(env, {
+    requireAgent: opts.requireAgent !== false,
+    requireAgentId: opts.requireAgentId !== false,
+  })
+  if (!dual.ok) {
+    throw new StagingAgentSmokeError(dual.reason || 'dual principal resolution failed', {
+      code: dual.code || 'MISSING_BEARER',
+      tokenRef: dual.root?.tokenRef ?? null,
+      agentTokenRef: dual.agent?.tokenRef ?? null,
+      meta: dual.meta,
     })
   }
+
   const expectedSha = opts.expectedSha ?? resolveExpectedSha(env, { require: false })
   const expectedSchema = opts.expectedSchema ?? resolveExpectedSchema(env)
   const pin = opts.pin ?? loadStagingPin()
-  const ids = opts.ids ?? buildSyntheticSmokeIds({ boardId })
+  const baseIds = opts.ids ?? buildSyntheticSmokeIds({ boardId })
+  // ownRun: register_run.agentId must match AGENT principal agentId/actorId
+  const ids = {
+    ...baseIds,
+    agentId: dual.agentId || baseIds.agentId,
+  }
 
   const ownerTarget = {
     base_url: baseUrl,
@@ -1317,11 +1846,16 @@ export async function runRealStagingAgentSmoke(opts = {}) {
         return null
       }
     })(),
-    account: `tokenRef=${token.tokenRef}`,
+    account: `rootTokenRef=${dual.root.tokenRef};agentTokenRef=${dual.agent.tokenRef};agentId=${dual.agentId}`,
     device: 'n/a-mcp-http',
     boardId,
     expectedSha: expectedSha ?? 'UNSET',
+    dualPrincipal: true,
   }
+
+  const secrets = []
+  if (dual.root?.bearer) secrets.push(dual.root.bearer)
+  if (dual.agent?.bearer) secrets.push(dual.agent.bearer)
 
   try {
     const receipt = await runStagingAgentLifecycleSmoke({
@@ -1330,10 +1864,16 @@ export async function runRealStagingAgentSmoke(opts = {}) {
       boardId,
       pin,
       ids,
-      bearer: token.bearer,
-      tokenRef: token.tokenRef,
+      rootBearer: dual.root.bearer,
+      agentBearer: dual.agent.bearer,
+      dualPrincipal: true,
+      rootTokenRef: dual.root.tokenRef,
+      agentTokenRef: dual.agent.tokenRef,
+      tokenRef: dual.root.tokenRef,
+      principalMeta: dual.meta,
       expectedSha,
       expectedSchema,
+      requireAgentBearer: true,
       requireUnauthHealthDenial: true,
       // Real staging may not expose full pin on healthz — allow weak only when env set
       allowWeakPin: env.STAGING_ALLOW_WEAK_PIN === '1',
@@ -1345,13 +1885,18 @@ export async function runRealStagingAgentSmoke(opts = {}) {
     return {
       ok: receipt.ok,
       ownerTarget,
-      tokenMeta: token.meta,
-      receipt: redactSecretsDeep(receipt, [token.bearer]),
+      tokenMeta: dual.meta,
+      receipt: redactSecretsDeep(receipt, secrets),
     }
   } finally {
-    // scrub local bearer reference
+    // scrub local bearer references (never leave secrets in returned dual handles)
     try {
-      token.bearer = ''
+      if (dual.root) dual.root.bearer = ''
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (dual.agent) dual.agent.bearer = ''
     } catch {
       /* ignore */
     }
