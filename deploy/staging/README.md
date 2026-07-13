@@ -63,6 +63,62 @@ cp deploy/staging/env.staging.example deploy/staging/.env
 
 `deploy/staging/.env` is gitignored by the root `.env` pattern and must never be committed.
 
+### `CAIRN_BEARER_PRINCIPALS_JSON` shape
+
+`parseEnvBearerJson` (`src/server/rbac.ts`) accepts **only a JSON array** of principal
+records. A JSON object/map (token → principal) is rejected (mechanism not OK).
+
+| Field | Required | Notes |
+|---|---|---|
+| `secret` | yes | Bearer value compared timing-safe; never log |
+| `role` | yes | `OWNER` \| `ROOT_ORCHESTRATOR` \| `AGENT` \| `INTEGRATOR` — not `ROOT` |
+| `tokenId` | recommended | Opaque id / label source |
+| `actorId` | recommended | Actor identity |
+| `boardId` | optional | Constrains board access when set |
+| `scopes` | optional | Defaults from role when omitted |
+
+Placeholder example (safe to commit as documentation only):
+
+```text
+CAIRN_BEARER_PRINCIPALS_JSON=[{"tokenId":"staging-root","secret":"REPLACE_ME_staging_bearer_secret","role":"ROOT_ORCHESTRATOR","actorId":"staging-root","boardId":"mfs-rebuild-staging-synth"}]
+```
+
+### Generate a staging ROOT principal (does not print the secret)
+
+Writes/updates `CAIRN_BEARER_PRINCIPALS_JSON` in `deploy/staging/.env` only.
+Prints `tokenId` for ops reference; **never** prints `secret`.
+
+```bash
+cd /opt/mfs/staging/cairn-taskmanager-v3/source   # or local checkout
+node <<'NODE'
+const crypto = require('crypto');
+const fs = require('fs');
+const path = 'deploy/staging/.env';
+const secret = crypto.randomBytes(32).toString('base64url');
+const tokenId = 'staging-root-' + crypto.randomBytes(4).toString('hex');
+const rec = [{
+  tokenId,
+  secret,
+  role: 'ROOT_ORCHESTRATOR',
+  actorId: 'staging-root',
+  boardId: 'mfs-rebuild-staging-synth',
+  label: 'staging-root',
+}];
+const line = 'CAIRN_BEARER_PRINCIPALS_JSON=' + JSON.stringify(rec);
+let text = fs.readFileSync(path, 'utf8');
+if (/^CAIRN_BEARER_PRINCIPALS_JSON=/m.test(text)) {
+  text = text.replace(/^CAIRN_BEARER_PRINCIPALS_JSON=.*$/m, line);
+} else {
+  text = text.replace(/\s*$/, '\n' + line + '\n');
+}
+fs.writeFileSync(path, text, { mode: 0o600 });
+// Intentionally omit secret from stdout
+console.log('updated', path, 'tokenId=' + tokenId + ' role=ROOT_ORCHESTRATOR (secret not printed)');
+NODE
+```
+
+Use that bearer only as `Authorization: Bearer <secret>` (read secret from `.env` on the host; do not paste into tickets/logs).
+
 ---
 
 ## Idempotent commands (sudo Docker Compose)
