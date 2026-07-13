@@ -876,7 +876,7 @@ export function createStagingSmokeMockFetch(opts = {}) {
         release: { sha: expectedSha, match: true },
         migration: {
           status: 'READY',
-          appliedVersions: ['001', '002', '003'],
+          appliedVersions: ['000', '001', '002', '003'],
           expectedLatestVersion: '003',
           schemaVersion: '003',
         },

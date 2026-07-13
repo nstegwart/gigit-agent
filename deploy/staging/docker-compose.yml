@@ -33,8 +33,13 @@ services:
       - cairn-tm-v3-net
     # No host port publish — MySQL is reachable only on the internal compose network.
     healthcheck:
-      # Official image helper; does not embed passwords in the compose file.
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      # Portable for official mysql:8.4 (MariaDB helper binary is absent). $$ keeps
+      # Compose from host-interpolating MYSQL_ROOT_PASSWORD; container shell expands it.
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD || exit 1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 12

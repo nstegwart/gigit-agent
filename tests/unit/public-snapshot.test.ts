@@ -471,7 +471,7 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
     schemaVersion: '003',
     migration: {
       status: 'READY',
-      appliedVersions: ['001', '002', '003'],
+      appliedVersions: ['000', '001', '002', '003'],
       expectedLatestVersion: '003',
       schemaVersion: '003',
     },
@@ -1302,7 +1302,7 @@ describe('health route auth/mismatch via public exports (no product edit)', () =
     schemaVersion: '003',
     migration: {
       status: 'READY',
-      appliedVersions: ['001', '002', '003'],
+      appliedVersions: ['000', '001', '002', '003'],
       expectedLatestVersion: '003',
       schemaVersion: '003',
     },

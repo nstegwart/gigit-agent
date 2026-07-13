@@ -162,8 +162,16 @@ export interface MigrationSqlExecutor {
 
 const MIGRATIONS_DIR_NAME = 'migrations'
 
-/** Ordered, deterministic manifest (SHA computed from on-disk SQL). */
+/** Ordered, deterministic manifest (SHA computed from on-disk SQL). Starts at 000 baseline. */
 export const MIGRATION_MANIFEST: ReadonlyArray<MigrationEntry> = [
+  {
+    version: '000',
+    filename: '000_baseline_core.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '000_baseline_core.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'Greenfield baseline core tables (boards/tasks/board_docs/audit_log + schema_migrations) before control-plane expand',
+  },
   {
     version: '001',
     filename: '001_control_plane_expand.sql',
@@ -225,9 +233,13 @@ export function loadMigrationManifest(cwd: string = process.cwd()): Array<Migrat
   })
 }
 
+/**
+ * Versions are zero-padded 3-digit strings starting at 000 (baseline), then 001…
+ * Index i must equal version number i (not i+1).
+ */
 export function assertManifestOrder(entries: ReadonlyArray<MigrationEntry>): void {
   for (let i = 0; i < entries.length; i++) {
-    const expected = String(i + 1).padStart(3, '0')
+    const expected = String(i).padStart(3, '0')
     if (entries[i]!.version !== expected) {
       throw new Error(`Migration order broken: expected version ${expected}, got ${entries[i]!.version}`)
     }

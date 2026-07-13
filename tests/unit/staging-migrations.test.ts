@@ -202,7 +202,7 @@ describe('migrate CLI parse + mapping loader', () => {
     })
     expect(result.exitCode).toBe(0)
     expect(result.plan?.status).toBe('READY')
-    expect(result.plan?.orderedVersions).toEqual(['001', '002', '003'])
+    expect(result.plan?.orderedVersions).toEqual(['000', '001', '002', '003'])
   })
 })
 
@@ -229,7 +229,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       },
     })
     expect(history).toHaveLength(1)
-    expect(history[0]!.version).toBe('001')
+    expect(history[0]!.version).toBe('000')
   })
 
   it('readMigrationSchemaState returns UNKNOWN when history empty', async () => {
@@ -276,7 +276,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
     })
     expect(schema.status).toBe('IDEMPOTENT_NOOP')
     expect(schema.schemaVersion).toBe('003')
-    expect(schema.appliedVersions).toEqual(['001', '002', '003'])
+    expect(schema.appliedVersions).toEqual(['000', '001', '002', '003'])
   })
 
   it('checksum mismatch surfaces via migrationStatusAsync', async () => {
@@ -300,28 +300,42 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
 // Disposable local MySQL integration (skip when unreachable)
 // ---------------------------------------------------------------------------
 
+const EXPECTED_VERSIONS = ['000', '001', '002', '003'] as const
+
 type ItCtx = {
-  database: string
+  /** Pre-existing BASE_DDL path (legacy tables present, empty schema_migrations). */
+  baseDdlDatabase: string
+  /** True empty greenfield database (no tables). */
+  greenfieldDatabase: string
+  /** Partial: control_plane tables present, tasks missing. */
+  partialDatabase: string
   host: string
   available: boolean
 }
 
 const itCtx: ItCtx = {
-  database: `cairn_migrate_it_${process.pid}_${Date.now()}`,
+  baseDdlDatabase: `cairn_migrate_base_${process.pid}_${Date.now()}`,
+  greenfieldDatabase: `cairn_migrate_gf_${process.pid}_${Date.now()}`,
+  partialDatabase: `cairn_migrate_partial_${process.pid}_${Date.now()}`,
   host: '127.0.0.1',
   available: false,
+}
+
+async function openAdminConn() {
+  return mysql.createConnection({
+    host: itCtx.host,
+    port: 3306,
+    user: process.env.CAIRN_DB_USER || 'root',
+    password: process.env.CAIRN_DB_PASSWORD || '',
+    multipleStatements: true,
+    connectTimeout: 3000,
+  })
 }
 
 async function probeLocalMysql(): Promise<boolean> {
   if (process.env.CAIRN_MIGRATE_IT === '0') return false
   try {
-    const conn = await mysql.createConnection({
-      host: itCtx.host,
-      port: 3306,
-      user: process.env.CAIRN_DB_USER || 'root',
-      password: process.env.CAIRN_DB_PASSWORD || '',
-      connectTimeout: 3000,
-    })
+    const conn = await openAdminConn()
     await conn.query('SELECT 1')
     await conn.end()
     return true
@@ -330,26 +344,79 @@ async function probeLocalMysql(): Promise<boolean> {
   }
 }
 
+/**
+ * Partial failed greenfield: some control-plane objects exist, baseline `tasks` missing.
+ * board_revisions shape matches 001 so CREATE IF NOT EXISTS is a true no-op.
+ */
+const PARTIAL_CONTROL_PLANE_DDL = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version VARCHAR(64) NOT NULL,
+  filename VARCHAR(255) NOT NULL,
+  sha256 CHAR(64) NOT NULL,
+  classification VARCHAR(64) NOT NULL,
+  applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  applied_by VARCHAR(160) NULL,
+  dry_run TINYINT(1) NOT NULL DEFAULT 0,
+  PRIMARY KEY (version),
+  UNIQUE KEY uq_schema_migrations_filename (filename)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS boards (
+  id VARCHAR(64) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  description TEXT NULL,
+  views JSON NULL,
+  created_at VARCHAR(32) NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS board_docs (
+  board_id VARCHAR(64) NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  data JSON NOT NULL,
+  PRIMARY KEY (board_id, kind)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS board_revisions (
+  board_id VARCHAR(64) NOT NULL,
+  board_rev BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  lifecycle_rev BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  subject_hash CHAR(64) NULL,
+  canonical_snapshot_id VARCHAR(64) NULL,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (board_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 describe('disposable local MySQL migration integration', () => {
   beforeAll(async () => {
     itCtx.available = await probeLocalMysql()
     if (!itCtx.available) return
-    const conn = await mysql.createConnection({
-      host: itCtx.host,
-      port: 3306,
-      user: process.env.CAIRN_DB_USER || 'root',
-      password: process.env.CAIRN_DB_PASSWORD || '',
-      multipleStatements: true,
-    })
+    const conn = await openAdminConn()
     try {
-      await conn.query(`CREATE DATABASE \`${itCtx.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)
-      await conn.query(`USE \`${itCtx.database}\``)
+      // Path A: pre-existing BASE_DDL (upgrade path) + seed rows
+      await conn.query(
+        `CREATE DATABASE \`${itCtx.baseDdlDatabase}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      )
+      await conn.query(`USE \`${itCtx.baseDdlDatabase}\``)
       await conn.query(BASE_DDL)
       await conn.query(
         `INSERT INTO boards (id, name, created_at) VALUES ('synth-board', 'Synthetic', '2026-01-01T00:00:00Z')`,
       )
       await conn.query(
         `INSERT INTO tasks (board_id, id, title, rev) VALUES ('synth-board', 't1', 'seed', 0)`,
+      )
+
+      // Path B: empty greenfield
+      await conn.query(
+        `CREATE DATABASE \`${itCtx.greenfieldDatabase}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      )
+
+      // Path C: partial — control_plane present, tasks missing
+      await conn.query(
+        `CREATE DATABASE \`${itCtx.partialDatabase}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      )
+      await conn.query(`USE \`${itCtx.partialDatabase}\``)
+      await conn.query(PARTIAL_CONTROL_PLANE_DDL)
+      await conn.query(
+        `INSERT INTO boards (id, name, created_at) VALUES ('partial-board', 'Partial', '2026-01-01T00:00:00Z')`,
       )
     } finally {
       await conn.end()
@@ -358,20 +425,17 @@ describe('disposable local MySQL migration integration', () => {
 
   afterAll(async () => {
     if (!itCtx.available) return
-    const conn = await mysql.createConnection({
-      host: itCtx.host,
-      port: 3306,
-      user: process.env.CAIRN_DB_USER || 'root',
-      password: process.env.CAIRN_DB_PASSWORD || '',
-    })
+    const conn = await openAdminConn()
     try {
-      await conn.query(`DROP DATABASE IF EXISTS \`${itCtx.database}\``)
+      await conn.query(`DROP DATABASE IF EXISTS \`${itCtx.baseDdlDatabase}\``)
+      await conn.query(`DROP DATABASE IF EXISTS \`${itCtx.greenfieldDatabase}\``)
+      await conn.query(`DROP DATABASE IF EXISTS \`${itCtx.partialDatabase}\``)
     } finally {
       await conn.end()
     }
   }, 30_000)
 
-  it('applies 001..003 in order, records checksums, idempotent re-apply, schema readback', async () => {
+  it('empty greenfield: apply yields 000,001,002,003; second apply skips all', async () => {
     if (!itCtx.available) {
       console.warn('SKIP disposable MySQL integration: local MySQL not reachable')
       return
@@ -379,8 +443,70 @@ describe('disposable local MySQL migration integration', () => {
 
     const exec = createMysqlMigrationExecutor({
       host: itCtx.host,
-      database: itCtx.database,
-      appliedBy: 'staging-migrations-test',
+      database: itCtx.greenfieldDatabase,
+      appliedBy: 'staging-migrations-greenfield',
+    })
+    try {
+      await exec.ping()
+      const empty = exec.listApplied ? await exec.listApplied() : []
+      expect(empty).toEqual([])
+
+      const first = await applyMigrations({
+        host: itCtx.host,
+        hostClass: 'LOCAL',
+        cwd,
+        executor: exec,
+        lifecycleMapping: SAFE_MAPPING,
+      })
+      expect(first.ok).toBe(true)
+      expect(first.applied).toEqual([...EXPECTED_VERSIONS])
+      expect(first.skipped).toEqual([])
+
+      const history = exec.listApplied ? await exec.listApplied() : []
+      expect(history.map((h) => h.version)).toEqual([...EXPECTED_VERSIONS])
+      const loaded = loadMigrationManifest(cwd)
+      for (const h of history) {
+        const m = loaded.find((x) => x.version === h.version)!
+        expect(h.sha256).toBe(m.sha256)
+      }
+
+      // Prove core + expand tables exist after greenfield apply
+      // createMysqlMigrationExecutor.query returns rows only (not [rows, fields])
+      const tables = (await exec.query(
+        `SELECT TABLE_NAME AS t FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY t`,
+        [itCtx.greenfieldDatabase],
+      )) as Array<{ t: string }>
+      const names = tables.map((r) => r.t)
+      expect(names).toEqual(
+        expect.arrayContaining(['boards', 'tasks', 'board_docs', 'audit_log', 'schema_migrations']),
+      )
+
+      const second = await applyMigrations({
+        host: itCtx.host,
+        hostClass: 'LOCAL',
+        cwd,
+        executor: exec,
+        lifecycleMapping: SAFE_MAPPING,
+      })
+      expect(second.ok).toBe(true)
+      expect(second.applied).toEqual([])
+      expect(second.skipped).toEqual([...EXPECTED_VERSIONS])
+      expect(second.plan.status).toBe('IDEMPOTENT_NOOP')
+    } finally {
+      await exec.close()
+    }
+  }, 60_000)
+
+  it('pre-existing BASE_DDL path remains safe: apply 000-003, checksums, idempotent re-apply', async () => {
+    if (!itCtx.available) {
+      console.warn('SKIP disposable MySQL integration: local MySQL not reachable')
+      return
+    }
+
+    const exec = createMysqlMigrationExecutor({
+      host: itCtx.host,
+      database: itCtx.baseDdlDatabase,
+      appliedBy: 'staging-migrations-base-ddl',
     })
     try {
       await exec.ping()
@@ -389,7 +515,7 @@ describe('disposable local MySQL migration integration', () => {
 
       const ro = createMysqlMigrationReadOnlyExecutor({
         host: itCtx.host,
-        database: itCtx.database,
+        database: itCtx.baseDdlDatabase,
       })
       try {
         const dry = await dryRunMigrations({
@@ -400,6 +526,7 @@ describe('disposable local MySQL migration integration', () => {
           lifecycleMapping: SAFE_MAPPING,
         })
         expect(dry.status).toBe('READY')
+        expect(dry.orderedVersions).toEqual([...EXPECTED_VERSIONS])
       } finally {
         await ro.close()
       }
@@ -412,11 +539,19 @@ describe('disposable local MySQL migration integration', () => {
         lifecycleMapping: SAFE_MAPPING,
       })
       expect(first.ok).toBe(true)
-      expect(first.applied).toEqual(['001', '002', '003'])
+      expect(first.applied).toEqual([...EXPECTED_VERSIONS])
       expect(first.skipped).toEqual([])
 
+      // Seed rows survived CREATE IF NOT EXISTS baseline + expand
+      const taskRows = (await exec.query(
+        `SELECT id, title FROM tasks WHERE board_id = ? AND id = ?`,
+        ['synth-board', 't1'],
+      )) as Array<{ id: string; title: string }>
+      expect(taskRows).toHaveLength(1)
+      expect(taskRows[0]!.title).toBe('seed')
+
       const history = exec.listApplied ? await exec.listApplied() : []
-      expect(history.map((h) => h.version)).toEqual(['001', '002', '003'])
+      expect(history.map((h) => h.version)).toEqual([...EXPECTED_VERSIONS])
       const loaded = loadMigrationManifest(cwd)
       for (const h of history) {
         const m = loaded.find((x) => x.version === h.version)!
@@ -432,10 +567,9 @@ describe('disposable local MySQL migration integration', () => {
       })
       expect(schema.schemaVersion).toBe('003')
       expect(schema.status).toBe('IDEMPOTENT_NOOP')
-      expect(schema.appliedVersions).toEqual(['001', '002', '003'])
+      expect(schema.appliedVersions).toEqual([...EXPECTED_VERSIONS])
       expect(schema.expectedLatestVersion).toBe('003')
 
-      // Idempotent re-apply
       const second = await applyMigrations({
         host: itCtx.host,
         hostClass: 'LOCAL',
@@ -445,7 +579,7 @@ describe('disposable local MySQL migration integration', () => {
       })
       expect(second.ok).toBe(true)
       expect(second.applied).toEqual([])
-      expect(second.skipped).toEqual(['001', '002', '003'])
+      expect(second.skipped).toEqual([...EXPECTED_VERSIONS])
       expect(second.plan.status).toBe('IDEMPOTENT_NOOP')
 
       // Fail-closed checksum mismatch
@@ -468,15 +602,93 @@ describe('disposable local MySQL migration integration', () => {
     }
   }, 60_000)
 
-  it('CLI status against disposable DB reports schema readback', async () => {
+  it('partial state (control_plane present, tasks missing) recovers via 000-003', async () => {
+    if (!itCtx.available) {
+      console.warn('SKIP disposable MySQL integration: local MySQL not reachable')
+      return
+    }
+
+    // Prove tasks is missing before apply; board_revisions (control-plane) present
+    const probe = await openAdminConn()
+    try {
+      const [before] = (await probe.query(
+        `SELECT COUNT(*) AS c FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'tasks'`,
+        [itCtx.partialDatabase],
+      )) as [Array<{ c: number }>, unknown]
+      expect(Number(before[0]!.c)).toBe(0)
+      const [cp] = (await probe.query(
+        `SELECT COUNT(*) AS c FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'board_revisions'`,
+        [itCtx.partialDatabase],
+      )) as [Array<{ c: number }>, unknown]
+      expect(Number(cp[0]!.c)).toBe(1)
+    } finally {
+      await probe.end()
+    }
+
+    const exec = createMysqlMigrationExecutor({
+      host: itCtx.host,
+      database: itCtx.partialDatabase,
+      appliedBy: 'staging-migrations-partial',
+    })
+    try {
+      await exec.ping()
+      // schema_migrations table exists but has zero history rows
+      const empty = exec.listApplied ? await exec.listApplied() : []
+      expect(empty).toEqual([])
+
+      const result = await applyMigrations({
+        host: itCtx.host,
+        hostClass: 'LOCAL',
+        cwd,
+        executor: exec,
+        lifecycleMapping: SAFE_MAPPING,
+      })
+      expect(result.ok).toBe(true)
+      expect(result.applied).toEqual([...EXPECTED_VERSIONS])
+      expect(result.skipped).toEqual([])
+
+      const after = (await exec.query(
+        `SELECT COUNT(*) AS c FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'tasks'`,
+        [itCtx.partialDatabase],
+      )) as Array<{ c: number }>
+      expect(Number(after[0]!.c)).toBe(1)
+
+      // Expand column from 001 must exist on recovered tasks
+      const cols = (await exec.query(
+        `SELECT COLUMN_NAME AS c FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'tasks' AND COLUMN_NAME = 'task_class'`,
+        [itCtx.partialDatabase],
+      )) as Array<{ c: string }>
+      expect(cols).toHaveLength(1)
+
+      const history = exec.listApplied ? await exec.listApplied() : []
+      expect(history.map((h) => h.version)).toEqual([...EXPECTED_VERSIONS])
+
+      const second = await applyMigrations({
+        host: itCtx.host,
+        hostClass: 'LOCAL',
+        cwd,
+        executor: exec,
+        lifecycleMapping: SAFE_MAPPING,
+      })
+      expect(second.ok).toBe(true)
+      expect(second.applied).toEqual([])
+      expect(second.skipped).toEqual([...EXPECTED_VERSIONS])
+    } finally {
+      await exec.close()
+    }
+  }, 60_000)
+
+  it('CLI status against disposable BASE_DDL DB reports schema readback', async () => {
     if (!itCtx.available) return
-    // Restore valid checksums after previous test may have tampered — re-seed history
-    // by re-reading from apply path is complex; just open status on current DB state.
+    // CHECKSUM_MISMATCH exit 2 after tamper in BASE_DDL test is still valid CLI behavior
     const result = await runMigrateCli(
-      ['status', '--host', itCtx.host, '--database', itCtx.database, '--json'],
+      ['status', '--host', itCtx.host, '--database', itCtx.baseDdlDatabase, '--json'],
       { log: () => {}, logErr: () => {} },
     )
-    // CHECKSUM_MISMATCH exit 2 after tamper in previous test is still valid CLI behavior
     expect([0, 2]).toContain(result.exitCode)
     expect(result.schema).toBeDefined()
     expect(result.schema!.expectedLatestVersion).toBe('003')
