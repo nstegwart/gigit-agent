@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
     "test:unit": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "migrate": "node src/server/migrate-runner.mjs",
     "migrate:plan": "node src/server/migrate-runner.mjs plan",
     "migrate:dry-run": "node src/server/migrate-runner.mjs dry-run",

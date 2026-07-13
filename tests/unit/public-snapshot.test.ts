@@ -10,10 +10,12 @@ import {
   etagMatches,
   getOrMaterializePublicSnapshot,
   handlePublicSnapshotGet,
+  isCanonicalMaskedAccountId,
   maskAccountId,
   materializePublicSnapshot,
   normalizeEtagHeader,
   pinIdentity,
+  publicContentFingerprint,
   publicSnapshotResultToResponse,
   sanitizePublicValue,
   sha256Hex,
@@ -49,16 +51,27 @@ import {
   extractDirectRemoteAddress,
   extractTrustedEdgeClientIp,
   getPublicSnapshotDeps,
+  isPublicBoardAllowed,
   loadPublicAggregation,
   publicSnapshotGetHandler,
+  resetPublicSnapshotDeps,
   resolvePublicSnapshotClientIp,
+  setPublicBoardAllowlistForTests,
   setPublicSnapshotDeps,
   setTrustedEdgeClientIpProvider,
 } from '#/routes/api.public-snapshot'
 import {
+  createPublicSnapshotService,
+  getSharedPublicSnapshotService,
+  resetPublicSnapshotServiceForTests,
+  setTestPublicSnapshotService,
+} from '#/server/public-snapshot-service'
+import {
+  REQUIRED_TABLES_BY_MIGRATION,
   getHealthzDeps,
   healthzAuthGuard,
   healthzGetHandler,
+  requiredTablesForAppliedVersions,
   setHealthzDeps,
 } from '#/routes/api.healthz'
 
@@ -165,23 +178,59 @@ describe('AC-PUBLIC-01 pinned materialization once (no recomputation)', () => {
     expect(left.payload.projects.map((p) => p.id)).toEqual(['p1', 'p2'])
   })
 
-  it('getOrMaterialize returns same object for same pin (no recompute)', () => {
+  it('getOrMaterialize returns same object for same pin+content (no recompute)', () => {
     const store = createMemoryPublicSnapshotStore()
     const input = baseAggregation()
     const first = getOrMaterializePublicSnapshot({ boardId: 'board-1', store, input })
-    // Mutate input summaries — cache must ignore recomputation for same pin
-    const mutated = baseAggregation({
-      decisionCount: 99,
-      tasks: [{ id: 't-new', title: 'should not appear' }],
-    })
+    // Identical content again — cache hit
     const second = getOrMaterializePublicSnapshot({
       boardId: 'board-1',
       store,
-      input: mutated,
+      input: baseAggregation(),
     })
     expect(second).toBe(first)
     expect(second.payload.decisionCount).toBe(2)
-    expect(second.payload.tasks).toHaveLength(1)
+    expect(second.contentFingerprint).toBe(publicContentFingerprint(input))
+  })
+
+  it('decisionCount/G5/lifecycle content change invalidates cache even when pin unchanged', () => {
+    const store = createMemoryPublicSnapshotStore()
+    const pin = basePin()
+    const first = getOrMaterializePublicSnapshot({
+      boardId: 'board-1',
+      store,
+      input: baseAggregation({ pin, decisionCount: 2 }),
+    })
+    // Same pin, different decision count → must rematerialize (not boardHash-only identity)
+    const second = getOrMaterializePublicSnapshot({
+      boardId: 'board-1',
+      store,
+      input: baseAggregation({ pin, decisionCount: 99 }),
+    })
+    expect(second).not.toBe(first)
+    expect(second.payload.decisionCount).toBe(99)
+    expect(second.etag).not.toBe(first.etag)
+    expect(second.contentFingerprint).not.toBe(first.contentFingerprint)
+
+    const g5Changed = getOrMaterializePublicSnapshot({
+      boardId: 'board-1',
+      store,
+      input: baseAggregation({
+        pin,
+        decisionCount: 99,
+        g5: { g5Pass: true, domainPassCount: 9, domainRequiredCount: 9 },
+      }),
+    })
+    expect(g5Changed.etag).not.toBe(second.etag)
+
+    const lifecyclePin = basePin({ lifecycleRev: 99 })
+    const lifeChanged = getOrMaterializePublicSnapshot({
+      boardId: 'board-1',
+      store,
+      input: baseAggregation({ pin: lifecyclePin, decisionCount: 99 }),
+    })
+    expect(lifeChanged.etag).not.toBe(second.etag)
+    expect(lifeChanged.pin.lifecycleRev).toBe(99)
   })
 
   it('pin change forces new materialization', () => {
@@ -269,11 +318,54 @@ describe('AC-PUBLIC-02 ETag SHA-256 and If-None-Match 304', () => {
 })
 
 describe('AC-PUBLIC-03 redaction / allowlist / attack surface', () => {
-  it('masks account ids and run account refs', () => {
+  it('masks account ids and run account refs with canonical pattern', () => {
     const snap = materializePublicSnapshot(baseAggregation())
-    expect(snap.payload.accounts[0]?.accountIdMasked).toMatch(/^acc_\*\*\*/)
-    expect(snap.payload.runs[0]?.accountRefMasked).toMatch(/^acc_\*\*\*/)
+    expect(snap.payload.accounts[0]?.accountIdMasked).toMatch(/^acc_\*{3}[A-Za-z0-9]{4}$/)
+    expect(snap.payload.runs[0]?.accountRefMasked).toMatch(/^acc_\*{3}[A-Za-z0-9]{4}$/)
     expect(maskAccountId('abcdefgh')).toBe('acc_***efgh')
+    expect(isCanonicalMaskedAccountId('acc_***efgh')).toBe(true)
+    // acc_ prefix alone is NOT masking
+    expect(isCanonicalMaskedAccountId('acc_plaintextSECRET99')).toBe(false)
+    expect(maskAccountId('acc_plaintextSECRET99')).toMatch(/^acc_\*{3}[A-Za-z0-9]{4}$/)
+    expect(maskAccountId('acc_plaintextSECRET99')).not.toContain('plaintext')
+    expect(maskAccountId('acc_plaintextSECRET99')).not.toContain('SECRET')
+  })
+
+  it('hostile acc_ residual identity is remasked on materialize', () => {
+    const snap = materializePublicSnapshot(
+      baseAggregation({
+        accounts: [
+          {
+            accountIdMasked: 'acc_rawIdentityHOSTILE1',
+            status: 'ACTIVE',
+            usable: true,
+          },
+        ],
+        runs: [
+          {
+            runId: 'run-h',
+            status: 'RUNNING',
+            accountRefMasked: 'acc_rawIdentityHOSTILE1',
+          },
+        ],
+      }),
+    )
+    expect(snap.payload.accounts[0]?.accountIdMasked).toMatch(/^acc_\*{3}[A-Za-z0-9]{4}$/)
+    expect(snap.payload.accounts[0]?.accountIdMasked).not.toContain('rawIdentity')
+    expect(snap.payload.runs[0]?.accountRefMasked).toMatch(/^acc_\*{3}[A-Za-z0-9]{4}$/)
+    expect(snap.bodyJson).not.toContain('rawIdentity')
+    expect(snap.bodyJson).not.toContain('HOSTILE')
+  })
+
+  it('usable=false forced for BAN/403/AUTH_EXPIRED even if caller set usable true', () => {
+    for (const status of ['BAN', '403', 'AUTH_EXPIRED', 'quarantine']) {
+      const snap = materializePublicSnapshot(
+        baseAggregation({
+          accounts: [{ accountIdMasked: 'acc_***ab12', status, usable: true }],
+        }),
+      )
+      expect(snap.payload.accounts[0]?.usable).toBe(false)
+    }
   })
 
   it('rejects forbidden secret fields in strict mode', () => {
@@ -464,16 +556,16 @@ describe('AC-AUTH-05 PUBLIC_SNAPSHOT_RATE_LIMIT_V1', () => {
 describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
   const expected: HealthExpected = {
     deployedSha: 'd01d6d0aba17cc0aec23f3e4f8ad26229eac249f',
-    schemaVersion: '003',
+    schemaVersion: '005',
   }
   const healthyObserved: HealthObserved = {
     deployedSha: 'd01d6d0aba17cc0aec23f3e4f8ad26229eac249f',
-    schemaVersion: '003',
+    schemaVersion: '005',
     migration: {
       status: 'READY',
-      appliedVersions: ['000', '001', '002', '003'],
-      expectedLatestVersion: '003',
-      schemaVersion: '003',
+      appliedVersions: ['000', '001', '002', '003', '004', '005'],
+      expectedLatestVersion: '005',
+      schemaVersion: '005',
     },
     snapshot: {
       canonicalSnapshotId: 'snap-1',
@@ -483,6 +575,7 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
     dependencies: [
       { name: 'mysql', status: 'up' },
       { name: 'mcp', status: 'up' },
+      { name: 'schema-required-tables', status: 'up' },
     ],
     serviceName: 'cairn-task-manager',
   }
@@ -517,7 +610,7 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
     const p = result.payload as ReturnType<typeof buildHealthzPayload>
     expect(p.status).toBe('ok')
     expect(p.deployedSha).toBe(expected.deployedSha)
-    expect(p.schema.version).toBe('003')
+    expect(p.schema.version).toBe('005')
     expect(p.schema.match).toBe(true)
     expect(p.release.match).toBe(true)
     expect(p.canonicalSnapshotId).toBe('snap-1')
@@ -527,6 +620,76 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
     expect(p.dependencies).toEqual([
       { name: 'mysql', status: 'up' },
       { name: 'mcp', status: 'up' },
+      { name: 'schema-required-tables', status: 'up' },
+    ])
+  })
+
+  it('only 003 applied (prior-schema) => unhealthy vs latest expected 005', () => {
+    const only003: HealthObserved = {
+      ...healthyObserved,
+      schemaVersion: '003',
+      migration: {
+        status: 'PENDING',
+        appliedVersions: ['000', '001', '002', '003'],
+        expectedLatestVersion: '005',
+        schemaVersion: '003',
+      },
+      // Prior-schema: 004/005 tables not required yet for claimed history
+      dependencies: [
+        { name: 'mysql', status: 'up' },
+        { name: 'mcp', status: 'up' },
+      ],
+    }
+    const evaled = evaluateHealthStatus(expected, only003)
+    expect(evaled.status).toBe('unhealthy')
+    expect(evaled.schemaMatch).toBe(false)
+    expect(evaled.unhealthyReasons).toContain('SCHEMA_VERSION_MISMATCH')
+  })
+
+  it('history 005 but required table missing => unhealthy (schema unproven)', () => {
+    // loadObserved clears schemaVersion when required 004/005 tables are missing.
+    const missingTables: HealthObserved = {
+      ...healthyObserved,
+      schemaVersion: '',
+      migration: {
+        status: 'PENDING',
+        appliedVersions: ['000', '001', '002', '003', '004', '005'],
+        expectedLatestVersion: '005',
+        schemaVersion: '',
+      },
+      dependencies: [
+        { name: 'mysql', status: 'up' },
+        { name: 'mcp', status: 'up' },
+        {
+          name: 'schema-required-tables',
+          status: 'down',
+          detail: 'missing:control_plane_dispatch_plans',
+        },
+      ],
+    }
+    const evaled = evaluateHealthStatus(expected, missingTables)
+    expect(evaled.status).toBe('unhealthy')
+    expect(evaled.schemaMatch).toBe(false)
+    expect(evaled.unhealthyReasons).toContain('SCHEMA_VERSION_MISMATCH')
+    expect(evaled.unhealthyReasons).toContain('DEPENDENCY_DOWN:schema-required-tables')
+  })
+
+  it('all required (005 history + tables up) => healthy', () => {
+    const evaled = evaluateHealthStatus(expected, healthyObserved)
+    expect(evaled.status).toBe('ok')
+    expect(evaled.schemaMatch).toBe(true)
+    expect(evaled.releaseMatch).toBe(true)
+    expect(evaled.unhealthyReasons).toEqual([])
+  })
+
+  it('requiredTablesForAppliedVersions covers 004/005 probes only', () => {
+    expect(requiredTablesForAppliedVersions(['000', '001', '002', '003'])).toEqual([])
+    expect(requiredTablesForAppliedVersions(['000', '001', '002', '003', '004'])).toEqual([
+      ...REQUIRED_TABLES_BY_MIGRATION['004'],
+    ])
+    expect(requiredTablesForAppliedVersions(['000', '001', '002', '003', '004', '005'])).toEqual([
+      ...REQUIRED_TABLES_BY_MIGRATION['004'],
+      ...REQUIRED_TABLES_BY_MIGRATION['005'],
     ])
   })
 
@@ -591,27 +754,44 @@ describe('stable stringify helpers', () => {
 })
 
 describe('installed route deps (api.public-snapshot)', () => {
-  const originalPublicDeps = getPublicSnapshotDeps()
-
   afterEach(() => {
-    setPublicSnapshotDeps(originalPublicDeps)
+    resetPublicSnapshotDeps()
+    setPublicBoardAllowlistForTests(null)
+    setTestPublicSnapshotService(null)
+    resetPublicSnapshotServiceForTests()
   })
 
-  it('default deps install loadPublicAggregation + rate limiter + store + resolveIp', () => {
+  it('default deps share MCP public-snapshot-service store + rate limiter', () => {
+    resetPublicSnapshotServiceForTests()
+    const shared = getSharedPublicSnapshotService()
     const deps = getPublicSnapshotDeps()
     expect(deps.loadAggregation).toBe(loadPublicAggregation)
-    expect(deps.store).toBeDefined()
-    expect(deps.rateLimiter).toBeDefined()
-    expect(typeof deps.rateLimiter?.check).toBe('function')
+    expect(deps.store).toBe(shared.store)
+    expect(deps.rateLimiter).toBe(shared.rateLimiter)
     expect(typeof deps.resolveIp).toBe('function')
   })
 
-  it('loadPublicAggregation returns null for missing board (fail-closed, no invent)', async () => {
+  it('public board allowlist fail-closed when unset / board not listed', async () => {
+    setPublicBoardAllowlistForTests([])
+    expect(isPublicBoardAllowed('ibils')).toBe(false)
+    expect(await loadPublicAggregation('ibils')).toBeNull()
+    expect(await loadPublicAggregation('board-does-not-exist-w15-05')).toBeNull()
+
+    setPublicBoardAllowlistForTests(['only-this-board'])
+    expect(isPublicBoardAllowed('ibils')).toBe(false)
+    expect(await loadPublicAggregation('ibils')).toBeNull()
+  })
+
+  it('loadPublicAggregation returns null for missing/disallowed board (fail-closed, no invent)', async () => {
+    setPublicBoardAllowlistForTests(['board-does-not-exist-w15-05'])
     const agg = await loadPublicAggregation('board-does-not-exist-w15-05')
+    // Board missing or sectionErrors/stale from control-center load → null
     expect(agg).toBeNull()
   })
 
   it('installed handler returns 503 STALE_OR_MISSING for missing board — no invented body', async () => {
+    // Use default shared deps (real loadPublicAggregation) — disallowed board
+    setPublicBoardAllowlistForTests([])
     const res = await publicSnapshotGetHandler(
       new Request('http://local/api/public-snapshot?boardId=board-does-not-exist-w15-05'),
     )
@@ -650,37 +830,143 @@ describe('installed route deps (api.public-snapshot)', () => {
     expect(body.pin.serializerVersion).toBe(PUBLIC_SERIALIZER_VERSION)
   })
 
-  it('loadPublicAggregation pin envelope uses content hash + non-invented rev/g5', async () => {
-    // Prefer a real board when present; otherwise skip shape on null only.
-    const probe = await loadPublicAggregation('ibils')
-    if (!probe) {
-      // Environment without data/boards — still proves fail-closed path exists
-      expect(probe).toBeNull()
-      return
+  it('API handler + MCP service share store: revision/hash/count/ETag parity', async () => {
+    resetPublicSnapshotServiceForTests()
+    const sharedStore = createMemoryPublicSnapshotStore()
+    const sharedLimiter = createPublicSnapshotRateLimiter({
+      policy: { burst: 100, sustainedPerMinute: 600 },
+    })
+    const svc = createPublicSnapshotService({
+      store: sharedStore,
+      rateLimiter: sharedLimiter,
+    })
+    setTestPublicSnapshotService(svc)
+
+    const input = baseAggregation({
+      pin: basePin({
+        canonicalSnapshotId: 'snap-parity-1',
+        canonicalHash: 'c'.repeat(64),
+        boardRev: 7,
+        lifecycleRev: 3,
+      }),
+      decisionCount: 5,
+      g5: { g5Pass: true, domainPassCount: 9, domainRequiredCount: 9 },
+    })
+
+    // MCP service path
+    const mcp = await svc.getPublicSnapshot({
+      boardId: 'board-1',
+      loadAggregation: async () => input,
+      skipRateLimit: true,
+    })
+    expect(mcp.ok).toBe(true)
+    if (!mcp.ok) throw new Error('mcp load failed')
+
+    // HTTP path with same shared store + same aggregation
+    setPublicSnapshotDeps({
+      store: sharedStore,
+      loadAggregation: async () => input,
+      rateLimiter: sharedLimiter,
+      resolveIp: () => '10.0.0.1',
+    })
+    const httpRes = await publicSnapshotGetHandler(
+      new Request('http://local/api/public-snapshot?boardId=board-1'),
+    )
+    expect(httpRes.status).toBe(200)
+    const httpBody = await httpRes.json()
+
+    expect(httpBody.etag).toBe(mcp.etag)
+    expect(httpBody.pin).toEqual(mcp.pin)
+    expect(httpBody.decisionCount).toBe(5)
+    expect(httpBody.decisionCount).toBe(mcp.snapshot.decisionCount)
+    expect(httpBody.g5).toEqual(mcp.snapshot.g5)
+    expect(httpBody.pin.boardRev).toBe(7)
+    expect(httpBody.pin.lifecycleRev).toBe(3)
+    expect(httpBody.pin.canonicalHash).toBe('c'.repeat(64))
+    // Second MCP call replays same materialization (shared store)
+    const mcp2 = await svc.getPublicSnapshot({
+      boardId: 'board-1',
+      loadAggregation: async () => input,
+      skipRateLimit: true,
+    })
+    expect(mcp2.ok).toBe(true)
+    if (mcp2.ok) {
+      expect(mcp2.replayed).toBe(true)
+      expect(mcp2.etag).toBe(mcp.etag)
     }
-    expect(probe.boardId).toBe('ibils')
-    expect(probe.pin.serializerVersion).toBe(PUBLIC_SERIALIZER_VERSION)
-    expect(probe.pin.canonicalHash).toMatch(/^[a-f0-9]{64}$/)
-    expect(probe.pin.canonicalSnapshotId).toMatch(/^pub-ibils-/)
-    // Route does not invent integer revs from missing fields
-    expect(probe.pin.boardRev).toBe(0)
-    expect(probe.pin.lifecycleRev).toBe(0)
-    // PublicG5Summary only — no invented domainPass / g5Pass green
-    expect(probe.g5.g5Pass).toBe(false)
-    expect(probe.g5.domainPassCount).toBe(0)
-    expect(probe.g5.domainRequiredCount).toBe(9)
-    expect(probe.completion.complete).toBe(false)
+  })
+
+  it('shared store: payload change (decisionCount) invalidates pin-stable cache + ETag', async () => {
+    const store = createMemoryPublicSnapshotStore()
+    const pin = basePin({ boardRev: 1, lifecycleRev: 1 })
+    const v1 = baseAggregation({ pin, decisionCount: 1 })
+    const v2 = baseAggregation({ pin, decisionCount: 2 })
+
+    setPublicSnapshotDeps({
+      store,
+      loadAggregation: async () => v1,
+      resolveIp: () => '1.1.1.1',
+    })
+    const r1 = await publicSnapshotGetHandler(
+      new Request('http://local/api/public-snapshot?boardId=board-1'),
+    )
+    expect(r1.status).toBe(200)
+    const b1 = await r1.json()
+
+    setPublicSnapshotDeps({
+      store,
+      loadAggregation: async () => v2,
+      resolveIp: () => '1.1.1.1',
+    })
+    const r2 = await publicSnapshotGetHandler(
+      new Request('http://local/api/public-snapshot?boardId=board-1'),
+    )
+    expect(r2.status).toBe(200)
+    const b2 = await r2.json()
+    expect(b2.decisionCount).toBe(2)
+    expect(b2.etag).not.toBe(b1.etag)
+    // 304 only matches new etag
+    const r304 = await handlePublicSnapshotGet(
+      new Request('http://local/api/public-snapshot?boardId=board-1', {
+        headers: { 'if-none-match': `"${b2.etag}"` },
+      }),
+      {
+        store,
+        loadAggregation: async () => v2,
+      },
+    )
+    expect(r304.status).toBe(304)
+    const staleMatch = await handlePublicSnapshotGet(
+      new Request('http://local/api/public-snapshot?boardId=board-1', {
+        headers: { 'if-none-match': `"${b1.etag}"` },
+      }),
+      {
+        store,
+        loadAggregation: async () => v2,
+      },
+    )
+    expect(staleMatch.status).toBe(200)
   })
 })
 
 describe('one loader invocation per pin + exact revision/hash envelope', () => {
-  it('getOrMaterialize materializes once per pin identity', () => {
+  it('getOrMaterialize materializes once per pin+content identity', () => {
     const store = createMemoryPublicSnapshotStore()
     const pin = basePin()
     const input = baseAggregation({ pin })
     const first = getOrMaterializePublicSnapshot({ boardId: 'board-1', store, input })
-    // Mutate aggregation numbers; same pin → identical object (no recompute)
+    // Same pin + same content → cache hit
     const second = getOrMaterializePublicSnapshot({
+      boardId: 'board-1',
+      store,
+      input: baseAggregation({ pin }),
+    })
+    expect(second).toBe(first)
+    expect(second.payload.decisionCount).toBe(2)
+    expect(pinIdentity(second.pin)).toBe(pinIdentity(pin))
+
+    // Same pin + different decisionCount → new materialization + new ETag
+    const third = getOrMaterializePublicSnapshot({
       boardId: 'board-1',
       store,
       input: baseAggregation({
@@ -692,9 +978,9 @@ describe('one loader invocation per pin + exact revision/hash envelope', () => {
         },
       }),
     })
-    expect(second).toBe(first)
-    expect(second.payload.decisionCount).toBe(2)
-    expect(pinIdentity(second.pin)).toBe(pinIdentity(pin))
+    expect(third).not.toBe(first)
+    expect(third.payload.decisionCount).toBe(999)
+    expect(third.etag).not.toBe(first.etag)
   })
 
   it('handler: loadAggregation called once per request; materialize once per pin', async () => {
@@ -1129,6 +1415,39 @@ describe('R5-04 per-client PUBLIC_SNAPSHOT_RATE_LIMIT_V1 IP wiring', () => {
     expect(extractDirectRemoteAddress(req)).toBe('192.0.2.44')
     expect(resolvePublicSnapshotClientIp(req)).toBe('192.0.2.44')
   })
+
+  it('HTTP + MCP unauth share the same public-snapshot:${ip} rate-limit key', async () => {
+    // Repair contract: unauth MCP tool/resource pass clientKey = resolvePublicSnapshotClientIp
+    // so service keys as public-snapshot:${ip} — identical to HTTP handlePublicSnapshotGet.
+    const limiter = createPublicSnapshotRateLimiter({
+      policy: { burst: 1, sustainedPerMinute: 60 },
+    })
+    const sharedIp = '203.0.113.88'
+    const deps = {
+      store: createMemoryPublicSnapshotStore(),
+      loadAggregation: async () => baseAggregation(),
+      rateLimiter: limiter,
+      resolveIp: resolvePublicSnapshotClientIp,
+    }
+    const httpReq = requestWithSocketIp(
+      'http://local/api/public-snapshot?boardId=board-1',
+      sharedIp,
+    )
+    expect(resolvePublicSnapshotClientIp(httpReq)).toBe(sharedIp)
+    expect((await handlePublicSnapshotGet(httpReq, deps)).status).toBe(200)
+
+    // MCP unauth uses the same raw IP as clientKey → public-snapshot:${ip}
+    const svc = createPublicSnapshotService({ rateLimiter: limiter })
+    const mcp = await svc.getPublicSnapshot({
+      boardId: 'board-1',
+      clientKey: sharedIp,
+      loadAggregation: async () => baseAggregation(),
+    })
+    expect(mcp.ok).toBe(false)
+    if (!mcp.ok) {
+      expect(mcp.code).toBe('RATE_LIMITED')
+    }
+  })
 })
 
 describe('recursive redaction attacks', () => {
@@ -1295,16 +1614,16 @@ describe('health route auth/mismatch via public exports (no product edit)', () =
 
   const expected: HealthExpected = {
     deployedSha: 'd01d6d0aba17cc0aec23f3e4f8ad26229eac249f',
-    schemaVersion: '003',
+    schemaVersion: '005',
   }
   const healthyObserved: HealthObserved = {
     deployedSha: 'd01d6d0aba17cc0aec23f3e4f8ad26229eac249f',
-    schemaVersion: '003',
+    schemaVersion: '005',
     migration: {
       status: 'READY',
-      appliedVersions: ['000', '001', '002', '003'],
-      expectedLatestVersion: '003',
-      schemaVersion: '003',
+      appliedVersions: ['000', '001', '002', '003', '004', '005'],
+      expectedLatestVersion: '005',
+      schemaVersion: '005',
     },
     snapshot: {
       canonicalSnapshotId: 'snap-1',
@@ -1314,6 +1633,7 @@ describe('health route auth/mismatch via public exports (no product edit)', () =
     dependencies: [
       { name: 'mysql', status: 'up' },
       { name: 'mcp', status: 'up' },
+      { name: 'schema-required-tables', status: 'up' },
     ],
     serviceName: 'cairn-task-manager',
   }
@@ -1384,6 +1704,77 @@ describe('health route auth/mismatch via public exports (no product edit)', () =
     const body = await res.json()
     expect(body.schema.match).toBe(false)
     expect(body.unhealthyReasons).toContain('SCHEMA_VERSION_MISMATCH')
+  })
+
+  it('injected only-003 applied → 503 unhealthy (compat: prior latest not current)', async () => {
+    setHealthzDeps({
+      authGuard: allowAllHealthGuard(),
+      loadExpected: () => expected,
+      loadObserved: () => ({
+        ...healthyObserved,
+        schemaVersion: '003',
+        migration: {
+          status: 'PENDING',
+          appliedVersions: ['000', '001', '002', '003'],
+          expectedLatestVersion: '005',
+          schemaVersion: '003',
+        },
+      }),
+    })
+    const res = await healthzGetHandler(new Request('http://local/api/healthz'))
+    expect(res.status).toBe(503)
+    const body = await res.json()
+    expect(body.status).toBe('unhealthy')
+    expect(body.unhealthyReasons).toContain('SCHEMA_VERSION_MISMATCH')
+    expect(body.migration.appliedVersions).toEqual(['000', '001', '002', '003'])
+    expect(body.migration.expectedLatestVersion).toBe('005')
+  })
+
+  it('injected history 005 + required table missing (empty schema) → 503 unhealthy', async () => {
+    setHealthzDeps({
+      authGuard: allowAllHealthGuard(),
+      loadExpected: () => expected,
+      loadObserved: () => ({
+        ...healthyObserved,
+        schemaVersion: '',
+        migration: {
+          status: 'PENDING',
+          appliedVersions: ['000', '001', '002', '003', '004', '005'],
+          expectedLatestVersion: '005',
+          schemaVersion: '',
+        },
+        dependencies: [
+          { name: 'mysql', status: 'up' },
+          {
+            name: 'schema-required-tables',
+            status: 'down',
+            detail: 'missing:control_plane_classification_receipts',
+          },
+        ],
+      }),
+    })
+    const res = await healthzGetHandler(new Request('http://local/api/healthz'))
+    expect(res.status).toBe(503)
+    const body = await res.json()
+    expect(body.status).toBe('unhealthy')
+    expect(body.unhealthyReasons).toContain('SCHEMA_VERSION_MISMATCH')
+    expect(body.unhealthyReasons).toContain('DEPENDENCY_DOWN:schema-required-tables')
+  })
+
+  it('injected all-required healthy 005 path → 200 ok', async () => {
+    setHealthzDeps({
+      authGuard: allowAllHealthGuard(),
+      loadExpected: () => expected,
+      loadObserved: () => healthyObserved,
+    })
+    const res = await healthzGetHandler(new Request('http://local/api/healthz'))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.status).toBe('ok')
+    expect(body.schema.version).toBe('005')
+    expect(body.schema.match).toBe(true)
+    expect(body.migration.appliedVersions).toEqual(['000', '001', '002', '003', '004', '005'])
+    expect(body.migration.expectedLatestVersion).toBe('005')
   })
 
   it('dependency down degrades but not unhealthy when release/schema match', async () => {

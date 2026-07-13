@@ -862,6 +862,11 @@ export function aggregateControlCenter(
 // Surface data shapes
 // ---------------------------------------------------------------------------
 
+export interface OverviewLifecycleStageCount {
+  stage: string
+  count: number
+}
+
 export interface OverviewData {
   surfaceVersion: typeof CONTROL_CENTER_UI_SURFACE_VERSION
   buckets: RollupV3Result['buckets']
@@ -893,6 +898,18 @@ export interface OverviewData {
   needsHuman: boolean
   projects: Array<ProjectUiSummary>
   sectionErrors: Array<{ section: string; code: string; message: string }>
+  /**
+   * Lifecycle stage histogram for Overview lower panel (server-built).
+   * Prefer over client re-derivation when present (may be empty honestly).
+   */
+  lifecycle?: Array<OverviewLifecycleStageCount>
+  /**
+   * Material audit/events for Overview lower panel (from durable audit sources).
+   * Empty array = honestly empty; never invents activity.
+   */
+  materialEvents?: Array<AuditUiEvent>
+  /** Alias wire for older projectors — same rows as materialEvents. */
+  auditEvents?: Array<AuditUiEvent>
 }
 
 export interface WorkData {
@@ -1045,6 +1062,29 @@ function withEmptyIfZero(
   return state
 }
 
+/**
+ * Build lifecycle stage counts from project readinessStage (+ taskCount weight).
+ * Empty when no proven stages — never invents MAP_VERIFIED/etc.
+ */
+export function buildOverviewLifecycleFromProjects(
+  projects: ReadonlyArray<ProjectUiSummary>,
+): Array<OverviewLifecycleStageCount> {
+  const counts = new Map<string, number>()
+  for (const pr of projects) {
+    const stage =
+      typeof pr.readinessStage === 'string' && pr.readinessStage.length > 0
+        ? pr.readinessStage
+        : null
+    if (!stage) continue
+    const weight =
+      typeof pr.taskCount === 'number' && Number.isFinite(pr.taskCount) ? pr.taskCount : 1
+    counts.set(stage, (counts.get(stage) ?? 0) + weight)
+  }
+  return [...counts.entries()]
+    .map(([stage, count]) => ({ stage, count }))
+    .sort((a, b) => a.stage.localeCompare(b.stage))
+}
+
 export function projectOverview(
   agg: ControlCenterAggregation,
 ): PinnedEnvelope<OverviewData> {
@@ -1052,6 +1092,8 @@ export function projectOverview(
   const needsHuman = agg.decisions.some(
     (d) => d.blocking && (d.status === 'OPEN' || d.status === 'ACKNOWLEDGED'),
   )
+  const lifecycle = buildOverviewLifecycleFromProjects(agg.projects)
+  const materialEvents = agg.auditEvents.map((e) => ({ ...e }))
   const data: OverviewData = stripSensitiveFields({
     surfaceVersion: CONTROL_CENTER_UI_SURFACE_VERSION,
     buckets: { ...agg.rollup.buckets },
@@ -1088,6 +1130,9 @@ export function projectOverview(
     needsHuman,
     projects: agg.projects.map((p) => ({ ...p })),
     sectionErrors: [...agg.sectionErrors],
+    lifecycle,
+    materialEvents,
+    auditEvents: materialEvents,
   })
   let surfaceState = baseSurfaceState(agg)
   if (needsHuman && surfaceState === 'populated') surfaceState = 'needs-human'

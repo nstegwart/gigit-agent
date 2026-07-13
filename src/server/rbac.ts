@@ -173,6 +173,36 @@ export function defaultScopesForRole(role: V3Role): Scope[] {
 }
 
 /**
+ * Immutable role maxima = defaultScopesForRole.
+ * Configured bearer custom scopes are INTERSECTED with maxima — never elevated.
+ * Omitted / empty configured list → full role maxima (not "no scopes").
+ */
+export function intersectScopesWithRoleMaxima(
+  role: V3Role,
+  configured: ReadonlyArray<Scope> | null | undefined,
+): Scope[] {
+  const maxima = defaultScopesForRole(role)
+  if (!configured || configured.length === 0) return maxima
+  const maxSet = new Set<Scope>(maxima)
+  // Preserve maxima order; drop any hostile extras (e.g. AGENT + dispatch:write).
+  return maxima.filter((s) => configured.includes(s) && maxSet.has(s))
+}
+
+/** AGENT / INTEGRATOR require an explicit board binding. OWNER/ROOT may be unbound. */
+export function requiresBoardBinding(role: V3Role): boolean {
+  return role === 'AGENT' || role === 'INTEGRATOR'
+}
+
+export function hasBoardBinding(
+  boardId: string | null | undefined,
+  boards?: ReadonlyArray<string> | null,
+): boolean {
+  if (boardId && String(boardId).trim()) return true
+  if (boards && boards.some((b) => !!b && String(b).trim())) return true
+  return false
+}
+
+/**
  * Map legacy session user → V3 principal.
  * admin → OWNER only (never silently ROOT/AGENT/INTEGRATOR).
  * member → board:read allowlist only.
@@ -247,16 +277,33 @@ export function requireRole(
   return principal
 }
 
-/** Board visibility: OWNER sees all; member allowlist; agent/integrator board-bound; PUBLIC none for board. */
+/**
+ * Board visibility (fail-closed):
+ * - OWNER: all boards
+ * - ROOT_ORCHESTRATOR: unbound → all; optional boardId/boards restrict
+ * - AGENT / INTEGRATOR: MUST be board-bound; unbound → deny every board
+ * - member session: boards[] allowlist only
+ * - true PUBLIC: none
+ */
 export function canAccessBoard(principal: Principal | null | undefined, boardId: string): boolean {
   if (!principal) return false
   if (principal.role === 'OWNER') return true
   if (principal.role === 'PUBLIC' && principal.legacyRole !== 'member') return false
-  if (principal.boards.length === 0 && (principal.role === 'ROOT_ORCHESTRATOR' || principal.role === 'AGENT' || principal.role === 'INTEGRATOR')) {
-    // unbound agent/root token may access any board (token-scoped later)
+
+  // AGENT / INTEGRATOR: fail closed when unbound; never "any board".
+  if (principal.role === 'AGENT' || principal.role === 'INTEGRATOR') {
     if (principal.boardId) return principal.boardId === boardId
+    if (principal.boards.length > 0) return principal.boards.includes(boardId)
+    return false
+  }
+
+  // ROOT: optional binding; unbound may access any board (dispatch authority).
+  if (principal.role === 'ROOT_ORCHESTRATOR') {
+    if (principal.boardId) return principal.boardId === boardId
+    if (principal.boards.length > 0) return principal.boards.includes(boardId)
     return true
   }
+
   if (principal.boards.length === 0 && principal.legacyRole === 'admin') return true
   if (principal.boards.includes(boardId)) return true
   if (principal.boardId && principal.boardId === boardId) return true
@@ -365,39 +412,77 @@ export interface ToolAuthSpec {
 }
 
 /**
+ * API_CONTRACT §2 authenticated read method names that MUST appear in MCP_TOOL_SPECS.
+ * Exact set — used by catalog integrity tests / human-safe list filters.
+ */
+export const CANONICAL_MCP_READ_TOOL_NAMES = [
+  'get_overview',
+  'list_work_items',
+  'list_projects',
+  'get_project',
+  'list_features',
+  'get_feature',
+  'list_tasks',
+  'get_task',
+  'list_runs',
+  'get_run',
+  'list_accounts',
+  'get_account',
+  'list_decisions',
+  'get_decision',
+  'list_activity',
+  'list_audit',
+  'get_priority_portfolio',
+  'get_g5',
+  'get_prod',
+  'get_guide',
+] as const
+
+export type CanonicalMcpReadToolName = (typeof CANONICAL_MCP_READ_TOOL_NAMES)[number]
+
+/**
  * Canonical + legacy compatibility tool names → auth.
  * Unauthenticated tools/list may only expose public tools.
+ * Human-safe catalog: every entry is a named operator/agent method (no internal dumps).
  */
 export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   // Public
   { name: 'get_public_snapshot', kind: 'public', scopes: [] },
 
-  // Reads — board/task
-  { name: 'list_boards', kind: 'read', scopes: ['board:read'] },
+  // ---- API_CONTRACT §2 canonical authenticated reads (least-privilege scopes) ----
+  { name: 'get_overview', kind: 'read', scopes: ['board:read'] },
+  { name: 'list_work_items', kind: 'read', scopes: ['board:read', 'task:read'] },
   { name: 'list_projects', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_project', kind: 'read', scopes: ['board:read'] },
   { name: 'list_features', kind: 'read', scopes: ['board:read'] },
   { name: 'get_feature', kind: 'read', scopes: ['board:read'] },
+  { name: 'list_tasks', kind: 'read', scopes: ['task:read', 'board:read'] },
+  { name: 'get_task', kind: 'read', scopes: ['task:read', 'board:read'] },
+  { name: 'list_runs', kind: 'read', scopes: ['run:read'] },
+  { name: 'get_run', kind: 'read', scopes: ['run:read'] },
+  { name: 'list_accounts', kind: 'read', scopes: ['account:read'] },
+  { name: 'get_account', kind: 'read', scopes: ['account:read'] },
+  { name: 'list_decisions', kind: 'read', scopes: ['decision:read'] },
+  { name: 'get_decision', kind: 'read', scopes: ['decision:read'] },
+  { name: 'list_activity', kind: 'read', scopes: ['audit:read', 'board:read'] },
+  { name: 'list_audit', kind: 'read', scopes: ['audit:read'] },
+  { name: 'get_priority_portfolio', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_g5', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_prod', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_guide', kind: 'read', scopes: ['board:read'] },
+
+  // ---- Compatibility / legacy reads (aliases preserve auth of target) ----
+  { name: 'get_work', kind: 'read', scopes: ['board:read', 'task:read'], aliasOf: 'list_work_items' },
+  { name: 'get_priority', kind: 'read', scopes: ['board:read'], aliasOf: 'get_priority_portfolio' },
+  { name: 'get_rollup', kind: 'read', scopes: ['board:read'], aliasOf: 'get_overview' },
+  { name: 'get_lifecycle', kind: 'read', scopes: ['board:read'], aliasOf: 'get_overview' },
+  { name: 'get_board_hash', kind: 'read', scopes: ['board:read'], aliasOf: 'get_overview' },
+  { name: 'get_task_lifecycle', kind: 'read', scopes: ['task:read', 'board:read'] },
+  { name: 'list_boards', kind: 'read', scopes: ['board:read'] },
   { name: 'list_queue', kind: 'read', scopes: ['board:read'] },
   { name: 'get_conventions', kind: 'read', scopes: ['board:read'] },
   { name: 'get_workspace', kind: 'read', scopes: ['board:read'] },
   { name: 'get_design', kind: 'read', scopes: ['board:read'] },
-  { name: 'get_lifecycle', kind: 'read', scopes: ['board:read'] },
-  { name: 'get_task_lifecycle', kind: 'read', scopes: ['task:read', 'board:read'] },
-  { name: 'get_rollup', kind: 'read', scopes: ['board:read'] },
-  { name: 'get_board_hash', kind: 'read', scopes: ['board:read'] },
-  { name: 'list_audit', kind: 'read', scopes: ['audit:read'] },
-  { name: 'list_activity', kind: 'read', scopes: ['audit:read', 'board:read'] },
-  { name: 'list_tasks', kind: 'read', scopes: ['task:read', 'board:read'] },
-  { name: 'get_task', kind: 'read', scopes: ['task:read', 'board:read'] },
-  { name: 'get_prod', kind: 'read', scopes: ['board:read'] },
-  { name: 'get_guide', kind: 'read', scopes: ['board:read'] },
-  { name: 'list_runs', kind: 'read', scopes: ['run:read'] },
-  { name: 'list_accounts', kind: 'read', scopes: ['account:read'] },
-  { name: 'get_overview', kind: 'read', scopes: ['board:read'] },
-  { name: 'get_work', kind: 'read', scopes: ['board:read', 'task:read'] },
-  { name: 'get_priority', kind: 'read', scopes: ['board:read'] },
-  { name: 'get_g5', kind: 'read', scopes: ['board:read'] },
-  { name: 'list_decisions', kind: 'read', scopes: ['decision:read'] },
   // NEXT projection is sole plan source — any authenticated board reader may observe it.
   { name: 'get_next', kind: 'read', scopes: ['board:read'] },
   { name: 'get_dispatch_next', kind: 'read', scopes: ['board:read'], aliasOf: 'get_next' },
@@ -450,6 +535,33 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
 
 const TOOL_SPEC_BY_NAME = new Map(MCP_TOOL_SPECS.map((t) => [t.name, t]))
 
+/** Detect duplicate catalog names at module load (fail loud in tests). */
+export function assertMcpToolCatalogIntegrity(): void {
+  const names = MCP_TOOL_SPECS.map((t) => t.name)
+  if (new Set(names).size !== names.length) {
+    throw new RbacError('FORBIDDEN_SCOPE', 'MCP_TOOL_SPECS contains duplicate tool names', 500)
+  }
+  for (const required of CANONICAL_MCP_READ_TOOL_NAMES) {
+    if (!TOOL_SPEC_BY_NAME.has(required)) {
+      throw new RbacError(
+        'FORBIDDEN_SCOPE',
+        `MCP_TOOL_SPECS missing canonical read tool: ${required}`,
+        500,
+      )
+    }
+  }
+  // Aliases must point at a registered target (including get_dispatch_next → get_next).
+  for (const spec of MCP_TOOL_SPECS) {
+    if (spec.aliasOf && !TOOL_SPEC_BY_NAME.has(spec.aliasOf)) {
+      throw new RbacError(
+        'FORBIDDEN_SCOPE',
+        `MCP_TOOL_SPECS alias ${spec.name} → missing target ${spec.aliasOf}`,
+        500,
+      )
+    }
+  }
+}
+
 export function getToolSpec(name: string): ToolAuthSpec | undefined {
   return TOOL_SPEC_BY_NAME.get(name)
 }
@@ -457,6 +569,26 @@ export function getToolSpec(name: string): ToolAuthSpec | undefined {
 export function isPublicTool(name: string): boolean {
   const s = TOOL_SPEC_BY_NAME.get(name)
   return !!s && s.kind === 'public'
+}
+
+/**
+ * Tools that enumerate boards globally (no boardId required by contract).
+ * Board-bound AGENT/INTEGRATOR must not list or call these — board scope used to
+ * be checked only when args.boardId was present, which left list_boards open.
+ */
+export const UNSCOPED_BOARD_ENUMERATION_TOOLS: ReadonlyArray<string> = ['list_boards'] as const
+
+export function isUnscopedBoardEnumerationTool(name: string): boolean {
+  return (UNSCOPED_BOARD_ENUMERATION_TOOLS as ReadonlyArray<string>).includes(name)
+}
+
+/**
+ * AGENT/INTEGRATOR are board-bound by design (unbound → null at bearer resolve).
+ * They must not access unscoped global board enumeration. OWNER/ROOT/member session
+ * retain list_boards; public tools stay on the public path.
+ */
+export function deniesUnscopedBoardEnumeration(principal: Principal): boolean {
+  return principal.role === 'AGENT' || principal.role === 'INTEGRATOR'
 }
 
 /** tools/list visibility for a principal (null = unauthenticated). */
@@ -480,7 +612,36 @@ export function isToolListable(principal: Principal | null, name: string): boole
   if (spec.roles && spec.roles.length > 0 && !spec.roles.includes(principal.role)) {
     return false
   }
+  // Hide unscoped board enumeration from tools/list for board-bound AGENT/INTEGRATOR.
+  // tools/call also denies via authorizeToolCall (defense in depth). ROOT/OWNER/member retain.
+  if (isUnscopedBoardEnumerationTool(name) && deniesUnscopedBoardEnumeration(principal)) {
+    return false
+  }
   return true
+}
+
+/**
+ * Human-safe tools/list catalog for a principal.
+ * Only returns entries from MCP_TOOL_SPECS that pass isToolListable —
+ * never invents tools, never leaks unknown/internal names.
+ * Unauthenticated → public tools only.
+ */
+export function listHumanSafeToolCatalog(
+  principal: Principal | null,
+): ReadonlyArray<ToolAuthSpec> {
+  return MCP_TOOL_SPECS.filter((spec) => isToolListable(principal, spec.name))
+}
+
+/** Human-safe tool names only (order stable = MCP_TOOL_SPECS order). */
+export function listHumanSafeToolNames(principal: Principal | null): string[] {
+  return listHumanSafeToolCatalog(principal).map((s) => s.name)
+}
+
+/** Resolve alias target name, or self when not an alias. Unknown → null. */
+export function resolveToolAliasTarget(name: string): string | null {
+  const spec = TOOL_SPEC_BY_NAME.get(name)
+  if (!spec) return null
+  return spec.aliasOf ?? spec.name
 }
 
 export interface ToolAuthResult {
@@ -554,10 +715,35 @@ export function authorizeToolCall(
   if (spec.decisionRequest && principal.role === 'ROOT_ORCHESTRATOR') {
     // ROOT may not use decision request as owner resolve path
   }
-  // board access when boardId present
-  const boardId = typeof args.boardId === 'string' ? args.boardId : null
+  // Unscoped global board enumeration (e.g. list_boards): never for board-bound
+  // AGENT/INTEGRATOR — previously bypassed because board scope ran only when boardId present.
+  if (isUnscopedBoardEnumerationTool(name) && deniesUnscopedBoardEnumeration(principal)) {
+    return {
+      ok: false,
+      code: 'FORBIDDEN_SCOPE',
+      message: 'board-bound principal cannot access unscoped board enumeration',
+    }
+  }
+  // Cross-board / board allowlist: enforce whenever boardId is present (non-empty).
+  // OWNER always has board access (canAccessBoard); keep explicit short-circuit for clarity.
+  const boardId =
+    typeof args.boardId === 'string' && args.boardId.trim() !== '' ? args.boardId : null
   if (boardId && !canAccessBoard(principal, boardId) && principal.role !== 'OWNER') {
     return { ok: false, code: 'FORBIDDEN_SCOPE', message: 'no access to this board' }
+  }
+  // Board-bound AGENT/INTEGRATOR with boards allowlist: also reject non-string / wrong-type
+  // boardId attempts that would otherwise skip the check (fail closed on hostile args).
+  if (
+    (principal.role === 'AGENT' || principal.role === 'INTEGRATOR') &&
+    args.boardId != null &&
+    boardId === null
+  ) {
+    // Present but empty/non-string boardId is not a valid scoped call — treat as unscoped.
+    // Tools that do not need boardId (run/decision by id) omit the field entirely.
+    // If caller sends boardId: "" / whitespace, deny rather than open unscoped path.
+    if (typeof args.boardId === 'string') {
+      return { ok: false, code: 'FORBIDDEN_SCOPE', message: 'no access to this board' }
+    }
   }
   // AGENT own-run: missing binding is deny (fail-closed). Soft-pass when agentId unbound is forbidden.
   if (spec.ownRun && principal.role === 'AGENT') {
@@ -700,13 +886,67 @@ export function resetBearerInjection(): void {
 }
 
 /**
+ * Build a fail-closed bearer principal from a token record.
+ * - scopes ∩ role maxima (hostile custom scopes cannot elevate)
+ * - AGENT/INTEGRATOR without board binding → null (disabled)
+ */
+export function principalFromBearerRecord(rec: BearerTokenRecord): Principal | null {
+  const role = rec.role
+  const boardId = rec.boardId?.trim() || null
+  if (requiresBoardBinding(role) && !hasBoardBinding(boardId)) {
+    return null
+  }
+  const scopes = intersectScopesWithRoleMaxima(role, rec.scopes)
+  return {
+    actorId: rec.actorId || rec.tokenId,
+    role,
+    scopes,
+    channel: 'bearer',
+    boards: boardId ? [boardId] : [],
+    agentId: rec.agentId ?? (role === 'AGENT' ? rec.actorId || rec.tokenId : null),
+    boardId,
+    pathspecs: rec.pathspecs,
+    checkpointId: rec.checkpointId ?? null,
+    label: rec.label ?? rec.tokenId,
+  }
+}
+
+/**
+ * Clamp any principal (incl. custom resolver) to immutable role maxima + board binding rules.
+ * Returns null when AGENT/INTEGRATOR is unbound.
+ */
+export function clampBearerPrincipal(principal: Principal): Principal | null {
+  if (principal.channel === 'session' || principal.channel === 'public') {
+    // Not a bearer clamp target — return as-is (session path has its own mapping).
+    return principal
+  }
+  if (requiresBoardBinding(principal.role) && !hasBoardBinding(principal.boardId, principal.boards)) {
+    return null
+  }
+  const boardId = principal.boardId?.trim() || null
+  const boards =
+    boardId && principal.boards.length === 0
+      ? [boardId]
+      : principal.boards.filter((b) => !!b && String(b).trim())
+  return {
+    ...principal,
+    scopes: intersectScopesWithRoleMaxima(principal.role, principal.scopes),
+    boardId: boardId ?? (boards[0] ?? null),
+    boards: boardId ? (boards.includes(boardId) ? boards : [boardId, ...boards]) : boards,
+  }
+}
+
+/**
  * Resolve MCP bearer principal. Never elevates from cookies.
- * Legacy CAIRN_WRITE_TOKEN → constrained AGENT (run:write + bounded read), not all-powerful.
+ * Legacy CAIRN_WRITE_TOKEN → constrained AGENT only when board-bound
+ * (CAIRN_WRITE_TOKEN_BOARD_ID / opts.envWriteTokenBoardId); unbound → disabled.
  */
 export async function resolveBearerPrincipal(
   rawToken: string | null | undefined,
   opts?: {
     envWriteToken?: string | null
+    /** Required for legacy write token — unbound legacy is disabled. */
+    envWriteTokenBoardId?: string | null
     envBearerJson?: string | null
   },
 ): Promise<{ principal: Principal | null; mechanism: AuthMechanismState }> {
@@ -722,26 +962,18 @@ export async function resolveBearerPrincipal(
 
   if (injectedBearerResolver) {
     const p = await injectedBearerResolver(rawToken)
-    return { principal: p, mechanism: p ? { kind: 'OK' } : mechanism }
+    if (!p) return { principal: null, mechanism }
+    const clamped = clampBearerPrincipal(p)
+    return { principal: clamped, mechanism: clamped ? { kind: 'OK' } : mechanism }
   }
 
   if (injectedBearerRecords) {
     for (const rec of injectedBearerRecords) {
       if (timingSafeEqualStr(rec.secret, rawToken)) {
+        const principal = principalFromBearerRecord(rec)
         return {
-          principal: {
-            actorId: rec.actorId,
-            role: rec.role,
-            scopes: rec.scopes ? [...rec.scopes] : defaultScopesForRole(rec.role),
-            channel: 'bearer',
-            boards: rec.boardId ? [rec.boardId] : [],
-            agentId: rec.agentId ?? (rec.role === 'AGENT' ? rec.actorId : null),
-            boardId: rec.boardId ?? null,
-            pathspecs: rec.pathspecs,
-            checkpointId: rec.checkpointId ?? null,
-            label: rec.label ?? rec.tokenId,
-          },
-          mechanism: { kind: 'OK' },
+          principal,
+          mechanism: principal ? { kind: 'OK' } : mechanism,
         }
       }
     }
@@ -754,39 +986,42 @@ export async function resolveBearerPrincipal(
     if (parsed) {
       for (const rec of parsed) {
         if (rec?.secret && timingSafeEqualStr(String(rec.secret), rawToken)) {
-          const role = rec.role
+          const principal = principalFromBearerRecord(rec)
           return {
-            principal: {
-              actorId: rec.actorId || rec.tokenId,
-              role,
-              scopes: rec.scopes ? [...rec.scopes] : defaultScopesForRole(role),
-              channel: 'bearer',
-              boards: rec.boardId ? [rec.boardId] : [],
-              agentId: rec.agentId ?? (role === 'AGENT' ? rec.actorId || rec.tokenId : null),
-              boardId: rec.boardId ?? null,
-              pathspecs: rec.pathspecs,
-              checkpointId: rec.checkpointId ?? null,
-              label: rec.label ?? rec.tokenId,
-            },
-            mechanism: { kind: 'OK' },
+            principal,
+            mechanism: principal ? { kind: 'OK' } : mechanism,
           }
         }
       }
     }
   }
 
-  // Legacy write token → constrained AGENT only (not all-powerful, not ROOT/OWNER).
+  // Legacy write token → constrained AGENT only when board-bound; otherwise disabled.
   // Explicit deny of owner/root/account/audit/evidence authority even if defaults change.
   if (opts?.envWriteToken && timingSafeEqualStr(opts.envWriteToken, rawToken)) {
-    const agentScopes = defaultScopesForRole('AGENT').filter(
-      (s) =>
-        s !== 'account:read' &&
-        s !== 'audit:read' &&
-        s !== 'evidence:read' &&
-        s !== 'dispatch:write' &&
-        s !== 'account:sync' &&
-        s !== 'policy:write' &&
-        s !== 'reconcile:write',
+    const boardId = (
+      opts.envWriteTokenBoardId ??
+      process.env.CAIRN_WRITE_TOKEN_BOARD_ID ??
+      ''
+    )
+      .toString()
+      .trim()
+    if (!boardId) {
+      // Unbound legacy write token is disabled (fail closed).
+      return { principal: null, mechanism: { kind: 'OK' } }
+    }
+    const agentScopes = intersectScopesWithRoleMaxima(
+      'AGENT',
+      defaultScopesForRole('AGENT').filter(
+        (s) =>
+          s !== 'account:read' &&
+          s !== 'audit:read' &&
+          s !== 'evidence:read' &&
+          s !== 'dispatch:write' &&
+          s !== 'account:sync' &&
+          s !== 'policy:write' &&
+          s !== 'reconcile:write',
+      ),
     )
     return {
       principal: {
@@ -794,7 +1029,8 @@ export async function resolveBearerPrincipal(
         role: 'AGENT',
         scopes: agentScopes,
         channel: 'bearer',
-        boards: [],
+        boards: [boardId],
+        boardId,
         agentId: 'legacy-write-token',
         label: 'legacy-cairn-write-token',
       },

@@ -9,6 +9,7 @@ import { TanStackDevtools } from '@tanstack/react-devtools'
 
 import TanStackQueryDevtools from '../integrations/tanstack-query/devtools'
 import { meQueryOptions } from '#/lib/board-query'
+import { clearCsrfTokenCache, getCsrfToken } from '#/lib/csrf-client'
 import { meFn } from '#/server/auth-fns'
 
 import appCss from '../styles.css?url'
@@ -27,6 +28,16 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
   beforeLoad: async ({ context }): Promise<{ me: SessionUser | null }> => {
     const me = await meFn()
     context.queryClient.setQueryData(meQueryOptions().queryKey, me)
+    // Browser only: warm session CSRF cache for cookie mutations; never SSR-cache (cross-request leak).
+    if (typeof window !== 'undefined') {
+      if (me) {
+        void getCsrfToken().catch(() => {
+          /* mutations still fail-closed on demand */
+        })
+      } else {
+        clearCsrfTokenCache()
+      }
+    }
     return { me }
   },
   head: () => ({

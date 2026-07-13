@@ -193,6 +193,22 @@ export const MIGRATION_MANIFEST: ReadonlyArray<MigrationEntry> = [
     classification: 'FORWARD_FIX_ONLY',
     description: 'Source-grounded backfill; missing proof remains UNCLASSIFIED; no PRODUCT guess',
   },
+  {
+    version: '004',
+    filename: '004_control_data_persistence.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '004_control_data_persistence.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'Control-data persistence expand: board revision/import pins, G5/classification/DecisionV3 payloads, receipt archive; additive columns/tables only',
+  },
+  {
+    version: '005',
+    filename: '005_control_plane_runtime_persistence.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '005_control_plane_runtime_persistence.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'Control-plane runtime persistence: dispatch plans, V3 runs, locks, account sync, reconciler, retention; additive tables only',
+  },
 ] as const
 
 export function sha256Hex(content: string | Buffer): string {

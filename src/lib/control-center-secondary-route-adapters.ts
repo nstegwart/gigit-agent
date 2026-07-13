@@ -201,9 +201,10 @@ export function featuresEnvelopeToProps(
   }
 
   const d = envelope.data
-  // Prefer paginated `items` when present; fall back to full `features` list.
+  // Bounded server pagination only: when `items` is present (even empty), use it.
+  // Never fall back to full `features` when the page is honestly empty.
   // Order is server order — never client re-sort.
-  const source = d.items?.length ? d.items : d.features
+  const source = Array.isArray(d.items) ? d.items : d.features
   const features: FeatureRowView[] = source.map((f) => ({
     featureId: f.id,
     projectId: f.projectId,
@@ -308,8 +309,10 @@ export function agentsEnvelopeToProps(
     overlays: [...o.overlays],
   }))
 
+  // Bounded server pagination only: when `items` is present (even empty), use it.
+  // Never fall back to full `runs` when the page is honestly empty.
   // Server page order (paginateDesc) — do not re-sort stalled client-side.
-  const runSource = d.items?.length ? d.items : d.runs
+  const runSource = Array.isArray(d.items) ? d.items : d.runs
   const runs: AgentRunRowView[] = runSource.map((r) => ({
     runId: r.runId,
     taskId: r.taskId,

@@ -10,15 +10,24 @@ import {
   assertBearerChannel,
   assertAgentOwnRun,
   assertIntegratorBounds,
+  assertMcpToolCatalogIntegrity,
   assertNotOwnerEvidenceImpersonation,
   assertNotRootProductionApproval,
   authorizeToolCall,
   canAccessBoard,
+  clampBearerPrincipal,
   defaultScopesForRole,
+  deniesUnscopedBoardEnumeration,
   extractBearerFromHeaders,
   getBearerAuthMechanismState,
+  getToolSpec,
   hasScope,
+  intersectScopesWithRoleMaxima,
   isToolListable,
+  isUnscopedBoardEnumerationTool,
+  listHumanSafeToolCatalog,
+  listHumanSafeToolNames,
+  principalFromBearerRecord,
   principalFromSession,
   publicPrincipal,
   requireBoardAccess,
@@ -26,17 +35,21 @@ import {
   requireScope,
   resetBearerInjection,
   resolveBearerPrincipal,
+  resolveToolAliasTarget,
   setBearerResolver,
   setBearerTokenRecords,
   ALL_READ_SCOPES,
   ALL_WRITE_SCOPES,
+  CANONICAL_MCP_READ_TOOL_NAMES,
   MCP_TOOL_SPECS,
+  UNSCOPED_BOARD_ENUMERATION_TOOLS,
   RbacError,
   type Principal,
   type Scope,
   type V3Role,
 } from '#/server/rbac'
 import {
+  assertBrowserOrigin,
   assertBrowserWriteCsrf,
   clearNonceStore,
   C3_CSRF_TOKEN_CLIENT_WIRING,
@@ -417,12 +430,24 @@ describe('bearer principal resolution', () => {
     expect(denyWrite.ok).toBe(false)
   })
 
-  it('legacy token PRESENT → constrained AGENT only (not owner/root/account/audit/evidence)', async () => {
+  it('legacy token PRESENT without board binding → disabled (principal null)', async () => {
     const secret = 'legacy-test-write-token-value'
     const r = await resolveBearerPrincipal(secret, { envWriteToken: secret })
+    expect(r.principal).toBeNull()
+    expect(r.mechanism.kind).toBe('OK')
+  })
+
+  it('legacy token PRESENT board-bound → constrained AGENT only (not owner/root/account/audit/evidence)', async () => {
+    const secret = 'legacy-test-write-token-value'
+    const r = await resolveBearerPrincipal(secret, {
+      envWriteToken: secret,
+      envWriteTokenBoardId: 'mfs-rebuild',
+    })
     expect(r.principal).not.toBeNull()
     expect(r.principal!.role).toBe('AGENT')
     expect(r.principal!.channel).toBe('bearer')
+    expect(r.principal!.boardId).toBe('mfs-rebuild')
+    expect(r.principal!.boards).toEqual(['mfs-rebuild'])
     expect(r.principal!.role).not.toBe('OWNER')
     expect(r.principal!.role).not.toBe('ROOT_ORCHESTRATOR')
     for (const s of [
@@ -440,6 +465,9 @@ describe('bearer principal resolution', () => {
     expect(authorizeToolCall(r.principal, 'sync_accounts').ok).toBe(false)
     expect(authorizeToolCall(r.principal, 'list_accounts').ok).toBe(false)
     expect(authorizeToolCall(r.principal, 'list_audit').ok).toBe(false)
+    // Cross-board denied
+    expect(canAccessBoard(r.principal, 'other-board')).toBe(false)
+    expect(canAccessBoard(r.principal, 'mfs-rebuild')).toBe(true)
   })
 
   it('wrong legacy token does not authenticate even when env is set', async () => {
@@ -468,6 +496,7 @@ describe('bearer principal resolution', () => {
         role: 'AGENT',
         actorId: 'agent-1',
         agentId: 'agent-1',
+        boardId: 'mfs-rebuild',
       },
       {
         tokenId: 't-int',
@@ -475,6 +504,7 @@ describe('bearer principal resolution', () => {
         role: 'INTEGRATOR',
         actorId: 'int-1',
         pathspecs: ['src/**'],
+        boardId: 'mfs-rebuild',
       },
     ])
     expect(getBearerAuthMechanismState({}).kind).toBe('OK')
@@ -489,6 +519,7 @@ describe('bearer principal resolution', () => {
 
     const agent = await resolveBearerPrincipal('sec-agent')
     expect(agent.principal?.role).toBe('AGENT')
+    expect(agent.principal?.boardId).toBe('mfs-rebuild')
     expect(authorizeToolCall(agent.principal, 'publish_dispatch_plan').ok).toBe(false)
 
     const integ = await resolveBearerPrincipal('sec-int')
@@ -525,11 +556,19 @@ describe('bearer principal resolution', () => {
     )
     // Valid array with usable principal records → mechanism OK
     const valid = JSON.stringify([
-      { tokenId: 't1', secret: 'sec-valid-json', role: 'AGENT', actorId: 'a1', agentId: 'a1' },
+      {
+        tokenId: 't1',
+        secret: 'sec-valid-json',
+        role: 'AGENT',
+        actorId: 'a1',
+        agentId: 'a1',
+        boardId: 'mfs-rebuild',
+      },
     ])
     expect(getBearerAuthMechanismState({ envBearerJson: valid }).kind).toBe('OK')
     const hit = await resolveBearerPrincipal('sec-valid-json', { envBearerJson: valid })
     expect(hit.principal?.role).toBe('AGENT')
+    expect(hit.principal?.boardId).toBe('mfs-rebuild')
     expect(hit.mechanism.kind).toBe('OK')
   })
 
@@ -698,7 +737,19 @@ describe('CSRF / same-origin protection', () => {
     expect(r).toEqual({ ok: true, mode: 'token' })
   })
 
-  it('positive interim: missing token allowed only after same-origin (C3 deferred)', () => {
+  it('default fail-closed: missing token rejected even with same-origin (token mandatory)', () => {
+    const r = assertBrowserWriteCsrf({
+      sessionToken: 'sess',
+      csrfHeader: null,
+      origin: ORIGIN,
+      host: HOST,
+      // omit allowSameOriginWithoutToken — default must require token
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.code).toBe('CSRF_TOKEN_MISSING')
+  })
+
+  it('explicit interim: missing token allowed only when allowSameOriginWithoutToken=true', () => {
     const r = assertBrowserWriteCsrf({
       sessionToken: 'sess',
       csrfHeader: null,
@@ -976,5 +1027,435 @@ describe('existing auth regression (session semantics preserved)', () => {
     principalFromSession(member)
     expect(admin.role).toBe('admin')
     expect(member.role).toBe('member')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Hostile fail-closed: custom scopes, cross-board, missing CSRF, board-bind
+// ---------------------------------------------------------------------------
+describe('hostile fail-closed: custom scopes / board binding / CSRF', () => {
+  it('hostile custom scopes cannot elevate past role maxima (AGENT)', () => {
+    const hostile: Scope[] = [
+      'dispatch:write',
+      'policy:write',
+      'account:sync',
+      'run:write',
+      'board:read',
+    ]
+    const clamped = intersectScopesWithRoleMaxima('AGENT', hostile)
+    expect(clamped).toContain('run:write')
+    expect(clamped).toContain('board:read')
+    expect(clamped).not.toContain('dispatch:write')
+    expect(clamped).not.toContain('policy:write')
+    expect(clamped).not.toContain('account:sync')
+    // Only AGENT maxima that were also requested
+    for (const s of clamped) {
+      expect(defaultScopesForRole('AGENT')).toContain(s)
+      expect(hostile).toContain(s)
+    }
+  })
+
+  it('hostile custom scopes cannot elevate past role maxima (INTEGRATOR / OWNER)', () => {
+    expect(intersectScopesWithRoleMaxima('INTEGRATOR', ['dispatch:write', 'integration:write'])).toEqual([
+      'integration:write',
+    ])
+    // OWNER cannot gain dispatch via configured scopes
+    const ownerClamped = intersectScopesWithRoleMaxima('OWNER', [
+      'dispatch:write',
+      'policy:write',
+      'decision:write',
+    ])
+    expect(ownerClamped).toContain('policy:write')
+    expect(ownerClamped).toContain('decision:write')
+    expect(ownerClamped).not.toContain('dispatch:write')
+  })
+
+  it('bearer record with hostile scopes is clamped at resolve', async () => {
+    setBearerTokenRecords([
+      {
+        tokenId: 'hostile-agent',
+        secret: 'sec-hostile',
+        role: 'AGENT',
+        actorId: 'agent-h',
+        agentId: 'agent-h',
+        boardId: 'board-a',
+        scopes: ['dispatch:write', 'policy:write', 'run:write', 'board:read'] as Scope[],
+      },
+    ])
+    const r = await resolveBearerPrincipal('sec-hostile')
+    expect(r.principal).not.toBeNull()
+    expect(hasScope(r.principal, 'dispatch:write')).toBe(false)
+    expect(hasScope(r.principal, 'policy:write')).toBe(false)
+    expect(hasScope(r.principal, 'run:write')).toBe(true)
+    expect(authorizeToolCall(r.principal, 'publish_dispatch_plan').ok).toBe(false)
+  })
+
+  it('AGENT/INTEGRATOR unbound board → principal null (fail closed)', async () => {
+    setBearerTokenRecords([
+      {
+        tokenId: 'unbound-agent',
+        secret: 'sec-unbound-a',
+        role: 'AGENT',
+        actorId: 'a-unbound',
+        agentId: 'a-unbound',
+        // no boardId
+      },
+      {
+        tokenId: 'unbound-int',
+        secret: 'sec-unbound-i',
+        role: 'INTEGRATOR',
+        actorId: 'i-unbound',
+      },
+    ])
+    expect((await resolveBearerPrincipal('sec-unbound-a')).principal).toBeNull()
+    expect((await resolveBearerPrincipal('sec-unbound-i')).principal).toBeNull()
+    expect(principalFromBearerRecord({
+      tokenId: 'x',
+      secret: 's',
+      role: 'AGENT',
+      actorId: 'a',
+    })).toBeNull()
+  })
+
+  it('cross-board: board-bound AGENT denied on foreign boardId', () => {
+    const agent = principal('AGENT', {
+      agentId: 'agent-a',
+      boardId: 'board-a',
+      boards: ['board-a'],
+    })
+    expect(canAccessBoard(agent, 'board-a')).toBe(true)
+    expect(canAccessBoard(agent, 'board-b')).toBe(false)
+    expect(
+      authorizeToolCall(agent, 'list_tasks', { boardId: 'board-b' }).ok,
+    ).toBe(false)
+    expect(
+      authorizeToolCall(agent, 'list_tasks', { boardId: 'board-a' }).ok,
+    ).toBe(true)
+    // Unbound AGENT denies all boards
+    const unbound = principal('AGENT', { agentId: 'agent-a', boardId: null, boards: [] })
+    expect(canAccessBoard(unbound, 'board-a')).toBe(false)
+    expect(clampBearerPrincipal(unbound)).toBeNull()
+  })
+
+  it('ROOT unbound still has cross-board authority; OWNER always all boards', () => {
+    const root = principal('ROOT_ORCHESTRATOR', { boards: [], boardId: null })
+    expect(canAccessBoard(root, 'any-1')).toBe(true)
+    expect(canAccessBoard(root, 'any-2')).toBe(true)
+    const owner = principal('OWNER')
+    expect(canAccessBoard(owner, 'z')).toBe(true)
+  })
+
+  // ---- P0 board-bound RBAC: unscoped list_boards + cross-board (repair) ----
+  it('P0: board-bound AGENT denied unscoped list_boards (missing boardId)', () => {
+    const agent = principal('AGENT', {
+      agentId: 'agent-a',
+      boardId: 'board-a',
+      boards: ['board-a'],
+    })
+    // Verified defect: board scope used to run only when boardId present → list_boards open.
+    const unscoped = authorizeToolCall(agent, 'list_boards', {})
+    expect(unscoped.ok).toBe(false)
+    expect(unscoped.code).toBe('FORBIDDEN_SCOPE')
+    expect(unscoped.message).toMatch(/unscoped board enumeration|board-bound/)
+    // Even with own boardId arg, list_boards is global enumeration — still denied.
+    const withOwn = authorizeToolCall(agent, 'list_boards', { boardId: 'board-a' })
+    expect(withOwn.ok).toBe(false)
+    expect(withOwn.code).toBe('FORBIDDEN_SCOPE')
+    // tools/list must also hide unscoped enumeration for board-bound principals
+    expect(isToolListable(agent, 'list_boards')).toBe(false)
+    expect(listHumanSafeToolNames(agent)).not.toContain('list_boards')
+    expect(authorizeToolCall(agent, 'list_boards', {}).ok).toBe(false)
+  })
+
+  it('P0: board-bound INTEGRATOR denied unscoped list_boards', () => {
+    const integ = principal('INTEGRATOR', {
+      boardId: 'board-a',
+      boards: ['board-a'],
+      pathspecs: ['src/**'],
+    })
+    expect(authorizeToolCall(integ, 'list_boards', {}).ok).toBe(false)
+    expect(authorizeToolCall(integ, 'list_boards', {}).code).toBe('FORBIDDEN_SCOPE')
+    expect(isToolListable(integ, 'list_boards')).toBe(false)
+    expect(listHumanSafeToolNames(integ)).not.toContain('list_boards')
+    // Cross-board still denied on scoped tools
+    expect(authorizeToolCall(integ, 'list_projects', { boardId: 'board-b' }).ok).toBe(false)
+    expect(authorizeToolCall(integ, 'list_projects', { boardId: 'board-a' }).ok).toBe(true)
+  })
+
+  it('P0: OWNER/ROOT/member/public-snapshot preserve list_boards + public behavior', () => {
+    expect(authorizeToolCall(principal('OWNER'), 'list_boards', {}).ok).toBe(true)
+    expect(authorizeToolCall(principal('ROOT_ORCHESTRATOR'), 'list_boards', {}).ok).toBe(true)
+    expect(isToolListable(principal('OWNER'), 'list_boards')).toBe(true)
+    expect(isToolListable(principal('ROOT_ORCHESTRATOR'), 'list_boards')).toBe(true)
+    // member session allowlist still may call list_boards (session surface)
+    const member = principalFromSession(sessionMember({ boards: ['mfs-rebuild'] }))!
+    expect(authorizeToolCall(member, 'list_boards', {}).ok).toBe(true)
+    expect(isToolListable(member, 'list_boards')).toBe(true)
+    // public snapshot remains open without auth
+    expect(authorizeToolCall(null, 'get_public_snapshot').ok).toBe(true)
+    expect(authorizeToolCall(publicPrincipal(), 'get_public_snapshot').ok).toBe(true)
+    expect(isToolListable(null, 'get_public_snapshot')).toBe(true)
+    // public cannot list_boards
+    expect(authorizeToolCall(publicPrincipal(), 'list_boards').ok).toBe(false)
+    expect(isToolListable(publicPrincipal(), 'list_boards')).toBe(false)
+  })
+
+  it('P0: board-bound AGENT/INTEGRATOR cross-board deny; empty boardId not a bypass', () => {
+    const agent = principal('AGENT', {
+      agentId: 'agent-a',
+      boardId: 'board-a',
+      boards: ['board-a'],
+    })
+    const foreign = authorizeToolCall(agent, 'get_overview', { boardId: 'board-b' })
+    expect(foreign.ok).toBe(false)
+    expect(foreign.code).toBe('FORBIDDEN_SCOPE')
+    expect(foreign.message).toMatch(/no access to this board/)
+    expect(authorizeToolCall(agent, 'get_overview', { boardId: 'board-a' }).ok).toBe(true)
+    // Empty / whitespace boardId must not open unscoped path for board-bound principals
+    expect(authorizeToolCall(agent, 'list_tasks', { boardId: '' }).ok).toBe(false)
+    expect(authorizeToolCall(agent, 'list_tasks', { boardId: '   ' }).ok).toBe(false)
+    // Adjacent catalog audit: create_board/delete_board remain role-gated (not agent)
+    expect(authorizeToolCall(agent, 'create_board', { id: 'x', name: 'x' }).ok).toBe(false)
+    expect(authorizeToolCall(agent, 'delete_board', { boardId: 'board-a' }).ok).toBe(false)
+    expect(authorizeToolCall(agent, 'update_board', { boardId: 'board-a' }).ok).toBe(false)
+    // Helper catalog is explicit and only list_boards today
+    expect(UNSCOPED_BOARD_ENUMERATION_TOOLS).toEqual(['list_boards'])
+    expect(isUnscopedBoardEnumerationTool('list_boards')).toBe(true)
+    expect(isUnscopedBoardEnumerationTool('list_tasks')).toBe(false)
+    expect(deniesUnscopedBoardEnumeration(agent)).toBe(true)
+    expect(deniesUnscopedBoardEnumeration(principal('OWNER'))).toBe(false)
+    expect(deniesUnscopedBoardEnumeration(principal('ROOT_ORCHESTRATOR'))).toBe(false)
+  })
+
+  it('P0: board-bound principal may still call board-scoped reads with matching boardId', () => {
+    const agent = principal('AGENT', {
+      agentId: 'agent-a',
+      boardId: 'board-a',
+      boards: ['board-a'],
+    })
+    for (const tool of [
+      'list_projects',
+      'list_features',
+      'list_tasks',
+      'get_overview',
+      'list_work_items',
+      'get_priority_portfolio',
+    ] as const) {
+      expect(authorizeToolCall(agent, tool, { boardId: 'board-a' }).ok, tool).toBe(true)
+      expect(authorizeToolCall(agent, tool, { boardId: 'board-b' }).ok, tool).toBe(false)
+    }
+  })
+
+  it('missing CSRF: same-origin alone insufficient (default deny)', () => {
+    setCsrfSecret('test-csrf-secret')
+    const missing = assertBrowserWriteCsrf({
+      sessionToken: 'sess-csrf-miss',
+      csrfHeader: undefined,
+      origin: ORIGIN,
+      host: HOST,
+    })
+    expect(missing.ok).toBe(false)
+    if (!missing.ok) expect(missing.code).toBe('CSRF_TOKEN_MISSING')
+
+    const empty = assertBrowserWriteCsrf({
+      sessionToken: 'sess-csrf-miss',
+      csrfHeader: '   ',
+      origin: ORIGIN,
+      host: HOST,
+      allowSameOriginWithoutToken: false,
+    })
+    expect(empty.ok).toBe(false)
+    if (!empty.ok) expect(empty.code).toBe('CSRF_TOKEN_MISSING')
+  })
+
+  it('login/bootstrap origin helper rejects cross-origin and missing origin', () => {
+    expect(
+      assertBrowserOrigin({
+        origin: ORIGIN,
+        host: HOST,
+        protocol: 'http',
+      }).ok,
+    ).toBe(true)
+    expect(
+      assertBrowserOrigin({
+        origin: 'https://evil.example',
+        host: HOST,
+      }).ok,
+    ).toBe(false)
+    const missing = assertBrowserOrigin({
+      origin: null,
+      referer: null,
+      host: HOST,
+    })
+    expect(missing.ok).toBe(false)
+    if (!missing.ok) expect(missing.code).toBe('CSRF_ORIGIN_MISSING')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Canonical MCP catalog integrity + human-safe tools/list + least-privilege
+// ---------------------------------------------------------------------------
+describe('canonical MCP tool catalog (MCP_TOOL_SPECS)', () => {
+  it('assertMcpToolCatalogIntegrity: all contract reads registered, no dups, aliases resolve', () => {
+    expect(() => assertMcpToolCatalogIntegrity()).not.toThrow()
+    const names = MCP_TOOL_SPECS.map((s) => s.name)
+    expect(new Set(names).size).toBe(names.length)
+    for (const required of CANONICAL_MCP_READ_TOOL_NAMES) {
+      expect(names, required).toContain(required)
+      expect(getToolSpec(required)).toBeDefined()
+    }
+    // Exact set of five previously-missing canonical tools
+    for (const n of [
+      'list_work_items',
+      'get_priority_portfolio',
+      'get_run',
+      'get_account',
+      'get_decision',
+    ] as const) {
+      expect(getToolSpec(n)).toBeDefined()
+      expect(getToolSpec(n)!.kind).toBe('read')
+    }
+    expect(getToolSpec('get_project')).toBeDefined()
+  })
+
+  it('preserves get_dispatch_next alias of get_next (+ work/priority/overview aliases)', () => {
+    expect(getToolSpec('get_dispatch_next')?.aliasOf).toBe('get_next')
+    expect(resolveToolAliasTarget('get_dispatch_next')).toBe('get_next')
+    expect(resolveToolAliasTarget('get_next')).toBe('get_next')
+    expect(getToolSpec('get_work')?.aliasOf).toBe('list_work_items')
+    expect(getToolSpec('get_priority')?.aliasOf).toBe('get_priority_portfolio')
+    expect(getToolSpec('get_rollup')?.aliasOf).toBe('get_overview')
+    expect(getToolSpec('get_lifecycle')?.aliasOf).toBe('get_overview')
+    expect(getToolSpec('get_board_hash')?.aliasOf).toBe('get_overview')
+    expect(resolveToolAliasTarget('invented_tool')).toBeNull()
+  })
+
+  it('least-privilege scopes for new canonical reads', () => {
+    expect(getToolSpec('list_work_items')!.scopes).toEqual(
+      expect.arrayContaining(['board:read', 'task:read']),
+    )
+    expect(getToolSpec('get_priority_portfolio')!.scopes).toEqual(['board:read'])
+    expect(getToolSpec('get_run')!.scopes).toEqual(['run:read'])
+    expect(getToolSpec('get_account')!.scopes).toEqual(['account:read'])
+    expect(getToolSpec('get_decision')!.scopes).toEqual(['decision:read'])
+    // Must not over-scope get_account to board:read alone (would leak to AGENT)
+    expect(getToolSpec('get_account')!.scopes).not.toContain('board:read')
+  })
+
+  it('human-safe catalog: unauth only public; never invents unknown tools', () => {
+    const unauth = listHumanSafeToolNames(null)
+    expect(unauth).toEqual(['get_public_snapshot'])
+    expect(listHumanSafeToolCatalog(null).every((s) => s.kind === 'public')).toBe(true)
+
+    const pub = listHumanSafeToolNames(publicPrincipal())
+    expect(pub).toEqual(['get_public_snapshot'])
+
+    // Catalog only emits names present in MCP_TOOL_SPECS
+    const ownerNames = listHumanSafeToolNames(principal('OWNER'))
+    for (const n of ownerNames) {
+      expect(getToolSpec(n)).toBeDefined()
+    }
+    expect(ownerNames).not.toContain('__internal_dump')
+    expect(ownerNames).not.toContain('compute_my_own_rollup')
+  })
+
+  it('human-safe catalog lists exact canonical tools for authorized roles', () => {
+    const owner = principal('OWNER')
+    const names = listHumanSafeToolNames(owner)
+    for (const n of [
+      'list_work_items',
+      'get_priority_portfolio',
+      'get_run',
+      'get_account',
+      'get_decision',
+      'get_dispatch_next',
+      'get_next',
+      'get_work',
+      'get_priority',
+    ]) {
+      expect(names).toContain(n)
+      expect(isToolListable(owner, n)).toBe(true)
+      expect(authorizeToolCall(owner, n).ok).toBe(true)
+    }
+  })
+
+  it('hostile tool-list: AGENT cannot list/call account tools; can list runs/work', () => {
+    const agent = principal('AGENT', { agentId: 'a1', boardId: 'b1', boards: ['b1'] })
+    expect(isToolListable(agent, 'get_account')).toBe(false)
+    expect(isToolListable(agent, 'list_accounts')).toBe(false)
+    expect(authorizeToolCall(agent, 'get_account').ok).toBe(false)
+    expect(authorizeToolCall(agent, 'list_accounts').ok).toBe(false)
+
+    expect(isToolListable(agent, 'get_run')).toBe(true)
+    expect(isToolListable(agent, 'list_runs')).toBe(true)
+    expect(isToolListable(agent, 'list_work_items')).toBe(true)
+    expect(isToolListable(agent, 'get_priority_portfolio')).toBe(true)
+    expect(isToolListable(agent, 'get_decision')).toBe(true)
+    expect(authorizeToolCall(agent, 'get_run').ok).toBe(true)
+    expect(authorizeToolCall(agent, 'list_work_items').ok).toBe(true)
+    expect(authorizeToolCall(agent, 'get_decision').ok).toBe(true)
+
+    const catalog = listHumanSafeToolNames(agent)
+    expect(catalog).toContain('list_work_items')
+    expect(catalog).toContain('get_run')
+    expect(catalog).not.toContain('get_account')
+    expect(catalog).not.toContain('list_accounts')
+    expect(catalog).not.toContain('sync_accounts')
+    expect(catalog).not.toContain('publish_dispatch_plan')
+  })
+
+  it('hostile tool-list: INTEGRATOR cannot list sensitive account/run/decision/audit', () => {
+    const integ = principal('INTEGRATOR', { boardId: 'b1', boards: ['b1'] })
+    for (const n of [
+      'get_account',
+      'list_accounts',
+      'get_run',
+      'list_runs',
+      'get_decision',
+      'list_decisions',
+      'list_audit',
+    ]) {
+      expect(isToolListable(integ, n)).toBe(false)
+      expect(authorizeToolCall(integ, n).ok).toBe(false)
+    }
+    // Board/task reads still listable
+    expect(isToolListable(integ, 'list_work_items')).toBe(true)
+    expect(isToolListable(integ, 'get_priority_portfolio')).toBe(true)
+    expect(isToolListable(integ, 'list_projects')).toBe(true)
+  })
+
+  it('hostile tool-list: member session board/task only; no account/run/decision', () => {
+    const m = principalFromSession(sessionMember())!
+    expect(isToolListable(m, 'list_work_items')).toBe(true)
+    expect(isToolListable(m, 'get_priority_portfolio')).toBe(true)
+    expect(isToolListable(m, 'get_dispatch_next')).toBe(true)
+    expect(isToolListable(m, 'get_account')).toBe(false)
+    expect(isToolListable(m, 'get_run')).toBe(false)
+    expect(isToolListable(m, 'get_decision')).toBe(false)
+    expect(isToolListable(m, 'list_audit')).toBe(false)
+    expect(authorizeToolCall(m, 'get_account').ok).toBe(false)
+    expect(authorizeToolCall(m, 'list_work_items').ok).toBe(true)
+  })
+
+  it('get_dispatch_next and get_next share listability + authorize for every role', () => {
+    for (const role of ['OWNER', 'ROOT_ORCHESTRATOR', 'AGENT', 'INTEGRATOR'] as V3Role[]) {
+      const p = principal(role, {
+        agentId: role === 'AGENT' ? 'a' : undefined,
+        boardId: role === 'AGENT' || role === 'INTEGRATOR' ? 'b' : undefined,
+        boards: role === 'AGENT' || role === 'INTEGRATOR' ? ['b'] : [],
+      })
+      expect(isToolListable(p, 'get_next')).toBe(isToolListable(p, 'get_dispatch_next'))
+      expect(authorizeToolCall(p, 'get_next').ok).toBe(authorizeToolCall(p, 'get_dispatch_next').ok)
+    }
+    expect(isToolListable(null, 'get_dispatch_next')).toBe(false)
+    expect(authorizeToolCall(null, 'get_dispatch_next').ok).toBe(false)
+  })
+
+  it('unknown tool names are never listable or authorized', () => {
+    const owner = principal('OWNER')
+    expect(isToolListable(owner, 'not_a_real_tool')).toBe(false)
+    expect(authorizeToolCall(owner, 'not_a_real_tool').ok).toBe(false)
+    expect(authorizeToolCall(owner, 'not_a_real_tool').code).toBe('AUTHORIZATION_REQUIRED')
+    expect(listHumanSafeToolNames(owner)).not.toContain('not_a_real_tool')
   })
 })

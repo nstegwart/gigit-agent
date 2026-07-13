@@ -142,6 +142,27 @@ export interface ImportPlanResult {
   validation: { schema: true; hash: true; graph: true }
 }
 
+/**
+ * Durable pin + immutable snapshot payload for the pin's canonical_snapshot_id.
+ * `snapshot` is null when the pin row exists but the snapshot registry row is missing
+ * or the pin is incomplete (no canonical_snapshot_id).
+ * Outer null = board pin row missing entirely.
+ */
+export interface PinnedSnapshotBundle {
+  pin: ImportBoardState
+  /**
+   * Reconstructed CanonicalSnapshot from control_plane_snapshots (or memory last apply).
+   * null when pin incomplete or snapshot row absent.
+   */
+  snapshot: CanonicalSnapshot | null
+  /**
+   * Board rev / lifecycle rev stored on the snapshot registry row at apply time.
+   * Present only when a snapshot row was loaded (may differ from pin on corruption).
+   */
+  snapshotBoardRev: number | null
+  snapshotLifecycleRev: number | null
+}
+
 /** Injected storage — no real DB. */
 export interface ImportStorage {
   getBoardState(boardId: string): Promise<ImportBoardState | null>
@@ -159,6 +180,11 @@ export interface ImportStorage {
     importId: string
     appliedAt: string
   }): Promise<ImportBoardState>
+  /**
+   * Single-authority read: board_revisions pin + control_plane_snapshots.payload_json
+   * for pin.canonical_snapshot_id. Pure read — never re-applies, never fabricates lifecycle.
+   */
+  getPinnedSnapshot(boardId: string): Promise<PinnedSnapshotBundle | null>
   /** Optional audit append (in-memory for tests). */
   appendAudit?(entry: Record<string, unknown>): Promise<void>
 }
@@ -605,26 +631,56 @@ export function createMemoryImportStorage(
 ): ImportStorage & {
   state: () => ImportBoardState
   audits: () => Array<Record<string, unknown>>
+  /** Test helper: inspect retained last applied snapshot (may be null pre-apply). */
+  lastAppliedSnapshot: () => CanonicalSnapshot | null
+  /**
+   * Test helper: drop retained snapshot while keeping pin (simulates SNAPSHOT_MISSING).
+   */
+  dropLastSnapshot: () => void
+  /**
+   * Test helper: set pin fields without a matching snapshot payload.
+   */
+  forcePin: (partial: Partial<ImportBoardState>) => void
 } {
   let board: ImportBoardState = {
     ...seed,
     lifecycleEvidenceByTask: { ...seed.lifecycleEvidenceByTask },
   }
   const audits: Array<Record<string, unknown>> = []
+  /** Retained for getPinnedSnapshot — definition payload is readable after apply. */
   let lastSnapshot: CanonicalSnapshot | null = null
+  let lastSnapshotBoardRev: number | null = null
+  let lastSnapshotLifecycleRev: number | null = null
 
-  return {
-    state: () => ({
+  function pinCopy(): ImportBoardState {
+    return {
       ...board,
       lifecycleEvidenceByTask: { ...board.lifecycleEvidenceByTask },
-    }),
+    }
+  }
+
+  return {
+    state: () => pinCopy(),
     audits: () => audits.map((a) => ({ ...a })),
+    lastAppliedSnapshot: () => (lastSnapshot ? structuredClone(lastSnapshot) : null),
+    dropLastSnapshot: () => {
+      lastSnapshot = null
+      lastSnapshotBoardRev = null
+      lastSnapshotLifecycleRev = null
+    },
+    forcePin: (partial) => {
+      board = {
+        ...board,
+        ...partial,
+        lifecycleEvidenceByTask:
+          partial.lifecycleEvidenceByTask != null
+            ? { ...partial.lifecycleEvidenceByTask }
+            : { ...board.lifecycleEvidenceByTask },
+      }
+    },
     async getBoardState(boardId: string) {
       if (board.boardId !== boardId) return null
-      return {
-        ...board,
-        lifecycleEvidenceByTask: { ...board.lifecycleEvidenceByTask },
-      }
+      return pinCopy()
     },
     async applySnapshot(args) {
       if (args.boardId !== board.boardId) {
@@ -632,7 +688,9 @@ export function createMemoryImportStorage(
       }
       // Preserve lifecycle evidence exactly
       const preservedEvidence = { ...board.lifecycleEvidenceByTask }
-      lastSnapshot = args.snapshot
+      lastSnapshot = structuredClone(args.snapshot)
+      lastSnapshotBoardRev = args.nextBoardRev
+      lastSnapshotLifecycleRev = board.lifecycleRev
       board = {
         ...board,
         boardRev: args.nextBoardRev,
@@ -646,10 +704,37 @@ export function createMemoryImportStorage(
         lifecycleEvidenceByTask: preservedEvidence,
         // lifecycleRev unchanged
       }
-      void lastSnapshot
+      return pinCopy()
+    },
+    async getPinnedSnapshot(boardId: string) {
+      if (board.boardId !== boardId) return null
+      const pin = pinCopy()
+      const snapId =
+        pin.canonicalSnapshotId != null && String(pin.canonicalSnapshotId).trim()
+          ? String(pin.canonicalSnapshotId).trim()
+          : null
+      if (!snapId || !lastSnapshot) {
+        return {
+          pin,
+          snapshot: null,
+          snapshotBoardRev: null,
+          snapshotLifecycleRev: null,
+        }
+      }
+      if (lastSnapshot.manifest.snapshotId !== snapId) {
+        // Pin points at a different id than retained payload — treat as missing row.
+        return {
+          pin,
+          snapshot: null,
+          snapshotBoardRev: null,
+          snapshotLifecycleRev: null,
+        }
+      }
       return {
-        ...board,
-        lifecycleEvidenceByTask: { ...board.lifecycleEvidenceByTask },
+        pin,
+        snapshot: structuredClone(lastSnapshot),
+        snapshotBoardRev: lastSnapshotBoardRev,
+        snapshotLifecycleRev: lastSnapshotLifecycleRev,
       }
     },
     async appendAudit(entry) {

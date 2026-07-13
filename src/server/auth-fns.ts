@@ -6,17 +6,23 @@ import { z } from 'zod'
 
 import {
   authenticate,
+  BootstrapError,
+  checkLoginThrottle,
+  clearLoginThrottleKey,
   countUsers,
+  createFirstAdminAtomic,
   createUser,
   deleteUser,
   destroySession,
   listUsers,
+  recordLoginFailure,
   resetPassword,
   setUserBoards,
   setUserRole,
 } from './auth-store'
 import {
   assertRequestCsrf,
+  assertRequestOrigin,
   clearSessionCookie,
   currentCsrfToken,
   currentPrincipal,
@@ -65,17 +71,31 @@ export const needsSetupFn = createServerFn({ method: 'GET' }).handler(async () =
 export const loginFn = createServerFn({ method: 'POST' })
   .validator(z.object({ username: z.string().min(1), password: z.string().min(1) }))
   .handler(async ({ data }): Promise<SessionUser> => {
-    // Login has no prior session — CSRF not applicable; still prefer same-origin when present.
+    // Login: no prior session CSRF token; origin check is mandatory (fail closed).
+    const origin = assertRequestOrigin()
+    if (!origin.ok) throw new Error(origin.message)
+
+    const throttle = checkLoginThrottle(data.username)
+    if (!throttle.allowed) {
+      throw new Error(
+        `Too many login attempts — retry in ${throttle.retryAfterSeconds}s`,
+      )
+    }
+
     const res = await authenticate(data.username, data.password)
-    if (!res) throw new Error('Invalid username or password')
+    if (!res) {
+      recordLoginFailure(data.username)
+      throw new Error('Invalid username or password')
+    }
+    clearLoginThrottleKey(data.username)
     setSessionCookie(res.token)
     return res.user
   })
 
 export const logoutFn = createServerFn({ method: 'POST' }).handler(async () => {
-  // Logout: if session exists, CSRF-protect; anonymous logout is noop.
+  // Logout: if session exists, require CSRF token (same-origin alone insufficient).
   if (currentSessionToken()) {
-    const csrf = assertRequestCsrf({ allowSameOriginWithoutToken: true })
+    const csrf = assertRequestCsrf({ allowSameOriginWithoutToken: false })
     if (!csrf.ok) throw new Error(csrf.message)
   }
   await destroySession(currentSessionToken())
@@ -83,12 +103,20 @@ export const logoutFn = createServerFn({ method: 'POST' }).handler(async () => {
   return { ok: true }
 })
 
-/** One-time: create the first admin when there are zero users, then sign in. */
+/** One-time: create the first admin when there are zero users, then sign in. Atomic under lock. */
 export const bootstrapFn = createServerFn({ method: 'POST' })
   .validator(z.object({ username: z.string().min(1), password: z.string().min(6) }))
   .handler(async ({ data }): Promise<SessionUser> => {
-    if ((await countUsers()) > 0) throw new Error('Setup already complete — ask an admin for an account')
-    await createUser({ username: data.username, password: data.password, role: 'admin' })
+    // Bootstrap: unauthenticated POST — origin check mandatory; no session CSRF yet.
+    const origin = assertRequestOrigin()
+    if (!origin.ok) throw new Error(origin.message)
+
+    try {
+      await createFirstAdminAtomic({ username: data.username, password: data.password })
+    } catch (e) {
+      if (e instanceof BootstrapError) throw new Error(e.message)
+      throw e
+    }
     const res = await authenticate(data.username, data.password)
     if (!res) throw new Error('bootstrap failed')
     setSessionCookie(res.token)

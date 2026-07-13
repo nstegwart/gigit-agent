@@ -5,6 +5,7 @@ import { Link, createFileRoute, redirect, useNavigate } from '@tanstack/react-ro
 import { useState } from 'react'
 
 import { boardsQueryOptions, useBoards, useCanEdit } from '#/lib/board-query'
+import { csrfServerCall } from '#/lib/csrf-client'
 import { BrandMark, Icon } from '#/lib/icons'
 import { createBoardFn } from '#/server/board'
 import { UserMenu } from '#/components/UserMenu'
@@ -32,7 +33,7 @@ function Home() {
   const [open, setOpen] = useState(false)
 
   const create = useMutation({
-    mutationFn: (v: { id: string; name: string }) => createBoardFn({ data: v }),
+    mutationFn: (v: { id: string; name: string }) => csrfServerCall(createBoardFn, v),
     onSuccess: (_res, v) => {
       qc.invalidateQueries({ queryKey: ['boards'] })
       nav({ to: '/b/$boardId', params: { boardId: v.id } })

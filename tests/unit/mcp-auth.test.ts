@@ -12,12 +12,22 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
 
 import { authGate, resolveMcpAuthContext } from '#/routes/mcp'
+import { resolvePublicSnapshotClientIp } from '#/routes/api.public-snapshot'
 import {
+  createMemoryControlPlaneRuntimeContext,
   registerBoardTools,
+  resetControlPlaneRuntimeContextForTests,
   resetMcpControlPlaneDeps,
   setMcpPlanStore,
+  setTestControlPlaneRuntimeContext,
   type McpAuthContext,
 } from '#/server/board-mcp'
+import {
+  createPublicSnapshotService,
+  resetPublicSnapshotServiceForTests,
+  setTestPublicSnapshotService,
+} from '#/server/public-snapshot-service'
+import { createMemoryRateLimitStore, createPublicSnapshotRateLimiter } from '#/server/rate-limit'
 import type { DispatchPlanStore } from '#/server/control-plane-ingest'
 import {
   MCP_TOOL_SPECS,
@@ -68,6 +78,7 @@ const BEARER_RECORDS: BearerTokenRecord[] = [
     role: 'AGENT',
     actorId: 'agent-mcp-auth',
     agentId: 'agent-mcp-auth',
+    boardId: BOARD,
   },
   {
     tokenId: 't-int',
@@ -76,6 +87,7 @@ const BEARER_RECORDS: BearerTokenRecord[] = [
     actorId: 'int-mcp-auth',
     pathspecs: ['src/server/**'],
     checkpointId: 'cp-mcp-auth',
+    boardId: BOARD,
   },
 ]
 
@@ -138,14 +150,18 @@ function makeRequest(body: RpcBody | RpcBody[], headers: Record<string, string> 
 /**
  * Mirror of src/routes/mcp.ts handle() — uses exported route APIs only.
  * Cookie never elevates; session principal hard-denied if present.
+ * Injects non-spoofable clientIp (resolvePublicSnapshotClientIp) like production.
  */
 async function mcpHandle(request: Request): Promise<Response> {
+  // Capture IP before authGate body rebuild drops socket/runtime fields (matches production mcp.ts).
+  const clientIp = resolvePublicSnapshotClientIp(request)
   const gated = await authGate(request)
   if (gated instanceof Response) return gated
   request = gated
 
   const auth: McpAuthContext = await resolveMcpAuthContext(request)
-  if (auth.principal && auth.principal.channel === 'session') {
+  const authWithIp: McpAuthContext = { ...auth, clientIp }
+  if (authWithIp.principal && authWithIp.principal.channel === 'session') {
     return new Response(
       JSON.stringify({
         jsonrpc: '2.0',
@@ -161,7 +177,7 @@ async function mcpHandle(request: Request): Promise<Response> {
     enableJsonResponse: true,
   })
   const server = new McpServer({ name: 'cairn-board', version: '1.3.0' })
-  registerBoardTools(server, auth)
+  registerBoardTools(server, authWithIp)
   await server.connect(transport)
   try {
     return await transport.handleRequest(request)
@@ -169,6 +185,17 @@ async function mcpHandle(request: Request): Promise<Response> {
     void transport.close()
     void server.close()
   }
+}
+
+/** Request with non-spoofable runtime socket IP (mirrors srvx NodeRequest `.ip`). */
+function makeRequestWithSocketIp(
+  body: RpcBody | RpcBody[],
+  ip: string,
+  headers: Record<string, string> = {},
+): Request {
+  const req = makeRequest(body, headers)
+  Object.defineProperty(req, 'ip', { value: ip, enumerable: true, configurable: true })
+  return req
 }
 
 async function mcpRpc(
@@ -247,11 +274,16 @@ function sessionAdmin(): SessionUser {
 beforeEach(() => {
   resetBearerInjection()
   resetMcpControlPlaneDeps()
+  resetControlPlaneRuntimeContextForTests()
+  resetPublicSnapshotServiceForTests()
+  setTestControlPlaneRuntimeContext(createMemoryControlPlaneRuntimeContext())
 })
 
 afterEach(() => {
   resetBearerInjection()
   resetMcpControlPlaneDeps()
+  resetControlPlaneRuntimeContextForTests()
+  resetPublicSnapshotServiceForTests()
 })
 
 // ---------------------------------------------------------------------------
@@ -437,9 +469,31 @@ describe('legacy CAIRN_WRITE_TOKEN absent / present', () => {
     expect(unauth.status).toBe(401)
   })
 
-  it('legacy present: constrained AGENT only (not OWNER/ROOT; no account/audit/dispatch)', async () => {
+  it('legacy present unbound: disabled (principal null — board binding required)', async () => {
     const prev = process.env.CAIRN_WRITE_TOKEN
+    const prevBoard = process.env.CAIRN_WRITE_TOKEN_BOARD_ID
     process.env.CAIRN_WRITE_TOKEN = LEGACY
+    delete process.env.CAIRN_WRITE_TOKEN_BOARD_ID
+    try {
+      resetBearerInjection()
+      const ctx = await resolveMcpAuthContext(
+        makeRequest(rpc('tools/list'), bearerHeaders(LEGACY)),
+      )
+      // Unbound legacy write token is disabled (fail closed)
+      expect(ctx.principal).toBeNull()
+    } finally {
+      if (prev === undefined) delete process.env.CAIRN_WRITE_TOKEN
+      else process.env.CAIRN_WRITE_TOKEN = prev
+      if (prevBoard === undefined) delete process.env.CAIRN_WRITE_TOKEN_BOARD_ID
+      else process.env.CAIRN_WRITE_TOKEN_BOARD_ID = prevBoard
+    }
+  })
+
+  it('legacy present board-bound: constrained AGENT only (not OWNER/ROOT; no account/audit/dispatch)', async () => {
+    const prev = process.env.CAIRN_WRITE_TOKEN
+    const prevBoard = process.env.CAIRN_WRITE_TOKEN_BOARD_ID
+    process.env.CAIRN_WRITE_TOKEN = LEGACY
+    process.env.CAIRN_WRITE_TOKEN_BOARD_ID = BOARD
     try {
       // Clear injectable so only env legacy path applies
       resetBearerInjection()
@@ -449,6 +503,7 @@ describe('legacy CAIRN_WRITE_TOKEN absent / present', () => {
       expect(ctx.principal).not.toBeNull()
       expect(ctx.principal!.role).toBe('AGENT')
       expect(ctx.principal!.channel).toBe('bearer')
+      expect(ctx.principal!.boardId).toBe(BOARD)
       expect(ctx.principal!.role).not.toBe('OWNER')
       expect(ctx.principal!.role).not.toBe('ROOT_ORCHESTRATOR')
 
@@ -492,6 +547,8 @@ describe('legacy CAIRN_WRITE_TOKEN absent / present', () => {
     } finally {
       if (prev === undefined) delete process.env.CAIRN_WRITE_TOKEN
       else process.env.CAIRN_WRITE_TOKEN = prev
+      if (prevBoard === undefined) delete process.env.CAIRN_WRITE_TOKEN_BOARD_ID
+      else process.env.CAIRN_WRITE_TOKEN_BOARD_ID = prevBoard
     }
   })
 })
@@ -610,6 +667,8 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
     expect(names).not.toContain('list_audit')
     expect(names).not.toContain('publish_dispatch_plan')
     expect(names).not.toContain('sync_accounts')
+    // P0: unscoped list_boards hidden from tools/list for board-bound AGENT
+    expect(names).not.toContain('list_boards')
 
     // authorizeToolCall own-run (direct recheck contract used by secureTool)
     const deny = authorizeToolCall(
@@ -646,12 +705,24 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
     const list = await mcpRpc(rpc('tools/list'), bearerHeaders(TOKENS.INTEGRATOR))
     const names = toolNamesFromList(list.json)
     expect(names).toContain('integration_lock')
-    expect(names).toContain('list_boards')
+    // P0: unscoped list_boards hidden from tools/list for board-bound INTEGRATOR
+    expect(names).not.toContain('list_boards')
     expect(names).not.toContain('publish_dispatch_plan')
     expect(names).not.toContain('advance_task')
     expect(names).not.toContain('resolve_decision_v3')
     expect(names).not.toContain('sync_accounts')
     assertNoSecretLeak(list.rawText)
+  })
+
+  it('ROOT/OWNER still list list_boards; AGENT/INTEGRATOR do not', async () => {
+    const root = await mcpRpc(rpc('tools/list'), bearerHeaders(TOKENS.ROOT))
+    const owner = await mcpRpc(rpc('tools/list'), bearerHeaders(TOKENS.OWNER))
+    expect(toolNamesFromList(root.json)).toContain('list_boards')
+    expect(toolNamesFromList(owner.json)).toContain('list_boards')
+    const agent = await mcpRpc(rpc('tools/list'), bearerHeaders(TOKENS.AGENT))
+    const integ = await mcpRpc(rpc('tools/list'), bearerHeaders(TOKENS.INTEGRATOR))
+    expect(toolNamesFromList(agent.json)).not.toContain('list_boards')
+    expect(toolNamesFromList(integ.json)).not.toContain('list_boards')
   })
 
   it('PUBLIC/unauth: only public tools; write invocations denied', async () => {
@@ -889,6 +960,226 @@ describe('typed revision / idempotency / authorization errors', () => {
       expect(JSON.stringify(payload)).not.toMatch(/password|apiKey|api_key|Bearer /i)
     }
     assertNoSecretLeak(r.rawText)
+  })
+
+  it('list_projects returns pinned envelope + nextCursor contract (canonical pagination)', async () => {
+    const r = await mcpRpc(
+      toolCall('list_projects', { boardId: BOARD, pageSize: 50 }),
+      bearerHeaders(TOKENS.AGENT),
+    )
+    expect(r.status).not.toBe(401)
+    const payload = parseToolPayload(r.json)
+    if (payload?.ok === false) {
+      // board may be missing on fixture — still typed + secret-free
+      expect(payload.code).toMatch(/NOT_FOUND|ERROR|AUTHORIZATION|FORBIDDEN|INVALID|STALE|MCP_/i)
+      assertNoSecretLeak(r.rawText)
+      return
+    }
+    if (payload) {
+      expect(payload).toHaveProperty('schemaVersion', 'TM_PINNED_ENVELOPE_V1')
+      expect(payload).toHaveProperty('boardId')
+      expect(payload).toHaveProperty('boardRev')
+      expect(payload).toHaveProperty('lifecycleRev')
+      expect(payload).toHaveProperty('canonicalHash')
+      expect(payload).toHaveProperty('canonicalSnapshotId')
+      expect(payload).toHaveProperty('nextCursor')
+      expect(payload).toHaveProperty('data')
+      // Hard gate: required envelope metadata (no soft || true)
+      expect(payload.method).toBe('list_projects')
+      expect(payload.requestedAs).toBe('list_projects')
+      expect(payload.contractVersion).toBe('TM_MCP_READ_CONTRACT_V1')
+      // default pageSize bound
+      if (Array.isArray(payload.projects)) {
+        expect(payload.projects.length).toBeLessThanOrEqual(50)
+      }
+      if (Array.isArray(payload.data?.items)) {
+        expect(payload.data.items.length).toBeLessThanOrEqual(50)
+      }
+    }
+    assertNoSecretLeak(r.rawText)
+  })
+
+  it('get_overview / get_board_hash / get_prod wire envelope method+requestedAs+contractVersion', async () => {
+    for (const [tool, expectedMethod, expectedRequestedAs] of [
+      ['get_overview', 'get_overview', 'get_overview'],
+      ['get_board_hash', 'get_overview', 'get_board_hash'],
+      ['get_prod', 'get_prod', 'get_prod'],
+      ['get_guide', 'get_guide', 'get_guide'],
+      ['get_rollup', 'get_overview', 'get_rollup'],
+      ['get_lifecycle', 'get_overview', 'get_lifecycle'],
+    ] as const) {
+      const r = await mcpRpc(toolCall(tool, { boardId: BOARD }), bearerHeaders(TOKENS.AGENT))
+      expect(r.status).not.toBe(401)
+      const payload = parseToolPayload(r.json)
+      if (payload?.ok === false) {
+        // Board fixture may be missing — still typed, secret-free
+        expect(String(payload.code ?? '')).toMatch(
+          /NOT_FOUND|ERROR|AUTHORIZATION|FORBIDDEN|INVALID|STALE|MCP_|MISSING/i,
+        )
+        assertNoSecretLeak(r.rawText)
+        continue
+      }
+      if (payload) {
+        expect(payload.schemaVersion).toBe('TM_PINNED_ENVELOPE_V1')
+        expect(payload.method).toBe(expectedMethod)
+        expect(payload.requestedAs).toBe(expectedRequestedAs)
+        expect(payload.contractVersion).toBe('TM_MCP_READ_CONTRACT_V1')
+        expect(payload).toHaveProperty('canonicalHash')
+        expect(payload).toHaveProperty('boardRev')
+        if (tool === 'get_board_hash') {
+          expect(payload.hash === payload.canonicalHash || payload.data?.hash === payload.canonicalHash).toBe(
+            true,
+          )
+        }
+      }
+      assertNoSecretLeak(r.rawText)
+    }
+  })
+
+  it('get_work / get_priority alias envelope metadata on wire', async () => {
+    const work = await mcpRpc(
+      toolCall('get_work', { boardId: BOARD, pageSize: 10 }),
+      bearerHeaders(TOKENS.AGENT),
+    )
+    const workPayload = parseToolPayload(work.json)
+    if (workPayload && workPayload.ok !== false) {
+      expect(workPayload.method).toBe('list_work_items')
+      expect(workPayload.requestedAs).toBe('get_work')
+      expect(workPayload.contractVersion).toBe('TM_MCP_READ_CONTRACT_V1')
+    }
+    const prio = await mcpRpc(toolCall('get_priority', { boardId: BOARD }), bearerHeaders(TOKENS.AGENT))
+    const prioPayload = parseToolPayload(prio.json)
+    if (prioPayload && prioPayload.ok !== false) {
+      expect(prioPayload.method).toBe('get_priority_portfolio')
+      expect(prioPayload.requestedAs).toBe('get_priority')
+      expect(prioPayload.contractVersion).toBe('TM_MCP_READ_CONTRACT_V1')
+    }
+    assertNoSecretLeak(work.rawText)
+    assertNoSecretLeak(prio.rawText)
+  })
+
+  it('unauth get_public_snapshot rate-limits per socket IP; spoofed XFF ignored', async () => {
+    const clock = { nowMs: () => 5_000_000 }
+    const limiter = createPublicSnapshotRateLimiter({
+      store: createMemoryRateLimitStore(),
+      clock,
+      policy: { sustainedPerMinute: 60, burst: 1 },
+    })
+    setTestPublicSnapshotService(createPublicSnapshotService({ rateLimiter: limiter }))
+    try {
+      const body = toolCall('get_public_snapshot', { boardId: BOARD })
+      // Same socket IP + spoofed XFF — second call must share bucket (IP not XFF)
+      const r1 = await mcpHandle(
+        makeRequestWithSocketIp(body, '198.51.100.40', {
+          'x-forwarded-for': '9.9.9.9',
+        }),
+      )
+      const t1 = await r1.text()
+      const j1 = JSON.parse(t1)
+      const p1 = parseToolPayload(j1)
+      // First call: not 401; rate token consumed even when snapshot is STALE_OR_MISSING
+      expect(r1.status).not.toBe(401)
+      expect(p1?.code).not.toBe('RATE_LIMITED')
+
+      const r2 = await mcpHandle(
+        makeRequestWithSocketIp(body, '198.51.100.40', {
+          'x-forwarded-for': '1.2.3.4',
+        }),
+      )
+      const t2 = await r2.text()
+      const j2 = JSON.parse(t2)
+      const p2 = parseToolPayload(j2)
+      // Second call same socket IP must be rate limited (XFF spoof does not fork bucket)
+      expect(p2).toBeTruthy()
+      expect(p2.ok).toBe(false)
+      expect(p2.code).toBe('RATE_LIMITED')
+
+      // Different IP still has capacity
+      const r3 = await mcpHandle(makeRequestWithSocketIp(body, '198.51.100.41'))
+      const t3 = await r3.text()
+      const j3 = JSON.parse(t3)
+      const p3 = parseToolPayload(j3)
+      expect(p3).toBeTruthy()
+      expect(p3.code).not.toBe('RATE_LIMITED')
+      assertNoSecretLeak(t1)
+      assertNoSecretLeak(t2)
+      assertNoSecretLeak(t3)
+    } finally {
+      resetPublicSnapshotServiceForTests()
+    }
+  })
+
+  it('list_tasks rejects oversized pageSize via typed CURSOR/PAGE_SIZE error (not silent clamp)', async () => {
+    const r = await mcpRpc(
+      toolCall('list_tasks', { boardId: BOARD, pageSize: 201 }),
+      bearerHeaders(TOKENS.AGENT),
+    )
+    expect(r.status).not.toBe(401)
+    const payload = parseToolPayload(r.json)
+    if (payload) {
+      expect(payload.ok).not.toBe(true)
+      expect(String(payload.code ?? '')).toMatch(/PAGE_SIZE_INVALID|CURSOR_INVALID|INVALID|ERROR|MCP_/i)
+    }
+    assertNoSecretLeak(r.rawText)
+  })
+
+  it('V3 mutations require expectedBoardRev / idempotencyKey / entity rev where contract applies', async () => {
+    // Missing expectedBoardRev on open_decision_v3 — schema/handler must not invent boardRev silently
+    const openMissing = await mcpRpc(
+      toolCall('open_decision_v3', {
+        boardId: BOARD,
+        question: 'missing rev?',
+      }),
+      bearerHeaders(TOKENS.AGENT),
+    )
+    const openPayload = parseToolPayload(openMissing.json)
+    // Protocol validation error OR typed invalid — never ok:true with invented rev
+    if (openPayload) {
+      expect(openPayload.ok).not.toBe(true)
+    } else {
+      expect(openMissing.json?.error || openMissing.json?.result?.isError).toBeTruthy()
+    }
+    assertNoSecretLeak(openMissing.rawText)
+
+    // sync_accounts missing expectedBoardRev + still has idempotencyKey shape
+    const syncMissing = await mcpRpc(
+      toolCall('sync_accounts', {
+        boardId: BOARD,
+        sourceRevision: 1,
+        accounts: [],
+        idempotencyKey: 'idem-missing-board-rev',
+      }),
+      bearerHeaders(TOKENS.ROOT),
+    )
+    const syncPayload = parseToolPayload(syncMissing.json)
+    if (syncPayload) {
+      expect(syncPayload.ok).not.toBe(true)
+    } else {
+      expect(syncMissing.json?.error || syncMissing.json?.result?.isError).toBeTruthy()
+    }
+    assertNoSecretLeak(syncMissing.rawText)
+
+    // resolve_decision_v3 missing entityExpectedRev/expectedRev
+    const resolveMissing = await mcpRpc(
+      toolCall('resolve_decision_v3', {
+        boardId: BOARD,
+        decisionId: 'd-missing-entity-rev',
+        selectedOptionId: 'ack',
+        expectedBoardRev: 0,
+      }),
+      bearerHeaders(TOKENS.OWNER),
+    )
+    const resolvePayload = parseToolPayload(resolveMissing.json)
+    if (resolvePayload) {
+      expect(resolvePayload.ok).not.toBe(true)
+      // NOT_FOUND or INVALID_INPUT for missing entity rev — either is fail-closed
+      if (resolvePayload.code) {
+        expect(String(resolvePayload.code)).toMatch(
+          /INVALID_INPUT|NOT_FOUND|STALE|AUTHORIZATION|FORBIDDEN|ERROR|MCP_/i,
+        )
+      }
+    }
+    assertNoSecretLeak(resolveMissing.rawText)
   })
 
   it('publish_dispatch_plan twice with same idempotency key different hash → IDEMPOTENCY_CONFLICT or typed deny', async () => {

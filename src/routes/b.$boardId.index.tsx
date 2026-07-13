@@ -76,13 +76,36 @@ function ControlCenterOverview() {
 
   const onSelectBucket = useCallback(
     (bucket: PrimaryBucket) => {
-      // Deep-link to Work with server-validated bucket filter.
+      // Deep-link to Work with server-validated bucket filter + pin when known.
+      const params = new URLSearchParams({ bucket })
+      const env = q.data
+      if (env) {
+        params.set('boardRev', String(env.boardRev))
+        params.set('lifecycleRev', String(env.lifecycleRev))
+        if (env.canonicalSnapshotId) params.set('canonicalSnapshotId', env.canonicalSnapshotId)
+        if (env.canonicalHash) params.set('canonicalHash', env.canonicalHash)
+      }
       window.location.assign(
-        `/b/${encodeURIComponent(boardId)}/work?bucket=${encodeURIComponent(bucket)}`,
+        `/b/${encodeURIComponent(boardId)}/work?${params.toString()}`,
       )
     },
-    [boardId],
+    [boardId, q.data],
   )
+
+  const onToggleStale = useCallback(() => {
+    // AC-BUCKET-05: STALE chip → Work with stale family filter (not a 7th bucket).
+    const params = new URLSearchParams({ stale: '1' })
+    const env = q.data
+    if (env) {
+      params.set('boardRev', String(env.boardRev))
+      params.set('lifecycleRev', String(env.lifecycleRev))
+      if (env.canonicalSnapshotId) params.set('canonicalSnapshotId', env.canonicalSnapshotId)
+      if (env.canonicalHash) params.set('canonicalHash', env.canonicalHash)
+    }
+    window.location.assign(
+      `/b/${encodeURIComponent(boardId)}/work?${params.toString()}`,
+    )
+  }, [boardId, q.data])
 
   const props = overviewEnvelopeToProps(q.data, {
     boardLabel: boardMeta?.name,
@@ -91,6 +114,7 @@ function ControlCenterOverview() {
     onRetry,
     onReconnect: onRetry,
     onSelectBucket,
+    onToggleStale,
     pillCollapsed,
     onPillExpand,
     onPillCollapse,

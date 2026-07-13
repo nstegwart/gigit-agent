@@ -18,8 +18,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
 import { createFileRoute } from '@tanstack/react-router'
 
-import { registerBoardTools, type McpAuthContext } from '#/server/board-mcp'
+import { registerBoardTools, resolveMcpRuntimeContext, type McpAuthContext } from '#/server/board-mcp'
 import { envVar } from '#/server/db'
+import { peekControlPlaneRuntimeContext } from '#/server/control-plane-runtime-context'
 import {
   authorizeToolCall,
   extractBearerFromHeaders,
@@ -29,6 +30,7 @@ import {
   type AuthErrorCode,
   type Principal,
 } from '#/server/rbac'
+import { resolvePublicSnapshotClientIp } from '#/routes/api.public-snapshot'
 
 const SERVER_NAME = 'cairn-board'
 const SERVER_VERSION = '1.3.0'
@@ -351,6 +353,10 @@ export async function authGate(request: Request): Promise<Request | Response> {
 }
 
 async function handle(request: Request): Promise<Response> {
+  // Capture non-spoofable IP BEFORE authGate rebuilds the Request (body clone drops .ip / socket).
+  // Never raw XFF — resolvePublicSnapshotClientIp uses socket/runtime or trusted-edge only.
+  const clientIp = resolvePublicSnapshotClientIp(request)
+
   let gated: Request | Response
   try {
     gated = await authGate(request)
@@ -362,10 +368,22 @@ async function handle(request: Request): Promise<Response> {
   request = gated
 
   const auth = await resolveMcpAuthContext(request)
+  const authWithIp: McpAuthContext = { ...auth, clientIp }
 
   // Cookie elevation hard-deny (defensive; resolve already strips session channel).
-  if (auth.principal && auth.principal.channel === 'session') {
+  if (authWithIp.principal && authWithIp.principal.channel === 'session') {
     return rpcError(403, 'COOKIE_ELEVATION_DENIED', 'COOKIE_ELEVATION_DENIED')
+  }
+
+  // Production/default: warm one durable control-plane context before tools register.
+  // Memory only via explicit test injection (setTestControlPlaneRuntimeContext).
+  // Failures stay fail-closed inside tool handlers; do not open unauth sensitive surface.
+  if (authWithIp.principal && !peekControlPlaneRuntimeContext()) {
+    try {
+      resolveMcpRuntimeContext()
+    } catch {
+      // Leave unresolved — authenticated tools that need durable stores return typed errors.
+    }
   }
 
   // Fresh transport + server per request = fully stateless. Tool registration is cheap.
@@ -374,7 +392,7 @@ async function handle(request: Request): Promise<Response> {
     enableJsonResponse: true, // return JSON, not an SSE stream
   })
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION })
-  registerBoardTools(server, auth)
+  registerBoardTools(server, authWithIp)
   try {
     await server.connect(transport)
     try {

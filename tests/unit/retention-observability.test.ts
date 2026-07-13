@@ -11,6 +11,7 @@ import {
   type BoardPolicyRetention,
 } from '#/server/audit-retention'
 import {
+  OBSERVABILITY_REDACTED,
   STAGING_RUNBOOKS,
   V3_ALERT_IDS,
   V3_METRIC_CATEGORIES,
@@ -21,9 +22,18 @@ import {
   createObservabilityFacade,
   evaluatePublicFreshnessAlert,
   evaluateReleaseSchemaAlert,
+  isSecretObservabilityKey,
   redactForObservability,
   runbookForAlert,
 } from '#/server/observability'
+
+/** Well-known JWT (public demo payload) — must never appear raw in redacted output. */
+const RAW_JWT =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+
+/** Session cookie value with a distinctive secret segment for leak assertions. */
+const RAW_SESSION_COOKIE =
+  'session=s%3Araw-session-secret-value-DO-NOT-LOG.signature; Path=/; HttpOnly'
 
 describe('AC-OPS-04 heartbeat is not immutable per-event audit', () => {
   it('updates hot state without immutable heartbeat audit', () => {
@@ -344,6 +354,163 @@ describe('AC-OPS-02 structured log redaction', () => {
     })
     expect(log.meta?.token).toBe('[REDACTED]')
     expect(log.meta?.board).toBe('b1')
+  })
+
+  it('isSecretObservabilityKey matches case-insensitive variants and header aliases', () => {
+    const secretKeys = [
+      'token',
+      'Token',
+      'accessToken',
+      'refresh_token',
+      'password',
+      'apiKey',
+      'api-key',
+      'API_KEY',
+      'cookie',
+      'Cookie',
+      'cookieHeader',
+      'Cookie-Header',
+      'auth',
+      'authHeader',
+      'Authorization',
+      'authorization',
+      'session',
+      'sessionId',
+      'credential',
+      'clientSecret',
+      'x-auth-token',
+    ]
+    for (const k of secretKeys) {
+      expect(isSecretObservabilityKey(k), k).toBe(true)
+    }
+    // Safe structured / metric keys must remain usable.
+    for (const k of [
+      'requestId',
+      'endpoint',
+      'event',
+      'boardId',
+      'actorRole',
+      'latencyMs',
+      'route',
+      'channel',
+      'method',
+      'reason',
+      'count',
+      'safe',
+    ]) {
+      expect(isSecretObservabilityKey(k), k).toBe(false)
+    }
+  })
+
+  it('fail-closed: cookieHeader/authHeader + nested JWT/session cookie never leak raw', () => {
+    const redacted = redactForObservability({
+      cookieHeader: RAW_SESSION_COOKIE,
+      authHeader: `Bearer ${RAW_JWT}`,
+      Cookie: RAW_SESSION_COOKIE,
+      Authorization: `Bearer ${RAW_JWT}`,
+      headers: {
+        cookieHeader: RAW_SESSION_COOKIE,
+        authHeader: `Bearer ${RAW_JWT}`,
+        'x-api-key': 'sk-live-should-not-appear',
+      },
+      items: [
+        { accessToken: RAW_JWT, sessionCookie: RAW_SESSION_COOKIE, count: 2 },
+        { nested: { password: 'p', ok: true } },
+      ],
+      // Value-shape only (safe key) — still scrub JWT / session= blobs.
+      note: RAW_JWT,
+      cookieBlob: RAW_SESSION_COOKIE,
+      safe: 'ok',
+      boardId: 'b1',
+    }) as Record<string, unknown>
+
+    expect(redacted.cookieHeader).toBe(OBSERVABILITY_REDACTED)
+    expect(redacted.authHeader).toBe(OBSERVABILITY_REDACTED)
+    expect(redacted.Cookie).toBe(OBSERVABILITY_REDACTED)
+    expect(redacted.Authorization).toBe(OBSERVABILITY_REDACTED)
+    expect(redacted.safe).toBe('ok')
+    expect(redacted.boardId).toBe('b1')
+
+    const headers = redacted.headers as Record<string, unknown>
+    expect(headers.cookieHeader).toBe(OBSERVABILITY_REDACTED)
+    expect(headers.authHeader).toBe(OBSERVABILITY_REDACTED)
+    expect(headers['x-api-key']).toBe(OBSERVABILITY_REDACTED)
+
+    const items = redacted.items as Array<Record<string, unknown>>
+    expect(items[0]?.accessToken).toBe(OBSERVABILITY_REDACTED)
+    expect(items[0]?.sessionCookie).toBe(OBSERVABILITY_REDACTED)
+    expect(items[0]?.count).toBe(2)
+    expect((items[1]?.nested as Record<string, unknown>).password).toBe(
+      OBSERVABILITY_REDACTED,
+    )
+    expect((items[1]?.nested as Record<string, unknown>).ok).toBe(true)
+
+    // Value-shape redaction when the key itself is not secret-named.
+    expect(redacted.note).toBe(OBSERVABILITY_REDACTED)
+    // cookieBlob key contains "cookie" → key redaction.
+    expect(redacted.cookieBlob).toBe(OBSERVABILITY_REDACTED)
+
+    const json = JSON.stringify(redacted)
+    expect(json).not.toContain(RAW_JWT)
+    expect(json).not.toContain('raw-session-secret-value-DO-NOT-LOG')
+    expect(json).not.toContain(RAW_SESSION_COOKIE)
+    expect(json).not.toContain('sk-live-should-not-appear')
+    expect(json).not.toContain(`Bearer ${RAW_JWT}`)
+  })
+
+  it('buildStructuredLog meta: cookieHeader/authHeader with raw JWT/session never leak', () => {
+    const log = buildStructuredLog({
+      requestId: 'req-redact',
+      endpoint: '/api/public-snapshot',
+      event: 'get',
+      boardId: 'b1',
+      actorRole: 'PUBLIC',
+      result: 'ok',
+      latencyMs: 9,
+      boardRev: 3,
+      lifecycleRev: 1,
+      meta: {
+        cookieHeader: RAW_SESSION_COOKIE,
+        authHeader: `Bearer ${RAW_JWT}`,
+        route: 'public',
+      },
+    })
+    // Required structured fields preserved.
+    expect(log.requestId).toBe('req-redact')
+    expect(log.endpoint).toBe('/api/public-snapshot')
+    expect(log.event).toBe('get')
+    expect(log.boardId).toBe('b1')
+    expect(log.actorRole).toBe('PUBLIC')
+    expect(log.result).toBe('ok')
+    expect(log.latencyMs).toBe(9)
+    expect(log.boardRev).toBe(3)
+    expect(log.lifecycleRev).toBe(1)
+    expect(log.meta?.route).toBe('public')
+    expect(log.meta?.cookieHeader).toBe(OBSERVABILITY_REDACTED)
+    expect(log.meta?.authHeader).toBe(OBSERVABILITY_REDACTED)
+    const json = JSON.stringify(log)
+    expect(json).not.toContain(RAW_JWT)
+    expect(json).not.toContain('raw-session-secret-value-DO-NOT-LOG')
+  })
+
+  it('redacts cycles, depth cap, and large nests without leaking secrets', () => {
+    const cyclic: Record<string, unknown> = {
+      authHeader: `Bearer ${RAW_JWT}`,
+      safe: 1,
+    }
+    cyclic.self = cyclic
+    const out = redactForObservability(cyclic) as Record<string, unknown>
+    expect(out.authHeader).toBe(OBSERVABILITY_REDACTED)
+    expect(out.safe).toBe(1)
+    expect(out.self).toBe(`${OBSERVABILITY_REDACTED}:CYCLE`)
+    expect(JSON.stringify(out)).not.toContain(RAW_JWT)
+
+    // Deep nesting of a secret key still redacts at the leaf.
+    let deep: unknown = { cookieHeader: RAW_SESSION_COOKIE }
+    for (let i = 0; i < 20; i++) deep = { wrap: deep }
+    const deepOut = JSON.stringify(redactForObservability(deep))
+    expect(deepOut).not.toContain('raw-session-secret-value-DO-NOT-LOG')
+    expect(deepOut).toMatch(/REDACTED/)
   })
 })
 

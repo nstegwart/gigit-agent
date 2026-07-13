@@ -185,36 +185,128 @@ export const STAGING_RUNBOOKS: ReadonlyArray<RunbookEntry> = [
   },
 ] as const
 
-const SECRET_KEY_RE =
-  /^(password|passwd|token|secret|authorization|cookie|api[_-]?key|private[_-]?key|access[_-]?token|refresh[_-]?token|session|credential|rawIdentity|bearer)$/i
+/** Marker written in place of any secret/private value. */
+export const OBSERVABILITY_REDACTED = '[REDACTED]' as const
 
+/**
+ * Atomic secret tokens. Fail-closed: any key whose camel/snake/kebab segments
+ * include one of these is redacted (cookieHeader, authHeader, sessionId, …).
+ */
+const SECRET_KEY_TOKENS = new Set([
+  'password',
+  'passwd',
+  'token',
+  'secret',
+  'cookie',
+  'authorization',
+  'auth',
+  'session',
+  'credential',
+  'credentials',
+  'bearer',
+  'rawidentity',
+])
+
+/** Compound pairs: api-key / private-key (and camelCase apiKey / privateKey). */
+const SECRET_KEY_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ['api', 'key'],
+  ['private', 'key'],
+]
+
+/** Private decision / evidence payload keys — never log raw body text. */
+const PRIVATE_PAYLOAD_KEY_RE =
+  /comment|evidenceBody|decisionText|decisionTitle|privateDecision/i
+
+/**
+ * Value-shape hints: PEM, Bearer, sk- keys, raw JWT (three base64url segments), session= cookies.
+ * Applied only when the key was not already redacted by name.
+ */
 const SECRET_VALUE_HINT =
-  /-----BEGIN |Bearer\s+[A-Za-z0-9\-._~+/]+=*|sk-[A-Za-z0-9]{10,}/i
+  /-----BEGIN |Bearer\s+[A-Za-z0-9\-._~+/]+=*|sk-[A-Za-z0-9]{10,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|session=[^;\s]+/i
+
+const MAX_REDACT_DEPTH = 12
+const MAX_REDACT_KEYS = 100
+const MAX_REDACT_ARRAY = 100
+const MAX_REDACT_STRING = 4096
+
+/** Split camelCase / snake_case / kebab-case / Header-Case into lowercase tokens. */
+function keyTokens(key: string): Array<string> {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+}
+
+/** True if a metadata/log key must never retain its raw value. */
+export function isSecretObservabilityKey(key: string): boolean {
+  const tokens = keyTokens(key)
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!
+    if (SECRET_KEY_TOKENS.has(t)) return true
+    for (const [a, b] of SECRET_KEY_PAIRS) {
+      if (t === a && tokens[i + 1] === b) return true
+    }
+  }
+  return false
+}
+
+function isPrivatePayloadKey(key: string): boolean {
+  return PRIVATE_PAYLOAD_KEY_RE.test(key)
+}
+
+function redactStringValue(value: string): string {
+  if (SECRET_VALUE_HINT.test(value)) return OBSERVABILITY_REDACTED
+  if (value.length > MAX_REDACT_STRING) {
+    return `${value.slice(0, MAX_REDACT_STRING)}…[TRUNCATED]`
+  }
+  return value
+}
 
 /**
  * Recursive redaction for logs/metrics context.
- * Removes secret keys and scrubs secret-looking strings.
+ * Fail-closed: secret key variants, private payload keys, secret-looking strings,
+ * nested arrays/objects, depth/size caps, and cycles never emit raw secrets.
  */
-export function redactForObservability(value: unknown): unknown {
+export function redactForObservability(
+  value: unknown,
+  depth = 0,
+  seen?: WeakSet<object>,
+): unknown {
   if (value === null || value === undefined) return value
-  if (typeof value === 'string') {
-    if (SECRET_VALUE_HINT.test(value)) return '[REDACTED]'
-    return value
-  }
+  if (typeof value === 'string') return redactStringValue(value)
   if (typeof value !== 'object') return value
-  if (Array.isArray(value)) return value.map((v) => redactForObservability(v))
+
+  if (depth >= MAX_REDACT_DEPTH) return `${OBSERVABILITY_REDACTED}:MAX_DEPTH`
+
+  const seenSet = seen ?? new WeakSet<object>()
+  if (seenSet.has(value as object)) return `${OBSERVABILITY_REDACTED}:CYCLE`
+  seenSet.add(value as object)
+
+  if (Array.isArray(value)) {
+    const slice = value.slice(0, MAX_REDACT_ARRAY)
+    const mapped = slice.map((v) => redactForObservability(v, depth + 1, seenSet))
+    if (value.length > MAX_REDACT_ARRAY) {
+      mapped.push(`${OBSERVABILITY_REDACTED}:MAX_ARRAY+${value.length - MAX_REDACT_ARRAY}`)
+    }
+    return mapped
+  }
+
   const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (SECRET_KEY_RE.test(k) || /password|token|secret|credential/i.test(k)) {
-      out[k] = '[REDACTED]'
+  const entries = Object.entries(value as Record<string, unknown>)
+  let count = 0
+  for (const [k, v] of entries) {
+    if (count >= MAX_REDACT_KEYS) {
+      out[`${OBSERVABILITY_REDACTED}:MAX_KEYS`] = entries.length - MAX_REDACT_KEYS
+      break
+    }
+    count += 1
+    if (isSecretObservabilityKey(k) || isPrivatePayloadKey(k)) {
+      out[k] = OBSERVABILITY_REDACTED
       continue
     }
-    // Never log private decision text / comments / evidence bodies.
-    if (/comment|evidenceBody|decisionText|decisionTitle|privateDecision/i.test(k)) {
-      out[k] = '[REDACTED]'
-      continue
-    }
-    out[k] = redactForObservability(v)
+    out[k] = redactForObservability(v, depth + 1, seenSet)
   }
   return out
 }
@@ -266,8 +358,9 @@ export function createMemoryMetricsRegistry(clock?: () => number): MetricsRegist
     if (!labels) return undefined
     const out: Record<string, string> = {}
     for (const [k, v] of Object.entries(labels)) {
-      if (SECRET_KEY_RE.test(k)) continue
-      out[k] = SECRET_VALUE_HINT.test(v) ? '[REDACTED]' : v
+      // Drop secret-named labels entirely so they never appear in metric series.
+      if (isSecretObservabilityKey(k)) continue
+      out[k] = redactStringValue(v)
     }
     return out
   }

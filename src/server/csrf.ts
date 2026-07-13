@@ -6,8 +6,9 @@
  * - Session-bound CSRF token (HMAC-like hash of session token + secret) via double-submit header.
  * - Same-origin check on Origin/Referer vs Host (fail closed on mismatch).
  * - One-time nonce optional for replay tests (consumeNonce).
- * - When UI cannot yet supply X-CSRF-Token: allow only if same-origin is proven
- *   (C3_CSRF_TOKEN_CLIENT_WIRING carry-forward). Never disable the guard globally.
+ * - Fail closed: X-CSRF-Token is REQUIRED for cookie-authenticated writes.
+ *   Same-origin alone is insufficient (allowSameOriginWithoutToken must be explicit true
+ *   for rare interim paths only — never the admin-write default).
  */
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -203,8 +204,8 @@ export interface CsrfCheckInput {
   host?: string | null
   protocol?: string | null
   /**
-   * When true (default), missing CSRF token is allowed only if same-origin passes
-   * (C3 client wiring carry-forward). When false, token is mandatory.
+   * Default false: X-CSRF-Token is mandatory for cookie writes (same-origin alone insufficient).
+   * Explicit true is an opt-in interim only — admin writes must NOT set this.
    */
   allowSameOriginWithoutToken?: boolean
   /** When set, token must be unused one-time nonce. */
@@ -219,6 +220,7 @@ export type CsrfCheckResult =
 /**
  * Validate browser write CSRF. Call only for cookie-authenticated mutations.
  * MCP bearer path must NOT call this.
+ * Fail closed: missing X-CSRF-Token → CSRF_TOKEN_MISSING unless allowSameOriginWithoutToken===true.
  */
 export function assertBrowserWriteCsrf(input: CsrfCheckInput): CsrfCheckResult {
   if (!input.sessionToken) {
@@ -272,15 +274,36 @@ export function assertBrowserWriteCsrf(input: CsrfCheckInput): CsrfCheckResult {
     return { ok: true, mode: 'token' }
   }
 
-  // No token
-  if (input.allowSameOriginWithoutToken !== false) {
-    // C3 carry-forward: same-origin proven above + SameSite session cookie only.
-    // Does NOT disable the guard globally — origin check still required.
+  // No token — same-origin alone is insufficient unless explicitly opted in.
+  if (input.allowSameOriginWithoutToken === true) {
     return { ok: true, mode: 'same-origin-deferred' }
   }
   return { ok: false, code: 'CSRF_TOKEN_MISSING', message: 'CSRF token required' }
 }
 
-/** C3 carry-forward constant — client must wire X-CSRF-Token on mutations. */
+/**
+ * Origin check for unauthenticated browser POSTs (login / first-admin bootstrap).
+ * Same fail-closed rules as write CSRF origin gate; no session/token required.
+ */
+export function assertBrowserOrigin(input: OriginCheckInput): CsrfCheckResult {
+  const originCheck = isSameOrigin({
+    origin: input.origin,
+    referer: input.referer,
+    host: input.host,
+    protocol: input.protocol,
+    requireOrigin: input.requireOrigin !== false,
+  })
+  if (!originCheck.ok) {
+    return {
+      ok: false,
+      code: originCheck.code ?? 'CSRF_ORIGIN_MISMATCH',
+      message: originCheck.message ?? 'origin check failed',
+    }
+  }
+  // Reuse mode field; origin-only success is not a CSRF token grant.
+  return { ok: true, mode: 'token' }
+}
+
+/** Client must wire X-CSRF-Token on cookie mutations — same-origin alone is not enough. */
 export const C3_CSRF_TOKEN_CLIENT_WIRING =
-  'C3_CSRF_TOKEN_CLIENT_WIRING: browser mutation callers must send X-CSRF-Token (session-bound via csrfTokenFn); server currently accepts same-origin as interim fail-open for missing token only after origin check; never disable guard' as const
+  'C3_CSRF_TOKEN_CLIENT_WIRING: browser mutation callers MUST send X-CSRF-Token (session-bound via csrfTokenFn / meV3Fn); same-origin alone is insufficient; never disable guard' as const

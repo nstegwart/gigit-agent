@@ -1,147 +1,89 @@
 /**
  * Public GET /api/public-snapshot (AC-PUBLIC-*, AC-AUTH-05).
  * Allowlisted materialized snapshot only; rate limited; ETag/304.
- * C2A: installs pinned aggregation loader from same public serializer path.
- * Fail-closed on missing pin / errors — never leaks private data.
+ *
+ * Cross-surface: loads canonical loadControlCenterAggregation, maps via
+ * control-center-public-snapshot, materializes through the SAME shared
+ * public-snapshot-service store + rate limiter as MCP tool/resource.
+ * Fail-closed on missing pin / stale / sectionErrors / allowlist / errors —
+ * never leaks private data.
  */
 import { createFileRoute } from '@tanstack/react-router'
-import { createHash } from 'node:crypto'
 
 import {
-  PUBLIC_SERIALIZER_VERSION,
-  createMemoryPublicSnapshotStore,
   handlePublicSnapshotGet,
   publicSnapshotResultToResponse,
   type PublicAggregationInput,
   type PublicSnapshotDeps,
 } from '#/server/public-snapshot'
+import { resolveClientIp } from '#/server/rate-limit'
+import { loadControlCenterAggregation } from '#/server/control-center-ui-adapter'
 import {
-  createPublicSnapshotRateLimiter,
-  resolveClientIp,
-} from '#/server/rate-limit'
-import { boardHash, listBoards, readBoard, readOps } from '#/server/board-store'
-import { computeRollup, readLifecycle } from '#/server/lifecycle-store'
-import { readTasks } from '#/server/board-store'
-import { buildModel } from '#/lib/model'
-import { maskAccountId } from '#/server/public-snapshot'
-
-const defaultStore = createMemoryPublicSnapshotStore()
-const defaultLimiter = createPublicSnapshotRateLimiter()
+  ControlCenterPublicSnapshotError,
+  mapControlCenterAggregationToPublicInput,
+} from '#/server/control-center-public-snapshot'
+import { getSharedPublicSnapshotService } from '#/server/public-snapshot-service'
 
 /**
- * Build a pinned public aggregation from board stores.
- * Uses one materialization path (C2C serializer) — never recomputes private fields into payload.
- * Returns null on any failure (fail-closed 503).
+ * Explicit public-board allowlist (fail-closed).
+ * Env: CAIRN_PUBLIC_BOARD_IDS or CAIRN_PUBLIC_BOARDS — comma/space separated board ids.
+ * Empty/unset → deny all boards (no accidental public exposure).
  */
-export async function loadPublicAggregation(boardId: string): Promise<PublicAggregationInput | null> {
+export function resolvePublicBoardAllowlist(
+  fromEnv: NodeJS.ProcessEnv = process.env,
+): ReadonlySet<string> {
+  const raw = (
+    fromEnv.CAIRN_PUBLIC_BOARD_IDS ??
+    fromEnv.CAIRN_PUBLIC_BOARDS ??
+    ''
+  ).trim()
+  if (!raw) return new Set()
+  return new Set(
+    raw
+      .split(/[,;\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean),
+  )
+}
+
+let allowlistOverride: ReadonlySet<string> | null = null
+
+/** Test-only allowlist override. Pass null to clear. */
+export function setPublicBoardAllowlistForTests(
+  ids: ReadonlyArray<string> | null,
+): void {
+  allowlistOverride = ids == null ? null : new Set(ids)
+}
+
+export function getPublicBoardAllowlist(): ReadonlySet<string> {
+  return allowlistOverride ?? resolvePublicBoardAllowlist()
+}
+
+export function isPublicBoardAllowed(boardId: string): boolean {
+  if (!boardId) return false
+  return getPublicBoardAllowlist().has(boardId)
+}
+
+/**
+ * Build pinned public aggregation from canonical ControlCenterAggregation.
+ * One materialization path shared with MCP (same mapper + serializer).
+ * Returns null on any failure / allowlist miss / stale / partial (fail-closed 503).
+ */
+export async function loadPublicAggregation(
+  boardId: string,
+): Promise<PublicAggregationInput | null> {
   try {
     if (!boardId) return null
-    // Ensure board exists
-    const boards = await listBoards()
-    if (!boards.some((b) => b.id === boardId)) return null
+    // Explicit allowlist — fail closed when board not listed.
+    if (!isPublicBoardAllowed(boardId)) return null
 
-    const [raw, tasksDoc, ops, lc, rollup, hash] = await Promise.all([
-      readBoard(boardId),
-      readTasks(boardId),
-      readOps(boardId),
-      readLifecycle(boardId),
-      computeRollup(boardId),
-      boardHash(boardId),
-    ])
-    const model = buildModel(raw)
-    const pinHash = createHash('sha256').update(`${boardId}:${hash}`).digest('hex')
-    const generatedAt = new Date().toISOString()
-
-    // RawBoard / LifecycleConfig do not declare integer rev fields. Do not invent or unsafe-cast.
-    // Pin identity uses content hash; revs stay 0 until control-plane revision store is the source.
-    void raw
-    void lc
-    const boardRev = 0
-    const lifecycleRev = 0
-
-    const accounts = (ops.accounts ?? []).map((a: { id?: string; status?: string; usable?: boolean; label?: string }) => ({
-      accountIdMasked: maskAccountId(String(a.id ?? a.label ?? 'unknown')),
-      status: String(a.status ?? 'UNKNOWN'),
-      provider: null as string | null,
-      usable: !!a.usable,
-    }))
-
-    const readinessPercent =
-      typeof (rollup as { readinessPercent?: unknown }).readinessPercent === 'number'
-        ? (rollup as { readinessPercent: number }).readinessPercent
-        : 0
-    const activeCount =
-      typeof (rollup as { active?: unknown }).active === 'number'
-        ? (rollup as { active: number }).active
-        : model.features.length
-
-    const aggregation: PublicAggregationInput = {
-      boardId,
-      pin: {
-        canonicalSnapshotId: `pub-${boardId}-${pinHash.slice(0, 16)}`,
-        canonicalHash: pinHash,
-        boardRev,
-        lifecycleRev,
-        serializerVersion: PUBLIC_SERIALIZER_VERSION,
-      },
-      generatedAt,
-      publishedAt: generatedAt,
-      publicationIntervalMs: 60_000,
-      nowMs: Date.now(),
-      boardRollup: {
-        trackedWorkDenominator: activeCount || 0,
-        productDenominator: activeCount || 0,
-        stageProdReady: Number((rollup as { prodReady?: number }).prodReady ?? 0) || 0,
-        prodReadyWithEvidence: 0,
-        unclassifiedCount: Number((rollup as { uninitialized?: number }).uninitialized ?? 0) || 0,
-        rawTaskReadinessPercent: readinessPercent,
-        boardReadinessPercent: readinessPercent,
-        cappedBy: null,
-      },
-      completion: { complete: false, g5Pass: false },
-      buckets: {
-        DONE: 0,
-        RECONCILIATION_PENDING: 0,
-        ONGOING: 0,
-        NEXT: 0,
-        QUEUED: 0,
-        BLOCKED: model.features.filter((f) => f.isBlocked).length,
-      },
-      staleOverlays: {},
-      priorityRollup: null,
-      projects: model.projects.map((p) => ({
-        id: p.id,
-        name: p.nama,
-        status: p.status,
-      })),
-      features: model.features.map((f) => ({
-        id: f.id,
-        projectId: f.projectId,
-        name: f.nama,
-        phase: String(f.fase),
-      })),
-      tasks: (tasksDoc.tasks ?? []).map((t) => ({
-        id: t.id,
-        projectId: t.projectId ?? null,
-        title: t.title,
-        bucket: null,
-        readinessPercent: null,
-      })),
-      runs: model.runs.map((r) => ({
-        runId: r.id,
-        status: r.status,
-        taskId: r.taskId ?? r.task ?? null,
-        agentRole: r.role ?? null,
-        accountRefMasked: r.account ? maskAccountId(String(r.account)) : null,
-        lastHeartbeatAt: r.updated ?? null,
-      })),
-      accounts,
-      decisionCount: (model.decisions ?? []).length,
-      // PublicG5Summary only — no invented domain rows / no fake g5Pass.
-      g5: { g5Pass: false, domainPassCount: 0, domainRequiredCount: 9 },
-    }
-    return aggregation
-  } catch {
+    const agg = await loadControlCenterAggregation(boardId)
+    // mapControlCenterAggregationToPublicInput enforces pin consistency,
+    // stale pin, sectionErrors fail-closed, and account redaction.
+    return mapControlCenterAggregationToPublicInput(agg)
+  } catch (err) {
+    // Fail-closed: never invent public payload from private/partial state.
+    if (err instanceof ControlCenterPublicSnapshotError) return null
     return null
   }
 }
@@ -239,24 +181,38 @@ export function resolvePublicSnapshotClientIp(request: Request): string {
   })
 }
 
-/** Default: pinned loader installed (C2A). Fail-closed inside loader. */
-let publicSnapshotDeps: PublicSnapshotDeps = {
-  store: defaultStore,
-  loadAggregation: loadPublicAggregation,
-  rateLimiter: defaultLimiter,
-  resolveIp: resolvePublicSnapshotClientIp,
+/**
+ * Deps override for tests. When null, live defaults bind to the shared MCP service
+ * (one store + one rate limiter process-wide).
+ */
+let publicSnapshotDepsOverride: PublicSnapshotDeps | null = null
+
+function buildSharedPublicSnapshotDeps(): PublicSnapshotDeps {
+  // Lazy resolve avoids circular init issues with public-snapshot-service.
+  const shared = getSharedPublicSnapshotService()
+  return {
+    store: shared.store,
+    loadAggregation: loadPublicAggregation,
+    rateLimiter: shared.rateLimiter,
+    resolveIp: resolvePublicSnapshotClientIp,
+  }
 }
 
 export function setPublicSnapshotDeps(deps: PublicSnapshotDeps): void {
-  publicSnapshotDeps = deps
+  publicSnapshotDepsOverride = deps
+}
+
+/** Clear test override — restore shared service defaults. */
+export function resetPublicSnapshotDeps(): void {
+  publicSnapshotDepsOverride = null
 }
 
 export function getPublicSnapshotDeps(): PublicSnapshotDeps {
-  return publicSnapshotDeps
+  return publicSnapshotDepsOverride ?? buildSharedPublicSnapshotDeps()
 }
 
 export async function publicSnapshotGetHandler(request: Request): Promise<Response> {
-  const result = await handlePublicSnapshotGet(request, publicSnapshotDeps)
+  const result = await handlePublicSnapshotGet(request, getPublicSnapshotDeps())
   return publicSnapshotResultToResponse(result)
 }
 

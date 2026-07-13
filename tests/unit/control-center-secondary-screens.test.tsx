@@ -259,6 +259,25 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
     expect(summary.tagName).toBe('SUMMARY')
     expect(disclosure.textContent).toContain('f-open missing checklist')
   })
+
+  it('empty paginated items must NOT fall back to full features list', () => {
+    const emptyPage: FeaturesData = {
+      ...data,
+      features: [
+        {
+          id: 'f-only-full',
+          projectId: 'p1',
+          name: 'Should not appear',
+          phase: 'build',
+          flowBranch: 'open',
+          taskCount: 1,
+        },
+      ],
+      items: [],
+    }
+    const props = featuresEnvelopeToProps(basePin(emptyPage))
+    expect(props.features).toEqual([])
+  })
 })
 
 describe('agentsEnvelopeToProps + AgentsScreen', () => {
@@ -327,6 +346,16 @@ describe('agentsEnvelopeToProps + AgentsScreen', () => {
   it('does not re-sort runs (server order preserved)', () => {
     const props = agentsEnvelopeToProps(basePin(data))
     expect(props.runs.map((r) => r.runId)).toEqual(['run-1', 'run-2'])
+  })
+
+  it('empty paginated items must NOT fall back to full runs list', () => {
+    const emptyPage: AgentsData = {
+      ...data,
+      runs: data.items,
+      items: [],
+    }
+    const props = agentsEnvelopeToProps(basePin(emptyPage))
+    expect(props.runs).toEqual([])
   })
 
   it('zero-click ongoing shows ages / gate / role / masked account / evidence', () => {

@@ -1,10 +1,17 @@
 // TanStack Query wiring, boardId-scoped. queryKey ['board', boardId] holds the raw
 // board; useBoard() reads the current route's boardId and builds the derived Model.
 // Mutations write the returned raw board straight back into the cache.
+// Cookie-write mutations attach X-CSRF-Token via csrf-client (fail-closed).
 import { queryOptions, useMutation, useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useMemo } from 'react'
 
+import {
+  clearCsrfTokenCache,
+  csrfServerCall,
+  csrfServerCallNoData,
+  getCsrfToken,
+} from './csrf-client'
 import { buildModel } from './model'
 import { buildTasks } from './tasks'
 import {
@@ -147,7 +154,7 @@ export function useToggleCheckpoint() {
   const boardId = useBoardId()
   return useMutation({
     mutationFn: (v: { taskId: string; checkpointId: string }) =>
-      toggleCheckpointFn({ data: { ...v, boardId } }),
+      csrfServerCall(toggleCheckpointFn, { ...v, boardId }),
     onSuccess: (file) => {
       qc.setQueryData(tasksQueryOptions(boardId).queryKey, file)
     },
@@ -157,7 +164,8 @@ export function useSetLifecycle() {
   const qc = useQueryClient()
   const boardId = useBoardId()
   return useMutation({
-    mutationFn: (stages: LifecycleConfig['stages']) => setLifecycleFn({ data: { boardId, stages } }),
+    mutationFn: (stages: LifecycleConfig['stages']) =>
+      csrfServerCall(setLifecycleFn, { boardId, stages }),
     onSuccess: (cfg) => {
       qc.setQueryData(lifecycleQueryOptions(boardId).queryKey, cfg)
       void qc.invalidateQueries({ queryKey: ['rollup', boardId] })
@@ -179,7 +187,7 @@ export function useAdvanceTask() {
   const qc = useQueryClient()
   const boardId = useBoardId()
   return useMutation({
-    mutationFn: (v: AdvancePayload) => advanceTaskFn({ data: { ...v, boardId } }),
+    mutationFn: (v: AdvancePayload) => csrfServerCall(advanceTaskFn, { ...v, boardId }),
     onSuccess: (_r, v) => {
       void qc.invalidateQueries({ queryKey: ['task-lc', boardId, v.taskId] })
       void qc.invalidateQueries({ queryKey: ['rollup', boardId] })
@@ -187,7 +195,7 @@ export function useAdvanceTask() {
   })
 }
 
-/** Board mutations return the fresh raw board → replace the cache. boardId injected here. */
+/** Board mutations return the fresh raw board → replace the cache. boardId injected here. CSRF on every write. */
 function useBoardMutation<V extends object>(
   send: (payload: V & { boardId: string }) => Promise<RawBoard>,
 ) {
@@ -203,17 +211,17 @@ function useBoardMutation<V extends object>(
 
 export function useToggleTask() {
   return useBoardMutation<{ featureId: string; index: number; done?: boolean }>((p) =>
-    toggleTaskFn({ data: p }),
+    csrfServerCall(toggleTaskFn, p),
   )
 }
 export function useAddComment() {
   return useBoardMutation<{ featureId: string; author: string; authorType?: 'human' | 'agent'; text: string }>(
-    (p) => addCommentFn({ data: p }),
+    (p) => csrfServerCall(addCommentFn, p),
   )
 }
 export function useAddDesignLink() {
   return useBoardMutation<{ scope: 'project' | 'feature'; id: string; label?: string; url: string }>(
-    (p) => addDesignLinkFn({ data: p }),
+    (p) => csrfServerCall(addDesignLinkFn, p),
   )
 }
 export function useOpenDecision() {
@@ -222,15 +230,15 @@ export function useOpenDecision() {
     question: string
     options?: Array<{ key: string; label: string; rekomendasi?: boolean }>
     openedBy?: string
-  }>((p) => openDecisionFn({ data: p }))
+  }>((p) => csrfServerCall(openDecisionFn, p))
 }
 export function useDecideDecision() {
   return useBoardMutation<{ id: string; answer: string; keputusan?: string; decidedBy?: string }>(
-    (p) => decideDecisionFn({ data: p }),
+    (p) => csrfServerCall(decideDecisionFn, p),
   )
 }
 export function useClearBlocked() {
-  return useBoardMutation<{ featureId: string }>((p) => clearBlockedFn({ data: p }))
+  return useBoardMutation<{ featureId: string }>((p) => csrfServerCall(clearBlockedFn, p))
 }
 
 // ---- auth: the signed-in human + user management ----
@@ -248,8 +256,14 @@ export function useCanEdit(): boolean {
 export function useLogin() {
   const qc = useQueryClient()
   return useMutation({
+    // Origin-only: no session CSRF yet (server assertRequestOrigin).
     mutationFn: (v: { username: string; password: string }) => loginFn({ data: v }),
     onSuccess: (user) => {
+      // New session cookie — drop any prior cache, then warm the new token.
+      clearCsrfTokenCache()
+      void getCsrfToken().catch(() => {
+        /* warm is best-effort; mutations still fail-closed on demand */
+      })
       qc.setQueryData(meQueryOptions().queryKey, user)
       void qc.invalidateQueries({ queryKey: ['boards'] })
     },
@@ -258,8 +272,13 @@ export function useLogin() {
 export function useBootstrap() {
   const qc = useQueryClient()
   return useMutation({
+    // Origin-only: first-admin unauthenticated POST (server assertRequestOrigin).
     mutationFn: (v: { username: string; password: string }) => bootstrapFn({ data: v }),
     onSuccess: (user) => {
+      clearCsrfTokenCache()
+      void getCsrfToken().catch(() => {
+        /* warm is best-effort; mutations still fail-closed on demand */
+      })
       qc.setQueryData(meQueryOptions().queryKey, user)
       void qc.invalidateQueries({ queryKey: ['boards'] })
     },
@@ -268,8 +287,15 @@ export function useBootstrap() {
 export function useLogout() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => logoutFn(),
+    mutationFn: async () => {
+      try {
+        return await csrfServerCallNoData(logoutFn)
+      } finally {
+        clearCsrfTokenCache()
+      }
+    },
     onSuccess: () => {
+      clearCsrfTokenCache()
       qc.setQueryData(meQueryOptions().queryKey, null)
       qc.clear()
     },
@@ -289,17 +315,23 @@ function useUsersMutation<V>(send: (v: V) => Promise<Array<UserRow>>) {
   })
 }
 export function useCreateUser() {
-  return useUsersMutation((v: { username: string; password: string; role: Role; boards?: Array<string> }) => createUserFn({ data: v }))
+  return useUsersMutation((v: { username: string; password: string; role: Role; boards?: Array<string> }) =>
+    csrfServerCall(createUserFn, v),
+  )
 }
 export function useSetUserBoards() {
-  return useUsersMutation((v: { userId: string; boards: Array<string> }) => setUserBoardsFn({ data: v }))
+  return useUsersMutation((v: { userId: string; boards: Array<string> }) =>
+    csrfServerCall(setUserBoardsFn, v),
+  )
 }
 export function useSetUserRole() {
-  return useUsersMutation((v: { userId: string; role: Role }) => setUserRoleFn({ data: v }))
+  return useUsersMutation((v: { userId: string; role: Role }) => csrfServerCall(setUserRoleFn, v))
 }
 export function useDeleteUser() {
-  return useUsersMutation((v: { userId: string }) => deleteUserFn({ data: v }))
+  return useUsersMutation((v: { userId: string }) => csrfServerCall(deleteUserFn, v))
 }
 export function useResetPassword() {
-  return useMutation({ mutationFn: (v: { userId: string; password: string }) => resetPasswordFn({ data: v }) })
+  return useMutation({
+    mutationFn: (v: { userId: string; password: string }) => csrfServerCall(resetPasswordFn, v),
+  })
 }

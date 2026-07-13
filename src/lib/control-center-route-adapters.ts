@@ -43,6 +43,89 @@ function asSeverity(v: string | null | undefined): DecisionSeverity {
   return 'MEDIUM'
 }
 
+/** Optional wire fields some projectors may attach; never invent when absent. */
+type OverviewLowerWire = {
+  lifecycle?: ReadonlyArray<{ stage?: string; count?: number }>
+  lifecycleStages?: ReadonlyArray<{ stage?: string; count?: number }>
+  materialEvents?: ReadonlyArray<Record<string, unknown>>
+  auditEvents?: ReadonlyArray<Record<string, unknown>>
+}
+
+/**
+ * Project lower-panel lifecycle stage counts from server fields only.
+ * Prefer explicit lifecycle arrays; else projects[].readinessStage (+ taskCount weight).
+ */
+export function projectOverviewLifecycle(
+  d: OverviewData,
+): Array<{ stage: string; count: number }> {
+  const wire = d as OverviewData & OverviewLowerWire
+  const explicit = wire.lifecycle ?? wire.lifecycleStages
+  if (Array.isArray(explicit) && explicit.length > 0) {
+    const out: Array<{ stage: string; count: number }> = []
+    for (const row of explicit) {
+      const stage = typeof row?.stage === 'string' ? row.stage : ''
+      const count = typeof row?.count === 'number' && Number.isFinite(row.count) ? row.count : 0
+      if (stage) out.push({ stage, count })
+    }
+    return out
+  }
+  const counts = new Map<string, number>()
+  for (const pr of d.projects ?? []) {
+    const stage =
+      typeof pr.readinessStage === 'string' && pr.readinessStage.length > 0
+        ? pr.readinessStage
+        : null
+    if (!stage) continue
+    const weight =
+      typeof pr.taskCount === 'number' && Number.isFinite(pr.taskCount) ? pr.taskCount : 1
+    counts.set(stage, (counts.get(stage) ?? 0) + weight)
+  }
+  return [...counts.entries()]
+    .map(([stage, count]) => ({ stage, count }))
+    .sort((a, b) => a.stage.localeCompare(b.stage))
+}
+
+/**
+ * Project material events from optional server arrays on OverviewData.
+ * Empty when projector has not attached materialEvents/auditEvents (no invention).
+ */
+export function projectOverviewMaterialEvents(
+  d: OverviewData,
+): Array<{
+  eventId: string
+  atLabel: string
+  kind: string
+  summary: string
+  actor?: string
+}> {
+  const wire = d as OverviewData & OverviewLowerWire
+  const source = wire.materialEvents ?? wire.auditEvents
+  if (!Array.isArray(source) || source.length === 0) return []
+  return source.map((raw, i) => {
+    // AuditUiEvent and free-form wire rows both land here — normalize via unknown.
+    const row = (raw ?? {}) as unknown as Record<string, unknown>
+    const eventId = String(row.eventId ?? row.id ?? `ev-${i}`)
+    const at =
+      typeof row.atLabel === 'string'
+        ? row.atLabel
+        : typeof row.createdAt === 'string'
+          ? row.createdAt
+          : ''
+    return {
+      eventId,
+      atLabel: at,
+      kind: String(row.kind ?? 'event'),
+      summary: String(row.summary ?? ''),
+      actor:
+        typeof row.actor === 'string'
+          ? row.actor
+          : typeof row.actorId === 'string'
+            ? row.actorId
+            : undefined,
+    }
+  })
+}
+
 /** OverviewData envelope → Overview presentational props. */
 export function overviewEnvelopeToProps(
   envelope: PinnedEnvelope<OverviewData | null> | null | undefined,
@@ -227,7 +310,7 @@ export function overviewEnvelopeToProps(
         statusLabel: pr.status ?? undefined,
         count: pr.taskCount,
       })),
-      lifecycle: [],
+      lifecycle: projectOverviewLifecycle(d),
       g5: {
         g5Pass: d.g5.g5Pass,
         domains: d.g5.domainResults.map((row) => ({
@@ -239,7 +322,7 @@ export function overviewEnvelopeToProps(
         })),
       },
       decisionCount: d.decisionCount,
-      materialEvents: [],
+      materialEvents: projectOverviewMaterialEvents(d),
     },
     partialErrors: d.sectionErrors.map((e) => ({
       code: e.code,
@@ -256,6 +339,79 @@ export function overviewEnvelopeToProps(
   }
 }
 
+/** Zero-click ONGOING row fields used for Work list join (presentation only). */
+export type WorkOngoingJoinRow = {
+  taskId: string
+  targetGate?: string | null
+  agentId?: string | null
+  role?: string | null
+  model?: string | null
+  effort?: string | null
+  maskedAccount?: string | null
+  startedAgeSeconds?: number | null
+  heartbeatAgeSeconds?: number | null
+  materialProgressAgeSeconds?: number | null
+  productiveSubstate?: string | null
+  liveness?: string | null
+  evidenceLink?: string | null
+}
+
+type WorkDataWire = WorkData & {
+  ongoing?: ReadonlyArray<WorkOngoingJoinRow>
+}
+
+function buildOngoingJoinMap(
+  d: WorkData,
+  external?: ReadonlyArray<WorkOngoingJoinRow> | null,
+): Map<string, WorkOngoingJoinRow> {
+  const map = new Map<string, WorkOngoingJoinRow>()
+  const wire = d as WorkDataWire
+  for (const row of wire.ongoing ?? []) {
+    if (row?.taskId) map.set(row.taskId, row)
+  }
+  for (const row of external ?? []) {
+    if (row?.taskId) map.set(row.taskId, row)
+  }
+  return map
+}
+
+function mapWorkOngoingDisplay(
+  join: WorkOngoingJoinRow | undefined,
+  row: { bucket: PrimaryBucket | null; targetGate: string | null },
+): WorkItemRow['ongoing'] {
+  if (join) {
+    return {
+      targetGate: join.targetGate ?? row.targetGate,
+      agentId: join.agentId ?? null,
+      role: join.role ?? null,
+      model: join.model ?? null,
+      effort: join.effort ?? null,
+      maskedAccount: join.maskedAccount ?? null,
+      startedAgeSeconds: join.startedAgeSeconds ?? null,
+      heartbeatAgeSeconds: join.heartbeatAgeSeconds ?? null,
+      materialProgressAgeSeconds: join.materialProgressAgeSeconds ?? null,
+      liveness: join.liveness ?? join.productiveSubstate ?? null,
+      evidenceLink: join.evidenceLink ?? null,
+    }
+  }
+  // Partial zero-click from WorkTaskUiRow only — never invent agent/model/account.
+  if (row.bucket === 'ONGOING' && row.targetGate) {
+    return { targetGate: row.targetGate }
+  }
+  return null
+}
+
+/** Resolve taskHash for pin badge: envelope wire (if present) → route pin → empty. */
+function resolveWorkTaskHash(
+  envelope: PinnedEnvelope<unknown>,
+  routePinned?: { taskHash?: string | null } | null,
+): string {
+  const wire = envelope as PinnedEnvelope<unknown> & { taskHash?: unknown }
+  if (typeof wire.taskHash === 'string' && wire.taskHash.length > 0) return wire.taskHash
+  if (routePinned?.taskHash && routePinned.taskHash.length > 0) return routePinned.taskHash
+  return ''
+}
+
 /** WorkData envelope → WorkScreen props (controlled filter from route). */
 export function workEnvelopeToProps(
   envelope: PinnedEnvelope<WorkData | null> | null | undefined,
@@ -265,6 +421,16 @@ export function workEnvelopeToProps(
     staleOverlayActive: boolean
     overlayKind?: StaleOverlayKind | null
     transport?: 'online' | 'offline' | 'unknown'
+    /** Pin-matched ONGOING zero-click rows (e.g. Overview.ongoing). */
+    ongoingJoin?: ReadonlyArray<WorkOngoingJoinRow> | null
+    /** Route deep-link pin (preserves taskHash when envelope omits it). */
+    routePinned?: {
+      canonicalSnapshotId?: string | null
+      canonicalHash?: string | null
+      taskHash?: string | null
+      boardRev?: number | null
+      lifecycleRev?: number | null
+    } | null
     onBucketChange?: (bucket: PrimaryBucket) => void
     onStaleOverlayChange?: (active: boolean) => void
     onNextPage?: () => void
@@ -272,6 +438,7 @@ export function workEnvelopeToProps(
     onRetry?: () => void
     onRefresh?: () => void
     onReconnect?: () => void
+    onRowActivate?: WorkScreenProps['onRowActivate']
   },
 ): WorkScreenProps {
   const state = resolveClientSurfaceState(
@@ -301,6 +468,7 @@ export function workEnvelopeToProps(
       onRetry: opts.onRetry,
       onRefresh: opts.onRefresh,
       onReconnect: opts.onReconnect,
+      onRowActivate: opts.onRowActivate,
     }
   }
 
@@ -313,18 +481,45 @@ export function workEnvelopeToProps(
     return sum
   }, 0)
 
-  const items: WorkItemRow[] = d.items.map((row) => ({
-    taskId: row.taskId,
-    title: row.title,
-    bucket: (row.bucket ?? opts.activeBucket) as PrimaryBucket,
-    overlays: row.overlays,
-    blockReason: (row.blockReason as WorkItemRow['blockReason']) ?? null,
-    reason: row.blockReason,
-    projectId: row.projectId,
-    featureContractId: row.featureId,
-    lifecycleStage: row.lifecycleStage,
-    detailHref: `/b/${encodeURIComponent(opts.boardId)}/tasks/${encodeURIComponent(row.taskId)}`,
-  }))
+  const ongoingByTask = buildOngoingJoinMap(d, opts.ongoingJoin)
+  const nextReasonByTask = new Map(
+    (d.dispatchNext?.selectedForNextDispatch ?? []).map((s) => [
+      s.taskId,
+      s.selectionReason,
+    ]),
+  )
+
+  const items: WorkItemRow[] = d.items.map((row) => {
+    const bucket = (row.bucket ?? opts.activeBucket) as PrimaryBucket
+    const join = ongoingByTask.get(row.taskId)
+    const nextWhy = nextReasonByTask.get(row.taskId)
+    const claimState =
+      typeof row.claimState === 'string' && row.claimState.length > 0
+        ? row.claimState
+        : null
+    return {
+      taskId: row.taskId,
+      title: row.title,
+      bucket,
+      overlays: row.overlays,
+      blockReason: (row.blockReason as WorkItemRow['blockReason']) ?? null,
+      // Prefer dispatch "why NEXT" when present; else server blockReason only.
+      reason: nextWhy ?? row.blockReason,
+      projectId: row.projectId,
+      featureContractId: row.featureId,
+      lifecycleStage: row.lifecycleStage,
+      ongoing: mapWorkOngoingDisplay(join, {
+        bucket: row.bucket,
+        targetGate: row.targetGate,
+      }),
+      reconciliation: claimState
+        ? {
+            claimState,
+          }
+        : null,
+      detailHref: `/b/${encodeURIComponent(opts.boardId)}/tasks/${encodeURIComponent(row.taskId)}`,
+    }
+  })
 
   return {
     state,
@@ -344,7 +539,7 @@ export function workEnvelopeToProps(
     pinned: {
       canonicalSnapshotId: envelope.canonicalSnapshotId,
       canonicalHash: envelope.canonicalHash,
-      taskHash: '', // not on envelope surface — display pin uses board revs + hashes
+      taskHash: resolveWorkTaskHash(envelope, opts.routePinned),
       boardRev: envelope.boardRev,
       lifecycleRev: envelope.lifecycleRev,
     },
@@ -364,6 +559,7 @@ export function workEnvelopeToProps(
     onRetry: opts.onRetry,
     onRefresh: opts.onRefresh,
     onReconnect: opts.onReconnect,
+    onRowActivate: opts.onRowActivate,
   }
 }
 
@@ -608,8 +804,9 @@ export function decisionsEnvelopeToProps(
   }
 
   const d = envelope.data
-  // Prefer paginated `items` when present; fall back to full `decisions` list.
-  const source = d.items?.length ? d.items : d.decisions
+  // Bounded server pagination only: when `items` is present (even empty), use it.
+  // Never fall back to full `decisions` when the page is honestly empty.
+  const source = Array.isArray(d.items) ? d.items : d.decisions
   const fullById = new Map(d.decisions.map((row) => [row.decisionId, row]))
 
   const items: DecisionItemView[] = source.map((row) => {

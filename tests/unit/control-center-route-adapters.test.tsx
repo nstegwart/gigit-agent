@@ -16,6 +16,8 @@ import {
   decisionsEnvelopeToProps,
   evidenceEnvelopeToViewModel,
   pinIdentityFromEnvelope,
+  projectOverviewLifecycle,
+  projectOverviewMaterialEvents,
 } from '#/lib/control-center-route-adapters'
 import {
   createPinnedEnvelope,
@@ -171,7 +173,114 @@ describe('control-center-route-adapters', () => {
     expect(props.pin?.canonicalHash).toBe(PIN.canonicalHash)
     expect(props.pin?.boardRev).toBe(PIN.boardRev)
     expect(props.pin?.lifecycleRev).toBe(PIN.lifecycleRev)
+    expect(props.lower?.lifecycle).toEqual([])
+    expect(props.lower?.materialEvents).toEqual([])
     expect(JSON.stringify(props)).not.toMatch(/token|password|secret/i)
+  })
+
+  it('overview projects lifecycle from projects.readinessStage and materialEvents from wire', () => {
+    const data: OverviewData = {
+      surfaceVersion: 'CC_UI_V1',
+      buckets: emptyBuckets,
+      overlays: emptyOverlays,
+      trackedWorkDenominator: 3,
+      productDenominator: 2,
+      stageProdReady: 1,
+      prodReadyWithEvidence: 0,
+      unclassifiedCount: 0,
+      g5Pass: false,
+      complete: false,
+      rawTaskReadinessPercent: null,
+      boardReadinessPercent: null,
+      cappedBy: 'DATA_INTEGRITY_OR_P0',
+      priority: {
+        portfolioId: 'SALES_WEB_RELATED_BACKEND',
+        membershipTaskIds: [],
+        membershipDenominator: 0,
+        priorityClosureCapacity: 0,
+        allClosureCapacity: 0,
+        priorityCapacityShare: null,
+        majorityAllocationPass: null,
+        frontierState: 'PRIORITY_FRONTIER_EMPTY',
+        reason: 'no membership',
+      },
+      g5: { g5Pass: false, domainResults: [], missingDomains: [] },
+      dispatchNext: {
+        selectedForNextDispatch: [],
+        planId: null,
+        blockedReason: null,
+        soleSource: 'active_dispatch_plan',
+      },
+      ongoing: [],
+      decisionCount: 0,
+      topDecision: null,
+      needsHuman: false,
+      projects: [
+        {
+          id: 'p1',
+          name: 'A',
+          status: null,
+          taskCount: 2,
+          doneCount: 0,
+          blockedCount: 0,
+          readinessStage: 'BUILT',
+        },
+        {
+          id: 'p2',
+          name: 'B',
+          status: null,
+          taskCount: 1,
+          doneCount: 0,
+          blockedCount: 0,
+          readinessStage: 'BUILT',
+        },
+        {
+          id: 'p3',
+          name: 'C',
+          status: null,
+          taskCount: 4,
+          doneCount: 0,
+          blockedCount: 0,
+          readinessStage: 'PROD_READY',
+        },
+      ],
+      sectionErrors: [],
+    }
+    const withEvents = {
+      ...data,
+      auditEvents: [
+        {
+          id: 'ev-1',
+          createdAt: '2026-07-13T12:00:00.000Z',
+          kind: 'lifecycle.advance',
+          actorId: 'agent-1',
+          summary: 'advanced T1',
+          materialHash: 'mh1',
+        },
+      ],
+    }
+    expect(projectOverviewLifecycle(data)).toEqual([
+      { stage: 'BUILT', count: 3 },
+      { stage: 'PROD_READY', count: 4 },
+    ])
+    expect(projectOverviewMaterialEvents(data)).toEqual([])
+    expect(projectOverviewMaterialEvents(withEvents as OverviewData)).toEqual([
+      {
+        eventId: 'ev-1',
+        atLabel: '2026-07-13T12:00:00.000Z',
+        kind: 'lifecycle.advance',
+        summary: 'advanced T1',
+        actor: 'agent-1',
+      },
+    ])
+    const env = createPinnedEnvelope(PIN, withEvents as OverviewData, { surface: 'overview' })
+    const props = overviewEnvelopeToProps(env)
+    expect(props.lower?.lifecycle).toEqual([
+      { stage: 'BUILT', count: 3 },
+      { stage: 'PROD_READY', count: 4 },
+    ])
+    expect(props.lower?.materialEvents).toHaveLength(1)
+    expect(props.lower?.materialEvents[0]?.eventId).toBe('ev-1')
   })
 
   it('overview never synthesizes question from title', () => {
@@ -278,8 +387,111 @@ describe('control-center-route-adapters', () => {
     expect(props.items).toHaveLength(1)
     expect(props.items[0].bucket).toBe('BLOCKED')
     expect(props.items[0].blockReason).toBe('DATA_INTEGRITY')
+    expect(props.items[0].detailHref).toBe('/b/mfs-rebuild/tasks/T1')
     expect(props.page.nextCursor).toBe('cursor-next')
     expect(props.pinned?.boardRev).toBe(3)
+    expect(props.pinned?.taskHash).toBe('')
+  })
+
+  it('work mapping: ONGOING zero-click join + pin taskHash preservation + NEXT reason', () => {
+    const data: WorkData = {
+      surfaceVersion: 'CC_UI_V1',
+      buckets: {
+        DONE: 0,
+        RECONCILIATION_PENDING: 0,
+        ONGOING: 1,
+        NEXT: 1,
+        QUEUED: 0,
+        BLOCKED: 0,
+      },
+      overlays: emptyOverlays,
+      trackedWorkDenominator: 2,
+      filter: { bucket: null, overlay: null, staleFamily: null },
+      items: [
+        {
+          taskId: 'T-ON',
+          title: 'Running',
+          projectId: 'p1',
+          featureId: null,
+          bucket: 'ONGOING',
+          overlays: [],
+          blockReason: null,
+          outsideTracked: false,
+          lifecycleStage: 'BUILT',
+          targetGate: 'FUNCTIONAL',
+          claimState: 'VALID_CURRENT',
+          createdAt: PIN.generatedAt,
+          id: 'T-ON',
+        },
+        {
+          taskId: 'T-NEXT',
+          title: 'Next up',
+          projectId: 'p1',
+          featureId: null,
+          bucket: 'NEXT',
+          overlays: [],
+          blockReason: null,
+          outsideTracked: false,
+          lifecycleStage: 'MAPPED',
+          targetGate: 'BUILT',
+          claimState: null,
+          createdAt: PIN.generatedAt,
+          id: 'T-NEXT',
+        },
+      ],
+      pageSize: 50,
+      dispatchNext: {
+        selectedForNextDispatch: [
+          {
+            taskId: 'T-NEXT',
+            rank: 1,
+            selectionReason: 'sole dispatch plan head',
+            targetGate: 'BUILT',
+            role: 'implementer',
+            priorityPortfolioId: null,
+          },
+        ],
+        planId: 'plan-1',
+        blockedReason: null,
+        soleSource: 'active_dispatch_plan',
+      },
+    }
+    const env = createPinnedEnvelope(PIN, data, { surface: 'work' })
+    const props = workEnvelopeToProps(env, {
+      boardId: 'mfs-rebuild',
+      activeBucket: 'ONGOING',
+      staleOverlayActive: false,
+      routePinned: { taskHash: PIN.taskHash },
+      ongoingJoin: [
+        {
+          taskId: 'T-ON',
+          targetGate: 'FUNCTIONAL',
+          agentId: 'agent-a',
+          role: 'implementer',
+          model: 'grok',
+          effort: 'high',
+          maskedAccount: 'a***@x.ai',
+          startedAgeSeconds: 120,
+          heartbeatAgeSeconds: 5,
+          materialProgressAgeSeconds: 30,
+          productiveSubstate: 'PRODUCTIVE',
+          evidenceLink: '/evidence/e1',
+        },
+      ],
+    })
+    const ongoing = props.items.find((i) => i.taskId === 'T-ON')
+    expect(ongoing?.ongoing?.agentId).toBe('agent-a')
+    expect(ongoing?.ongoing?.model).toBe('grok')
+    expect(ongoing?.ongoing?.liveness).toBe('PRODUCTIVE')
+    expect(ongoing?.ongoing?.targetGate).toBe('FUNCTIONAL')
+    expect(ongoing?.reconciliation?.claimState).toBe('VALID_CURRENT')
+    expect(ongoing?.detailHref).toBe('/b/mfs-rebuild/tasks/T-ON')
+    const next = props.items.find((i) => i.taskId === 'T-NEXT')
+    expect(next?.reason).toBe('sole dispatch plan head')
+    expect(props.pinned?.taskHash).toBe(PIN.taskHash)
+    expect(props.pinned?.canonicalSnapshotId).toBe(PIN.canonicalSnapshotId)
+    expect(props.pinned?.boardRev).toBe(PIN.boardRev)
+    expect(props.pinned?.lifecycleRev).toBe(PIN.lifecycleRev)
   })
 
   it('priority mapping: N-A majority + portfolio membership fields', () => {
@@ -484,6 +696,49 @@ describe('control-center-route-adapters', () => {
     const vm = evidenceEnvelopeToViewModel(env)
     expect(vm.events[0].summary).toBe('audit line')
     expect(pinIdentityFromEnvelope(env).canonicalSnapshotId).toBe('snap-route-1')
+  })
+
+  it('empty paginated items must NOT fall back to full decisions collection', () => {
+    const fullRow = {
+      decisionId: 'dec-full',
+      severity: 'HIGH' as const,
+      blocking: true,
+      title: 'Full list only',
+      status: 'OPEN' as const,
+      dueAt: null,
+      createdAt: '2026-07-13T09:00:00.000Z',
+      snoozedUntil: null,
+      type: 'owner',
+      question: 'Q?',
+      evidence: [] as string[],
+      options: [{ optionId: 'a', label: 'A', tradeoffs: null, declining: false }],
+      agentRecommendation: null,
+      ownerId: null,
+      resolverId: null,
+      selectedOptionId: null,
+      expectedRev: 1,
+      boardRev: 1,
+      entityRev: 1,
+      scopedApprovalId: null,
+      auditIds: [] as string[],
+      projectId: null,
+      featureId: null,
+      taskId: null,
+      runId: null,
+    }
+    const data: DecisionsData = {
+      surfaceVersion: 'CC_UI_V1',
+      decisions: [fullRow],
+      items: [], // honest empty page
+      pageSize: 50,
+      openCount: 1,
+      blockingCount: 1,
+    }
+    const props = decisionsEnvelopeToProps(
+      createPinnedEnvelope(PIN, data, { surface: 'decisions' }),
+    )
+    expect(props.items).toEqual([])
+    expect(props.openCount).toBe(1)
   })
 
   it('existing-board compatibility: non mfs boards are not control-center', () => {

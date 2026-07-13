@@ -6,9 +6,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  createMemoryControlPlaneRuntimeContext,
   defaultRunDeps,
+  resetControlPlaneRuntimeContextForTests,
   resetMcpControlPlaneDeps,
   setMcpRunRegistryDeps,
+  setTestControlPlaneRuntimeContext,
 } from '#/server/board-mcp'
 import {
   createMemoryRunRegistryStore,
@@ -41,10 +44,14 @@ function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
 
 beforeEach(() => {
   resetMcpControlPlaneDeps()
+  resetControlPlaneRuntimeContextForTests()
+  // Memory durable context is explicit test injection only (production uses MySQL).
+  setTestControlPlaneRuntimeContext(createMemoryControlPlaneRuntimeContext())
 })
 
 afterEach(() => {
   resetMcpControlPlaneDeps()
+  resetControlPlaneRuntimeContextForTests()
 })
 
 describe('MCP default run registry (no injection)', () => {
@@ -104,6 +111,9 @@ describe('MCP default run registry (no injection)', () => {
     expect(reg.fencingToken).toBeTruthy()
 
     resetMcpControlPlaneDeps()
+    // Durable runs store lives on the runtime context; reset MCP deps + install a fresh memory context.
+    resetControlPlaneRuntimeContextForTests()
+    setTestControlPlaneRuntimeContext(createMemoryControlPlaneRuntimeContext())
 
     const deps2 = defaultRunDeps(BOARD_A, 0)
     expect(deps2).not.toBe(deps1)

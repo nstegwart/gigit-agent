@@ -68,6 +68,7 @@ function baseProps(over: Partial<WorkScreenProps> = {}): WorkScreenProps {
         title: 'Wire list_work_items',
         bucket: 'ONGOING',
         overlays: [],
+        detailHref: '/b/mfs-rebuild/tasks/t-ongoing-1',
         ongoing: {
           targetGate: 'BUILT',
           agentId: 'agent-a',
@@ -340,6 +341,58 @@ describe('WorkRow display rules', () => {
     expect(block.textContent).toContain('ag-1')
     expect(block.textContent).toContain('Stalled')
     expect(screen.getByTestId('work-row-evidence').getAttribute('href')).toBe('/e/2')
+  })
+
+  it('native detailHref link is present for accessible drilldown', () => {
+    const onActivate = vi.fn()
+    render(
+      <table>
+        <tbody>
+          <WorkRow
+            item={row({
+              taskId: 't-link',
+              title: 'Open me',
+              bucket: 'ONGOING',
+              detailHref: '/b/mfs-rebuild/tasks/t-link',
+            })}
+            onActivate={onActivate}
+          />
+        </tbody>
+      </table>,
+    )
+    const link = screen.getByTestId('work-row-link-t-link')
+    expect(link.tagName).toBe('A')
+    expect(link.getAttribute('href')).toBe('/b/mfs-rebuild/tasks/t-link')
+    fireEvent.click(link)
+    expect(onActivate).toHaveBeenCalled()
+    expect(onActivate.mock.calls[0]![0].taskId).toBe('t-link')
+  })
+
+  it('card mode uses native title anchor when detailHref set (no nested <a>)', () => {
+    render(
+      <WorkRow
+        asCard
+        item={row({
+          taskId: 't-card',
+          title: 'Card row',
+          bucket: 'ONGOING',
+          detailHref: '/b/mfs-rebuild/tasks/t-card',
+          ongoing: {
+            targetGate: 'BUILT',
+            evidenceLink: '/evidence/e-card',
+            liveness: 'PRODUCTIVE',
+          },
+        })}
+      />,
+    )
+    const card = screen.getByTestId('work-row-t-card')
+    // Outer shell is div/group so title + evidence <a> are not nested anchors.
+    expect(card.tagName).toBe('DIV')
+    expect(card.getAttribute('data-detail-href')).toBe('/b/mfs-rebuild/tasks/t-card')
+    const link = screen.getByTestId('work-row-link-t-card')
+    expect(link.tagName).toBe('A')
+    expect(link.getAttribute('href')).toBe('/b/mfs-rebuild/tasks/t-card')
+    expect(screen.getByTestId('work-row-evidence').getAttribute('href')).toBe('/evidence/e-card')
   })
 
   it('displays server blockReason + reason text only', () => {

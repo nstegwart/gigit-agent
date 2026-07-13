@@ -13,6 +13,7 @@ import {
 
 import { SESSION_DAYS, sessionUser } from './auth-store'
 import {
+  assertBrowserOrigin,
   assertBrowserWriteCsrf,
   C3_CSRF_TOKEN_CLIENT_WIRING,
   CSRF_HEADER,
@@ -148,26 +149,18 @@ export async function requirePrincipalBoard(boardId: string): Promise<Principal>
   }
 }
 
-/**
- * CSRF + same-origin for browser cookie writes.
- * MCP/bearer callers must not invoke this.
- */
-export function assertRequestCsrf(opts?: {
-  allowSameOriginWithoutToken?: boolean
-  oneTime?: boolean
-}): CsrfCheckResult {
-  let origin: string | null = null
-  let referer: string | null = null
-  let host: string | null = null
-  let protocol: string | null = null
-  let csrfHeader: string | null = null
+/** Read Origin/Referer/Host/Protocol from the current request (fail closed outside context). */
+export function readRequestOriginHeaders(): {
+  origin: string | null
+  referer: string | null
+  host: string | null
+  protocol: string | null
+  csrfHeader: string | null
+  ok: boolean
+} {
   try {
-    origin = getRequestHeader('origin') ?? null
-    referer = getRequestHeader('referer') ?? null
-    csrfHeader = getRequestHeader(CSRF_HEADER) ?? getRequestHeader('x-csrf-token') ?? null
-    host = getRequestHost({ xForwardedHost: false }) ?? null
-    protocol = getRequestProtocol({ xForwardedProto: false }) ?? null
-    // Fallback host from request URL when getRequestHost empty
+    let host = getRequestHost({ xForwardedHost: false }) ?? null
+    const protocol = getRequestProtocol({ xForwardedProto: false }) ?? null
     if (!host) {
       try {
         host = new URL(getRequest().url).host
@@ -175,30 +168,79 @@ export function assertRequestCsrf(opts?: {
         /* ignore */
       }
     }
+    return {
+      origin: getRequestHeader('origin') ?? null,
+      referer: getRequestHeader('referer') ?? null,
+      host,
+      protocol,
+      csrfHeader: getRequestHeader(CSRF_HEADER) ?? getRequestHeader('x-csrf-token') ?? null,
+      ok: true,
+    }
   } catch {
-    /* outside request context — fail closed */
+    return {
+      origin: null,
+      referer: null,
+      host: null,
+      protocol: null,
+      csrfHeader: null,
+      ok: false,
+    }
+  }
+}
+
+/**
+ * Origin check for login / bootstrap (no session required).
+ * Fail closed outside request context or on origin mismatch/missing.
+ */
+export function assertRequestOrigin(): CsrfCheckResult {
+  const h = readRequestOriginHeaders()
+  if (!h.ok) {
+    return { ok: false, code: 'CSRF_ORIGIN_MISSING', message: 'no request context' }
+  }
+  return assertBrowserOrigin({
+    origin: h.origin,
+    referer: h.referer,
+    host: h.host,
+    protocol: h.protocol,
+    requireOrigin: true,
+  })
+}
+
+/**
+ * CSRF + same-origin for browser cookie writes.
+ * MCP/bearer callers must not invoke this.
+ * Default: X-CSRF-Token required (same-origin alone insufficient).
+ */
+export function assertRequestCsrf(opts?: {
+  allowSameOriginWithoutToken?: boolean
+  oneTime?: boolean
+}): CsrfCheckResult {
+  const h = readRequestOriginHeaders()
+  if (!h.ok) {
     return { ok: false, code: 'CSRF_ORIGIN_MISSING', message: 'no request context' }
   }
 
   return assertBrowserWriteCsrf({
     sessionToken: currentSessionToken(),
-    csrfHeader,
-    origin,
-    referer,
-    host,
-    protocol,
-    allowSameOriginWithoutToken: opts?.allowSameOriginWithoutToken,
+    csrfHeader: h.csrfHeader,
+    origin: h.origin,
+    referer: h.referer,
+    host: h.host,
+    protocol: h.protocol,
+    // Default false — do not pass true unless an explicit interim path needs it.
+    allowSameOriginWithoutToken: opts?.allowSameOriginWithoutToken === true,
     oneTime: opts?.oneTime,
   })
 }
 
 /**
  * Require admin + CSRF for browser mutations.
+ * X-CSRF-Token is mandatory; same-origin alone is insufficient.
  * On CSRF failure throws AuthError 403 with code.
  */
 export async function requireAdminWrite(): Promise<SessionUser> {
   const u = await requireAdmin()
-  const csrf = assertRequestCsrf({ allowSameOriginWithoutToken: true })
+  const csrf = assertRequestCsrf({ allowSameOriginWithoutToken: false })
   if (!csrf.ok) {
     throw new AuthError(csrf.message, 403, csrf.code)
   }

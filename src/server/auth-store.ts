@@ -59,6 +59,226 @@ export async function countUsers(): Promise<number> {
   return Number((rows as Array<{ n: number }>)[0]?.n ?? 0)
 }
 
+/** Named MySQL advisory lock key for first-admin bootstrap serialization. */
+export const BOOTSTRAP_LOCK_NAME = 'cairn_first_admin_bootstrap' as const
+
+/**
+ * Injectable bootstrap deps for unit tests (concurrent race proofs without live DB).
+ * Production path uses MySQL GET_LOCK + COUNT + INSERT on a pinned connection.
+ */
+export type AtomicBootstrapDeps = {
+  acquireLock: () => Promise<boolean>
+  releaseLock: () => Promise<void>
+  countUsers: () => Promise<number>
+  insertAdmin: (input: { username: string; password: string }) => Promise<UserRow>
+}
+
+export class BootstrapError extends Error {
+  readonly code: 'SETUP_ALREADY_COMPLETE' | 'BOOTSTRAP_LOCK_TIMEOUT' | 'BOOTSTRAP_FAILED'
+  constructor(
+    code: 'SETUP_ALREADY_COMPLETE' | 'BOOTSTRAP_LOCK_TIMEOUT' | 'BOOTSTRAP_FAILED',
+    message: string,
+  ) {
+    super(message)
+    this.name = 'BootstrapError'
+    this.code = code
+  }
+}
+
+/**
+ * Serialize first-admin creation: lock → re-check empty → insert once.
+ * Concurrent callers: exactly one succeeds; others get SETUP_ALREADY_COMPLETE or lock timeout.
+ */
+export async function runAtomicFirstAdminBootstrap(
+  input: { username: string; password: string },
+  deps: AtomicBootstrapDeps,
+): Promise<UserRow> {
+  const got = await deps.acquireLock()
+  if (!got) {
+    throw new BootstrapError('BOOTSTRAP_LOCK_TIMEOUT', 'bootstrap lock unavailable — retry')
+  }
+  try {
+    if ((await deps.countUsers()) > 0) {
+      throw new BootstrapError(
+        'SETUP_ALREADY_COMPLETE',
+        'Setup already complete — ask an admin for an account',
+      )
+    }
+    return await deps.insertAdmin({
+      username: input.username,
+      password: input.password,
+    })
+  } finally {
+    await deps.releaseLock()
+  }
+}
+
+/**
+ * Production first-admin bootstrap: MySQL GET_LOCK + COUNT + createUser under the lock.
+ * Fail closed if users already exist (including races).
+ */
+export async function createFirstAdminAtomic(input: {
+  username: string
+  password: string
+}): Promise<UserRow> {
+  await ensure()
+  const conn = await db().getConnection()
+  const lockName = BOOTSTRAP_LOCK_NAME
+  try {
+    return await runAtomicFirstAdminBootstrap(input, {
+      acquireLock: async () => {
+        const [rows] = await conn.query('SELECT GET_LOCK(?, 10) AS acquired', [lockName])
+        const acquired = Number((rows as Array<{ acquired: number | null }>)[0]?.acquired)
+        return acquired === 1
+      },
+      releaseLock: async () => {
+        await conn.query('SELECT RELEASE_LOCK(?)', [lockName])
+      },
+      countUsers: async () => {
+        const [rows] = await conn.query('SELECT COUNT(*) AS n FROM users')
+        return Number((rows as Array<{ n: number }>)[0]?.n ?? 0)
+      },
+      insertAdmin: async (i) => {
+        // Reuse createUser but it opens its own pool queries — OK under advisory lock
+        // (lock is global per name, not transaction-scoped).
+        return createUser({ username: i.username, password: i.password, role: 'admin' })
+      },
+    })
+  } finally {
+    conn.release()
+  }
+}
+
+// ---- login throttle (process-local, bounded abuse protection) ----
+
+export type LoginThrottlePolicy = {
+  policyId: string
+  /** Max failed attempts per key within the window before lockout. */
+  maxFailures: number
+  /** Sliding window for counting failures. */
+  windowMs: number
+  /** Lockout duration after maxFailures. */
+  lockoutMs: number
+}
+
+export const LOGIN_THROTTLE_V1: LoginThrottlePolicy = {
+  policyId: 'LOGIN_THROTTLE_V1',
+  maxFailures: 10,
+  windowMs: 15 * 60 * 1000,
+  lockoutMs: 15 * 60 * 1000,
+}
+
+export type LoginThrottleDecision =
+  | { allowed: true; remaining: number; policyId: string }
+  | {
+      allowed: false
+      remaining: 0
+      retryAfterSeconds: number
+      policyId: string
+      code: 'LOGIN_THROTTLED'
+    }
+
+type LoginThrottleState = {
+  failures: number
+  windowStartMs: number
+  lockedUntilMs: number
+}
+
+const loginThrottleStore = new Map<string, LoginThrottleState>()
+
+export function normalizeLoginThrottleKey(username: string): string {
+  return `login:${username.trim().toLowerCase()}`
+}
+
+export function clearLoginThrottleStore(): void {
+  loginThrottleStore.clear()
+}
+
+/**
+ * Check whether a login attempt is allowed for this key (no mutation).
+ * Call before authenticate; on failure call recordLoginFailure; on success clearLoginThrottleKey.
+ */
+export function checkLoginThrottle(
+  username: string,
+  nowMs = Date.now(),
+  policy: LoginThrottlePolicy = LOGIN_THROTTLE_V1,
+): LoginThrottleDecision {
+  const key = normalizeLoginThrottleKey(username)
+  const state = loginThrottleStore.get(key)
+  if (!state) {
+    return { allowed: true, remaining: policy.maxFailures, policyId: policy.policyId }
+  }
+  if (state.lockedUntilMs > nowMs) {
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: Math.max(1, Math.ceil((state.lockedUntilMs - nowMs) / 1000)),
+      policyId: policy.policyId,
+      code: 'LOGIN_THROTTLED',
+    }
+  }
+  // Window expired → treat as fresh
+  if (nowMs - state.windowStartMs >= policy.windowMs) {
+    return { allowed: true, remaining: policy.maxFailures, policyId: policy.policyId }
+  }
+  const remaining = Math.max(0, policy.maxFailures - state.failures)
+  if (remaining <= 0) {
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: Math.max(1, Math.ceil(policy.lockoutMs / 1000)),
+      policyId: policy.policyId,
+      code: 'LOGIN_THROTTLED',
+    }
+  }
+  return { allowed: true, remaining, policyId: policy.policyId }
+}
+
+/** Record a failed login; may engage lockout. */
+export function recordLoginFailure(
+  username: string,
+  nowMs = Date.now(),
+  policy: LoginThrottlePolicy = LOGIN_THROTTLE_V1,
+): LoginThrottleDecision {
+  const key = normalizeLoginThrottleKey(username)
+  let state = loginThrottleStore.get(key)
+  if (!state || nowMs - state.windowStartMs >= policy.windowMs) {
+    state = { failures: 0, windowStartMs: nowMs, lockedUntilMs: 0 }
+  }
+  if (state.lockedUntilMs > nowMs) {
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: Math.max(1, Math.ceil((state.lockedUntilMs - nowMs) / 1000)),
+      policyId: policy.policyId,
+      code: 'LOGIN_THROTTLED',
+    }
+  }
+  state.failures += 1
+  if (state.failures >= policy.maxFailures) {
+    state.lockedUntilMs = nowMs + policy.lockoutMs
+    loginThrottleStore.set(key, state)
+    return {
+      allowed: false,
+      remaining: 0,
+      retryAfterSeconds: Math.max(1, Math.ceil(policy.lockoutMs / 1000)),
+      policyId: policy.policyId,
+      code: 'LOGIN_THROTTLED',
+    }
+  }
+  loginThrottleStore.set(key, state)
+  return {
+    allowed: true,
+    remaining: Math.max(0, policy.maxFailures - state.failures),
+    policyId: policy.policyId,
+  }
+}
+
+/** Clear throttle state after successful login. */
+export function clearLoginThrottleKey(username: string): void {
+  loginThrottleStore.delete(normalizeLoginThrottleKey(username))
+}
+
 // ---- users ----
 async function boardsOf(userId: string): Promise<Array<string>> {
   const [rows] = await db().query('SELECT board_id FROM user_boards WHERE user_id=?', [userId])

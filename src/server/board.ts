@@ -27,7 +27,12 @@ import {
 import { advanceTask, computeRollup, readLifecycle, writeLifecycle } from './lifecycle-store'
 import { taskLifecycle } from './tasks-store'
 import { currentUser, requireAdminWrite, requireView } from './auth'
-import { resolveSharedDispatchNext } from './control-plane-ingest'
+import {
+  projectDispatchNextFields,
+  resolveSharedDispatchNext,
+  selectNextFromActivePlan,
+} from './control-plane-ingest'
+import { peekControlPlaneRuntimeContext } from './control-plane-runtime-context'
 
 const board = z.string().min(1)
 
@@ -238,13 +243,27 @@ export const getGuideFn = createServerFn({ method: 'GET' })
 
 /**
  * Sole NEXT source = active dispatch plan selection (no UI heuristic).
- * Reads the process-wide shared plan store (publish + MCP + this Fn share one).
+ * Prefer durable control-plane runtime context plans (same authority as MCP publish)
+ * when context is installed; otherwise fall back to process shared plan store.
  * Returns empty selection when no active plan / expired / superseded.
  */
 export const getNextFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
   .handler(async ({ data }) => {
     await requireView(data.boardId)
+    const ctx = peekControlPlaneRuntimeContext()
+    if (ctx) {
+      const selected = await selectNextFromActivePlan(
+        { clock: ctx.clock, plans: ctx.runtime.plans },
+        data.boardId,
+      )
+      const projected = projectDispatchNextFields(selected)
+      return {
+        boardId: data.boardId,
+        ...projected,
+        generatedAt: ctx.clock.nowISO(),
+      }
+    }
     return resolveSharedDispatchNext(data.boardId)
   })
 

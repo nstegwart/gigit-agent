@@ -3,10 +3,11 @@
   "version": 1,
   "purpose": "Synthetic staging board + agent MCP lifecycle smoke (no production-derived data)",
   "boardId": "mfs-rebuild",
-  "schemaVersionExpected": "003",
+  "schemaVersionExpected": "005",
   "healthzSchema": "MFS_HEALTHZ_V1",
   "syntheticOnly": true,
   "productionDerived": false,
+  "schemaVersionNote": "Expected latest registered migration package version (000..005). Synthetic fixture only — not a live DB readback of applied_versions.",
   "expiryPolicy": "ephemeral-smoke-ids-per-run; fixtures durable in repo",
   "pin": {
     "canonicalSnapshotId": "synth-c3-r2d-snap-001",

@@ -31,20 +31,29 @@ const cwd = process.cwd()
 const SAFE_MAPPING = g0IdentityLifecycleMappingRows()
 
 describe('migration manifest ordering + checksums', () => {
-  it('has strictly ordered 000/001/002/003 entries', () => {
+  it('has strictly ordered 000/001/002/003/004/005 entries', () => {
     assertManifestOrder(MIGRATION_MANIFEST)
-    expect(MIGRATION_MANIFEST.map((m) => m.version)).toEqual(['000', '001', '002', '003'])
+    expect(MIGRATION_MANIFEST.map((m) => m.version)).toEqual([
+      '000',
+      '001',
+      '002',
+      '003',
+      '004',
+      '005',
+    ])
     expect(MIGRATION_MANIFEST.map((m) => m.classification)).toEqual([
       'REVERSIBLE',
       'REVERSIBLE',
       'EXPAND_CONTRACT_BACKWARD_COMPATIBLE',
       'FORWARD_FIX_ONLY',
+      'REVERSIBLE',
+      'REVERSIBLE',
     ])
   })
 
   it('loads on-disk SQL and computes stable SHA-256', () => {
     const loaded = loadMigrationManifest(cwd)
-    expect(loaded).toHaveLength(4)
+    expect(loaded).toHaveLength(6)
     for (const m of loaded) {
       const disk = fs.readFileSync(path.join(cwd, m.relativePath), 'utf8')
       expect(m.sha256).toBe(sha256Hex(disk))
@@ -109,7 +118,7 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(plan.status).toBe('READY')
     expect(plan.applyAllowed).toBe(true)
     expect(plan.items.every((i) => i.action === 'APPLY')).toBe(true)
-    expect(plan.orderedVersions).toEqual(['000', '001', '002', '003'])
+    expect(plan.orderedVersions).toEqual(['000', '001', '002', '003', '004', '005'])
   })
 
   it('idempotent plan is NOOP when history matches checksums', () => {
@@ -155,11 +164,11 @@ describe('migration plan / dry-run / idempotent rerun', () => {
       lifecycleMapping: SAFE_MAPPING,
     })
     expect(first.ok).toBe(true)
-    expect(first.applied).toEqual(['000', '001', '002', '003'])
+    expect(first.applied).toEqual(['000', '001', '002', '003', '004', '005'])
     expect(first.mapping?.approved).toBe(true)
     expect(first.mapping?.identityCount).toBe(9)
     expect(exec.statements.length).toBeGreaterThan(10)
-    expect(exec.history.map((h) => h.version)).toEqual(['000', '001', '002', '003'])
+    expect(exec.history.map((h) => h.version)).toEqual(['000', '001', '002', '003', '004', '005'])
 
     const second = await applyMigrations({
       host: '127.0.0.1',
@@ -171,7 +180,7 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     })
     expect(second.ok).toBe(true)
     expect(second.applied).toEqual([])
-    expect(second.skipped).toEqual(['000', '001', '002', '003'])
+    expect(second.skipped).toEqual(['000', '001', '002', '003', '004', '005'])
     expect(second.mapping?.approved).toBe(true)
   })
 
@@ -339,10 +348,10 @@ describe('lifecycle mapping guard wired into migration plan/apply (AC-LIFE-02)',
       lifecycleMapping: { schemaVersion: 'LIFECYCLE_MAPPING_V1', mapping: [...rows] },
     })
     expect(result.ok).toBe(true)
-    expect(result.applied).toEqual(['000', '001', '002', '003'])
+    expect(result.applied).toEqual(['000', '001', '002', '003', '004', '005'])
     expect(result.mapping?.approved).toBe(true)
     expect(exec.statements.length).toBeGreaterThan(0)
-    expect(exec.history).toHaveLength(4)
+    expect(exec.history).toHaveLength(6)
   })
 
   it('apply missing mapping → DECISION_LIFECYCLE_MAPPING_REQUIRED, zero SQL/history', async () => {
@@ -519,7 +528,7 @@ describe('lifecycle mapping guard wired into migration plan/apply (AC-LIFE-02)',
       lifecycleMapping: rows,
     })
     expect(result.ok).toBe(true)
-    expect(result.applied).toEqual(['000', '001', '002', '003'])
+    expect(result.applied).toEqual(['000', '001', '002', '003', '004', '005'])
     expect(exec.statements.length).toBeGreaterThan(0)
   })
 

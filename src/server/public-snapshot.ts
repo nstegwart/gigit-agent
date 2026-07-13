@@ -199,6 +199,12 @@ export interface MaterializedPublicSnapshot {
   bodyJson: string
   pin: PublicSnapshotPin
   materializedAt: string
+  /**
+   * Content fingerprint of public fields (decisions/lifecycle/G5/counts/etc.).
+   * Cache invalidation key — pin identity alone is insufficient when boardHash
+   * is stable but decisions/G5/lifecycle counts change.
+   */
+  contentFingerprint: string
 }
 
 export type PublicSnapshotErrorCode =
@@ -296,15 +302,90 @@ export function sanitizePublicValue(
   return out
 }
 
+/**
+ * Canonical public account mask: `acc_***` + exactly 4 alphanumeric tail chars.
+ * Leading `acc_` alone is NOT masking (hostile `acc_plaintextSECRET` must remask).
+ */
+export const CANONICAL_MASKED_ACCOUNT_RE = /^acc_\*{3}[A-Za-z0-9]{4}$/
+
+export function isCanonicalMaskedAccountId(value: string): boolean {
+  return CANONICAL_MASKED_ACCOUNT_RE.test(value)
+}
+
+/**
+ * Always produce a canonical masked id. `acc_` prefix is not trusted as already-masked.
+ */
 export function maskAccountId(raw: string): string {
-  if (!raw || raw.length < 4) return 'acc_****'
-  const tail = raw.slice(-4)
-  return `acc_***${tail}`
+  if (isCanonicalMaskedAccountId(raw)) return raw
+  if (!raw) return 'acc_****'
+  // Last 4 alphanumeric of the full string (handles hostile acc_ prefixes and hyphens).
+  const alnum = String(raw).replace(/[^A-Za-z0-9]/g, '')
+  if (alnum.length < 4) return 'acc_****'
+  return `acc_***${alnum.slice(-4)}`
+}
+
+/** Alias: force-mask any residual identity. */
+export function ensureMaskedAccountId(raw: string): string {
+  return maskAccountId(String(raw ?? ''))
 }
 
 export function maskAccountRef(raw: string | null | undefined): string | null {
   if (raw == null || raw === '') return null
   return maskAccountId(String(raw))
+}
+
+/**
+ * Public account usable=false when status is BAN/403/AUTH_EXPIRED/quarantine/tombstone/LIMIT
+ * or when account-sync authority is stale/absent/parity-invalid (caller supplies syncBlocked).
+ */
+export function isPublicAccountStatusUnusable(status: string | null | undefined): boolean {
+  if (status == null || status === '') return true
+  const s = String(status).trim()
+  const upper = s.toUpperCase()
+  if (
+    upper === 'BAN' ||
+    upper === '403' ||
+    upper === 'AUTH_EXPIRED' ||
+    upper === 'REMOVED' ||
+    upper === 'LIMIT' ||
+    upper === 'TOMBSTONE' ||
+    upper === 'QUARANTINE' ||
+    upper === 'QUARANTINED'
+  ) {
+    return true
+  }
+  if (s === 'quarantine') return true
+  return false
+}
+
+/**
+ * Fingerprint of public payload identity excluding wall-clock freshness fields.
+ * Used for cache invalidation when pin tuple is unchanged but decisions/G5/counts change.
+ */
+export function publicContentFingerprint(input: PublicAggregationInput): string {
+  const body = {
+    boardId: input.boardId,
+    pin: {
+      canonicalSnapshotId: input.pin.canonicalSnapshotId,
+      canonicalHash: input.pin.canonicalHash,
+      boardRev: input.pin.boardRev,
+      lifecycleRev: input.pin.lifecycleRev,
+      serializerVersion: input.pin.serializerVersion,
+    },
+    boardRollup: input.boardRollup,
+    completion: input.completion,
+    buckets: input.buckets,
+    staleOverlays: input.staleOverlays ?? {},
+    priorityRollup: input.priorityRollup ?? null,
+    projects: input.projects ?? [],
+    features: input.features ?? [],
+    tasks: input.tasks ?? [],
+    runs: input.runs ?? [],
+    accounts: input.accounts ?? [],
+    decisionCount: input.decisionCount,
+    g5: input.g5,
+  }
+  return sha256Hex(stableStringify(body))
 }
 
 function sortById<T extends { id: string }>(arr: ReadonlyArray<T>): Array<T> {
@@ -416,19 +497,23 @@ export function materializePublicSnapshot(input: PublicAggregationInput): Materi
         status: r.status,
         taskId: r.taskId ?? null,
         agentRole: r.agentRole ?? null,
+        // Always remask — `acc_` prefix is not sufficient proof of masking.
         accountRefMasked: maskAccountRef(r.accountRefMasked ?? null),
         lastHeartbeatAt: r.lastHeartbeatAt ?? null,
       })),
     )
     const accounts = sortByAccount(
-      (input.accounts ?? []).map((a) => ({
-        accountIdMasked: a.accountIdMasked.startsWith('acc_')
-          ? a.accountIdMasked
-          : maskAccountId(a.accountIdMasked),
-        status: a.status,
-        provider: a.provider ?? null,
-        usable: a.usable ?? false,
-      })),
+      (input.accounts ?? []).map((a) => {
+        const status = a.status
+        const forcedUnusable = isPublicAccountStatusUnusable(status)
+        return {
+          accountIdMasked: ensureMaskedAccountId(a.accountIdMasked),
+          status,
+          provider: a.provider ?? null,
+          // Caller may set usable=false for sync parity; never promote unusable statuses.
+          usable: forcedUnusable ? false : Boolean(a.usable),
+        }
+      }),
     )
 
     const draft: Omit<PublicSnapshotPayload, 'etag' | 'payloadSha256'> = {
@@ -460,6 +545,7 @@ export function materializePublicSnapshot(input: PublicAggregationInput): Materi
       payloadSha256: etag,
     }
     const bodyJson = stableStringify(payload)
+    const contentFingerprint = publicContentFingerprint(input)
 
     return {
       etag,
@@ -467,6 +553,7 @@ export function materializePublicSnapshot(input: PublicAggregationInput): Materi
       bodyJson,
       pin: { ...input.pin },
       materializedAt: publishedAt,
+      contentFingerprint,
     }
   } catch (err) {
     if (err instanceof PublicSnapshotError) throw err
@@ -508,7 +595,16 @@ export function pinIdentity(pin: PublicSnapshotPin): string {
 }
 
 /**
- * Pin + materialize if missing or pin changed. Same pin → return cached (no recompute).
+ * Full materialization cache identity: pin + public content fingerprint.
+ * Decisions/lifecycle/G5/count changes invalidate even when boardHash/pin tuple is stable.
+ */
+export function materializationCacheIdentity(input: PublicAggregationInput): string {
+  return `${pinIdentity(input.pin)}|${publicContentFingerprint(input)}`
+}
+
+/**
+ * Materialize if missing, pin changed, OR public content fingerprint changed.
+ * Same pin+content → return cached (no recompute). Pin alone is not enough.
  */
 export function getOrMaterializePublicSnapshot(opts: {
   boardId: string
@@ -516,10 +612,12 @@ export function getOrMaterializePublicSnapshot(opts: {
   input: PublicAggregationInput
 }): MaterializedPublicSnapshot {
   const existing = opts.store.get(opts.boardId)
+  const nextFp = publicContentFingerprint(opts.input)
   if (
     existing &&
+    existing.payload.boardId === opts.boardId &&
     pinIdentity(existing.pin) === pinIdentity(opts.input.pin) &&
-    existing.payload.boardId === opts.boardId
+    existing.contentFingerprint === nextFp
   ) {
     return existing
   }

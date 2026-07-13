@@ -3,6 +3,10 @@
  * Fail-closed: missing V3 classification/receipt → UNCLASSIFIED (never invent PRODUCT
  * from phase/progress/pct). Reuses C1/C2 rollup/priority/G5/dispatch via control-center-ui.
  * Account IDs masked; no tokens/private decision bodies/secrets in aggregation inputs.
+ *
+ * Durable truth (runtime context): V3 runs/accounts/active plan, DecisionV3, G5,
+ * classifications, material audit — loaded in parallel. Active ownership is derived
+ * from durable run registry only (never legacy embedded claimState / board.runs).
  */
 
 import { createHash } from 'node:crypto'
@@ -11,8 +15,7 @@ import { buildModel } from '#/lib/model'
 import type {
   ClassificationReceipt,
   G5DomainRecord,
-  PrimaryBucket,
-  StaleOverlayKind,
+  PrimaryOwnership,
   TaskClassificationRecord,
   TaskClass,
   TaskDisposition,
@@ -20,17 +23,26 @@ import type {
 import { TASK_CLASSES, TASK_DISPOSITIONS } from '#/lib/control-plane-types'
 import type { Decision, DecisionOptionV3Carrier, RawBoard, Run, WorkTask } from '#/lib/types'
 import {
+  isPinComplete,
+  isSyntheticCanonicalSnapshotId,
+  tryLoadPinnedDefinitionReadModel,
+  type CanonicalDefinitionProjection,
+  type CanonicalDefinitionReadModel,
+} from '#/server/canonical-read-model'
+import {
   boardHash,
   listBoards,
   readBoard,
   readOps,
   readTasks,
+  type ControlPlaneAuditEvent,
 } from '#/server/board-store'
-import { parseValidClaimState } from '#/server/tasks-store'
+import { parseValidClaimState, type ValidClaimState } from '#/server/tasks-store'
 import {
   selectNextFromActivePlan,
   getSharedDispatchPlanStore,
   projectDispatchNextFields,
+  type DispatchPlanRecord,
 } from '#/server/control-plane-ingest'
 import { createSystemClock } from '#/server/board-store'
 import { db } from '#/server/db'
@@ -58,6 +70,20 @@ import {
   type ProductiveSubstate,
   type RunUiSummary,
 } from '#/server/control-center-ui'
+import {
+  getControlPlaneRuntimeContext,
+  type ControlPlaneRuntimeContext,
+} from '#/server/control-plane-runtime-context'
+import {
+  LEASED_RUN_STATES,
+  RUN_LEASE_MS,
+  RUN_RECONCILIATION_GRACE_MS,
+  TERMINAL_RUN_STATES,
+  type RunRecord,
+  type RunState,
+} from '#/server/run-registry'
+import type { PriorityPacket } from '#/server/rollup-v3'
+import type { ClaimState, RunLiveness } from '#/server/rollup-v3'
 
 /** Optional run-registry / extended fields never mirrored from heartbeat alone. */
 type RunSourceExt = Run & {
@@ -67,6 +93,10 @@ type RunSourceExt = Run & {
   collisionScopeLockIds?: string[] | null
   controllerRunId?: string | null
   parentRunId?: string | null
+  targetGate?: string | null
+  fencingToken?: string | null
+  leaseExpiresAt?: string | null
+  leaseExpiresAtMs?: number | null
 }
 
 export {
@@ -173,11 +203,429 @@ const DECISION_V3_STATUSES = new Set<string>([
   'CANCELLED',
 ])
 const DECISION_SEVERITIES = new Set<string>(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
+const LEASED_SET = new Set<string>(LEASED_RUN_STATES as ReadonlyArray<string>)
+const TERMINAL_SET = new Set<string>(TERMINAL_RUN_STATES as ReadonlyArray<string>)
 
 /** Safe subject/canonical hash shape (matches classification receipt hash bounds). */
 export const SAFE_CANONICAL_HASH_RE = /^[a-f0-9]{16,128}$/i
 /** Bounded non-empty snapshot id (alphanumeric + common separators). */
 export const SAFE_SNAPSHOT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+
+// ---------------------------------------------------------------------------
+// Durable ownership / claim derivation (V3 run registry — not embedded claims)
+// ---------------------------------------------------------------------------
+
+/** Minimal task facts needed for beyond-stage detection. */
+export type OwnershipTaskHint = {
+  taskId: string
+  lifecycleStage?: string | null
+  productStageMode?: 'STAGE_1' | 'STAGE_2' | null
+}
+
+export type DurableTaskOwnership = {
+  taskId: string
+  /** Active primary owner (agent) when unique + valid. */
+  ownerId: string | null
+  claimState: ClaimState
+  runLiveness: RunLiveness
+  /** Conflicting primary owners for same task → rollup BLOCKED:DATA_INTEGRITY. */
+  conflicting: boolean
+  conflictOwnerIds: string[]
+  primaryRun: RunRecord | null
+  /** All non-terminal durable runs for this task (sorted by recency). */
+  runs: RunRecord[]
+}
+
+export type DurableOwnershipResult = {
+  byTaskId: Map<string, DurableTaskOwnership>
+  /** Distinct non-conflicting primary ownership edges for rollup join check. */
+  primaryOwnership: PrimaryOwnership[]
+  /** Task IDs with multi-owner conflict → forced DATA_INTEGRITY. */
+  conflictTaskIds: string[]
+}
+
+function isLeasedState(state: string): boolean {
+  return LEASED_SET.has(state)
+}
+
+function isTerminalState(state: string): boolean {
+  return TERMINAL_SET.has(state)
+}
+
+function isProductStageDone(
+  stage: string | null | undefined,
+  mode: 'STAGE_1' | 'STAGE_2' = 'STAGE_2',
+): boolean {
+  if (!stage) return false
+  if (mode === 'STAGE_1') {
+    return stage === 'MAP_VERIFIED' || stage === 'PROD_READY' || stage === 'LIVE_VERIFIED'
+  }
+  return stage === 'PROD_READY' || stage === 'LIVE_VERIFIED'
+}
+
+function runRecencyMs(rec: RunRecord): number {
+  return (
+    rec.heartbeatAtMs ??
+    rec.materialProgressAtMs ??
+    rec.registeredAtMs ??
+    rec.leaseExpiresAtMs ??
+    0
+  )
+}
+
+function mapRunStateToLiveness(state: RunState, stalled: boolean): RunLiveness {
+  if (state === 'STARTING' || state === 'RESERVED') return 'STARTING'
+  if (state === 'RUNNING' || state === 'WAITING_HUMAN') {
+    return stalled ? 'STALLED' : 'RUNNING'
+  }
+  if (state === 'STALE' || state === 'FAILED') return 'EXPIRED'
+  return 'NONE'
+}
+
+/**
+ * Pure: derive claim/ownership for one durable RunRecord.
+ * Never reads WorkTask.claimState or legacy board.runs claim embeds.
+ */
+export function deriveClaimStateFromRunRecord(
+  rec: RunRecord,
+  nowMs: number,
+  taskHint?: OwnershipTaskHint | null,
+): { claimState: ClaimState; runLiveness: RunLiveness } {
+  const runLiveness = mapRunStateToLiveness(rec.state, rec.stalled)
+
+  if (rec.state === 'QUEUED') {
+    return { claimState: 'NONE', runLiveness: 'NONE' }
+  }
+  if (rec.state === 'STALE') {
+    return { claimState: 'STALE', runLiveness: 'EXPIRED' }
+  }
+  if (rec.state === 'SUPERSEDED') {
+    return { claimState: 'FENCED', runLiveness: 'NONE' }
+  }
+  if (isTerminalState(rec.state)) {
+    // Terminal history only — no active claim (completed linger handled by overlays when set elsewhere).
+    return { claimState: 'NONE', runLiveness: 'NONE' }
+  }
+
+  // Orphan: leased-ish but missing agent / fence
+  if (!rec.agentId || rec.fencingToken == null) {
+    return { claimState: 'ORPHAN', runLiveness }
+  }
+
+  const leaseExpired =
+    rec.leaseExpiresAtMs != null &&
+    rec.leaseExpiresAtMs + RUN_RECONCILIATION_GRACE_MS <= nowMs
+  const neverHeartbeated =
+    rec.registeredAtMs != null &&
+    rec.heartbeatAtMs == null &&
+    nowMs - rec.registeredAtMs > RUN_LEASE_MS + RUN_RECONCILIATION_GRACE_MS
+
+  if (leaseExpired) {
+    return { claimState: 'EXPIRED', runLiveness: 'EXPIRED' }
+  }
+  if (neverHeartbeated) {
+    return { claimState: 'ORPHAN', runLiveness }
+  }
+
+  // Ambiguous fence recovery → FENCED
+  if (
+    rec.fencingVersion > 1 &&
+    rec.heartbeatAtMs != null &&
+    nowMs - rec.heartbeatAtMs > RUN_LEASE_MS
+  ) {
+    return { claimState: 'FENCED', runLiveness: 'STALLED' }
+  }
+
+  const mode = taskHint?.productStageMode === 'STAGE_1' ? 'STAGE_1' : 'STAGE_2'
+  const productDone = isProductStageDone(taskHint?.lifecycleStage, mode)
+  if (productDone && isLeasedState(rec.state)) {
+    // Valid claim after current-stage completion → beyond-stage ongoing overlay path.
+    return { claimState: 'BEYOND_STAGE', runLiveness }
+  }
+
+  if (isLeasedState(rec.state)) {
+    return { claimState: 'VALID_CURRENT', runLiveness }
+  }
+
+  return { claimState: 'STALE', runLiveness }
+}
+
+/**
+ * Deterministic multi-run ownership rollup per task.
+ * Conflicting distinct agent owners on non-terminal runs → conflicting=true
+ * (caller forces BLOCKED:DATA_INTEGRITY; does not pass multi-owner edges to rollup).
+ */
+export function deriveDurableOwnership(
+  runs: ReadonlyArray<RunRecord>,
+  nowMs: number,
+  taskHints: ReadonlyArray<OwnershipTaskHint> = [],
+): DurableOwnershipResult {
+  const hintById = new Map(taskHints.map((t) => [t.taskId, t] as const))
+  const byTask = new Map<string, RunRecord[]>()
+  for (const r of runs) {
+    if (!r.taskId) continue
+    const list = byTask.get(r.taskId) ?? []
+    list.push(r)
+    byTask.set(r.taskId, list)
+  }
+
+  const byTaskId = new Map<string, DurableTaskOwnership>()
+  const primaryOwnership: PrimaryOwnership[] = []
+  const conflictTaskIds: string[] = []
+
+  for (const [taskId, taskRuns] of byTask) {
+    const sorted = [...taskRuns].sort((a, b) => runRecencyMs(b) - runRecencyMs(a))
+    const active = sorted.filter((r) => !isTerminalState(r.state) && r.state !== 'QUEUED')
+    const owners = new Set(
+      active
+        .map((r) => (r.agentId && r.agentId.trim() ? r.agentId.trim() : ''))
+        .filter(Boolean),
+    )
+    const conflicting = owners.size > 1
+    if (conflicting) conflictTaskIds.push(taskId)
+
+    const hint = hintById.get(taskId) ?? { taskId }
+    const primaryRun = conflicting ? null : (active[0] ?? null)
+    let claimState: ClaimState = 'NONE'
+    let runLiveness: RunLiveness = 'NONE'
+    if (conflicting) {
+      // Integrity failure — not a valid claim state for ONGOING.
+      claimState = 'NONE'
+      runLiveness = 'NONE'
+    } else if (primaryRun) {
+      const d = deriveClaimStateFromRunRecord(primaryRun, nowMs, hint)
+      claimState = d.claimState
+      runLiveness = d.runLiveness
+    }
+
+    const ownerId =
+      !conflicting && primaryRun?.agentId && primaryRun.agentId.trim()
+        ? primaryRun.agentId.trim()
+        : null
+
+    byTaskId.set(taskId, {
+      taskId,
+      ownerId,
+      claimState,
+      runLiveness,
+      conflicting,
+      conflictOwnerIds: [...owners].sort(),
+      primaryRun,
+      runs: sorted,
+    })
+
+    if (ownerId && !conflicting) {
+      primaryOwnership.push({ taskId, ownerId })
+    }
+  }
+
+  primaryOwnership.sort((a, b) =>
+    a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : a.ownerId < b.ownerId ? -1 : 1,
+  )
+  conflictTaskIds.sort()
+
+  return { byTaskId, primaryOwnership, conflictTaskIds }
+}
+
+/** Map durable RunRecord → board Run shape used by UI projection helpers. */
+export function mapRunRecordToBoardRun(rec: RunRecord): Run & RunSourceExt {
+  const started =
+    rec.registeredAtMs != null ? new Date(rec.registeredAtMs).toISOString() : null
+  const heartbeatAt =
+    rec.heartbeatAtMs != null ? new Date(rec.heartbeatAtMs).toISOString() : null
+  const materialProgressAt =
+    rec.materialProgressAtMs != null
+      ? new Date(rec.materialProgressAtMs).toISOString()
+      : null
+  const statusMap: Record<string, Run['status']> = {
+    QUEUED: 'queued',
+    RESERVED: 'running',
+    STARTING: 'running',
+    RUNNING: 'running',
+    WAITING_HUMAN: 'blocked',
+    SUCCEEDED: 'done',
+    FAILED: 'failed',
+    CANCELLED: 'done',
+    STALE: 'failed',
+    SUPERSEDED: 'failed',
+  }
+  return {
+    id: rec.runId,
+    agent: rec.agentId,
+    agentType: 'other',
+    model: rec.model,
+    effort: rec.effort,
+    task: rec.taskId,
+    taskId: rec.taskId,
+    status: statusMap[rec.state] ?? 'running',
+    started: started ?? '',
+    updated: heartbeatAt ?? started ?? '',
+    role: rec.role,
+    account: rec.maskedAccountRef ?? undefined,
+    heartbeatAt,
+    materialProgressAt,
+    collisionScopeLockIds: rec.collisionScopeLockIds,
+    controllerRunId: rec.controllerRunId,
+    parentRunId: rec.parentRunId,
+    targetGate: rec.targetGate,
+    fencingToken: rec.fencingToken,
+    leaseExpiresAtMs: rec.leaseExpiresAtMs,
+  }
+}
+
+/**
+ * Build PriorityPacket[] from active plan + live durable runs.
+ * Empty when no plan items / live reserved capacity — never invent majority PASS.
+ */
+export function buildPriorityPacketsFromDurable(opts: {
+  plan: DispatchPlanRecord | null
+  runs: ReadonlyArray<RunRecord>
+  membershipTaskIds: ReadonlySet<string>
+  pinCanonicalHash: string
+  nowMs: number
+}): PriorityPacket[] {
+  const packets: PriorityPacket[] = []
+  const seen = new Set<string>()
+
+  const push = (p: PriorityPacket) => {
+    if (seen.has(p.packetId)) return
+    seen.add(p.packetId)
+    packets.push(p)
+  }
+
+  const plan = opts.plan
+  if (plan && plan.status === 'ACTIVE' && plan.expiresAtMs > opts.nowMs) {
+    const hashOk =
+      typeof plan.canonicalHash === 'string' &&
+      plan.canonicalHash.length > 0 &&
+      (plan.canonicalHash === opts.pinCanonicalHash || opts.pinCanonicalHash.length === 0)
+    for (const it of plan.items) {
+      const depOk = it.dependencyProof == null || it.dependencyProof.satisfied === true
+      const isPriority =
+        it.priorityPortfolioId === 'SALES_WEB_RELATED_BACKEND' ||
+        opts.membershipTaskIds.has(it.taskId)
+      push({
+        packetId: `plan:${plan.planId}:${it.rank}:${it.taskId}`,
+        taskId: it.taskId,
+        liveOrReserved: true,
+        genuine: true,
+        unique: true,
+        currentHash: hashOk,
+        dependencyReady: depOk,
+        collisionSafe: true,
+        advancesOpenClosureGate: depOk,
+        isPriorityPortfolio: isPriority,
+      })
+    }
+  }
+
+  for (const rec of opts.runs) {
+    if (!isLeasedState(rec.state) && rec.state !== 'QUEUED') continue
+    if (isTerminalState(rec.state)) continue
+    const liveOrReserved = isLeasedState(rec.state) || rec.state === 'QUEUED'
+    const hashOk =
+      rec.canonicalHash == null ||
+      rec.canonicalHash === opts.pinCanonicalHash ||
+      opts.pinCanonicalHash.length === 0
+    const isPriority = opts.membershipTaskIds.has(rec.taskId)
+    push({
+      packetId: `run:${rec.runId}`,
+      taskId: rec.taskId,
+      liveOrReserved,
+      genuine: Boolean(rec.agentId),
+      unique: true,
+      currentHash: hashOk,
+      dependencyReady: true,
+      collisionSafe: (rec.collisionScopeLockIds?.length ?? 0) >= 0,
+      advancesOpenClosureGate: isLeasedState(rec.state),
+      isPriorityPortfolio: isPriority,
+      excluded: rec.state === 'QUEUED' ? true : undefined,
+    })
+  }
+
+  packets.sort((a, b) => (a.packetId < b.packetId ? -1 : a.packetId > b.packetId ? 1 : 0))
+  return packets
+}
+
+/** Prefer durable classification store row; fail-closed UNCLASSIFIED when missing/invalid. */
+export function resolveTaskClassification(
+  task: WorkTask,
+  pin: Pick<
+    ControlCenterPin,
+    'canonicalSnapshotId' | 'canonicalHash' | 'taskHash' | 'boardRev' | 'lifecycleRev'
+  >,
+  durableByTaskId?: ReadonlyMap<string, TaskClassificationRecord> | null,
+): TaskClassificationRecord {
+  const fromStore = durableByTaskId?.get(task.id)
+  if (fromStore) {
+    // Re-validate via same fail-closed rules as embedded path.
+    if (
+      !fromStore.taskClass ||
+      !fromStore.disposition ||
+      fromStore.taskClass === 'UNCLASSIFIED' ||
+      fromStore.disposition === 'UNCLASSIFIED' ||
+      !fromStore.receipt
+    ) {
+      return {
+        taskId: task.id,
+        taskClass: 'UNCLASSIFIED',
+        disposition: 'UNCLASSIFIED',
+        receipt: null,
+      }
+    }
+    return {
+      ...fromStore,
+      taskId: task.id,
+    }
+  }
+  return mapTaskClassification(task, pin)
+}
+
+/** Map ControlPlane material audit → UI audit event (bounded summary). */
+export function mapMaterialAuditToUiEvent(
+  ev: ControlPlaneAuditEvent,
+): AuditUiEvent {
+  const summaryParts = [
+    ev.kind,
+    ev.subjectType,
+    ev.subjectId,
+    typeof ev.detail?.reason === 'string' ? ev.detail.reason : null,
+  ].filter(Boolean)
+  return {
+    id: ev.eventId,
+    createdAt: ev.atISO,
+    kind: ev.kind,
+    actorId: ev.actorId,
+    subjectId: ev.subjectId,
+    summary: summaryParts.join(' ').slice(0, 500),
+    materialHash: typeof ev.detail?.materialHash === 'string' ? ev.detail.materialHash : null,
+    boardRev:
+      typeof ev.detail?.boardRev === 'number' && Number.isFinite(ev.detail.boardRev)
+        ? ev.detail.boardRev
+        : null,
+  }
+}
+
+export function mapImportAuditToUiEvent(row: {
+  auditId: string
+  capturedAt: string
+  event: string
+  actorId: string | null
+  importId: string | null
+  contentHash: string | null
+  boardRev: number | null
+}): AuditUiEvent {
+  return {
+    id: row.auditId,
+    createdAt: row.capturedAt,
+    kind: row.event || 'import_audit',
+    actorId: row.actorId,
+    subjectId: row.importId,
+    summary: `${row.event}${row.importId ? ` import=${row.importId}` : ''}`.slice(0, 500),
+    materialHash: row.contentHash,
+    boardRev: row.boardRev,
+  }
+}
 
 function coerceIsoMs(value: unknown): { iso: string | null; ms: number | null } {
   if (typeof value !== 'string' || !value.trim()) return { iso: null, ms: null }
@@ -266,44 +714,49 @@ export function mapWorkTaskToControlCenterInput(
     hasBlockingDecision?: boolean
     hasNonBlockingDecision?: boolean
     run?: Run | null
+    /**
+     * When set (durable ownership path), supersedes WorkTask.claimState and
+     * legacy run-status liveness inference.
+     */
+    durableOwnership?: DurableTaskOwnership | null
+    /** Durable classification store row (preferred over embedded task fields). */
+    durableClassification?: TaskClassificationRecord | null
+    /** Force DATA_INTEGRITY (e.g. conflicting primary ownership). */
+    forceDataIntegrity?: boolean
   } = {},
 ): ControlCenterTaskInput {
-  const classification = mapTaskClassification(task, pin)
+  const classification =
+    opts.durableClassification != null
+      ? resolveTaskClassification(
+          task,
+          pin,
+          new Map([[task.id, opts.durableClassification]]),
+        )
+      : mapTaskClassification(task, pin)
   const run = opts.run
   const hardBlocker = Boolean(
     task.blockedReason ||
       (Array.isArray(task.blockers) && task.blockers.length > 0) ||
       task.status === 'blocked',
   )
-  // Valid claim enum only — invalid/absent → undefined (fail-closed, never trusted).
-  const claimState = parseValidClaimState(task.claimState)
   const productStageMode =
     typeof task.productStageMode === 'string' && PRODUCT_STAGE_MODES.has(task.productStageMode)
       ? (task.productStageMode as 'STAGE_1' | 'STAGE_2')
       : 'STAGE_2'
-  // Task decision flags may only SUPPLEMENT open Decision source (opts), never clear it.
-  const hasBlockingDecision =
-    Boolean(opts.hasBlockingDecision) || task.hasBlockingDecision === true
-  const hasNonBlockingDecision =
-    Boolean(opts.hasNonBlockingDecision) || task.hasNonBlockingDecision === true
-  // targetGate / evidence only from explicit source truth — never invent from heartbeat.
-  const targetGate =
-    (typeof task.targetGate === 'string' && task.targetGate.trim()
-      ? task.targetGate.trim()
-      : null) ??
-    task.lifecycleStage ??
-    null
-  return {
-    taskId: task.id,
-    title: task.title,
-    projectId: task.projectId ?? null,
-    featureId: task.featureContractId ?? null,
-    classification,
-    lifecycleStage: task.lifecycleStage ?? null,
-    // No fabricated stage evidence — only when explicitly present as V3 binding (not here).
-    evidence: null,
-    claimState,
-    runLiveness:
+
+  // Durable ownership is sole authority when provided — never legacy embedded claimState.
+  let claimState: ValidClaimState | ClaimState | undefined
+  let runLiveness: RunLiveness | undefined
+  if (opts.durableOwnership) {
+    claimState =
+      opts.durableOwnership.claimState === 'NONE'
+        ? undefined
+        : (opts.durableOwnership.claimState as ValidClaimState)
+    runLiveness = opts.durableOwnership.runLiveness
+  } else {
+    // Fixture / unit path only — production load always supplies durableOwnership when runs exist.
+    claimState = parseValidClaimState(task.claimState)
+    runLiveness =
       run?.status === 'running'
         ? 'RUNNING'
         : run?.status === 'blocked'
@@ -314,7 +767,58 @@ export function mapWorkTaskToControlCenterInput(
               ? 'STARTING'
               : run?.status === 'done'
                 ? 'NONE'
-                : undefined,
+                : undefined
+  }
+
+  // Task decision flags may only SUPPLEMENT open Decision source (opts), never clear it.
+  const hasBlockingDecision =
+    Boolean(opts.hasBlockingDecision) || task.hasBlockingDecision === true
+  const hasNonBlockingDecision =
+    Boolean(opts.hasNonBlockingDecision) || task.hasNonBlockingDecision === true
+  // targetGate / evidence only from explicit source truth — never invent from heartbeat.
+  const durableGate =
+    opts.durableOwnership?.primaryRun?.targetGate &&
+    opts.durableOwnership.primaryRun.targetGate.trim()
+      ? opts.durableOwnership.primaryRun.targetGate.trim()
+      : null
+  const targetGate =
+    durableGate ??
+    (typeof task.targetGate === 'string' && task.targetGate.trim()
+      ? task.targetGate.trim()
+      : null) ??
+    task.lifecycleStage ??
+    null
+
+  const durableRun = opts.durableOwnership?.primaryRun
+  const agentId = durableRun?.agentId ?? run?.agent ?? null
+  const role = durableRun?.role ?? run?.role ?? null
+  const model = durableRun?.model ?? run?.model ?? null
+  const effort = durableRun?.effort ?? run?.effort ?? null
+  const accountRef = durableRun?.maskedAccountRef ?? run?.account ?? null
+  const startedAt =
+    durableRun?.registeredAtMs != null
+      ? new Date(durableRun.registeredAtMs).toISOString()
+      : (run?.started ?? null)
+  const heartbeatAt =
+    durableRun?.heartbeatAtMs != null
+      ? new Date(durableRun.heartbeatAtMs).toISOString()
+      : ((run as RunSourceExt | null | undefined)?.heartbeatAt ?? run?.updated ?? null)
+  const materialProgressAt =
+    durableRun?.materialProgressAtMs != null
+      ? new Date(durableRun.materialProgressAtMs).toISOString()
+      : ((run as RunSourceExt | null | undefined)?.materialProgressAt ?? null)
+
+  return {
+    taskId: task.id,
+    title: task.title,
+    projectId: task.projectId ?? null,
+    featureId: task.featureContractId ?? null,
+    classification,
+    lifecycleStage: task.lifecycleStage ?? null,
+    // No fabricated stage evidence — only when explicitly present as V3 binding (not here).
+    evidence: null,
+    claimState,
+    runLiveness,
     hasBlockingDecision,
     hasNonBlockingDecision,
     hardBlocker,
@@ -326,17 +830,17 @@ export function mapWorkTaskToControlCenterInput(
     staleDispatchPlan: task.staleDispatchPlan === true,
     staleAccountSync: task.staleAccountSync === true,
     productStageMode,
-    p0Blocker: task.p0Blocker === true,
+    p0Blocker: opts.forceDataIntegrity === true || task.p0Blocker === true,
     targetGate,
-    agentId: run?.agent ?? null,
-    role: run?.role ?? null,
-    model: run?.model ?? null,
-    effort: run?.effort ?? null,
-    accountRef: run?.account ?? null,
-    startedAt: run?.started ?? null,
+    agentId,
+    role,
+    model,
+    effort,
+    accountRef,
+    startedAt,
     // Distinct fields only — never set materialProgressAt = heartbeat for shape.
-    heartbeatAt: (run as RunSourceExt | null | undefined)?.heartbeatAt ?? run?.updated ?? null,
-    materialProgressAt: (run as RunSourceExt | null | undefined)?.materialProgressAt ?? null,
+    heartbeatAt,
+    materialProgressAt,
     evidenceLink: task.evidence_path ?? run?.evidencePath ?? null,
     createdAt: task.updated ? new Date(task.updated).toISOString() : pin.generatedAt,
     // Priority membership only when receipt proves portfolio — never from title/phase.
@@ -521,6 +1025,10 @@ export interface ControlCenterSourceBundle {
     inUse?: number
     cap?: number
   }>
+  /**
+   * Legacy board.runs projection only — NEVER used for active ownership when
+   * `durableRuns` is provided (load path always prefers durable).
+   */
   runs: Run[]
   boardContentHash: string
   boardRev: number
@@ -545,6 +1053,28 @@ export interface ControlCenterSourceBundle {
    * or optimistic legacy ops capacity as account sourceRevision/capacity.
    */
   accountSyncSnapshot?: AccountSyncSnapshot | AccountSyncCcReadModel | null
+  /**
+   * Durable V3 run-registry rows (control_plane_runs). When present, sole
+   * source of active ownership / claimState / run liveness.
+   */
+  durableRuns?: ReadonlyArray<RunRecord> | null
+  /** Durable DecisionV3 store rows — preferred over legacy board.decisions. */
+  durableDecisions?: ReadonlyArray<DecisionV3Record> | null
+  /** Durable classification store by taskId. */
+  durableClassifications?: ReadonlyArray<TaskClassificationRecord> | null
+  /**
+   * When true, classification store was loaded (even if empty) — missing rows
+   * are fail-closed UNCLASSIFIED (no legacy embedded promotion).
+   */
+  durableClassificationsLoaded?: boolean
+  /** Active root dispatch plan (for priority packets + NEXT already in dispatchNext). */
+  activePlan?: DispatchPlanRecord | null
+  /** Pre-built priority packets; when omitted, derived from activePlan + durableRuns. */
+  priorityPackets?: ReadonlyArray<PriorityPacket> | null
+  /** Material audit events (atomic listAudit + import audit). */
+  materialAuditEvents?: ReadonlyArray<AuditUiEvent> | null
+  /** When true, ownership was loaded from durable registry (even if empty). */
+  durableOwnershipLoaded?: boolean
 }
 
 const FLOW_BRANCHES = new Set(['success', 'fail', 'expired', 'open'])
@@ -650,11 +1180,14 @@ function resolveAccountSyncReadModel(
 /**
  * Build pin + aggregation input from already-loaded sources (injectable / testable).
  * Does not recompute readiness formulas beyond C1/C2 aggregateControlCenter.
+ * When durableRuns/durableClassifications present, those are sole ownership/class authority.
  */
 export function buildControlCenterAggregationFromSources(
   src: ControlCenterSourceBundle,
 ): ControlCenterAggregation {
   const generatedAt = src.now ?? new Date().toISOString()
+  const nowMs = Date.parse(generatedAt)
+  const nowMsSafe = Number.isFinite(nowMs) ? nowMs : Date.now()
   const taskHash = sha256Hex(
     src.tasks
       .map((t) => t.id)
@@ -694,10 +1227,19 @@ export function buildControlCenterAggregationFromSources(
     (src.dispatchNext?.selectedForNextDispatch ?? []).map((x) => x.taskId),
   )
 
-  // Project decisions first so open Decision source drives blocking mapping.
-  const decisions = model.decisions.map((d) =>
-    mapLegacyDecisionToV3(src.boardId, d, src.boardRev),
-  )
+  // Prefer durable DecisionV3 store; else project legacy collab decisions.
+  const decisions: DecisionV3Record[] =
+    src.durableDecisions && src.durableDecisions.length > 0
+      ? [...src.durableDecisions].sort((a, b) => {
+          // Blocking open first, then severity, then createdAtMs desc (stable).
+          const aOpen = a.status === 'OPEN' || a.status === 'ACKNOWLEDGED' ? 1 : 0
+          const bOpen = b.status === 'OPEN' || b.status === 'ACKNOWLEDGED' ? 1 : 0
+          if (a.blocking !== b.blocking) return a.blocking ? -1 : 1
+          if (aOpen !== bOpen) return bOpen - aOpen
+          if (a.createdAtMs !== b.createdAtMs) return b.createdAtMs - a.createdAtMs
+          return a.decisionId < b.decisionId ? -1 : a.decisionId > b.decisionId ? 1 : 0
+        })
+      : model.decisions.map((d) => mapLegacyDecisionToV3(src.boardId, d, src.boardRev))
 
   const blockingDecisionTaskIds = new Set<string>()
   const nonBlockingDecisionTaskIds = new Set<string>()
@@ -713,14 +1255,52 @@ export function buildControlCenterAggregationFromSources(
     }
   }
   // Legacy open decisions (status === 'open') without V3 blocking flag still mark features.
-  for (const d of model.openDecisions) {
-    if (d.featureId) openBlockingFeatureIds.add(d.featureId)
+  if (!(src.durableDecisions && src.durableDecisions.length > 0)) {
+    for (const d of model.openDecisions) {
+      if (d.featureId) openBlockingFeatureIds.add(d.featureId)
+    }
   }
 
+  // Durable classification map (fail-closed UNCLASSIFIED when missing).
+  const durableClassByTask = new Map<string, TaskClassificationRecord>()
+  if (src.durableClassifications) {
+    for (const c of src.durableClassifications) {
+      if (c.taskId) durableClassByTask.set(c.taskId, c)
+    }
+  }
+  const useDurableClassification =
+    src.durableClassificationsLoaded === true ||
+    (src.durableClassifications != null && Array.isArray(src.durableClassifications))
+
+  // Durable ownership — sole claim authority when durableRuns provided (incl. empty list).
+  const useDurableOwnership =
+    src.durableOwnershipLoaded === true ||
+    (src.durableRuns != null && Array.isArray(src.durableRuns))
+  const taskHints: OwnershipTaskHint[] = src.tasks.map((t) => ({
+    taskId: t.id,
+    lifecycleStage: t.lifecycleStage ?? null,
+    productStageMode:
+      typeof t.productStageMode === 'string' && PRODUCT_STAGE_MODES.has(t.productStageMode)
+        ? (t.productStageMode as 'STAGE_1' | 'STAGE_2')
+        : 'STAGE_2',
+  }))
+  const ownership = useDurableOwnership
+    ? deriveDurableOwnership(src.durableRuns ?? [], nowMsSafe, taskHints)
+    : null
+
+  // Legacy board.runs only as fallback projection when no durable runs.
   const runByTask = new Map<string, Run>()
-  for (const r of src.runs) {
-    const tid = r.taskId || r.task
-    if (tid && !runByTask.has(String(tid))) runByTask.set(String(tid), r)
+  if (!useDurableOwnership) {
+    for (const r of src.runs) {
+      const tid = r.taskId || r.task
+      if (tid && !runByTask.has(String(tid))) runByTask.set(String(tid), r)
+    }
+  } else {
+    for (const rec of src.durableRuns ?? []) {
+      if (rec.taskId && !runByTask.has(rec.taskId)) {
+        runByTask.set(rec.taskId, mapRunRecordToBoardRun(rec))
+      }
+    }
   }
 
   const tasks: ControlCenterTaskInput[] = src.tasks.map((t) => {
@@ -729,14 +1309,31 @@ export function buildControlCenterAggregationFromSources(
       blockingDecisionTaskIds.has(t.id)
     // Non-blocking: explicit open Decision on task only (does not demote ONGOING).
     const hasNonBlocking = nonBlockingDecisionTaskIds.has(t.id)
+    const own = ownership?.byTaskId.get(t.id) ?? null
+    const forceDi = own?.conflicting === true
+    // When classification store loaded: missing row → explicit UNCLASSIFIED (not embedded).
+    const durableCls = useDurableClassification
+      ? (durableClassByTask.get(t.id) ?? {
+          taskId: t.id,
+          taskClass: 'UNCLASSIFIED' as const,
+          disposition: 'UNCLASSIFIED' as const,
+          receipt: null,
+        })
+      : null
     return mapWorkTaskToControlCenterInput(t, pin, {
       // NEXT solely from active root dispatch plan — never task.selectedForNextDispatch.
       selectedForNextDispatch: nextIds.has(t.id),
       hasBlockingDecision: hasBlocking,
       hasNonBlockingDecision: hasNonBlocking,
       run: runByTask.get(t.id) ?? null,
+      durableOwnership: useDurableOwnership ? own : null,
+      durableClassification: durableCls,
+      forceDataIntegrity: forceDi,
     })
   })
+
+  // Tasks that only exist as durable runs with conflict but no WorkTask row are ignored
+  // (rollup is task-keyed). Conflicting ownership on mapped tasks already force p0Blocker.
 
   const projects: ProjectUiSummary[] = model.projects.map((p) => {
     const projTasks = src.tasks.filter((t) => t.projectId === p.id)
@@ -798,36 +1395,82 @@ export function buildControlCenterAggregationFromSources(
     }
   })
 
-  const runs: RunUiSummary[] = src.runs.map((r) => {
-    const ext = r as RunSourceExt
-    const heartbeatAt = ext.heartbeatAt ?? r.updated ?? null
-    // Never mirror heartbeat into materialProgressAt merely for shape.
-    const materialProgressAt = ext.materialProgressAt ?? null
-    let productiveSubstate: ProductiveSubstate | null = null
-    if (r.status === 'running') productiveSubstate = 'PRODUCTIVE'
-    else if (r.status === 'blocked') productiveSubstate = 'STALLED'
-    return {
-      runId: r.id,
-      taskId: r.taskId ?? r.task ?? null,
-      agentId: r.agent ?? null,
-      role: r.role ?? null,
-      model: r.model ?? null,
-      effort: r.effort ?? null,
-      maskedAccount: maskAccountForUi(r.account ?? null),
-      status: r.status ?? null,
-      startedAt: r.started ?? null,
-      heartbeatAt,
-      materialProgressAt,
-      productiveSubstate,
-      createdAt: r.started ?? r.updated ?? generatedAt,
-      id: r.id,
-      evidenceLink: r.evidencePath ?? null,
-      claimState: ext.claimState ?? null,
-      lockIds: ext.collisionScopeLockIds ?? null,
-      controllerRunId: ext.controllerRunId ?? null,
-      parentRunId: ext.parentRunId ?? null,
-    }
-  })
+  // Prefer durable run registry for Agents/Runs surface; legacy board.runs only as fixture fallback.
+  const runs: RunUiSummary[] = useDurableOwnership
+    ? (src.durableRuns ?? []).map((rec) => {
+        const own = ownership?.byTaskId.get(rec.taskId)
+        const startedAt =
+          rec.registeredAtMs != null ? new Date(rec.registeredAtMs).toISOString() : null
+        const heartbeatAt =
+          rec.heartbeatAtMs != null ? new Date(rec.heartbeatAtMs).toISOString() : null
+        const materialProgressAt =
+          rec.materialProgressAtMs != null
+            ? new Date(rec.materialProgressAtMs).toISOString()
+            : null
+        let productiveSubstate: ProductiveSubstate | null = null
+        if (rec.state === 'RUNNING' || rec.state === 'STARTING' || rec.state === 'RESERVED') {
+          productiveSubstate = rec.stalled ? 'STALLED' : 'PRODUCTIVE'
+        } else if (rec.state === 'WAITING_HUMAN' || rec.state === 'STALE') {
+          productiveSubstate = 'STALLED'
+        }
+        const claimForRun =
+          own?.primaryRun?.runId === rec.runId
+            ? own.claimState === 'NONE'
+              ? null
+              : own.claimState
+            : null
+        return {
+          runId: rec.runId,
+          taskId: rec.taskId,
+          agentId: rec.agentId,
+          role: rec.role,
+          model: rec.model,
+          effort: rec.effort,
+          maskedAccount: maskAccountForUi(rec.maskedAccountRef),
+          status: rec.state,
+          startedAt,
+          heartbeatAt,
+          materialProgressAt,
+          productiveSubstate,
+          createdAt: startedAt ?? generatedAt,
+          id: rec.runId,
+          evidenceLink: null,
+          claimState: claimForRun,
+          lockIds: rec.collisionScopeLockIds ?? null,
+          controllerRunId: rec.controllerRunId,
+          parentRunId: rec.parentRunId,
+        }
+      })
+    : src.runs.map((r) => {
+        const ext = r as RunSourceExt
+        const heartbeatAt = ext.heartbeatAt ?? r.updated ?? null
+        // Never mirror heartbeat into materialProgressAt merely for shape.
+        const materialProgressAt = ext.materialProgressAt ?? null
+        let productiveSubstate: ProductiveSubstate | null = null
+        if (r.status === 'running') productiveSubstate = 'PRODUCTIVE'
+        else if (r.status === 'blocked') productiveSubstate = 'STALLED'
+        return {
+          runId: r.id,
+          taskId: r.taskId ?? r.task ?? null,
+          agentId: r.agent ?? null,
+          role: r.role ?? null,
+          model: r.model ?? null,
+          effort: r.effort ?? null,
+          maskedAccount: maskAccountForUi(r.account ?? null),
+          status: r.status ?? null,
+          startedAt: r.started ?? null,
+          heartbeatAt,
+          materialProgressAt,
+          productiveSubstate,
+          createdAt: r.started ?? r.updated ?? generatedAt,
+          id: r.id,
+          evidenceLink: r.evidencePath ?? null,
+          claimState: ext.claimState ?? null,
+          lockIds: ext.collisionScopeLockIds ?? null,
+          controllerRunId: ext.controllerRunId ?? null,
+          parentRunId: ext.parentRunId ?? null,
+        }
+      })
 
   // Prefer C2 account-sync snapshot; never treat legacy ops as capacity authority.
   const accountRead = resolveAccountSyncReadModel(src)
@@ -870,19 +1513,33 @@ export function buildControlCenterAggregationFromSources(
     }
   }
 
-  // Material events from activity feed only (summary strings already on Model).
-  const auditEvents: AuditUiEvent[] = (model.activity ?? []).slice(0, 200).map((ev, i) => ({
-    id: `act-${i}-${String(ev.ts ?? i)}`,
-    createdAt: ev.ts ? new Date(ev.ts).toISOString() : generatedAt,
-    kind: ev.kind || 'activity',
-    actorId: ev.actor ?? null,
-    subjectId: ev.featureId ?? null,
-    summary: String(ev.text ?? '').slice(0, 500),
-    materialHash: null,
-    boardRev: src.boardRev,
-  }))
+  // Material events: prefer durable atomic/import audit; else collab activity feed.
+  let auditEvents: AuditUiEvent[]
+  if (src.materialAuditEvents && src.materialAuditEvents.length > 0) {
+    auditEvents = [...src.materialAuditEvents]
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+      .slice(0, 200)
+  } else {
+    auditEvents = (model.activity ?? []).slice(0, 200).map((ev, i) => ({
+      id: `act-${i}-${String(ev.ts ?? i)}`,
+      createdAt: ev.ts ? new Date(ev.ts).toISOString() : generatedAt,
+      kind: ev.kind || 'activity',
+      actorId: ev.actor ?? null,
+      subjectId: ev.featureId ?? null,
+      summary: String(ev.text ?? '').slice(0, 500),
+      materialHash: null,
+      boardRev: src.boardRev,
+    }))
+  }
 
   const sectionErrors = [...(src.sectionErrors ?? [])]
+  if (ownership && ownership.conflictTaskIds.length > 0) {
+    sectionErrors.push({
+      section: 'ownership',
+      code: 'DATA_INTEGRITY',
+      message: `Conflicting primary ownership for task(s): ${ownership.conflictTaskIds.join(', ')} → BLOCKED:DATA_INTEGRITY`,
+    })
+  }
   // Honest pin-authority fallback documentation (do not rebind receipts to live boardHash).
   if (!pinAuthorityComplete) {
     const already = sectionErrors.some(
@@ -932,11 +1589,26 @@ export function buildControlCenterAggregationFromSources(
     })
   }
 
+  // Priority membership set from receipt-proven tasks (before packets).
+  const membershipTaskIds = new Set(
+    tasks.filter((t) => t.priorityMembership).map((t) => t.taskId),
+  )
+  const priorityPackets: PriorityPacket[] =
+    src.priorityPackets != null
+      ? [...src.priorityPackets]
+      : buildPriorityPacketsFromDurable({
+          plan: src.activePlan ?? null,
+          runs: src.durableRuns ?? [],
+          membershipTaskIds,
+          pinCanonicalHash: canonicalHash,
+          nowMs: nowMsSafe,
+        })
+
   const input: ControlCenterAggregationInput = {
     pin,
     tasks,
     g5Domains: src.g5Domains ?? [],
-    priorityPackets: [],
+    priorityPackets,
     projects,
     features,
     runs,
@@ -947,6 +1619,8 @@ export function buildControlCenterAggregationFromSources(
     accountSyncMeta,
     now: generatedAt,
     sectionErrors,
+    // Distinct non-conflicting ownership only (conflicts already p0Blocker).
+    primaryOwnership: ownership?.primaryOwnership ?? [],
     frontierStateWhenEmpty: 'PRIORITY_FRONTIER_EMPTY',
   }
 
@@ -1053,12 +1727,235 @@ export async function readPersistedBoardRevisions(
 }
 
 /**
+ * Resolve runtime context without throwing hard on missing test config —
+ * returns null + section error so partial board load can still fail closed.
+ */
+function tryGetRuntimeContext(): {
+  ctx: ControlPlaneRuntimeContext | null
+  error: string | null
+} {
+  try {
+    return { ctx: getControlPlaneRuntimeContext(), error: null }
+  } catch (e) {
+    return {
+      ctx: null,
+      error: e instanceof Error ? e.message : 'runtime context unavailable',
+    }
+  }
+}
+
+/**
+ * Build RawBoard from pinned canonical projection (projects + flows as features).
+ * Uses track=projectId so buildModel associates features to projects.
+ * Never fabricates lifecycle/readiness on features/tasks.
+ */
+export function rawBoardFromCanonicalProjection(
+  projection: CanonicalDefinitionProjection,
+): RawBoard {
+  return {
+    projects: projection.projects.map((p) => ({
+      id: p.id,
+      nama: (typeof p.name === 'string' && p.name) || p.id,
+      status: typeof p.status === 'string' ? p.status : 'active',
+      tracks: [p.id],
+      stage: typeof p.stage === 'string' ? p.stage : undefined,
+    })),
+    features: projection.flows.map((f) => ({
+      id: f.id,
+      nama: (typeof f.name === 'string' && f.name) || f.id,
+      projectId: f.projectId,
+      track: f.projectId,
+      fase: typeof f.fase === 'string' ? f.fase : 'backlog',
+      checklist: [],
+    })),
+    decisions: [],
+    log: [],
+    queue: { now: [], next: [] },
+    runs: [],
+    docs: [],
+  }
+}
+
+/**
+ * WorkTask[] from DISTINCT canonical definition task IDs + lifecycle left-join by task id.
+ * Never includes legacy-only tasks; never fabricates lifecycle stage;
+ * never copies classification from lifecycle overlay (classification is left-joined
+ * separately and missing → UNCLASSIFIED/DATA_INTEGRITY at aggregation).
+ */
+export function workTasksFromCanonicalProjection(
+  projection: CanonicalDefinitionProjection,
+  lifecycleByTaskId: Map<string, WorkTask> = new Map(),
+): WorkTask[] {
+  const fcByTask = new Map<string, string>()
+  for (const j of projection.featureContractJoins) {
+    if (!fcByTask.has(j.taskId)) fcByTask.set(j.taskId, j.featureContractId)
+  }
+  const depsByFrom = new Map<string, string[]>()
+  for (const d of projection.dependencies) {
+    const arr = depsByFrom.get(d.fromTaskId) ?? []
+    arr.push(d.toTaskId)
+    depsByFrom.set(d.fromTaskId, arr)
+  }
+  // Prefer distinctTaskIds (definition membership) over raw task array length.
+  const distinctIds =
+    projection.distinctTaskIds.length > 0
+      ? projection.distinctTaskIds
+      : [...new Set(projection.tasks.map((t) => t.id))]
+  const byId = new Map(projection.tasks.map((t) => [t.id, t] as const))
+  const out: WorkTask[] = []
+  const seen = new Set<string>()
+  for (const id of distinctIds) {
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    const ct = byId.get(id)
+    const overlay = lifecycleByTaskId.get(id)
+    // Definition-only id without task row still counts as membership (title from id).
+    const featureContractId =
+      (ct && typeof ct.featureContractId === 'string' && ct.featureContractId) ||
+      fcByTask.get(id) ||
+      overlay?.featureContractId ||
+      null
+    const deps = depsByFrom.get(id) ?? overlay?.dependencies ?? []
+    out.push({
+      id,
+      title:
+        (ct && typeof ct.title === 'string' && ct.title) ||
+        overlay?.title ||
+        id,
+      projectId: ct?.projectId ?? overlay?.projectId ?? null,
+      featureContractId,
+      objective:
+        (ct && typeof ct.objective === 'string' && ct.objective) ||
+        overlay?.objective ||
+        null,
+      dependencies: deps,
+      impacts: overlay?.impacts ?? [],
+      checkpoints: overlay?.checkpoints ?? [],
+      // Left-join only — missing stage stays null (never inherit orphan lifecycle-only rows).
+      lifecycleStage: overlay?.lifecycleStage ?? null,
+      blockedReason: overlay?.blockedReason ?? null,
+      lastReceiptAt: overlay?.lastReceiptAt ?? null,
+      updated: overlay?.updated ?? null,
+      phase: overlay?.phase ?? null,
+      scope: overlay?.scope,
+      status: overlay?.status ?? null,
+    })
+  }
+  return out
+}
+
+export type ControlCenterDefinitionLoad =
+  | {
+      kind: 'canonical'
+      model: CanonicalDefinitionReadModel
+      raw: RawBoard
+      tasks: WorkTask[]
+      boardRev: number
+      lifecycleRev: number
+      authorityCanonicalHash: string
+      authorityCanonicalSnapshotId: string
+      pinAuthorityComplete: true
+    }
+  | {
+      kind: 'mismatch'
+      code: string
+      message: string
+      details: Readonly<Record<string, unknown>>
+      boardRev: number
+      lifecycleRev: number
+      authorityCanonicalHash: string | null
+      authorityCanonicalSnapshotId: string | null
+      /** Pin identity known but definition refused — empty raw/tasks, never legacy merge. */
+      raw: RawBoard
+      tasks: WorkTask[]
+      pinAuthorityComplete: false
+    }
+  | {
+      kind: 'legacy'
+      reason: 'PIN_MISSING' | 'PIN_INCOMPLETE' | 'PIN_SYNTHETIC' | 'NO_IMPORTS'
+    }
+
+/**
+ * Resolve definition sources for control-center.
+ * Pin-complete + valid snapshot → sole definition authority.
+ * Pin-complete + mismatch → fail-closed empty definition (no legacy merge).
+ * No pin → legacy path (caller loads board_docs/tasks).
+ */
+export async function resolveControlCenterDefinitionLoad(
+  boardId: string,
+  imports: NonNullable<ControlPlaneRuntimeContext['controlData']>['imports'],
+  lifecycleTasks: WorkTask[] = [],
+): Promise<ControlCenterDefinitionLoad> {
+  const boardState = await imports.getBoardState(boardId)
+  if (!boardState) {
+    return { kind: 'legacy', reason: 'PIN_MISSING' }
+  }
+  if (!isPinComplete(boardState)) {
+    return {
+      kind: 'legacy',
+      reason: isSyntheticCanonicalSnapshotId(boardId, boardState.canonicalSnapshotId)
+        ? 'PIN_SYNTHETIC'
+        : 'PIN_INCOMPLETE',
+    }
+  }
+
+  const loaded = await tryLoadPinnedDefinitionReadModel(imports, boardId)
+  const pinHash =
+    (boardState.canonicalHash && String(boardState.canonicalHash).trim()) ||
+    (boardState.subjectHash && String(boardState.subjectHash).trim()) ||
+    null
+  const pinSnap =
+    boardState.canonicalSnapshotId && String(boardState.canonicalSnapshotId).trim()
+      ? String(boardState.canonicalSnapshotId).trim()
+      : null
+
+  if (!loaded.ok) {
+    return {
+      kind: 'mismatch',
+      code: loaded.code,
+      message: loaded.message,
+      details: loaded.details,
+      boardRev: boardState.boardRev,
+      lifecycleRev: boardState.lifecycleRev,
+      authorityCanonicalHash: pinHash,
+      authorityCanonicalSnapshotId: pinSnap,
+      raw: { projects: [], features: [], decisions: [], log: [], queue: { now: [], next: [] }, runs: [] },
+      tasks: [],
+      pinAuthorityComplete: false,
+    }
+  }
+
+  const lifecycleByTaskId = new Map<string, WorkTask>()
+  for (const t of lifecycleTasks) {
+    if (t?.id) lifecycleByTaskId.set(t.id, t)
+  }
+  return {
+    kind: 'canonical',
+    model: loaded.model,
+    raw: rawBoardFromCanonicalProjection(loaded.model.projection),
+    tasks: workTasksFromCanonicalProjection(loaded.model.projection, lifecycleByTaskId),
+    boardRev: loaded.model.pin.boardRev,
+    lifecycleRev: loaded.model.pin.lifecycleRev,
+    authorityCanonicalHash: loaded.model.pin.canonicalHash,
+    authorityCanonicalSnapshotId: loaded.model.pin.canonicalSnapshotId,
+    pinAuthorityComplete: true,
+  }
+}
+
+/**
  * Authenticated board load → single aggregation.
- * Partial source failures become sectionErrors / empty sections (never fabricated PASS).
+ * Loads durable V3 runs/accounts/active plan/DecisionV3/G5/classifications/audit
+ * in parallel via control-plane-runtime-context. Partial source failures become
+ * sectionErrors / empty sections (never fabricated PASS).
+ * Active ownership is NEVER derived from legacy embedded claims/board.runs.
+ *
+ * Definition graph (projects/features/tasks): pinned snapshot is sole authority
+ * when pin-complete; mismatch fails closed (no legacy merge). No pin → legacy
+ * board_docs/tasks with PIN_AUTHORITY_INCOMPLETE honesty.
  */
 export async function loadControlCenterAggregation(
   boardId: string,
-  opts: { now?: string } = {},
+  opts: { now?: string; runtime?: ControlPlaneRuntimeContext | null } = {},
 ): Promise<ControlCenterAggregation> {
   const boards = await listBoards()
   if (!boards.some((b) => b.id === boardId)) {
@@ -1066,10 +1963,19 @@ export async function loadControlCenterAggregation(
   }
 
   const sectionErrors: Array<{ section: string; code: string; message: string }> = []
-  let raw: RawBoard
+  // Initialized before branch assignment so TS definite-assignment is satisfied.
+  let raw: RawBoard = {
+    projects: [],
+    features: [],
+    decisions: [],
+    log: [],
+    queue: { now: [], next: [] },
+    runs: [],
+  }
   let tasks: WorkTask[] = []
   let opsAccounts: ControlCenterSourceBundle['opsAccounts'] = []
-  let runs: Run[] = []
+  // Legacy board.runs kept only for residual diagnostic — ownership uses durableRuns.
+  let legacyRuns: Run[] = []
   let hash = ''
   // Honest zero until board_revisions row is proven; never invent positive pins.
   let boardRev = 0
@@ -1078,48 +1984,143 @@ export async function loadControlCenterAggregation(
   let authorityCanonicalSnapshotId: string | null = null
   let pinAuthorityComplete = false
   let dispatchNext: DispatchNextUi | null = null
+  let usedCanonicalDefinition = false
 
-  try {
-    ;[raw, hash] = await Promise.all([readBoard(boardId), boardHash(boardId)])
-    runs = (raw.runs ?? []) as Run[]
-  } catch (e) {
-    throw e
-  }
+  // ---- Runtime context early (needed for import pin + durable V3) ----
+  const ctxResultEarly =
+    opts.runtime !== undefined
+      ? { ctx: opts.runtime, error: opts.runtime ? null : 'runtime context not injected' }
+      : tryGetRuntimeContext()
+  const runtimeForDefinition = ctxResultEarly.ctx
 
-  const persistedRev = await readPersistedBoardRevisions(boardId)
-  if (persistedRev) {
-    boardRev = persistedRev.boardRev
-    lifecycleRev = persistedRev.lifecycleRev
-    if (persistedRev.complete) {
-      authorityCanonicalHash = persistedRev.subjectHash
-      authorityCanonicalSnapshotId = persistedRev.canonicalSnapshotId
-      pinAuthorityComplete = true
-    } else {
-      // Partial/invalid authority — fail closed: revs used, pin hash NOT treated as verified.
-      sectionErrors.push({
-        section: 'revisions',
-        code: 'PIN_AUTHORITY_INCOMPLETE',
-        message: `board_revisions row present but pin authority incomplete (${persistedRev.incompleteReason ?? 'unknown'}); canonicalHash falls back to live boardHash; classification receipts not rebound`,
-      })
-    }
-  } else {
-    sectionErrors.push({
-      section: 'revisions',
-      code: 'REVISION_AUTHORITY_MISSING',
-      message:
-        'board_revisions row absent or unreadable; pin boardRev/lifecycleRev left at honest 0 (not fabricated)',
-    })
-  }
-
+  // Soft-load lifecycle rows for overlay (never definition authority).
+  let lifecycleTasksForOverlay: WorkTask[] = []
   try {
     const tasksDoc = await readTasks(boardId)
-    tasks = tasksDoc.tasks ?? []
-  } catch (e) {
-    sectionErrors.push({
-      section: 'tasks',
-      code: 'PARTIAL_SOURCE',
-      message: e instanceof Error ? e.message : 'tasks load failed',
-    })
+    lifecycleTasksForOverlay = tasksDoc.tasks ?? []
+  } catch {
+    lifecycleTasksForOverlay = []
+  }
+
+  if (runtimeForDefinition?.controlData?.imports) {
+    const defLoad = await resolveControlCenterDefinitionLoad(
+      boardId,
+      runtimeForDefinition.controlData.imports,
+      lifecycleTasksForOverlay,
+    )
+    if (defLoad.kind === 'canonical') {
+      usedCanonicalDefinition = true
+      raw = defLoad.raw
+      tasks = defLoad.tasks
+      boardRev = defLoad.boardRev
+      lifecycleRev = defLoad.lifecycleRev
+      authorityCanonicalHash = defLoad.authorityCanonicalHash
+      authorityCanonicalSnapshotId = defLoad.authorityCanonicalSnapshotId
+      pinAuthorityComplete = true
+      // Content hash is non-authority diagnostic; prefer live boardHash when available.
+      try {
+        hash = await boardHash(boardId)
+      } catch {
+        hash = defLoad.model.pin.payloadSha256.slice(0, 16)
+      }
+      // Preserve non-definition overlays (conventions/design/collab/runs) from board_docs
+      // without reintroducing legacy projects/features/tasks as definition authority.
+      try {
+        const legacyRaw = await readBoard(boardId)
+        legacyRuns = (legacyRaw.runs ?? []) as Run[]
+        raw = {
+          ...raw,
+          conventions: legacyRaw.conventions,
+          design: legacyRaw.design,
+          collab: legacyRaw.collab,
+          decisions: legacyRaw.decisions,
+          log: legacyRaw.log,
+          // queue intentionally from empty canonical (dispatch NEXT is durable plan)
+        }
+      } catch {
+        legacyRuns = []
+      }
+    } else if (defLoad.kind === 'mismatch') {
+      usedCanonicalDefinition = true // block legacy definition merge
+      raw = defLoad.raw
+      tasks = []
+      boardRev = defLoad.boardRev
+      lifecycleRev = defLoad.lifecycleRev
+      // Pin identity from board_revisions for honesty; definition empty + stale section.
+      authorityCanonicalHash = defLoad.authorityCanonicalHash
+      authorityCanonicalSnapshotId = defLoad.authorityCanonicalSnapshotId
+      pinAuthorityComplete = false
+      sectionErrors.push({
+        section: 'definition',
+        code: defLoad.code,
+        message: defLoad.message,
+      })
+      sectionErrors.push({
+        section: 'definition',
+        code: 'DEFINITION_AUTHORITY_STALE',
+        message:
+          'pinned snapshot missing/mismatched; refusing legacy board_docs/tasks merge for definition',
+      })
+      try {
+        hash = await boardHash(boardId)
+      } catch {
+        hash = ''
+      }
+    }
+  }
+
+  if (!usedCanonicalDefinition) {
+    try {
+      ;[raw, hash] = await Promise.all([readBoard(boardId), boardHash(boardId)])
+      legacyRuns = (raw.runs ?? []) as Run[]
+    } catch (e) {
+      throw e
+    }
+
+    const persistedRev = await readPersistedBoardRevisions(boardId)
+    if (persistedRev) {
+      boardRev = persistedRev.boardRev
+      lifecycleRev = persistedRev.lifecycleRev
+      if (persistedRev.complete) {
+        // Pin row looks complete via SQL but ImportStorage path did not supply snapshot
+        // (runtime missing / incomplete). Do NOT claim pinAuthorityComplete — definition
+        // is legacy board_docs and must not rewrite classification receipts to pin hash.
+        authorityCanonicalHash = null
+        authorityCanonicalSnapshotId = null
+        pinAuthorityComplete = false
+        sectionErrors.push({
+          section: 'definition',
+          code: 'PIN_AUTHORITY_INCOMPLETE',
+          message:
+            'board_revisions pin present but canonical snapshot definition was not loaded via ImportStorage; serving legacy definition with incomplete pin authority',
+        })
+      } else {
+        // Partial/invalid authority — fail closed: revs used, pin hash NOT treated as verified.
+        sectionErrors.push({
+          section: 'revisions',
+          code: 'PIN_AUTHORITY_INCOMPLETE',
+          message: `board_revisions row present but pin authority incomplete (${persistedRev.incompleteReason ?? 'unknown'}); canonicalHash falls back to live boardHash; classification receipts not rebound`,
+        })
+      }
+    } else {
+      sectionErrors.push({
+        section: 'revisions',
+        code: 'REVISION_AUTHORITY_MISSING',
+        message:
+          'board_revisions row absent or unreadable; pin boardRev/lifecycleRev left at honest 0 (not fabricated)',
+      })
+    }
+
+    try {
+      const tasksDoc = await readTasks(boardId)
+      tasks = tasksDoc.tasks ?? []
+    } catch (e) {
+      sectionErrors.push({
+        section: 'tasks',
+        code: 'PARTIAL_SOURCE',
+        message: e instanceof Error ? e.message : 'tasks load failed',
+      })
+    }
   }
 
   // Legacy ops is diagnostic only — never account capacity authority (C2 snapshot is).
@@ -1134,23 +2135,161 @@ export async function loadControlCenterAggregation(
     })
   }
 
+  // ---- Durable V3 sources in parallel (runtime context) ----
+  const ctx = runtimeForDefinition
+  if (!ctx) {
+    sectionErrors.push({
+      section: 'runtime_context',
+      code: 'PARTIAL_SOURCE',
+      message: ctxResultEarly.error ?? 'control-plane runtime context unavailable',
+    })
+  }
+
+  type Settled<T> = { ok: true; value: T } | { ok: false; error: string }
+  const settle = async <T>(p: Promise<T>, label: string): Promise<Settled<T>> => {
+    try {
+      return { ok: true, value: await p }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : `${label} failed` }
+    }
+  }
+
+  const emptyRunList: RunRecord[] = []
+  const emptyDecisions: DecisionV3Record[] = []
+  const emptyG5: G5DomainRecord[] = []
+  const emptyClass: TaskClassificationRecord[] = []
+
+  const [
+    durableRunsS,
+    accountSnapS,
+    activePlanS,
+    decisionsS,
+    g5S,
+    classS,
+    auditS,
+    importAuditS,
+  ] = await Promise.all([
+    ctx
+      ? settle(ctx.runtime.runs.list(boardId), 'runs')
+      : Promise.resolve({ ok: false as const, error: 'no runtime context' }),
+    ctx
+      ? settle(ctx.runtime.accounts.get(boardId), 'accounts')
+      : settle(readLatestAccountSyncSnapshot(boardId), 'accounts_fallback'),
+    ctx
+      ? settle(ctx.runtime.plans.getActive(boardId), 'active_plan')
+      : Promise.resolve({ ok: false as const, error: 'no runtime context' }),
+    ctx
+      ? settle(ctx.controlData.decisions.list(boardId), 'decisions')
+      : Promise.resolve({ ok: false as const, error: 'no runtime context' }),
+    ctx
+      ? settle(ctx.controlData.g5.list(boardId), 'g5')
+      : Promise.resolve({ ok: false as const, error: 'no runtime context' }),
+    ctx
+      ? settle(ctx.controlData.classification.list(boardId), 'classification')
+      : Promise.resolve({ ok: false as const, error: 'no runtime context' }),
+    ctx
+      ? settle(ctx.atomic.listAudit(boardId), 'material_audit')
+      : Promise.resolve({ ok: false as const, error: 'no runtime context' }),
+    ctx
+      ? settle(ctx.controlData.imports.listImportAudit(boardId), 'import_audit')
+      : Promise.resolve({ ok: false as const, error: 'no runtime context' }),
+  ])
+
+  const durableRuns: RunRecord[] = durableRunsS.ok ? durableRunsS.value : emptyRunList
+  if (!durableRunsS.ok) {
+    sectionErrors.push({
+      section: 'runs',
+      code: 'PARTIAL_SOURCE',
+      message: durableRunsS.error,
+    })
+  }
+
   let accountSyncSnapshot: AccountSyncSnapshot | null = null
-  try {
-    accountSyncSnapshot = await readLatestAccountSyncSnapshot(boardId)
-  } catch (e) {
+  if (accountSnapS.ok) {
+    accountSyncSnapshot = accountSnapS.value
+  } else {
     sectionErrors.push({
       section: 'accounts',
       code: 'PARTIAL_SOURCE',
-      message: e instanceof Error ? e.message : 'account-sync snapshot read failed',
+      message: accountSnapS.error,
     })
-    accountSyncSnapshot = null
   }
 
+  let activePlan: DispatchPlanRecord | null = null
+  if (activePlanS.ok) {
+    activePlan = activePlanS.value
+  } else {
+    sectionErrors.push({
+      section: 'dispatch',
+      code: 'PARTIAL_SOURCE',
+      message: activePlanS.error,
+    })
+  }
+
+  const durableDecisions: DecisionV3Record[] = decisionsS.ok
+    ? decisionsS.value
+    : emptyDecisions
+  if (!decisionsS.ok) {
+    sectionErrors.push({
+      section: 'decisions',
+      code: 'PARTIAL_SOURCE',
+      message: decisionsS.error,
+    })
+  }
+
+  const g5Domains: G5DomainRecord[] = g5S.ok ? g5S.value : emptyG5
+  if (!g5S.ok) {
+    sectionErrors.push({
+      section: 'g5',
+      code: 'PARTIAL_SOURCE',
+      message: g5S.error,
+    })
+  }
+
+  const durableClassifications: TaskClassificationRecord[] = classS.ok
+    ? classS.value
+    : emptyClass
+  if (!classS.ok) {
+    sectionErrors.push({
+      section: 'classification',
+      code: 'PARTIAL_SOURCE',
+      message: classS.error,
+    })
+  }
+
+  const materialAuditEvents: AuditUiEvent[] = []
+  if (auditS.ok) {
+    for (const ev of auditS.value) {
+      materialAuditEvents.push(mapMaterialAuditToUiEvent(ev))
+    }
+  } else {
+    sectionErrors.push({
+      section: 'audit',
+      code: 'PARTIAL_SOURCE',
+      message: auditS.error,
+    })
+  }
+  if (importAuditS.ok) {
+    for (const row of importAuditS.value) {
+      materialAuditEvents.push(mapImportAuditToUiEvent(row))
+    }
+  } else if (ctx) {
+    sectionErrors.push({
+      section: 'import_audit',
+      code: 'PARTIAL_SOURCE',
+      message: importAuditS.error,
+    })
+  }
+
+  // Dispatch NEXT from durable active plan store when available; else shared memory fallback.
   try {
+    const planStore = ctx?.runtime.plans ?? getSharedDispatchPlanStore()
     const selected = await selectNextFromActivePlan(
-      { clock: createSystemClock(), plans: getSharedDispatchPlanStore() },
+      { clock: ctx?.clock ?? createSystemClock(), plans: planStore },
       boardId,
     )
+    // Prefer already-fetched active plan when select used same store.
+    if (!activePlan && selected.plan) activePlan = selected.plan
     const projected = projectDispatchNextFields(selected)
     dispatchNext = {
       selectedForNextDispatch: projected.selectedForNextDispatch.map((s) => ({
@@ -1179,12 +2318,36 @@ export async function loadControlCenterAggregation(
     }
   }
 
+  // Prefer atomic board rev when available and higher-fidelity than partial parse.
+  if (ctx) {
+    try {
+      const st = await ctx.atomic.getBoardState(boardId)
+      if (typeof st.boardRev === 'number' && Number.isInteger(st.boardRev) && st.boardRev >= 0) {
+        // Do not lower a proven persisted rev; only fill when still 0.
+        if (boardRev === 0 && st.boardRev > 0) boardRev = st.boardRev
+      }
+    } catch {
+      // ignore — board_revisions parse already recorded
+    }
+  }
+
+  // Pin-complete: force classification fail-closed for DISTINCT definition tasks only.
+  // Missing store row → UNCLASSIFIED/DATA_INTEGRITY; never promote legacy embedded class.
+  // Even when classification store load fails, treat as loaded-empty under pin authority.
+  const forceClassFailClosed = pinAuthorityComplete
+  const classificationsForAgg: TaskClassificationRecord[] | null = classS.ok
+    ? durableClassifications
+    : forceClassFailClosed
+      ? emptyClass
+      : null
+
   return buildControlCenterAggregationFromSources({
     boardId,
     raw,
     tasks,
     opsAccounts,
-    runs,
+    // Never use legacy embedded runs for ownership; keep only when durable failed entirely.
+    runs: durableRunsS.ok ? [] : legacyRuns,
     boardContentHash: hash,
     boardRev,
     lifecycleRev,
@@ -1195,7 +2358,18 @@ export async function loadControlCenterAggregation(
     dispatchNext,
     sectionErrors,
     accountSyncSnapshot,
+    durableRuns,
+    durableOwnershipLoaded: durableRunsS.ok,
+    durableDecisions: decisionsS.ok ? durableDecisions : null,
+    durableClassifications: classificationsForAgg,
+    durableClassificationsLoaded: classS.ok || forceClassFailClosed,
+    g5Domains,
+    activePlan,
+    materialAuditEvents: materialAuditEvents.length > 0 ? materialAuditEvents : null,
   })
 }
 
-export type { PrimaryBucket, StaleOverlayKind }
+export type {
+  PrimaryBucket,
+  StaleOverlayKind,
+} from '#/lib/control-plane-types'

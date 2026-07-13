@@ -334,6 +334,11 @@ describe('canonical import plan/apply — auth, CAS, idempotency, no evidence fa
       stage: 'MAPPED',
       receiptId: 'ev-live-1',
     })
+    // Retained pinned snapshot payload is readable after apply (single-authority read path).
+    const pinned = await storage.getPinnedSnapshot('mfs-rebuild')
+    expect(pinned?.snapshot?.manifest.snapshotId).toBe('snap-001')
+    expect(pinned?.snapshot?.payload.tasks.map((t) => t.id).sort()).toEqual(['t-1', 't-2'])
+    expect(pinned?.pin.canonicalHash).toBe(canonicalSubjectHash(snap))
   })
 
   it('idempotent replay returns original body', async () => {

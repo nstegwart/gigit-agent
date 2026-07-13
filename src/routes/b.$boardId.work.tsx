@@ -4,11 +4,17 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo } from 'react'
 import { z } from 'zod'
 
-import { WorkScreen, parseWorkDeepLink, isPrimaryBucket } from '#/components/control-center/work'
+import {
+  WorkScreen,
+  parseWorkDeepLink,
+  isPrimaryBucket,
+  type WorkItemRow,
+} from '#/components/control-center/work'
 import type { PrimaryBucket } from '#/components/control-center/work'
 import { boardQueryOptions, useBoardId } from '#/lib/board-query'
 import {
   getDefaultControlCenterFetchers,
+  overviewQueryOptions,
   workQueryOptions,
 } from '#/lib/control-center-query'
 import { workEnvelopeToProps } from '#/lib/control-center-route-adapters'
@@ -115,11 +121,53 @@ function WorkRoute() {
     ),
   )
 
+  // Pin-matched Overview ongoing for Work zero-click join (same aggregation source).
+  // Only used when work envelope items need ONGOING fields and pins match.
+  const overviewQ = useQuery(overviewQueryOptions(boardId, fetchers.overview))
+
+  const ongoingJoin = useMemo(() => {
+    const workEnv = q.data
+    const overviewEnv = overviewQ.data
+    if (!workEnv?.data || !overviewEnv?.data?.ongoing?.length) return null
+    if (
+      workEnv.canonicalSnapshotId !== overviewEnv.canonicalSnapshotId ||
+      workEnv.boardRev !== overviewEnv.boardRev ||
+      workEnv.lifecycleRev !== overviewEnv.lifecycleRev ||
+      workEnv.canonicalHash !== overviewEnv.canonicalHash
+    ) {
+      return null
+    }
+    return overviewEnv.data.ongoing
+  }, [q.data, overviewQ.data])
+
+  const routePinned = useMemo(() => {
+    if (filters.pinned) return filters.pinned
+    // Partial pin fields from URL even when taskHash incomplete (still preserve what we have).
+    if (
+      search.taskHash ||
+      search.canonicalHash ||
+      search.boardRev ||
+      search.lifecycleRev ||
+      search.canonicalSnapshotId ||
+      search.pin
+    ) {
+      return {
+        taskHash: search.taskHash ?? null,
+        canonicalHash: search.canonicalHash ?? null,
+        canonicalSnapshotId: search.canonicalSnapshotId ?? search.pin ?? null,
+        boardRev: search.boardRev != null ? Number(search.boardRev) : null,
+        lifecycleRev: search.lifecycleRev != null ? Number(search.lifecycleRev) : null,
+      }
+    }
+    return null
+  }, [filters.pinned, search])
+
   const patchSearch = useCallback(
     (patch: Record<string, string | undefined>) => {
       void navigate({
         search: (prev) => {
           const next: Record<string, string | undefined> = { ...prev, ...patch }
+          // Preserve pin tuple keys unless explicitly cleared by patch.
           for (const k of Object.keys(next)) {
             if (next[k] === undefined || next[k] === '') delete next[k]
           }
@@ -156,7 +204,20 @@ function WorkRoute() {
 
   const onRetry = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['control-center', 'work', boardId] })
+    void qc.invalidateQueries({ queryKey: ['control-center', 'overview', boardId] })
   }, [qc, boardId])
+
+  const onRowActivate = useCallback(
+    (item: WorkItemRow) => {
+      const taskId = item.taskId
+      // SPA navigate to board-scoped task detail (native href is also set on rows).
+      void navigate({
+        to: '/b/$boardId/tasks/$taskId',
+        params: { boardId, taskId },
+      })
+    },
+    [navigate, boardId],
+  )
 
   const props = workEnvelopeToProps(q.data, {
     boardId,
@@ -164,12 +225,15 @@ function WorkRoute() {
     staleOverlayActive,
     overlayKind: overlayKind as StaleOverlayKind | null,
     transport: q.isError ? 'offline' : 'online',
+    ongoingJoin,
+    routePinned,
     onBucketChange,
     onStaleOverlayChange,
     onNextPage,
     onRetry,
     onRefresh: onRetry,
     onReconnect: onRetry,
+    onRowActivate,
   })
 
   const state = q.isLoading && !q.data ? 'loading' : props.state

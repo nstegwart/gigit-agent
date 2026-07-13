@@ -117,7 +117,7 @@ function readLocalSha(): string {
   }
 }
 
-/** Latest version declared by the migration manifest (e.g. "003"). Empty if unreadable. */
+/** Latest version declared by the migration manifest (e.g. "005"). Empty if unreadable. */
 function manifestLatestVersion(): string {
   try {
     const last = MIGRATION_MANIFEST[MIGRATION_MANIFEST.length - 1]
@@ -125,6 +125,65 @@ function manifestLatestVersion(): string {
   } catch {
     return ''
   }
+}
+
+/**
+ * Required CREATE TABLE objects introduced by migrations 004/005.
+ * History claiming these versions is not healthy if the tables are absent
+ * (partial apply / drift). ALTER-only expands are not listed here.
+ * Exported for unit tests (table-probe contract).
+ */
+export const REQUIRED_TABLES_BY_MIGRATION: Readonly<Record<string, ReadonlyArray<string>>> = {
+  '004': [
+    'control_plane_classification_receipts',
+    'control_plane_decisions',
+  ],
+  '005': [
+    'control_plane_dispatch_plans',
+    'control_plane_runs',
+    'control_plane_collision_locks',
+  ],
+}
+
+/** Tables required given applied migration versions (004/005 probes). */
+export function requiredTablesForAppliedVersions(
+  appliedVersions: ReadonlyArray<string>,
+): Array<string> {
+  const out: Array<string> = []
+  const seen = new Set<string>()
+  for (const v of appliedVersions) {
+    const tables = REQUIRED_TABLES_BY_MIGRATION[v]
+    if (!tables) continue
+    for (const t of tables) {
+      if (seen.has(t)) continue
+      seen.add(t)
+      out.push(t)
+    }
+  }
+  return out
+}
+
+/**
+ * Probe existence of required tables. Returns missing names (empty = all present).
+ * Uses SELECT 1 LIMIT 0 — fails closed on missing/unreadable tables.
+ */
+async function probeRequiredTables(
+  tables: ReadonlyArray<string>,
+): Promise<Array<string>> {
+  const missing: Array<string> = []
+  for (const table of tables) {
+    // Identifier from static allow-list only — never interpolate user input.
+    if (!/^[a-z0-9_]+$/i.test(table)) {
+      missing.push(table)
+      continue
+    }
+    try {
+      await db().query(`SELECT 1 AS ok FROM \`${table}\` LIMIT 0`)
+    } catch {
+      missing.push(table)
+    }
+  }
+  return missing
 }
 
 /**
@@ -184,6 +243,8 @@ async function loadObserved(): Promise<HealthObserved> {
 
   let dbStatus: DependencyHealth['status'] = 'unknown'
   let controlPlaneStatus: DependencyHealth['status'] = 'unknown'
+  let requiredTablesStatus: DependencyHealth['status'] = 'unknown'
+  let missingRequiredTables: Array<string> = []
 
   try {
     // Bounded connectivity probe — no credentials in result.
@@ -233,6 +294,25 @@ async function loadObserved(): Promise<HealthObserved> {
         migStatus = 'UNKNOWN'
         schemaVersion = ''
       }
+    }
+
+    // Required tables for applied 004/005 (history alone is not sufficient proof)
+    const requiredTables = requiredTablesForAppliedVersions(appliedVersions)
+    if (requiredTables.length > 0) {
+      missingRequiredTables = await probeRequiredTables(requiredTables)
+      if (missingRequiredTables.length > 0) {
+        // Drift: history claims 004/005 but CREATE TABLE objects absent.
+        // Clear observed schema so evaluateHealthStatus marks SCHEMA_VERSION_MISMATCH
+        // (unhealthy). Dependency lists missing table names for operators.
+        requiredTablesStatus = 'down'
+        schemaVersion = ''
+        migStatus = 'PENDING'
+      } else {
+        requiredTablesStatus = 'up'
+      }
+    } else if (appliedVersions.length > 0) {
+      // Applied history does not yet include 004/005 — no 004/005 table probe needed.
+      requiredTablesStatus = 'up'
     }
 
     // board_revisions + optional latest snapshot (explicit null when absent)
@@ -336,6 +416,22 @@ async function loadObserved(): Promise<HealthObserved> {
   const observedSchemaVersion = schemaVersion
   const migrationSchemaVersion = schemaVersion // no expectedLatest fallback (would invent match-looking data)
 
+  const dependencies: Array<DependencyHealth> = [
+    { name: 'mysql', status: dbStatus }, // up only after SELECT 1; else down/unknown
+    { name: 'control-plane', status: controlPlaneStatus }, // up only with proven pin row
+  ]
+  // Surface 004/005 required-table probe when we attempted it (or DB was up enough to classify).
+  if (requiredTablesStatus !== 'unknown' || missingRequiredTables.length > 0) {
+    dependencies.push({
+      name: 'schema-required-tables',
+      status: requiredTablesStatus === 'down' ? 'down' : requiredTablesStatus,
+      detail:
+        missingRequiredTables.length > 0
+          ? `missing:${missingRequiredTables.join(',')}`
+          : null,
+    })
+  }
+
   return {
     deployedSha: sha, // empty string when unknown — health core marks RELEASE_SHA_MISMATCH
     schemaVersion: observedSchemaVersion,
@@ -351,10 +447,7 @@ async function loadObserved(): Promise<HealthObserved> {
       lifecycleRev, // null when unproven — never invent 0
       canonicalHash, // null when unproven
     },
-    dependencies: [
-      { name: 'mysql', status: dbStatus }, // up only after SELECT 1; else down/unknown
-      { name: 'control-plane', status: controlPlaneStatus }, // up only with proven pin row
-    ],
+    dependencies,
     serviceName: 'cairn-task-manager',
   }
 }
