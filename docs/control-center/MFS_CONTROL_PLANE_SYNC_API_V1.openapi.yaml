@@ -1,0 +1,925 @@
+openapi: 3.1.0
+info:
+  title: MFS Control Plane Sync API
+  version: MFS_CONTROL_PLANE_SYNC_API_V1
+  description: |
+    DESIGN CONTRACT only (C0 freeze). Authoritative adapter surface for dispatch plan,
+    run registration/heartbeat, and masked account sync into the task-manager control plane.
+
+    Explicit non-claims:
+    - staging gate TASK_MANAGER_STAGING_VERIFIED only
+    - live status AWAITING_PRODUCTION_APPROVAL_DEPLOY_READBACK
+    - no live P0 PASS, mass-refill unlock, or FABLE PASS
+    - production and public-consumer writes excluded
+    - never include tokens or raw account identity
+
+    Fail-closed semantics (normative for all paths in this file):
+    - Missing/invalid auth → AUTHORIZATION_REQUIRED; no partial apply.
+    - Revision/hash mismatch → STALE_REVISION / STALE_HASH; mutation not applied.
+    - Fencing/lease/registration failures → FENCED / LEASE_EXPIRED / RUN_NOT_REGISTERED.
+    - Idempotency key reuse with different payload hash → IDEMPOTENCY_CONFLICT (409).
+    - HOLD/EXCLUDE or UNCLASSIFIED scope → HOLD_OR_EXCLUDE / UNCLASSIFIED_SCOPE.
+    - Account sync SLA miss or multi-surface readback mismatch → stale=true,
+      ACCOUNT_SYNC_STALE alert, usableCapacity=0 for new dispatch until same
+      sourceRevision/generatedAt is observed on MCP + authenticated API/UI + Ops.
+    - Never invent capacity, NEXT, or lifecycle evidence from client-side recompute.
+
+    Authenticated vs public readback (contract reference; full GET surfaces live in
+    API_CONTRACT.md, not as mutation paths here):
+    - Authenticated readback: MCP tools, authenticated API, and UI loaders MUST
+      read the same pinned aggregation envelope (canonicalSnapshotId/hash,
+      boardRev, lifecycleRev, generatedAt) within publication SLA after each
+      successful mutation accepted by these endpoints.
+    - Public readback: allowlisted public snapshot only (PUBLIC_SNAPSHOT_RATE_LIMIT_V1
+      60/min/IP burst 20 → 429+Retry-After); never exposes private decisions,
+      tokens, or raw account identity; ETag/304 from revision+payload hash.
+    - Unauthenticated access MUST NOT reach these mutation methods.
+
+    Source SHA: 3c8a855dabd68a1d8a701597da16969756ee6511
+  contact:
+    name: gigit-agent control-plane design
+servers:
+  - url: https://task-manager.example.invalid
+    description: Placeholder base URL — not a live production grant
+  - url: http://127.0.0.1:33211
+    description: Staging loopback (when deployed); synthetic data only
+tags:
+  - name: Dispatch
+  - name: Runs
+  - name: Accounts
+  - name: Errors
+  - name: Policies
+paths:
+  /api/v1/control-plane/dispatch-plan:
+    post:
+      tags: [Dispatch]
+      operationId: publish_dispatch_plan
+      summary: Publish ranked dispatch plan (ROOT_ORCHESTRATOR only; sole NEXT source)
+      security:
+        - BearerAuth: []
+        - CairnToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishDispatchPlanRequest'
+            examples:
+              sample:
+                value:
+                  boardId: mfs-rebuild
+                  planId: plan-example-001
+                  planVersion: 1
+                  planHash: sha256:deadbeefexampleplanhash000000000000000000000000000000000001
+                  canonicalSnapshotId: snap-example-001
+                  canonicalHash: sha256:deadbeefexamplesnaphash000000000000000000000000000000000001
+                  expectedBoardRev: 12
+                  issuedAt: "2026-07-13T08:00:00Z"
+                  expiresAt: "2026-07-13T12:00:00Z"
+                  stage: MAP_VERIFIED
+                  items:
+                    - rank: 1
+                      taskId: T-EXAMPLE-001
+                      targetGate: FUNCTIONAL
+                      role: PRODUCT
+                      selectionReason: priority-closure-frontier
+                      priorityPortfolioId: SALES_WEB_RELATED_BACKEND
+                      dependencyProof:
+                        satisfied: true
+                        refs: []
+                      collisionScopeLockIds:
+                        - "repo:example:src/**"
+                      expectedEntityRev: 3
+                      expectedBoardRev: 12
+      responses:
+        "200":
+          description: Plan accepted or idempotent replay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishDispatchPlanResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "422":
+          $ref: '#/components/responses/Unprocessable'
+
+  /api/v1/control-plane/runs:
+    post:
+      tags: [Runs]
+      operationId: register_run
+      summary: Register an agent run (idempotent on runId + key)
+      security:
+        - BearerAuth: []
+        - CairnToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRunRequest'
+            examples:
+              sample:
+                value:
+                  boardId: mfs-rebuild
+                  runId: run-example-001
+                  planId: plan-example-001
+                  planItemRank: 1
+                  taskId: T-EXAMPLE-001
+                  targetGate: FUNCTIONAL
+                  role: PRODUCT
+                  agentId: agent-example-001
+                  model: grok-4.5
+                  effort: high
+                  maskedAccountRef: acct-mask-001
+                  canonicalHash: sha256:deadbeefexamplesnaphash000000000000000000000000000000000001
+                  collisionScopeLockIds:
+                    - "repo:example:src/**"
+                  expectedEntityRev: 3
+                  expectedBoardRev: 12
+      responses:
+        "200":
+          description: Run registered or idempotent replay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterRunResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "422":
+          $ref: '#/components/responses/Unprocessable'
+
+  /api/v1/control-plane/runs/{runId}/heartbeat:
+    post:
+      tags: [Runs]
+      operationId: heartbeat_run
+      summary: Heartbeat owning agent run (fencing + sequence; liveness only)
+      security:
+        - BearerAuth: []
+        - CairnToken: []
+      parameters:
+        - name: runId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRunRequest'
+            examples:
+              sample:
+                value:
+                  boardId: mfs-rebuild
+                  fencingToken: fence-example-001
+                  heartbeatSequence: 42
+                  materialProgressAt: null
+                  expectedEntityRev: 3
+                  expectedBoardRev: 12
+      responses:
+        "200":
+          description: Heartbeat accepted or sequence replay
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatRunResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "422":
+          $ref: '#/components/responses/Unprocessable'
+
+  /api/v1/control-plane/accounts/sync:
+    post:
+      tags: [Accounts]
+      operationId: sync_accounts
+      summary: Sync masked account capacity state (never tokens or raw identity)
+      description: |
+        Publishes masked account capacity only. Fail-closed publication SLA:
+        - Triggered state must reach MCP + authenticated API/UI + Ops with the same
+          sourceRevision/generatedAt within 30 seconds.
+        - Periodic health publication at least every 60 seconds.
+        - Missed/stale multi-surface readback → stale=true, ACCOUNT_SYNC_STALE,
+          usableCapacity=0 for new dispatch until parity restored.
+        - Never transmit tokens, passwords, cookies, or raw account identity.
+        - No server-local-only account transition.
+      security:
+        - BearerAuth: []
+        - CairnToken: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncAccountsRequest'
+            examples:
+              sample:
+                value:
+                  boardId: mfs-rebuild
+                  sourceRevision: 1001
+                  generatedAt: "2026-07-13T08:00:00Z"
+                  expectedBoardRev: 12
+                  accounts:
+                    - maskedAccountId: acct-mask-001
+                      status: OK
+                      effectiveInUse: 2
+                      effectiveCap: 5
+                      physicalSlotsDisplay: "2/20"
+                      adaptiveQuotaState: HEALTHY
+                      reason: null
+                      statusChangedAt: "2026-07-13T07:59:00Z"
+      responses:
+        "200":
+          description: |
+            Account batch accepted or idempotent replay. Consumers must read back
+            the same sourceRevision/generatedAt on authenticated surfaces within SLA;
+            otherwise fail-closed (usableCapacity=0).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncAccountsResponse'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "422":
+          $ref: '#/components/responses/Unprocessable'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Orchestrator/agent/sync bearer credential (design; no live tokens documented)
+    CairnToken:
+      type: apiKey
+      in: header
+      name: X-Cairn-Token
+      description: Compatibility agent/write token header (scoped; never owner cookie)
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 200
+      description: |
+        Scope = actor + board + endpoint + key. TTL 24 hours.
+        Same key + same request hash → replay. Same key + different hash → 409 IDEMPOTENCY_CONFLICT.
+
+  responses:
+    Unauthorized:
+      description: Missing/invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: AUTHORIZATION_REQUIRED
+              message: Authentication required
+    Forbidden:
+      description: Authenticated but insufficient role/scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: AUTHORIZATION_REQUIRED
+              message: Scope dispatch:write required
+    Conflict:
+      description: Concurrency, fencing, lock, or idempotency conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unprocessable:
+      description: Validation, integrity, or classification failure
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+
+  schemas:
+    TypedErrorCode:
+      type: string
+      description: Complete V3 typed error set
+      enum:
+        - STALE_REVISION
+        - INVALID_TRANSITION
+        - MISSING_EVIDENCE
+        - STALE_HASH
+        - SELF_VERIFICATION
+        - INVALID_VERIFIER_ROLE
+        - RUN_NOT_REGISTERED
+        - LEASE_EXPIRED
+        - FENCED
+        - CLAIM_COLLISION
+        - INTEGRATION_LOCKED
+        - HOLD_OR_EXCLUDE
+        - UNCLASSIFIED_SCOPE
+        - AUTHORIZATION_REQUIRED
+        - DECISION_EXPIRED
+        - IDEMPOTENCY_CONFLICT
+        - DATA_INTEGRITY
+
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              $ref: '#/components/schemas/TypedErrorCode'
+            message:
+              type: string
+            boardRev:
+              type: integer
+              minimum: 0
+            entityExpectedRev:
+              type: integer
+              minimum: 0
+            details:
+              type: object
+              additionalProperties: true
+
+    CommonEnvelopeMeta:
+      type: object
+      required:
+        - schemaVersion
+        - boardId
+        - boardRev
+        - generatedAt
+      properties:
+        schemaVersion:
+          type: string
+          example: TM_PINNED_ENVELOPE_V1
+        boardId:
+          type: string
+          example: mfs-rebuild
+        canonicalSnapshotId:
+          type: string
+        canonicalHash:
+          type: string
+        boardRev:
+          type: integer
+          minimum: 0
+        lifecycleRev:
+          type: integer
+          minimum: 0
+        generatedAt:
+          type: string
+          format: date-time
+        freshnessAgeSeconds:
+          type: integer
+          minimum: 0
+        stale:
+          type: boolean
+        staleReason:
+          type: string
+          nullable: true
+
+    DependencyProof:
+      type: object
+      required: [satisfied]
+      properties:
+        satisfied:
+          type: boolean
+        refs:
+          type: array
+          items:
+            type: string
+
+    DispatchPlanItem:
+      type: object
+      required:
+        - rank
+        - taskId
+        - targetGate
+        - role
+        - selectionReason
+        - expectedEntityRev
+        - expectedBoardRev
+      properties:
+        rank:
+          type: integer
+          minimum: 1
+        taskId:
+          type: string
+        targetGate:
+          type: string
+        role:
+          type: string
+        selectionReason:
+          type: string
+        priorityPortfolioId:
+          type: string
+          example: SALES_WEB_RELATED_BACKEND
+        dependencyProof:
+          $ref: '#/components/schemas/DependencyProof'
+        collisionScopeLockIds:
+          type: array
+          items:
+            type: string
+        expectedEntityRev:
+          type: integer
+          minimum: 0
+        expectedBoardRev:
+          type: integer
+          minimum: 0
+
+    PublishDispatchPlanRequest:
+      type: object
+      required:
+        - boardId
+        - planId
+        - planVersion
+        - planHash
+        - canonicalSnapshotId
+        - canonicalHash
+        - expectedBoardRev
+        - issuedAt
+        - expiresAt
+        - items
+      properties:
+        boardId:
+          type: string
+        planId:
+          type: string
+        planVersion:
+          type: integer
+          minimum: 1
+        planHash:
+          type: string
+        canonicalSnapshotId:
+          type: string
+        canonicalHash:
+          type: string
+        expectedBoardRev:
+          type: integer
+          minimum: 0
+        issuedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        stage:
+          type: string
+        items:
+          type: array
+          minItems: 0
+          items:
+            $ref: '#/components/schemas/DispatchPlanItem'
+
+    PublishDispatchPlanResponse:
+      allOf:
+        - $ref: '#/components/schemas/CommonEnvelopeMeta'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                planId:
+                  type: string
+                planVersion:
+                  type: integer
+                planHash:
+                  type: string
+                itemCount:
+                  type: integer
+
+    RegisterRunRequest:
+      type: object
+      required:
+        - boardId
+        - runId
+        - taskId
+        - targetGate
+        - agentId
+        - model
+        - expectedEntityRev
+        - expectedBoardRev
+      properties:
+        boardId:
+          type: string
+        runId:
+          type: string
+        planId:
+          type: string
+        planItemRank:
+          type: integer
+          minimum: 1
+        taskId:
+          type: string
+        targetGate:
+          type: string
+        role:
+          type: string
+        agentId:
+          type: string
+        model:
+          type: string
+        effort:
+          type: string
+        maskedAccountRef:
+          type: string
+          description: Masked reference only — never a token or raw identity
+        canonicalHash:
+          type: string
+        collisionScopeLockIds:
+          type: array
+          items:
+            type: string
+        expectedEntityRev:
+          type: integer
+        expectedBoardRev:
+          type: integer
+
+    RegisterRunResponse:
+      allOf:
+        - $ref: '#/components/schemas/CommonEnvelopeMeta'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                runId:
+                  type: string
+                state:
+                  type: string
+                  enum:
+                    - QUEUED
+                    - RESERVED
+                    - STARTING
+                    - RUNNING
+                    - WAITING_HUMAN
+                    - SUCCEEDED
+                    - FAILED
+                    - CANCELLED
+                    - STALE
+                    - SUPERSEDED
+                fencingToken:
+                  type: string
+                leaseExpiresAt:
+                  type: string
+                  format: date-time
+                registeredAt:
+                  type: string
+                  format: date-time
+
+    HeartbeatRunRequest:
+      type: object
+      required:
+        - boardId
+        - fencingToken
+        - heartbeatSequence
+        - expectedEntityRev
+        - expectedBoardRev
+      properties:
+        boardId:
+          type: string
+        fencingToken:
+          type: string
+        heartbeatSequence:
+          type: integer
+          minimum: 0
+        materialProgressAt:
+          type: string
+          format: date-time
+          nullable: true
+        expectedEntityRev:
+          type: integer
+        expectedBoardRev:
+          type: integer
+
+    HeartbeatRunResponse:
+      allOf:
+        - $ref: '#/components/schemas/CommonEnvelopeMeta'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                runId:
+                  type: string
+                state:
+                  type: string
+                leaseExpiresAt:
+                  type: string
+                  format: date-time
+                heartbeatAt:
+                  type: string
+                  format: date-time
+                heartbeatSequence:
+                  type: integer
+                replayed:
+                  type: boolean
+
+    MaskedAccountStatus:
+      type: string
+      enum:
+        - ACTIVE
+        - OK
+        - LIMIT
+        - BAN
+        - "403"
+        - AUTH_EXPIRED
+        - quarantine
+        - REMOVED
+
+    MaskedAccount:
+      type: object
+      required:
+        - maskedAccountId
+        - status
+        - effectiveInUse
+        - effectiveCap
+      properties:
+        maskedAccountId:
+          type: string
+          description: Opaque masked ID only
+        status:
+          $ref: '#/components/schemas/MaskedAccountStatus'
+        effectiveInUse:
+          type: integer
+          minimum: 0
+        effectiveCap:
+          type: integer
+          minimum: 0
+        physicalSlotsDisplay:
+          type: string
+          description: Display-only (e.g. 2/20); never dispatch authorization
+        adaptiveQuotaState:
+          type: string
+        reason:
+          type: string
+          nullable: true
+        statusChangedAt:
+          type: string
+          format: date-time
+
+    SyncAccountsRequest:
+      type: object
+      required:
+        - boardId
+        - sourceRevision
+        - generatedAt
+        - expectedBoardRev
+        - accounts
+      properties:
+        boardId:
+          type: string
+        sourceRevision:
+          type: integer
+          minimum: 0
+        generatedAt:
+          type: string
+          format: date-time
+        expectedBoardRev:
+          type: integer
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/MaskedAccount'
+
+    SyncAccountsResponse:
+      allOf:
+        - $ref: '#/components/schemas/CommonEnvelopeMeta'
+        - type: object
+          description: |
+            Fail-closed account publish result. If stale=true or multi-surface
+            readback parity fails, usableCapacity MUST be 0 for new dispatch.
+          properties:
+            data:
+              type: object
+              properties:
+                sourceRevision:
+                  type: integer
+                acceptedCount:
+                  type: integer
+                usableCapacity:
+                  type: integer
+                  minimum: 0
+                  description: |
+                    Sum of usable capacity after masking rules. MUST be 0 when
+                    stale=true or ACCOUNT_SYNC_STALE fail-closed is active.
+                stale:
+                  type: boolean
+                  description: true when SLA miss or authenticated/public readback parity fails
+                staleReason:
+                  type: string
+                  nullable: true
+
+    FailClosedSemantics:
+      type: object
+      description: |
+        Normative fail-closed policy for this adapter (DESIGN CONTRACT).
+        Implementers MUST refuse unsafe progress rather than guess.
+      properties:
+        onAuthFailure:
+          type: string
+          const: AUTHORIZATION_REQUIRED
+        onRevisionMismatch:
+          type: string
+          const: STALE_REVISION
+        onIdempotencyPayloadMismatch:
+          type: string
+          const: IDEMPOTENCY_CONFLICT
+        onAccountSyncStale:
+          type: string
+          const: usableCapacity=0 + ACCOUNT_SYNC_STALE until multi-surface readback parity
+        onClientRecompute:
+          type: string
+          const: FORBIDDEN — server pinned aggregation only
+
+    AuthenticatedPublicReadbackContract:
+      type: object
+      description: |
+        Readback contract referenced by this adapter. Mutation success is not
+        complete until authenticated readback parity holds; public snapshot is a
+        separate allowlisted surface.
+      properties:
+        authenticatedSurfaces:
+          type: array
+          items:
+            type: string
+          example: [MCP, authenticated-API, authenticated-UI, Ops]
+        publicationSlaSeconds:
+          type: integer
+          const: 30
+        periodicHealthMaxIntervalSeconds:
+          type: integer
+          const: 60
+        publicSnapshotPolicy:
+          $ref: '#/components/schemas/PublicRateLimitPolicy'
+        publicNeverIncludes:
+          type: array
+          items:
+            type: string
+          example: [tokens, raw-account-identity, private-decision-bodies]
+
+    # Reference enums for implementers (not all exposed as paths in this adapter file)
+    LifecycleStage:
+      type: string
+      enum:
+        - MAPPING
+        - MAPPED
+        - MAP_VERIFIED
+        - BUILT
+        - FUNCTIONAL
+        - INTEGRATED
+        - STAGING_PROVEN
+        - PROD_READY
+        - LIVE_VERIFIED
+
+    PrimaryBucket:
+      type: string
+      enum:
+        - DONE
+        - RECONCILIATION_PENDING
+        - ONGOING
+        - NEXT
+        - QUEUED
+        - BLOCKED
+
+    Overlay:
+      type: string
+      enum:
+        - STALE
+        - STALE_CLAIM
+        - BEYOND_STAGE_ONGOING
+
+    RbacRole:
+      type: string
+      enum:
+        - OWNER
+        - ROOT_ORCHESTRATOR
+        - AGENT
+        - INTEGRATOR
+        - PUBLIC
+
+    G5Domain:
+      type: string
+      enum:
+        - security
+        - performance/capacity
+        - migration/data integrity
+        - rollback/restore
+        - backup/DR
+        - monitoring/alerts/runbooks
+        - config/secrets
+        - cutover rehearsal
+        - dependency/provider readiness
+
+    PublicRateLimitPolicy:
+      type: object
+      description: Reference policy PUBLIC_SNAPSHOT_RATE_LIMIT_V1 (public GET surface, not these mutations)
+      properties:
+        policy:
+          type: string
+          example: PUBLIC_SNAPSHOT_RATE_LIMIT_V1
+        sustainedPerMinutePerIp:
+          type: integer
+          example: 60
+        burst:
+          type: integer
+          example: 20
+        onExceed:
+          type: string
+          example: "429 + Retry-After"
+
+    CursorPolicy:
+      type: object
+      properties:
+        stableKey:
+          type: array
+          items:
+            type: string
+          example: [createdAt, id]
+        defaultPageSize:
+          type: integer
+          example: 50
+        maxPageSize:
+          type: integer
+          example: 200
+
+    IdempotencyPolicy:
+      type: object
+      properties:
+        scope:
+          type: string
+          example: actor+board+endpoint+key
+        ttlHours:
+          type: integer
+          const: 24
+          description: 24h idempotency TTL (exact)
+
+    ReadinessWeights:
+      type: object
+      description: MFS_DELIVERY_READINESS_V1 exact stage weights (const; not soft examples)
+      required:
+        - MAPPING
+        - MAPPED
+        - MAP_VERIFIED
+        - BUILT
+        - FUNCTIONAL
+        - INTEGRATED
+        - STAGING_PROVEN
+        - PROD_READY
+        - LIVE_VERIFIED
+      properties:
+        MAPPING:
+          type: integer
+          const: 0
+        MAPPED:
+          type: integer
+          const: 10
+        MAP_VERIFIED:
+          type: integer
+          const: 20
+        BUILT:
+          type: integer
+          const: 45
+        FUNCTIONAL:
+          type: integer
+          const: 65
+        INTEGRATED:
+          type: integer
+          const: 75
+        STAGING_PROVEN:
+          type: integer
+          const: 90
+        PROD_READY:
+          type: integer
+          const: 100
+        LIVE_VERIFIED:
+          type: integer
+          const: 100
