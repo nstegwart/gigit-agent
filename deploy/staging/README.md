@@ -310,7 +310,29 @@ node deploy/staging/scripts/seed-synthetic.mjs --disposable-proof
 1. `compose up` (MySQL + app)
 2. Migration apply (when CLI available) against `cairn_tm_v3_staging` only
 3. **Synthetic seed** (this script) — creates baseline tables if absent; does not wipe migrations
-4. Authenticated MCP smoke
+4. Authenticated MCP smoke (dual-principal — see below)
+
+### Dual-principal agent MCP smoke (`qa/e2e/flows/staging-agent-smoke.mjs --real`)
+
+Real smoke is **fail-closed dual-principal**. A single ROOT token is not enough:
+`tools/list` is gated **per role** (ROOT must expose `publish_dispatch_plan` /
+`get_next` / `sync_accounts`; AGENT must expose `register_run` / `heartbeat_run`).
+Ops use the matching bearer; secrets are never printed (token **refs** only).
+
+| Client env | Role | Notes |
+|---|---|---|
+| `STAGING_ROOT_BEARER_TOKEN` | ROOT_ORCHESTRATOR | Preferred. Fallback: `STAGING_BEARER_TOKEN` \| `STAGING_BEARER` \| `CAIRN_MCP_BEARER` |
+| `STAGING_AGENT_BEARER_TOKEN` | AGENT | **Required** for `--real`; missing → `MISSING_AGENT_BEARER` |
+| `STAGING_AGENT_ID` | AGENT actorId/agentId | **Required** for ownRun (`register_run.agentId` match) |
+| `STAGING_URL` | — | e.g. `http://127.0.0.1:33211` after SSH tunnel |
+| `EXPECTED_SHA` / `FULL_SHA` | — | Fail-closed vs `healthz.deployedSha` when set |
+
+Server-side `CAIRN_BEARER_PRINCIPALS_JSON` must include both a `ROOT_ORCHESTRATOR`
+and an `AGENT` principal (see `env.staging.example`). Contract self-test (no server):
+
+```bash
+node qa/e2e/flows/staging-agent-smoke.mjs --self-test
+```
 
 ---
 
