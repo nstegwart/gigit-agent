@@ -977,3 +977,84 @@ export function createMemoryAccountSyncStore(): AccountSyncStore & {
     },
   }
 }
+
+// ---------------------------------------------------------------------------
+// Read-only control-center adapter (no mutation of authority/policy)
+// ---------------------------------------------------------------------------
+
+/** Process-wide account-sync store (same pattern as dispatch plan shared store). */
+let sharedAccountSyncStore: AccountSyncStore | null = null
+
+export function getSharedAccountSyncStore(): AccountSyncStore {
+  if (!sharedAccountSyncStore) {
+    sharedAccountSyncStore = createMemoryAccountSyncStore()
+  }
+  return sharedAccountSyncStore
+}
+
+export function setSharedAccountSyncStore(store: AccountSyncStore | null): void {
+  sharedAccountSyncStore = store
+}
+
+export function resetSharedAccountSyncStore(): void {
+  sharedAccountSyncStore = null
+}
+
+/**
+ * Read-only latest snapshot for a board.
+ * Does not mutate, re-evaluate freshness, or alter dispatch block state.
+ */
+export async function readLatestAccountSyncSnapshot(
+  boardId: string,
+  store?: AccountSyncStore | null,
+): Promise<AccountSyncSnapshot | null> {
+  const s = store ?? getSharedAccountSyncStore()
+  return s.get(boardId)
+}
+
+/** UI/control-center read model — masked fields only, no tokens/raw identity. */
+export interface AccountSyncCcReadModel {
+  boardId: string
+  sourceRevision: number
+  generatedAt: string
+  generatedAtMs: number
+  stale: boolean
+  staleReason: string | null
+  usableCapacity: number
+  accounts: Array<MaskedAccountRecord>
+  publishedAtMs: number
+  lastPeriodicHealthAtMs: number | null
+  readbackParityOk: boolean
+  readbackSurfaces: AccountSyncSnapshot['readbackSurfaces']
+  entityRev: number
+}
+
+/**
+ * Project authoritative snapshot → control-center read model (pure, no I/O).
+ * null input → null (caller fail-closes usableCapacity=0 / stale).
+ */
+export function projectAccountSyncCcReadModel(
+  snap: AccountSyncSnapshot | null | undefined,
+): AccountSyncCcReadModel | null {
+  if (!snap) return null
+  const parity = surfacesHaveParity(
+    snap.readbackSurfaces,
+    snap.sourceRevision,
+    snap.generatedAt,
+  )
+  return {
+    boardId: snap.boardId,
+    sourceRevision: snap.sourceRevision,
+    generatedAt: snap.generatedAt,
+    generatedAtMs: snap.generatedAtMs,
+    stale: snap.stale,
+    staleReason: snap.staleReason,
+    usableCapacity: snap.usableCapacity,
+    accounts: snap.accounts.map((a) => ({ ...a })),
+    publishedAtMs: snap.publishedAtMs,
+    lastPeriodicHealthAtMs: snap.lastPeriodicHealthAtMs,
+    readbackParityOk: parity,
+    readbackSurfaces: { ...snap.readbackSurfaces },
+    entityRev: snap.entityRev,
+  }
+}

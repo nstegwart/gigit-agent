@@ -1,8 +1,9 @@
-// Board (home) view — ported from prototype `vBoard(m)` (docs/plan/assets/app.js).
-// Renders the page body only; AppShell provides sidebar/topbar/search/theme.
+// Board home / Overview — control-center boards use pinned Overview; others keep adaptive Board.
 import { Navigate, createFileRoute } from '@tanstack/react-router'
 import { BoardLink as Link } from '#/components/BoardLink'
 import { useStore } from '@tanstack/react-store'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useState } from 'react'
 
 import { ActivityFeed } from '#/components/ActivityFeed'
 import { KpiStrip, type KpiItem } from '#/components/KpiStrip'
@@ -10,13 +11,32 @@ import { ProjectCard } from '#/components/ProjectCard'
 import { QueueCard } from '#/components/QueueCard'
 import { RunCard } from '#/components/RunCard'
 import { EmptyState } from '#/components/primitives'
-import { boardQueryOptions, useBoard, useBoardId, useBoardViews } from '#/lib/board-query'
+import { Overview } from '#/components/control-center/overview'
+import {
+  boardQueryOptions,
+  useBoard,
+  useBoardId,
+  useBoardViews,
+  useCurrentBoard,
+} from '#/lib/board-query'
+import {
+  getDefaultControlCenterFetchers,
+  isControlCenterBoard,
+  overviewQueryOptions,
+} from '#/lib/control-center-query'
+import { overviewEnvelopeToProps } from '#/lib/control-center-route-adapters'
 import { Icon } from '#/lib/icons'
 import { uiStore } from '#/store/ui'
+import type { PrimaryBucket } from '#/lib/control-plane-types'
 
 export const Route = createFileRoute('/b/$boardId/')({
   loader: async ({ context, params }) => {
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
+    if (isControlCenterBoard(params.boardId)) {
+      await context.queryClient.ensureQueryData(
+        overviewQueryOptions(params.boardId, getDefaultControlCenterFetchers().overview),
+      )
+    }
   },
   component: View,
 })
@@ -24,6 +44,11 @@ export const Route = createFileRoute('/b/$boardId/')({
 function View() {
   const views = useBoardViews()
   const boardId = useBoardId()
+
+  if (isControlCenterBoard(boardId)) {
+    return <ControlCenterOverview />
+  }
+
   // adaptive: boards without a 'board' view land on their first enabled view
   if (!views.includes('board')) {
     const first = views.find((v) => v !== 'board') ?? 'tasks'
@@ -31,6 +56,57 @@ function View() {
     return <Navigate {...({ to: `/b/$boardId/${first}`, params: { boardId }, replace: true } as any)} />
   }
   return <BoardHome />
+}
+
+function ControlCenterOverview() {
+  const boardId = useBoardId()
+  const boardMeta = useCurrentBoard()
+  const qc = useQueryClient()
+  // Controlled sticky pill: child IntersectionObserver calls these when the
+  // decision card leaves/enters the #view scroll root (must not skip IO).
+  const [pillCollapsed, setPillCollapsed] = useState(false)
+  const onPillExpand = useCallback(() => setPillCollapsed(false), [])
+  const onPillCollapse = useCallback(() => setPillCollapsed(true), [])
+  const fetchers = getDefaultControlCenterFetchers()
+  const q = useQuery(overviewQueryOptions(boardId, fetchers.overview))
+
+  const onRetry = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ['control-center', 'overview', boardId] })
+  }, [qc, boardId])
+
+  const onSelectBucket = useCallback(
+    (bucket: PrimaryBucket) => {
+      // Deep-link to Work with server-validated bucket filter.
+      window.location.assign(
+        `/b/${encodeURIComponent(boardId)}/work?bucket=${encodeURIComponent(bucket)}`,
+      )
+    },
+    [boardId],
+  )
+
+  const props = overviewEnvelopeToProps(q.data, {
+    boardLabel: boardMeta?.name,
+    liveStage: 'mfs-rebuild control center',
+    transport: q.isError ? 'offline' : 'online',
+    onRetry,
+    onReconnect: onRetry,
+    onSelectBucket,
+    pillCollapsed,
+    onPillExpand,
+    onPillCollapse,
+  })
+
+  // Loading surface when no data yet
+  const surfaceProps =
+    q.isLoading && !q.data
+      ? { ...props, surfaceState: 'loading' as const }
+      : props
+
+  return (
+    <div className="wrap" data-testid="control-center-overview-route">
+      <Overview {...surfaceProps} />
+    </div>
+  )
 }
 
 function BoardHome() {

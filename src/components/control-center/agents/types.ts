@@ -1,0 +1,82 @@
+/**
+ * Prop contracts for Agents/Runs (UI_CONTRACT §2 screen 6, §7 zero-click).
+ * Presentation-only: server order preserved; no client stall re-sort.
+ */
+
+export type AgentsSurfaceState =
+  | 'populated'
+  | 'loading'
+  | 'empty'
+  | 'zero-results'
+  | 'partial'
+  | 'stale'
+  | 'disconnected'
+  | 'error'
+  | 'forbidden'
+  | 'needs-human'
+
+export type ProductiveSubstateView = 'PRODUCTIVE' | 'IDLE' | 'STALLED' | null
+
+export interface AgentsPinView {
+  boardId: string
+  canonicalSnapshotId: string
+  canonicalHash: string
+  boardRev: number
+  lifecycleRev: number
+  generatedAt: string
+  freshnessAgeSeconds: number
+  stale: boolean
+  staleReason: string | null
+}
+
+/** Zero-click ONGOING row — ages already formatted from server seconds. */
+export interface AgentOngoingRowView {
+  taskId: string
+  title: string
+  targetGate: string
+  agentId: string
+  role: string
+  model: string | null
+  effort: string | null
+  maskedAccount: string
+  startedAge: string
+  heartbeatAge: string
+  materialProgressAge: string
+  productiveSubstate: ProductiveSubstateView
+  evidenceLink: string | null
+  taskHref: string
+  overlays: string[]
+}
+
+export interface AgentRunRowView {
+  runId: string
+  taskId: string | null
+  agentId: string | null
+  role: string | null
+  model: string | null
+  effort: string | null
+  maskedAccount: string
+  status: string | null
+  startedAt: string | null
+  heartbeatAt: string | null
+  materialProgressAt: string | null
+  productiveSubstate: ProductiveSubstateView
+  taskHref: string | null
+}
+
+export interface AgentsScreenProps {
+  surfaceState: AgentsSurfaceState
+  boardId: string
+  ongoing: AgentOngoingRowView[]
+  runs: AgentRunRowView[]
+  pageSize: number
+  nextCursor: string | null
+  pin: AgentsPinView | null
+  error?: { code: string; message: string } | null
+  projectionGaps?: string[]
+  liveMessage?: string | null
+  onRetry?: () => void
+  onRefresh?: () => void
+  onNextPage?: () => void
+  className?: string
+}

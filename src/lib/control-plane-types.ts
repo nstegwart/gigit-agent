@@ -236,6 +236,26 @@ export type StaleOverlayKind =
   | 'BEYOND_STAGE_ONGOING'
   | 'RECONCILIATION_DRILLDOWN'
 
+export type StaleFamilyOverlayKind = Extract<
+  StaleOverlayKind,
+  'STALE_DATA_SOURCE' | 'EXPIRED_STALLED_RUN' | 'STALE_CLAIM' | 'STALE_DISPATCH_PLAN' | 'STALE_ACCOUNT_SYNC'
+>
+
+export const STALE_FAMILY_OVERLAYS: ReadonlyArray<StaleFamilyOverlayKind> = [
+  'STALE_DATA_SOURCE',
+  'EXPIRED_STALLED_RUN',
+  'STALE_CLAIM',
+  'STALE_DISPATCH_PLAN',
+  'STALE_ACCOUNT_SYNC',
+] as const
+
+export function isStaleFamilyOverlay(
+  overlay: StaleOverlayKind | null | undefined,
+): overlay is StaleFamilyOverlayKind {
+  if (!overlay) return false
+  return (STALE_FAMILY_OVERLAYS as readonly StaleOverlayKind[]).includes(overlay)
+}
+
 export type BlockReasonCode =
   | 'DATA_INTEGRITY'
   | 'BLOCKING_DECISION'

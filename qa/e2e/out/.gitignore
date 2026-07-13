@@ -1,0 +1,12 @@
+*
+!.gitignore
+!.gitkeep
+!screenshots/
+!axe/
+!runtime/
+screenshots/*
+!screenshots/.gitkeep
+axe/*
+!axe/.gitkeep
+runtime/*
+!runtime/.gitkeep

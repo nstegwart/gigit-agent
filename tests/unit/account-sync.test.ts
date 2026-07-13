@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
   createFakeClock,
@@ -15,12 +15,25 @@ import {
   createMemoryAccountSyncStore,
   evaluateAccountSyncFreshness,
   evaluateCapacityPolicy,
+  getSharedAccountSyncStore,
+  projectAccountSyncCcReadModel,
+  readLatestAccountSyncSnapshot,
   recordAccountReadback,
+  resetSharedAccountSyncStore,
   resolveProviderKindFromModel,
+  setSharedAccountSyncStore,
   syncAccounts,
   type AccountSyncDeps,
   type MaskedAccountRecord,
 } from '#/server/account-sync'
+import {
+  resetMcpControlPlaneDeps,
+  setMcpAccountStore,
+} from '#/server/board-mcp'
+import {
+  buildControlCenterAggregationFromSources,
+} from '#/server/control-center-ui-adapter'
+import { projectOps } from '#/server/control-center-ui'
 import { createMemoryIdempotencyStorage } from '#/server/idempotency'
 import {
   createMemoryDispatchPlanStore,
@@ -764,5 +777,215 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
     const b = await syncAccounts(d, body)
     expect(b.replayed).toBe(true)
     expect(b.sourceRevision).toBe(a.sourceRevision)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Process-wide shared store: MCP write path == control-center UI read path
+// ---------------------------------------------------------------------------
+describe('shared account-sync store (MCP ↔ control-center parity)', () => {
+  beforeEach(() => {
+    resetMcpControlPlaneDeps()
+    resetSharedAccountSyncStore()
+  })
+  afterEach(() => {
+    resetMcpControlPlaneDeps()
+    resetSharedAccountSyncStore()
+  })
+
+  it('authorized sync via shared deps is read back identically by CC helpers', async () => {
+    const clock = createFakeClock()
+    const atomic = createMemoryControlPlaneAtomicStore([
+      { boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null },
+    ])
+    const idempotency = createMemoryIdempotencyStorage()
+    // Exact shared deps shape used by board-mcp accountSyncDeps():
+    // accounts: getSharedAccountSyncStore()
+    const mcpStyleDeps: AccountSyncDeps = {
+      clock,
+      accounts: getSharedAccountSyncStore(),
+      atomic,
+      idempotency,
+    }
+
+    const generatedAt = clock.nowISO()
+    const sourceRevision = 42
+    const write = await syncAccounts(mcpStyleDeps, {
+      boardId: BOARD,
+      sourceRevision,
+      generatedAt,
+      expectedBoardRev: 0,
+      accounts: [
+        {
+          maskedAccountId: 'acc_shared_ok',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 1,
+          effectiveCap: 5,
+        },
+        {
+          maskedAccountId: 'acc_shared_limit',
+          status: 'LIMIT',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+        {
+          // secret-like fields must never land on the read model / projector path
+          maskedAccountId: 'acc_shared_ban',
+          status: 'BAN',
+          providerKind: 'SPARK',
+          effectiveInUse: 0,
+          effectiveCap: 10,
+        },
+      ],
+      trigger: 'ORCHESTRATOR_LAUNCH',
+      idempotencyKey: 'shared-store-write-1',
+      callerRole: 'ROOT_ORCHESTRATOR',
+      actorId: 'mcp-root-test',
+    })
+
+    // Same process-wide store: read helper used by control-center-ui-adapter
+    const snap = await readLatestAccountSyncSnapshot(BOARD)
+    expect(snap).not.toBeNull()
+    expect(snap!.boardId).toBe(BOARD)
+    expect(snap!.sourceRevision).toBe(write.sourceRevision)
+    expect(snap!.sourceRevision).toBe(sourceRevision)
+    expect(snap!.generatedAt).toBe(generatedAt)
+    expect(snap!.generatedAt).toBe(write.generatedAt)
+    expect(snap!.accounts.map((a) => a.maskedAccountId).sort()).toEqual([
+      'acc_shared_ban',
+      'acc_shared_limit',
+      'acc_shared_ok',
+    ])
+    // No token/raw identity keys on snapshot
+    expect(JSON.stringify(snap)).not.toMatch(/password|token|secret|apiKey|authorization/i)
+
+    // Store identity: MCP setter/getter and shared store are the same instance
+    const viaSetter = createMemoryAccountSyncStore()
+    setMcpAccountStore(viaSetter)
+    expect(getSharedAccountSyncStore()).toBe(viaSetter)
+    // After injection, previous snapshot is gone (isolation)
+    expect(await readLatestAccountSyncSnapshot(BOARD)).toBeNull()
+
+    // Restore shared path and re-prove write→read after re-bind of original store
+    setSharedAccountSyncStore(mcpStyleDeps.accounts)
+    const snap2 = await readLatestAccountSyncSnapshot(BOARD)
+    expect(snap2?.sourceRevision).toBe(sourceRevision)
+    expect(snap2?.generatedAt).toBe(generatedAt)
+
+    const projected = projectAccountSyncCcReadModel(snap2)
+    expect(projected).not.toBeNull()
+    expect(projected!.boardId).toBe(BOARD)
+    expect(projected!.sourceRevision).toBe(sourceRevision)
+    expect(projected!.generatedAt).toBe(generatedAt)
+    expect(projected!.accounts).toHaveLength(3)
+    expect(JSON.stringify(projected)).not.toMatch(/password|token|secret/i)
+
+    // Control-center aggregation + Ops fail-closed / capacity rules from same snapshot
+    const raw = {
+      id: BOARD,
+      name: 'MFS',
+      projects: [],
+      features: [],
+      runs: [],
+      decisions: [],
+      log: [],
+      collab: { comments: {}, activity: [] },
+    } as never
+    const agg = buildControlCenterAggregationFromSources({
+      boardId: BOARD,
+      raw,
+      tasks: [],
+      opsAccounts: [{ id: 'legacy-should-not-drive-capacity', cap: 999, usable: true }],
+      runs: [],
+      boardContentHash: 'hash_shared_store_parity',
+      boardRev: 99, // must NOT become sourceRevision
+      lifecycleRev: 0,
+      now: generatedAt,
+      accountSyncSnapshot: snap2,
+    })
+    expect(agg.accountSyncMeta?.authoritative).toBe(true)
+    expect(agg.accountSyncMeta?.sourceRevision).toBe(sourceRevision)
+    expect(agg.accountSyncMeta?.sourceRevision).not.toBe(99)
+    expect(agg.accountSyncMeta?.generatedAt).toBe(generatedAt)
+    expect(agg.accounts.map((a) => a.maskedAccountId).sort()).toEqual([
+      'acc_shared_ban',
+      'acc_shared_limit',
+      'acc_shared_ok',
+    ])
+    expect(agg.accounts.find((a) => a.status === 'BAN')?.quarantine).toBe(true)
+    expect(agg.accounts.find((a) => a.status === 'LIMIT')).toBeTruthy()
+
+    const ops = projectOps(agg)
+    // Fresh publish without multi-surface parity → readbackParityOk false → fail-closed capacity 0
+    expect(ops.data.sourceRevision).toBe(sourceRevision)
+    expect(ops.data.sourceRevision).not.toBe(99)
+    expect(ops.data.readbackParityOk).toBe(false)
+    expect(ops.data.accountSyncStale).toBe(true)
+    expect(ops.data.usableCapacity).toBe(0)
+    expect(JSON.stringify(ops.data)).not.toMatch(/password|token|secret/i)
+  })
+
+  it('missing snapshot fail-closes Ops; reset clears both MCP and CC surfaces', async () => {
+    expect(await readLatestAccountSyncSnapshot(BOARD)).toBeNull()
+    const raw = {
+      id: BOARD,
+      name: 'MFS',
+      projects: [],
+      features: [],
+      runs: [],
+      decisions: [],
+      log: [],
+      collab: { comments: {}, activity: [] },
+    } as never
+    const agg = buildControlCenterAggregationFromSources({
+      boardId: BOARD,
+      raw,
+      tasks: [],
+      opsAccounts: [{ id: 'legacy', cap: 50, usable: true }],
+      runs: [],
+      boardContentHash: 'hash_missing_sync',
+      boardRev: 7,
+      lifecycleRev: 0,
+      now: '2026-07-13T12:00:00.000Z',
+      accountSyncSnapshot: null,
+    })
+    expect(agg.accountSyncMeta?.authoritative).toBe(false)
+    expect(agg.accountSyncMeta?.sourceRevision).toBeNull()
+    expect(agg.accountSyncMeta?.usableCapacity).toBe(0)
+    expect(agg.accountSyncMeta?.stale).toBe(true)
+    const ops = projectOps(agg)
+    expect(ops.data.usableCapacity).toBe(0)
+    expect(ops.data.accountSyncStale).toBe(true)
+    expect(ops.data.sourceRevision).toBeNull()
+    // boardRev must never substitute
+    expect(ops.data.sourceRevision).not.toBe(7)
+
+    // Write then reset via MCP helper — both surfaces empty
+    const clock = createFakeClock()
+    await syncAccounts(
+      {
+        clock,
+        accounts: getSharedAccountSyncStore(),
+        atomic: createMemoryControlPlaneAtomicStore([
+          { boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null },
+        ]),
+        idempotency: createMemoryIdempotencyStorage(),
+      },
+      {
+        boardId: BOARD,
+        sourceRevision: 1,
+        generatedAt: clock.nowISO(),
+        expectedBoardRev: 0,
+        accounts: [grok('acc_tmp')],
+        trigger: 'HEARTBEAT',
+        idempotencyKey: 'tmp-reset',
+        callerRole: 'ROOT_ORCHESTRATOR',
+      },
+    )
+    expect(await readLatestAccountSyncSnapshot(BOARD)).not.toBeNull()
+    resetMcpControlPlaneDeps()
+    expect(await readLatestAccountSyncSnapshot(BOARD)).toBeNull()
   })
 })

@@ -184,7 +184,12 @@ export function FeaturesTable({ model: m }: { model: Model }) {
           </button>
         ))}
       </div>
-      <div style={{ overflowX: 'auto' }}>
+      <div
+        className="table-scroll"
+        role="region"
+        aria-label="Features table"
+        tabIndex={0}
+      >
         <table className="ftable">
           <thead>
             {table.getHeaderGroups().map((hg) => (

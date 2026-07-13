@@ -234,13 +234,23 @@ export function TasksTable({
           </>
         ) : null}
         {fcs.length ? (
-          <select className="tf-select" value={filterFC} onChange={(e) => setFilterFC(e.target.value)}>
+          <select
+            className="tf-select"
+            value={filterFC}
+            onChange={(e) => setFilterFC(e.target.value)}
+            aria-label="Filter by feature capability"
+          >
             <option value="">All FCs</option>
             {fcs.map((f) => <option key={f} value={f}>{f}</option>)}
           </select>
         ) : null}
         {gates.length ? (
-          <select className="tf-select" value={filterGate} onChange={(e) => setFilterGate(e.target.value)}>
+          <select
+            className="tf-select"
+            value={filterGate}
+            onChange={(e) => setFilterGate(e.target.value)}
+            aria-label="Filter by next gate"
+          >
             <option value="">Any next gate</option>
             {gates.map((g) => <option key={g} value={g}>→ {g}</option>)}
           </select>
@@ -254,7 +264,12 @@ export function TasksTable({
           </button>
         )}
       </div>
-      <div style={{ overflowX: 'auto' }}>
+      <div
+        className="table-scroll"
+        role="region"
+        aria-label="Tasks table"
+        tabIndex={0}
+      >
         <table className="ftable">
           <thead>
             {table.getHeaderGroups().map((hg) => (

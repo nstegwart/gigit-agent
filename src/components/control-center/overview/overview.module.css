@@ -1,0 +1,985 @@
+/* C3 Overview — scoped module. Tokens from global :root design system.
+   Local AA contrast overrides: global --text-faint #98a1af fails 2.6:1 on white. */
+
+.root {
+  --cc-text-faint: #58616f;
+  --cc-text-dim: var(--text-dim, #58616f);
+  /* Local AA semantic FG (hard) so module contrast does not depend on globals alone. */
+  --cc-ok: #0a6e48;
+  --cc-blocked: #c62828;
+  --cc-warn: #8a5200;
+  --cc-info: #1a5fb4;
+  --cc-accent: #4f3fd4;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--text);
+}
+
+/* C3-C10: shelf layout fills #view client height; mission region owns overflow. */
+.rootShelf {
+  gap: var(--sp-2);
+  overflow: hidden;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+/* Non-scrolling chrome band: app summary + collapsed decision pill.
+   Mission sections scroll in .missionScroll — never under this shelf. */
+.stickyChrome {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  z-index: 25;
+  /* Fully opaque shelf so mission paint cannot bleed through. */
+  background: var(--bg, var(--surface));
+  padding-bottom: 0.35rem;
+  /* Separate chrome from scrolling mission by a hard edge (not a geometric overlap). */
+  box-shadow: 0 1px 0 var(--border);
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  /* Prevent shelf children from expanding past the browser viewport. */
+  overflow-x: clip;
+}
+
+.missionScroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  /* Small top pad so first mission block clears the chrome edge by >8px. */
+  padding-top: 0.35rem;
+  overscroll-behavior: contain;
+}
+
+/* ----- surface banners (compact; details for long codes) ----- */
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sp-2) var(--sp-3);
+  padding: 0.55rem 0.85rem;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.bannerCompact {
+  padding: 0.45rem 0.75rem;
+  gap: 0.5rem 0.75rem;
+}
+
+.bannerDetails {
+  flex: 1 1 100%;
+  margin: 0.15rem 0 0;
+  min-width: 0;
+}
+
+.bannerDetails summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--text-dim);
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.bannerDetails summary:focus-visible {
+  outline: 2px solid var(--accent, var(--cc-accent));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.bannerError {
+  border-color: var(--blocked);
+  background: var(--blocked-bg);
+  color: var(--blocked);
+}
+
+.bannerWarn {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.bannerInfo {
+  border-color: var(--info);
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.bannerMuted {
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+
+.bannerBody {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.bannerTitle {
+  font-weight: 650;
+  font-size: 0.95rem;
+  color: inherit;
+}
+
+.bannerText {
+  margin: 2px 0 0;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.bannerActions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+/* ----- focus / targets ----- */
+.focusable:focus-visible,
+.bucketBtn:focus-visible,
+.pillBtn:focus-visible,
+.actionBtn:focus-visible,
+.linkBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.actionBtn,
+.pillBtn,
+.bucketBtn,
+.linkBtn {
+  font-family: inherit;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.875rem;
+  line-height: 1.2;
+}
+
+.actionBtn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.actionBtnSecondary {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.5rem 0.85rem;
+  border-radius: var(--r-sm);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.linkBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  padding: 0.35rem 0.25rem;
+}
+
+/* ----- app summary ----- */
+.appBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  /* Inside stickyChrome the bar is already non-scrolling; sticky is fallback
+     only when shelf layout is off (loading/error shells). */
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.stickyChrome .appBar {
+  position: relative;
+  top: auto;
+}
+
+.appBarItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8125rem;
+  color: var(--text-dim);
+}
+
+.appBarLabel {
+  color: var(--cc-text-faint, #4a5568);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.appBarValue {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.connLive {
+  color: var(--cc-ok, var(--ok));
+}
+.connStale {
+  color: var(--cc-warn, var(--warn));
+}
+.connDown {
+  color: var(--cc-blocked, var(--blocked));
+}
+
+/* ----- cards ----- */
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: var(--sp-4);
+  min-width: 0;
+}
+
+.cardElevated {
+  border-color: var(--blocked);
+  box-shadow: 0 0 0 1px var(--blocked-bg), var(--shadow-sm);
+}
+
+.cardTitle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0 0 var(--sp-3);
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: var(--sp-3);
+}
+
+.metric {
+  min-width: 0;
+}
+
+.metricLabel {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cc-text-faint, #4a5568);
+  margin-bottom: 2px;
+}
+
+.metricValue {
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: var(--text);
+  /* Break at word boundaries only — never mid-token shred on enums. */
+  overflow-wrap: break-word;
+  word-break: normal;
+  min-width: 0;
+}
+
+.metricValueMono {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  overflow-wrap: break-word;
+  word-break: normal;
+  min-width: 0;
+}
+
+/* Humanized operational enums (spaces) — wrap at spaces, keep raw in title. */
+.metricValueEnum {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: none;
+  min-width: 0;
+}
+
+.pass {
+  color: var(--cc-ok, var(--ok));
+}
+.fail {
+  color: var(--cc-blocked, var(--blocked));
+}
+.na {
+  color: var(--cc-text-faint, #4a5568);
+}
+
+.blockers {
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.blockerItem {
+  font-size: 0.8125rem;
+  color: var(--blocked);
+  display: flex;
+  gap: 0.4rem;
+  align-items: flex-start;
+}
+
+/* ----- decision ----- */
+.decisionCard {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: var(--sp-4);
+  min-width: 0;
+}
+
+.decisionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.severity {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  min-height: 1.75rem;
+}
+
+.sevCritical,
+.sevHigh {
+  background: color-mix(in srgb, var(--cc-blocked, #c62828) 12%, transparent);
+  color: var(--cc-blocked, #c62828);
+}
+
+.sevMedium {
+  background: color-mix(in srgb, var(--cc-warn, #8a5200) 12%, transparent);
+  color: var(--cc-warn, #8a5200);
+}
+
+.sevLow {
+  background: var(--surface-3);
+  color: var(--text-dim);
+}
+
+.blockingBadge {
+  background: color-mix(in srgb, var(--cc-blocked, #c62828) 12%, transparent);
+  color: var(--cc-blocked, #c62828);
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.decisionTitle {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.decisionQuestion {
+  margin: 0.25rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.decisionQuestionPartial {
+  font-style: italic;
+}
+
+.taskId {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--cc-text-faint, #58616f);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ownerAction {
+  margin-top: var(--sp-2);
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  font-size: 0.875rem;
+}
+
+.ownerActionLabel {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cc-text-faint, #4a5568);
+  margin-bottom: 0.25rem;
+}
+
+/* sticky decision stack — card host only; pill is a sibling under Overview.root
+   so its sticky containing block is the full mission body (not a short stack). */
+.decisionStack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.stickyPill {
+  /* Fallback path (no shelf host): sit under app summary via CSS sticky.
+     Primary path: portal into .stickyChrome (position relative, non-scrolling). */
+  position: sticky;
+  top: var(--cc-sticky-pill-top, 0px);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0.45rem 0.75rem;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  /* Fully opaque surface — never translucent color-mix that lets mission text bleed. */
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  /* Constrain to the scrollport/parent width — never bleed past the browser
+     viewport when an intermediate ancestor is wider than the visible rect. */
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  align-self: stretch;
+  margin-bottom: 0;
+  /* One-line pill: hard cap so sticky stack never obscures primary content. */
+  max-height: min(56px, 12vh);
+  min-height: 44px;
+  flex: none;
+  overflow: hidden;
+}
+
+/* Shelved pill lives in non-scrolling chrome — not CSS-sticky mid-content. */
+.stickyChrome .stickyPill,
+.stickyPill[data-shelf='true'] {
+  position: relative;
+  top: auto;
+  z-index: 1;
+  margin-bottom: 0;
+  /* Parent #view can be wider than the browser viewport (scrollbar/layout).
+     Bind width to 100vw so the pill never clips the right edge (C3-C10). */
+  width: min(100%, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  box-sizing: border-box;
+}
+
+.stickyPillBlocking {
+  border-color: var(--blocked);
+  /* Opaque surface + solid border (no alpha bleed-through of mission text). */
+  background: var(--surface);
+  box-shadow:
+    inset 3px 0 0 var(--blocked),
+    var(--shadow-md);
+}
+
+.stickyPillAmber {
+  border-color: var(--warn);
+  background: var(--surface);
+  box-shadow:
+    inset 3px 0 0 var(--warn),
+    var(--shadow-md);
+}
+
+.pillMeta {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.pillBlockingLabel {
+  color: var(--blocked);
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.pillBtn {
+  flex: none;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pillBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* When sticky pill owns the chrome, collapse the visual card footprint so mission
+   content (priority/global/buckets/ONGOING) does not park under the sticky pill.
+   Full a11y content stays in the tree (no aria-hidden); visually clipped.
+   1px max-height keeps a sentinel box for IntersectionObserver. */
+.decisionCardSpacer {
+  max-height: 1px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* Compact buffer for sticky stack clearance. */
+  scroll-margin-top: calc(var(--cc-sticky-pill-top, 0px) + 4.5rem);
+}
+
+/* When pill is collapsed, keep a tiny sentinel stack (card is 1px spacer).
+   Clearance is provided by stickyChrome + missionScroll sibling split, not
+   by parking mission content under a mid-scroll sticky overlay. */
+.decisionStack[data-pill-collapsed='true'] {
+  margin-bottom: 0.25rem;
+  padding-bottom: 0;
+  scroll-margin-top: 0.5rem;
+}
+
+/* ----- priority / global pair ----- */
+.priorityGlobal {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-4);
+}
+
+/* ----- buckets ----- */
+.bucketStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.bucketBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--surface);
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.bucketBtnActive {
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+
+.bucketCount {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.bDone {
+  color: var(--cc-ok, var(--ok));
+}
+.bOngoing {
+  color: var(--cc-info, var(--info));
+}
+.bNext {
+  color: var(--cc-accent, var(--accent));
+}
+.bQueued {
+  color: var(--text-dim);
+}
+.bBlocked {
+  color: var(--cc-blocked, var(--blocked));
+}
+.bRecon {
+  color: var(--cc-warn, var(--warn));
+}
+.bStale {
+  color: var(--cc-warn, var(--warn));
+  border-style: dashed;
+}
+
+.icon {
+  display: inline-flex;
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+}
+
+.icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* ----- ONGOING zero-click ----- */
+.ongoingList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ongoingCard {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: var(--sp-3) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.ongoingTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  justify-content: space-between;
+}
+
+.ongoingTitle {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ongoingMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chipMono {
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.ages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: var(--sp-2);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.ageLabel {
+  display: block;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cc-text-faint, #4a5568);
+}
+
+/* productive states: text + icon (not color alone) */
+.prodState {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.prodProductive {
+  color: var(--info);
+  border-color: color-mix(in srgb, var(--info) 40%, var(--border));
+  background: var(--info-bg);
+}
+
+.prodIdle {
+  color: var(--text-dim);
+  background: var(--surface-2);
+}
+
+.prodStalled {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: var(--warn-bg);
+}
+
+/* pulse only when productive and motion allowed */
+.pulseDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.pulseDotLive {
+  animation: ovPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes ovPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulseDotLive {
+    animation: none;
+  }
+}
+
+.hollowDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  background: transparent;
+  flex: none;
+}
+
+/* ----- lower panels ----- */
+.lowerGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: var(--sp-3);
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: var(--sp-3);
+  min-width: 0;
+}
+
+.panelTitle {
+  margin: 0 0 var(--sp-2);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cc-text-faint, #4a5568);
+}
+
+.panelList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.panelRow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+.panelMuted {
+  color: var(--cc-text-faint, #4a5568);
+  font-size: 0.8125rem;
+}
+
+/* ----- skeleton (no fake numbers) ----- */
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.skelBlock {
+  height: 4.5rem;
+  border-radius: var(--r-md);
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    var(--surface-3) 50%,
+    var(--surface-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: ovShimmer 1.4s ease-in-out infinite;
+  border: 1px solid var(--border-soft);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skelBlock {
+    animation: none;
+    background: var(--surface-2);
+  }
+}
+
+@keyframes ovShimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+.emptySlot {
+  padding: var(--sp-4);
+  text-align: center;
+  color: var(--cc-text-faint, #4a5568);
+  font-size: 0.9rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.sectionLabel {
+  margin: 0 0 var(--sp-2);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cc-text-faint, #4a5568);
+}
+
+/* mobile order matches UI_CONTRACT §4 (DOM already ordered; tighten stack) */
+@media (max-width: 768px) {
+  .priorityGlobal {
+    grid-template-columns: 1fr;
+  }
+
+  .stickyPill {
+    /* keep pill under ~30% of 390×844 ≈ 253px — single line + pad */
+    max-height: 4.5rem;
+    /* Mobile content padding is 12px each side (.content @ ≤900). Bind to
+       the real browser viewport so a wider overflow ancestor cannot push
+       left/right past the visible 390/360 scrollport (C3-C9 rejection). */
+    max-width: min(100%, calc(100vw - 24px));
+  }
+
+  .stickyChrome .stickyPill,
+  .stickyPill[data-shelf='true'] {
+    max-width: min(100%, calc(100vw - 24px));
+  }
+
+  .appBar {
+    position: sticky;
+    top: 0;
+  }
+
+  .stickyChrome .appBar {
+    position: relative;
+    top: auto;
+  }
+}
+
+/* live region host */
+.liveRegion {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

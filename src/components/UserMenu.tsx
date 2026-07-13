@@ -1,4 +1,5 @@
 // Signed-in human chip: username + role, admin → Users link, and sign out.
+// Mobile/zoom: compact avatar (+ optional role) so the chip never clips mid-name.
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 
@@ -14,12 +15,28 @@ export function UserMenu() {
   const initial = me.username.charAt(0).toUpperCase()
 
   return (
-    <div className="usermenu">
-      <button className="usermenu-btn" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open}>
-        <span className="usermenu-avatar">{initial}</span>
+    <div className="usermenu" data-testid="user-menu">
+      <button
+        type="button"
+        className="usermenu-btn"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Account menu: ${me.username}, ${me.role}`}
+        title={`${me.username} (${me.role})`}
+        data-username={me.username}
+        data-role={me.role}
+      >
+        <span className="usermenu-avatar" aria-hidden="true">
+          {initial}
+        </span>
         <span className="usermenu-name">{me.username}</span>
-        <span className={`chip ${me.role === 'admin' ? 'chip-admin' : 'chip-member'}`}>{me.role}</span>
-        <Icon name="chevL" size={13} className="switcher-caret" />
+        <span
+          className={`chip usermenu-role ${me.role === 'admin' ? 'chip-admin' : 'chip-member'}`}
+        >
+          {me.role}
+        </span>
+        <Icon name="chevL" size={13} className="switcher-caret usermenu-caret" />
       </button>
       {open ? (
         <div className="usermenu-pop" role="menu">

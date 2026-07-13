@@ -17,9 +17,12 @@ import { Route as ApiPublicSnapshotRouteImport } from './routes/api.public-snaps
 import { Route as ApiHealthzRouteImport } from './routes/api.healthz'
 import { Route as AdminUsersRouteImport } from './routes/admin.users'
 import { Route as BBoardIdIndexRouteImport } from './routes/b.$boardId.index'
+import { Route as BBoardIdWorkRouteImport } from './routes/b.$boardId.work'
+import { Route as BBoardIdPriorityRouteImport } from './routes/b.$boardId.priority'
 import { Route as BBoardIdOpsRouteImport } from './routes/b.$boardId.ops'
 import { Route as BBoardIdMapRouteImport } from './routes/b.$boardId.map'
 import { Route as BBoardIdLogRouteImport } from './routes/b.$boardId.log'
+import { Route as BBoardIdEvidenceRouteImport } from './routes/b.$boardId.evidence'
 import { Route as BBoardIdDesignRouteImport } from './routes/b.$boardId.design'
 import { Route as BBoardIdDecisionsRouteImport } from './routes/b.$boardId.decisions'
 import { Route as BBoardIdAgentsRouteImport } from './routes/b.$boardId.agents'
@@ -70,6 +73,16 @@ const BBoardIdIndexRoute = BBoardIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => BBoardIdRoute,
 } as any)
+const BBoardIdWorkRoute = BBoardIdWorkRouteImport.update({
+  id: '/work',
+  path: '/work',
+  getParentRoute: () => BBoardIdRoute,
+} as any)
+const BBoardIdPriorityRoute = BBoardIdPriorityRouteImport.update({
+  id: '/priority',
+  path: '/priority',
+  getParentRoute: () => BBoardIdRoute,
+} as any)
 const BBoardIdOpsRoute = BBoardIdOpsRouteImport.update({
   id: '/ops',
   path: '/ops',
@@ -83,6 +96,11 @@ const BBoardIdMapRoute = BBoardIdMapRouteImport.update({
 const BBoardIdLogRoute = BBoardIdLogRouteImport.update({
   id: '/log',
   path: '/log',
+  getParentRoute: () => BBoardIdRoute,
+} as any)
+const BBoardIdEvidenceRoute = BBoardIdEvidenceRouteImport.update({
+  id: '/evidence',
+  path: '/evidence',
   getParentRoute: () => BBoardIdRoute,
 } as any)
 const BBoardIdDesignRoute = BBoardIdDesignRouteImport.update({
@@ -144,9 +162,12 @@ export interface FileRoutesByFullPath {
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
   '/b/$boardId/design': typeof BBoardIdDesignRoute
+  '/b/$boardId/evidence': typeof BBoardIdEvidenceRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
   '/b/$boardId/map': typeof BBoardIdMapRoute
   '/b/$boardId/ops': typeof BBoardIdOpsRoute
+  '/b/$boardId/priority': typeof BBoardIdPriorityRoute
+  '/b/$boardId/work': typeof BBoardIdWorkRoute
   '/b/$boardId/': typeof BBoardIdIndexRoute
   '/b/$boardId/features/$featureId': typeof BBoardIdFeaturesFeatureIdRoute
   '/b/$boardId/projects/$projectId': typeof BBoardIdProjectsProjectIdRoute
@@ -165,9 +186,12 @@ export interface FileRoutesByTo {
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
   '/b/$boardId/design': typeof BBoardIdDesignRoute
+  '/b/$boardId/evidence': typeof BBoardIdEvidenceRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
   '/b/$boardId/map': typeof BBoardIdMapRoute
   '/b/$boardId/ops': typeof BBoardIdOpsRoute
+  '/b/$boardId/priority': typeof BBoardIdPriorityRoute
+  '/b/$boardId/work': typeof BBoardIdWorkRoute
   '/b/$boardId': typeof BBoardIdIndexRoute
   '/b/$boardId/features/$featureId': typeof BBoardIdFeaturesFeatureIdRoute
   '/b/$boardId/projects/$projectId': typeof BBoardIdProjectsProjectIdRoute
@@ -188,9 +212,12 @@ export interface FileRoutesById {
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
   '/b/$boardId/design': typeof BBoardIdDesignRoute
+  '/b/$boardId/evidence': typeof BBoardIdEvidenceRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
   '/b/$boardId/map': typeof BBoardIdMapRoute
   '/b/$boardId/ops': typeof BBoardIdOpsRoute
+  '/b/$boardId/priority': typeof BBoardIdPriorityRoute
+  '/b/$boardId/work': typeof BBoardIdWorkRoute
   '/b/$boardId/': typeof BBoardIdIndexRoute
   '/b/$boardId/features/$featureId': typeof BBoardIdFeaturesFeatureIdRoute
   '/b/$boardId/projects/$projectId': typeof BBoardIdProjectsProjectIdRoute
@@ -212,9 +239,12 @@ export interface FileRouteTypes {
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
+    | '/b/$boardId/evidence'
     | '/b/$boardId/log'
     | '/b/$boardId/map'
     | '/b/$boardId/ops'
+    | '/b/$boardId/priority'
+    | '/b/$boardId/work'
     | '/b/$boardId/'
     | '/b/$boardId/features/$featureId'
     | '/b/$boardId/projects/$projectId'
@@ -233,9 +263,12 @@ export interface FileRouteTypes {
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
+    | '/b/$boardId/evidence'
     | '/b/$boardId/log'
     | '/b/$boardId/map'
     | '/b/$boardId/ops'
+    | '/b/$boardId/priority'
+    | '/b/$boardId/work'
     | '/b/$boardId'
     | '/b/$boardId/features/$featureId'
     | '/b/$boardId/projects/$projectId'
@@ -255,9 +288,12 @@ export interface FileRouteTypes {
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
+    | '/b/$boardId/evidence'
     | '/b/$boardId/log'
     | '/b/$boardId/map'
     | '/b/$boardId/ops'
+    | '/b/$boardId/priority'
+    | '/b/$boardId/work'
     | '/b/$boardId/'
     | '/b/$boardId/features/$featureId'
     | '/b/$boardId/projects/$projectId'
@@ -335,6 +371,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BBoardIdIndexRouteImport
       parentRoute: typeof BBoardIdRoute
     }
+    '/b/$boardId/work': {
+      id: '/b/$boardId/work'
+      path: '/work'
+      fullPath: '/b/$boardId/work'
+      preLoaderRoute: typeof BBoardIdWorkRouteImport
+      parentRoute: typeof BBoardIdRoute
+    }
+    '/b/$boardId/priority': {
+      id: '/b/$boardId/priority'
+      path: '/priority'
+      fullPath: '/b/$boardId/priority'
+      preLoaderRoute: typeof BBoardIdPriorityRouteImport
+      parentRoute: typeof BBoardIdRoute
+    }
     '/b/$boardId/ops': {
       id: '/b/$boardId/ops'
       path: '/ops'
@@ -354,6 +404,13 @@ declare module '@tanstack/react-router' {
       path: '/log'
       fullPath: '/b/$boardId/log'
       preLoaderRoute: typeof BBoardIdLogRouteImport
+      parentRoute: typeof BBoardIdRoute
+    }
+    '/b/$boardId/evidence': {
+      id: '/b/$boardId/evidence'
+      path: '/evidence'
+      fullPath: '/b/$boardId/evidence'
+      preLoaderRoute: typeof BBoardIdEvidenceRouteImport
       parentRoute: typeof BBoardIdRoute
     }
     '/b/$boardId/design': {
@@ -426,9 +483,12 @@ interface BBoardIdRouteChildren {
   BBoardIdAgentsRoute: typeof BBoardIdAgentsRoute
   BBoardIdDecisionsRoute: typeof BBoardIdDecisionsRoute
   BBoardIdDesignRoute: typeof BBoardIdDesignRoute
+  BBoardIdEvidenceRoute: typeof BBoardIdEvidenceRoute
   BBoardIdLogRoute: typeof BBoardIdLogRoute
   BBoardIdMapRoute: typeof BBoardIdMapRoute
   BBoardIdOpsRoute: typeof BBoardIdOpsRoute
+  BBoardIdPriorityRoute: typeof BBoardIdPriorityRoute
+  BBoardIdWorkRoute: typeof BBoardIdWorkRoute
   BBoardIdIndexRoute: typeof BBoardIdIndexRoute
   BBoardIdFeaturesFeatureIdRoute: typeof BBoardIdFeaturesFeatureIdRoute
   BBoardIdProjectsProjectIdRoute: typeof BBoardIdProjectsProjectIdRoute
@@ -442,9 +502,12 @@ const BBoardIdRouteChildren: BBoardIdRouteChildren = {
   BBoardIdAgentsRoute: BBoardIdAgentsRoute,
   BBoardIdDecisionsRoute: BBoardIdDecisionsRoute,
   BBoardIdDesignRoute: BBoardIdDesignRoute,
+  BBoardIdEvidenceRoute: BBoardIdEvidenceRoute,
   BBoardIdLogRoute: BBoardIdLogRoute,
   BBoardIdMapRoute: BBoardIdMapRoute,
   BBoardIdOpsRoute: BBoardIdOpsRoute,
+  BBoardIdPriorityRoute: BBoardIdPriorityRoute,
+  BBoardIdWorkRoute: BBoardIdWorkRoute,
   BBoardIdIndexRoute: BBoardIdIndexRoute,
   BBoardIdFeaturesFeatureIdRoute: BBoardIdFeaturesFeatureIdRoute,
   BBoardIdProjectsProjectIdRoute: BBoardIdProjectsProjectIdRoute,

@@ -81,7 +81,8 @@ import { createMemoryLockStore, type LockStore } from '#/server/locks'
 import {
   evaluateCapacityPolicy,
   syncAccounts,
-  createMemoryAccountSyncStore,
+  getSharedAccountSyncStore,
+  setSharedAccountSyncStore,
   type AccountSyncStore,
   type AccountSyncDeps,
 } from '#/server/account-sync'
@@ -139,7 +140,6 @@ function featureSummary(f: Feature) {
  * Durable external stores may replace these; absent capacity/config → Decision/blocker, not success stubs.
  */
 let mcpRunDeps: RunRegistryDeps | null = null
-let mcpAccountStore: AccountSyncStore | null = null
 let mcpDecisionStore: DecisionV3Store | null = null
 let mcpReconcilerStore: ReconcilerStore | null = null
 let mcpAtomic: ControlPlaneAtomicStore | null = null
@@ -154,8 +154,12 @@ export function setMcpRunRegistryDeps(deps: RunRegistryDeps | null): void {
 export function setMcpPlanStore(store: DispatchPlanStore | null): void {
   setSharedDispatchPlanStore(store)
 }
+/**
+ * Wire MCP sync_accounts / capacity to the process-wide shared account-sync store
+ * (same instance as control-center-ui-adapter readLatestAccountSyncSnapshot).
+ */
 export function setMcpAccountStore(store: AccountSyncStore | null): void {
-  mcpAccountStore = store
+  setSharedAccountSyncStore(store)
 }
 export function setMcpDecisionStore(store: DecisionV3Store | null): void {
   mcpDecisionStore = store
@@ -169,7 +173,7 @@ export function setMcpAtomic(store: ControlPlaneAtomicStore | null): void {
 export function resetMcpControlPlaneDeps(): void {
   mcpRunDeps = null
   setSharedDispatchPlanStore(null)
-  mcpAccountStore = null
+  setSharedAccountSyncStore(null)
   mcpDecisionStore = null
   mcpReconcilerStore = null
   mcpAtomic = null
@@ -208,10 +212,14 @@ function sharedPlanStore(): DispatchPlanStore {
   return getSharedDispatchPlanStore()
 }
 
+/**
+ * Sole account-sync store: same process-wide instance as
+ * getSharedAccountSyncStore / readLatestAccountSyncSnapshot (control-center UI).
+ * Never creates a private MCP-only store — that split caused sourceRevision/generatedAt
+ * parity failures (MCP write invisible to authenticated CC reads).
+ */
 function sharedAccountStore(): AccountSyncStore {
-  if (mcpAccountStore) return mcpAccountStore
-  mcpAccountStore = createMemoryAccountSyncStore()
-  return mcpAccountStore
+  return getSharedAccountSyncStore()
 }
 
 function sharedDecisionStore(): DecisionV3Store {

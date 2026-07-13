@@ -169,6 +169,32 @@ export interface WorkTask {
   lifecycleStage?: string | null // current proven lifecycle stage (from the tasks table)
   blockedReason?: string | null // current blocker (set on repair/fail, cleared on forward)
   lastReceiptAt?: string | null // timestamp of the last lifecycle transition
+  /**
+   * Optional control-plane fields for C3 rollup truth (list + detail).
+   * Read-only projection from persisted task JSON — never writable readiness/G5 shortcuts.
+   * claimState: only VALID_CURRENT|STALE|ORPHAN|EXPIRED|FENCED|BEYOND_STAGE are trusted.
+   * selectedForNextDispatch is intentionally NOT a task field authority (NEXT = active plan only).
+   */
+  claimState?:
+    | 'VALID_CURRENT'
+    | 'STALE'
+    | 'ORPHAN'
+    | 'EXPIRED'
+    | 'FENCED'
+    | 'BEYOND_STAGE'
+    | string
+    | null
+  staleDataSource?: boolean
+  staleDispatchPlan?: boolean
+  staleAccountSync?: boolean
+  /** Product DONE mode: Stage 1 = MAP_VERIFIED; Stage 2 = PROD_READY|LIVE_VERIFIED. */
+  productStageMode?: 'STAGE_1' | 'STAGE_2' | string | null
+  p0Blocker?: boolean
+  /** Explicit target gate when distinct from lifecycleStage. */
+  targetGate?: string | null
+  /** Explicit current open-decision flags — may only supplement open Decision source. */
+  hasBlockingDecision?: boolean
+  hasNonBlockingDecision?: boolean
   // object-shaped extras (kept as opaque JSON)
   detail?: Json
   unit_test_plan?: Json
@@ -376,10 +402,27 @@ export interface DecisionOption {
   label: string
   rekomendasi?: boolean
 }
+
+/** Optional V3 option shape carried on board JSON (rich DecisionV3 seed). */
+export interface DecisionOptionV3Carrier {
+  optionId?: string
+  id?: string
+  key?: string
+  label: string
+  tradeoffs?: string | null
+  declining?: boolean
+  recommended?: boolean
+}
+
+/**
+ * Board collab Decision carrier.
+ * Legacy fields remain required for older boards; optional V3-shaped fields are
+ * projected when present. Private body/privateNote/comment must never ship to UI.
+ */
 export interface Decision {
   id: string
   teks: string
-  status: string // 'open' | 'decided' | 'blocked'
+  status: string // 'open' | 'decided' | 'blocked' | V3 OPEN|ACKNOWLEDGED|…
   aksi?: string
   opsi?: Array<DecisionOption>
   jawaban?: string
@@ -387,6 +430,38 @@ export interface Decision {
   tanggal_putus?: string
   featureId?: string // set when an agent opened a decision against a feature
   openedBy?: string
+  // ---- optional DecisionV3-shaped fields (read-only projection) ----
+  decisionId?: string
+  title?: string
+  question?: string
+  severity?: string
+  blocking?: boolean
+  type?: string
+  evidence?: Array<string>
+  options?: Array<DecisionOptionV3Carrier>
+  agentRecommendation?: string | null
+  recommendation?: string | null
+  dueAt?: string | null
+  due?: string | null
+  createdAt?: string | null
+  created?: string | null
+  snoozedUntil?: string | null
+  ownerId?: string | null
+  resolverId?: string | null
+  selectedOptionId?: string | null
+  projectId?: string | null
+  taskId?: string | null
+  runId?: string | null
+  expectedRev?: number | null
+  boardRev?: number | null
+  entityRev?: number | null
+  scopedApprovalId?: string | null
+  auditIds?: Array<string>
+  expiresAt?: string | null
+  /** Private — never map into public/UI projection. */
+  body?: string
+  privateNote?: string
+  comment?: string | null
 }
 
 export type Actor = 'human' | 'agent'

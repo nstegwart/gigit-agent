@@ -1,0 +1,544 @@
+/* Decisions inbox — scoped CSS module (C3-R1C). WCAG AA contrast fallbacks. */
+
+.screen {
+  --dec-surface: var(--surface, #ffffff);
+  --dec-surface-2: var(--surface-2, #f4f6f9);
+  --dec-border: var(--border, #e4e8ee);
+  --dec-text: var(--text, #171a21);
+  --dec-text-dim: var(--text-dim, #58616f);
+  /* Hard AA locals — do not pass through bright global tokens via var(--x, aaHex). */
+  --dec-text-faint: #58616f;
+  --dec-accent: #4f3fd4;
+  --dec-ok: #0a6e48;
+  --dec-ok-bg: rgba(10, 110, 72, 0.12);
+  --dec-blocked: #c62828;
+  --dec-blocked-bg: rgba(198, 40, 40, 0.12);
+  --dec-warn: #8a5200;
+  --dec-warn-bg: rgba(138, 82, 0, 0.12);
+  --dec-info: #1a5fb4;
+  --dec-info-bg: rgba(26, 95, 180, 0.12);
+  --dec-radius: var(--r-md, 12px);
+  --dec-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+  --dec-touch: 44px;
+  --dec-mono: var(--mono, ui-monospace, monospace);
+
+  color: var(--dec-text);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.liveRegion {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- header ---- */
+
+.pageHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 20px;
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dec-text-faint);
+}
+
+.pageTitle {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.pageSub {
+  margin: 6px 0 0;
+  color: var(--dec-text-dim);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  max-width: min(42rem, 100%);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.summaryStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.summaryChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--dec-border);
+  background: var(--dec-surface-2);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--dec-text);
+}
+
+.summaryChipBlocking {
+  border-color: color-mix(in srgb, var(--dec-blocked) 45%, var(--dec-border));
+  background: var(--dec-blocked-bg);
+  color: var(--dec-blocked);
+}
+
+.summaryChipOpen {
+  border-color: color-mix(in srgb, var(--dec-accent) 35%, var(--dec-border));
+  background: color-mix(in srgb, var(--dec-accent) 10%, var(--dec-surface));
+  color: var(--dec-accent);
+}
+
+.pinStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--dec-border);
+  border-radius: var(--dec-radius);
+  background: var(--dec-surface);
+  font-size: 0.8rem;
+  color: var(--dec-text-dim);
+}
+
+.pinStrip code {
+  font-family: var(--dec-mono);
+  font-size: 0.78rem;
+  color: var(--dec-text);
+}
+
+/* ---- banners (compact first-viewport diagnostics) ---- */
+
+.banner {
+  border: 1px solid var(--dec-border);
+  border-radius: var(--dec-radius);
+  padding: 10px 12px;
+  background: var(--dec-surface-2);
+}
+
+.bannerCompact {
+  padding: 8px 12px;
+}
+
+.bannerTitle {
+  margin: 0 0 2px;
+  font-weight: 650;
+  font-size: 0.88rem;
+}
+
+.bannerBody {
+  margin: 0;
+  color: var(--dec-text-dim);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.diagDetails {
+  margin-top: 6px;
+}
+
+.diagDetails summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--dec-text-dim);
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.diagDetails summary:focus-visible {
+  outline: 2px solid var(--dec-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.banner_error,
+.banner_forbidden,
+.banner_disconnected {
+  border-color: color-mix(in srgb, var(--dec-blocked) 40%, var(--dec-border));
+  background: var(--dec-blocked-bg);
+}
+
+.banner_stale,
+.banner_partial,
+.banner_needs_human {
+  border-color: color-mix(in srgb, var(--dec-warn) 40%, var(--dec-border));
+  background: var(--dec-warn-bg);
+}
+
+.gapList {
+  margin: 8px 0 0;
+  padding-left: 1.1rem;
+  color: var(--dec-text-dim);
+  font-size: 0.85rem;
+}
+
+.retryBtn {
+  margin-top: 12px;
+  min-height: var(--dec-touch);
+  min-width: var(--dec-touch);
+  padding: 0 16px;
+  border-radius: 10px;
+  border: 1px solid var(--dec-accent);
+  background: var(--dec-accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.retryBtn:focus-visible {
+  outline: 2px solid var(--dec-accent);
+  outline-offset: 3px;
+}
+
+/* ---- list ---- */
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  border: 1px solid var(--dec-border);
+  border-radius: var(--dec-radius);
+  background: var(--dec-surface);
+  box-shadow: var(--dec-shadow);
+  padding: 14px 16px 16px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cardBlocking {
+  border-color: color-mix(in srgb, var(--dec-blocked) 50%, var(--dec-border));
+  box-shadow: 0 0 0 1px var(--dec-blocked-bg), var(--dec-shadow);
+}
+
+.cardHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.decisionId {
+  font-family: var(--dec-mono);
+  font-size: 0.78rem;
+  color: var(--dec-text-dim);
+}
+
+.title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--dec-text);
+  line-height: 1.3;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fieldLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dec-text-faint);
+}
+
+.fieldValue {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--dec-text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fieldPartial {
+  color: var(--dec-text-dim);
+  font-style: italic;
+}
+
+.metaGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+@media (min-width: 768px) {
+  .metaGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.metaCell {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--dec-surface-2);
+}
+
+.metaCell dt {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--dec-text-faint);
+}
+
+.metaCell dd {
+  margin: 3px 0 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+/* severity / status chips — icon+text+color */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 1.75rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sevCritical,
+.sevHigh {
+  background: var(--dec-blocked-bg);
+  color: var(--dec-blocked);
+}
+
+.sevMedium {
+  background: var(--dec-warn-bg);
+  color: var(--dec-warn);
+}
+
+.sevLow {
+  background: var(--dec-surface-2);
+  color: var(--dec-text-dim);
+  border: 1px solid var(--dec-border);
+}
+
+.statusOpen {
+  background: color-mix(in srgb, var(--dec-accent) 12%, transparent);
+  color: var(--dec-accent);
+}
+
+.statusAck {
+  background: var(--dec-info-bg);
+  color: var(--dec-info);
+}
+
+.statusResolved {
+  background: var(--dec-ok-bg);
+  color: var(--dec-ok);
+}
+
+.statusRejected,
+.statusExpired,
+.statusCancelled {
+  background: var(--dec-surface-2);
+  color: var(--dec-text-dim);
+}
+
+.blockingBadge {
+  background: var(--dec-blocked-bg);
+  color: var(--dec-blocked);
+  text-transform: uppercase;
+}
+
+.options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.optionRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--dec-border);
+  background: var(--dec-surface-2);
+  font-size: 0.875rem;
+}
+
+.optionTradeoff {
+  font-size: 0.8rem;
+  color: var(--dec-text-dim);
+}
+
+.evidenceList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.evidenceItem {
+  font-family: var(--dec-mono);
+  font-size: 0.78rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--dec-surface-2);
+  border: 1px solid var(--dec-border);
+  color: var(--dec-text);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.actionHint {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--dec-touch);
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--dec-border);
+  background: var(--dec-surface);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--dec-text);
+}
+
+.actionHintPrimary {
+  border-color: var(--dec-accent);
+  background: var(--dec-accent);
+  color: #fff;
+}
+
+.actionHintBlocked {
+  border-color: color-mix(in srgb, var(--dec-blocked) 40%, var(--dec-border));
+  color: var(--dec-blocked);
+}
+
+.empty {
+  margin: 0;
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--dec-text-dim);
+  border: 1px dashed var(--dec-border);
+  border-radius: var(--dec-radius);
+  background: var(--dec-surface-2);
+  font-size: 0.95rem;
+}
+
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skeletonCard {
+  height: 120px;
+  border-radius: var(--dec-radius);
+  background: linear-gradient(
+    90deg,
+    var(--dec-surface-2) 0%,
+    #e8ecf2 50%,
+    var(--dec-surface-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: decShimmer 1.2s ease-in-out infinite;
+  border: 1px solid var(--dec-border);
+}
+
+@keyframes decShimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonCard {
+    animation: none;
+    background: var(--dec-surface-2);
+  }
+  .retryBtn,
+  .actionHint {
+    transition: none;
+  }
+}
+
+/* field-linked errors */
+.fieldError {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--dec-blocked);
+  font-weight: 550;
+}
+
+.fieldError:focus-visible {
+  outline: 2px solid var(--dec-blocked);
+  outline-offset: 2px;
+}

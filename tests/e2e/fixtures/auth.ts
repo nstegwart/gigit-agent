@@ -1,0 +1,96 @@
+/**
+ * Fail-closed authenticated storageState helpers for Cairn UI E2E.
+ * Cookie name: cairn_session (src/server/auth.ts SESSION_COOKIE).
+ * Credentials: CAIRN_E2E_USERNAME / CAIRN_E2E_PASSWORD only (env).
+ */
+import { type Browser, type BrowserContext, type Page, expect } from '@playwright/test'
+import fs from 'node:fs'
+import path from 'node:path'
+
+import { requireE2ECredentials } from './env'
+
+/** Canonical storageState path used by Playwright projects + qa/e2e flows. */
+export const AUTH_STORAGE_STATE_PATH = path.join(
+  process.cwd(),
+  'qa/e2e/fixtures/storage/admin.json',
+)
+
+export const SESSION_COOKIE_NAME = 'cairn_session'
+
+export function ensureAuthStorageDir(): void {
+  fs.mkdirSync(path.dirname(AUTH_STORAGE_STATE_PATH), { recursive: true })
+}
+
+/**
+ * Drive the real login UI and persist storageState.
+ * Fail-closed: missing env, wrong credentials, or missing session cookie → throw.
+ */
+export async function loginAndSaveStorageState(page: Page, outPath = AUTH_STORAGE_STATE_PATH): Promise<void> {
+  const { username, password } = requireE2ECredentials()
+  ensureAuthStorageDir()
+
+  await page.goto('/login', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.auth-card')).toBeVisible({ timeout: 30_000 })
+
+  // Setup form only when instance has zero users — still uses same fields.
+  await page.locator('input[autocomplete="username"]').fill(username)
+  const passwordInput = page.locator('input[type="password"]')
+  await passwordInput.fill(password)
+  await page.locator('button.auth-submit').click()
+
+  // Success: leave /login (home or board picker). Fail: stay with .auth-err.
+  await Promise.race([
+    page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 30_000 }),
+    page.locator('.auth-err').waitFor({ state: 'visible', timeout: 30_000 }).then(async () => {
+      const msg = (await page.locator('.auth-err').textContent())?.trim() || 'unknown login error'
+      throw new Error(`FAIL-CLOSED auth: login rejected — ${msg}`)
+    }),
+  ])
+
+  if (page.url().includes('/login')) {
+    throw new Error('FAIL-CLOSED auth: still on /login after submit')
+  }
+
+  const cookies = await page.context().cookies()
+  const session = cookies.find((c) => c.name === SESSION_COOKIE_NAME)
+  if (!session?.value) {
+    throw new Error(
+      `FAIL-CLOSED auth: cookie ${SESSION_COOKIE_NAME} missing after login — not using ambient session`,
+    )
+  }
+
+  await page.context().storageState({ path: outPath })
+}
+
+/** Load storageState only if the file exists and contains cairn_session; else throw. */
+export function requireExistingStorageState(filePath = AUTH_STORAGE_STATE_PATH): string {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(
+      `FAIL-CLOSED auth: storageState missing at ${filePath}. Run setup-auth project or qa/e2e/flows/auth-login.mjs first.`,
+    )
+  }
+  let parsed: { cookies?: Array<{ name: string; value: string }> }
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as typeof parsed
+  } catch (e) {
+    throw new Error(`FAIL-CLOSED auth: storageState unreadable at ${filePath}: ${String(e)}`)
+  }
+  const hasSession = (parsed.cookies ?? []).some(
+    (c) => c.name === SESSION_COOKIE_NAME && Boolean(c.value),
+  )
+  if (!hasSession) {
+    throw new Error(
+      `FAIL-CLOSED auth: ${filePath} has no ${SESSION_COOKIE_NAME} cookie — refusing empty/ambient state`,
+    )
+  }
+  return filePath
+}
+
+/** Open a context with validated storageState (fail-closed). */
+export async function newAuthenticatedContext(
+  browser: Browser,
+  filePath = AUTH_STORAGE_STATE_PATH,
+): Promise<BrowserContext> {
+  const state = requireExistingStorageState(filePath)
+  return browser.newContext({ storageState: state })
+}

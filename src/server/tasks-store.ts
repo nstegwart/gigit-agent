@@ -72,9 +72,277 @@ export function ensureTaskSchema(): Promise<void> {
   return schemaReady
 }
 
+/** Optional V3 classification fields that may ride on WorkTask (list + detail). */
+type WorkTaskClassificationCarrier = WorkTask & {
+  taskClass?: TaskClass | null
+  disposition?: TaskDisposition | null
+  classification?: {
+    taskClass?: TaskClass | null
+    disposition?: TaskDisposition | null
+    receipt?: ClassificationReceipt | null
+    controlPlaneTargetGate?: string | null
+    controlPlaneGateVerifiedPass?: boolean
+    controlPlaneRootAccepted?: boolean
+  } | null
+  classificationReceipt?: ClassificationReceipt | null
+  classificationReceiptId?: string | null
+  classificationReceiptHash?: string | null
+}
+
+/** Claim enum values trusted for rollup (invalid → undefined, fail-closed). */
+export const VALID_CLAIM_STATES = [
+  'VALID_CURRENT',
+  'STALE',
+  'ORPHAN',
+  'EXPIRED',
+  'FENCED',
+  'BEYOND_STAGE',
+] as const
+export type ValidClaimState = (typeof VALID_CLAIM_STATES)[number]
+
+export function parseValidClaimState(value: unknown): ValidClaimState | undefined {
+  if (typeof value !== 'string') return undefined
+  return (VALID_CLAIM_STATES as ReadonlyArray<string>).includes(value)
+    ? (value as ValidClaimState)
+    : undefined
+}
+
+function parseStrictBoolean(value: unknown): boolean | undefined {
+  if (value === true || value === 1 || value === '1' || value === 'true') return true
+  if (value === false || value === 0 || value === '0' || value === 'false') return false
+  // MySQL JSON_EXTRACT may return Buffer/string "true"/"false"
+  if (typeof value === 'string') {
+    const t = value.trim().toLowerCase()
+    if (t === 'true') return true
+    if (t === 'false') return false
+  }
+  return undefined
+}
+
+function parseBoundedString(value: unknown, maxLen = 400): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const s = value.trim()
+  if (!s || s.length > maxLen) return undefined
+  return s
+}
+
+/**
+ * Project bounded control-plane fields onto light list rows without full `data` blob.
+ * Never invents claim/stale/P0; invalid claim enum → undefined (fail-closed).
+ * Does NOT project selectedForNextDispatch (NEXT = active root dispatch plan only).
+ */
+export function projectLightTaskControlPlane(sources: {
+  summary?: Record<string, unknown> | null
+  dataClaimState?: unknown
+  dataStaleDataSource?: unknown
+  dataStaleDispatchPlan?: unknown
+  dataStaleAccountSync?: unknown
+  dataProductStageMode?: unknown
+  dataP0Blocker?: unknown
+  dataTargetGate?: unknown
+  dataEvidencePath?: unknown
+  dataHasBlockingDecision?: unknown
+  dataHasNonBlockingDecision?: unknown
+}): Pick<
+  WorkTask,
+  | 'claimState'
+  | 'staleDataSource'
+  | 'staleDispatchPlan'
+  | 'staleAccountSync'
+  | 'productStageMode'
+  | 'p0Blocker'
+  | 'targetGate'
+  | 'evidence_path'
+  | 'hasBlockingDecision'
+  | 'hasNonBlockingDecision'
+> {
+  const s = (sources.summary && typeof sources.summary === 'object'
+    ? sources.summary
+    : {}) as Record<string, unknown>
+
+  const claimState = parseValidClaimState(s.claimState ?? sources.dataClaimState)
+  const staleDataSource =
+    parseStrictBoolean(s.staleDataSource ?? sources.dataStaleDataSource)
+  const staleDispatchPlan =
+    parseStrictBoolean(s.staleDispatchPlan ?? sources.dataStaleDispatchPlan)
+  const staleAccountSync =
+    parseStrictBoolean(s.staleAccountSync ?? sources.dataStaleAccountSync)
+  const modeRaw = s.productStageMode ?? sources.dataProductStageMode
+  const productStageMode =
+    modeRaw === 'STAGE_1' || modeRaw === 'STAGE_2' ? modeRaw : undefined
+  const p0Blocker = parseStrictBoolean(s.p0Blocker ?? sources.dataP0Blocker)
+  const targetGate = parseBoundedString(s.targetGate ?? sources.dataTargetGate, 64)
+  const evidence_path = parseBoundedString(
+    s.evidence_path ?? sources.dataEvidencePath,
+    800,
+  )
+  const hasBlockingDecision = parseStrictBoolean(
+    s.hasBlockingDecision ?? sources.dataHasBlockingDecision,
+  )
+  const hasNonBlockingDecision = parseStrictBoolean(
+    s.hasNonBlockingDecision ?? sources.dataHasNonBlockingDecision,
+  )
+
+  const out: ReturnType<typeof projectLightTaskControlPlane> = {}
+  if (claimState !== undefined) out.claimState = claimState
+  if (staleDataSource !== undefined) out.staleDataSource = staleDataSource
+  if (staleDispatchPlan !== undefined) out.staleDispatchPlan = staleDispatchPlan
+  if (staleAccountSync !== undefined) out.staleAccountSync = staleAccountSync
+  if (productStageMode !== undefined) out.productStageMode = productStageMode
+  if (p0Blocker !== undefined) out.p0Blocker = p0Blocker
+  if (targetGate !== undefined) out.targetGate = targetGate
+  if (evidence_path !== undefined) out.evidence_path = evidence_path
+  if (hasBlockingDecision !== undefined) out.hasBlockingDecision = hasBlockingDecision
+  if (hasNonBlockingDecision !== undefined) out.hasNonBlockingDecision = hasNonBlockingDecision
+  return out
+}
+
+/** Parse JSON cell that may arrive as object, string, or Buffer (mysql2). */
+export function parseJsonCell(value: unknown): unknown {
+  if (value == null) return null
+  if (Buffer.isBuffer(value)) {
+    try {
+      return JSON.parse(value.toString('utf8'))
+    } catch {
+      return null
+    }
+  }
+  if (typeof value === 'string') {
+    const t = value.trim()
+    if (!t || t === 'null') return null
+    try {
+      return JSON.parse(t)
+    } catch {
+      return null
+    }
+  }
+  return value
+}
+
+/**
+ * Project classification onto light list rows without loading full mapping `data`.
+ * Sources (first non-null wins per field): summary → data JSON extract → V3 columns / v3_namespace.
+ * NEVER invents PRODUCT from phase/scope/mappingPct — only forwards persisted proof.
+ */
+export function projectLightTaskClassification(sources: {
+  summary?: Record<string, unknown> | null
+  dataClassification?: unknown
+  dataClassificationReceipt?: unknown
+  dataTaskClass?: unknown
+  dataDisposition?: unknown
+  colTaskClass?: unknown
+  colDisposition?: unknown
+  colReceiptId?: unknown
+  colReceiptHash?: unknown
+  v3Namespace?: unknown
+}): Pick<
+  WorkTaskClassificationCarrier,
+  | 'taskClass'
+  | 'disposition'
+  | 'classification'
+  | 'classificationReceipt'
+  | 'classificationReceiptId'
+  | 'classificationReceiptHash'
+> {
+  const s = (sources.summary && typeof sources.summary === 'object'
+    ? sources.summary
+    : {}) as Record<string, unknown>
+
+  const nestedFromSummary =
+    s.classification && typeof s.classification === 'object'
+      ? (s.classification as NonNullable<WorkTaskClassificationCarrier['classification']>)
+      : null
+  const nestedFromDataRaw = parseJsonCell(sources.dataClassification)
+  const nestedFromData =
+    nestedFromDataRaw && typeof nestedFromDataRaw === 'object'
+      ? (nestedFromDataRaw as NonNullable<WorkTaskClassificationCarrier['classification']>)
+      : null
+  const nested = nestedFromSummary ?? nestedFromData
+
+  const receiptFromSummary =
+    s.classificationReceipt && typeof s.classificationReceipt === 'object'
+      ? (s.classificationReceipt as ClassificationReceipt)
+      : null
+  const receiptFromDataRaw = parseJsonCell(sources.dataClassificationReceipt)
+  const receiptFromData =
+    receiptFromDataRaw && typeof receiptFromDataRaw === 'object'
+      ? (receiptFromDataRaw as ClassificationReceipt)
+      : null
+  const v3ns = parseJsonCell(sources.v3Namespace)
+  const receiptFromV3 =
+    v3ns &&
+    typeof v3ns === 'object' &&
+    (v3ns as { classificationReceipt?: unknown }).classificationReceipt &&
+    typeof (v3ns as { classificationReceipt?: unknown }).classificationReceipt === 'object'
+      ? ((v3ns as { classificationReceipt: ClassificationReceipt }).classificationReceipt)
+      : nested?.receipt && typeof nested.receipt === 'object'
+        ? nested.receipt
+        : null
+
+  const receipt = receiptFromSummary ?? receiptFromData ?? receiptFromV3 ?? null
+
+  const taskClassRaw =
+    nested?.taskClass ??
+    s.taskClass ??
+    sources.dataTaskClass ??
+    sources.colTaskClass ??
+    receipt?.taskClass ??
+    null
+  const dispositionRaw =
+    nested?.disposition ??
+    s.disposition ??
+    sources.dataDisposition ??
+    sources.colDisposition ??
+    receipt?.disposition ??
+    null
+
+  const taskClass =
+    typeof taskClassRaw === 'string' && (TASK_CLASSES as ReadonlyArray<string>).includes(taskClassRaw)
+      ? (taskClassRaw as TaskClass)
+      : null
+  const disposition =
+    typeof dispositionRaw === 'string' &&
+    (TASK_DISPOSITIONS as ReadonlyArray<string>).includes(dispositionRaw)
+      ? (dispositionRaw as TaskDisposition)
+      : null
+
+  const receiptId =
+    (typeof s.classificationReceiptId === 'string' ? s.classificationReceiptId : null) ??
+    (typeof sources.colReceiptId === 'string' ? sources.colReceiptId : null) ??
+    receipt?.receiptId ??
+    null
+  const receiptHash =
+    (typeof s.classificationReceiptHash === 'string' ? s.classificationReceiptHash : null) ??
+    (typeof sources.colReceiptHash === 'string' ? sources.colReceiptHash : null) ??
+    receipt?.receiptHash ??
+    null
+
+  const classification =
+    nested || receipt || taskClass || disposition
+      ? {
+          taskClass: taskClass ?? nested?.taskClass ?? null,
+          disposition: disposition ?? nested?.disposition ?? null,
+          receipt,
+          controlPlaneTargetGate: nested?.controlPlaneTargetGate ?? null,
+          controlPlaneGateVerifiedPass: nested?.controlPlaneGateVerifiedPass,
+          controlPlaneRootAccepted: nested?.controlPlaneRootAccepted,
+        }
+      : null
+
+  return {
+    taskClass,
+    disposition,
+    classification,
+    classificationReceipt: receipt,
+    classificationReceiptId: receiptId,
+    classificationReceiptHash: receiptHash,
+  }
+}
+
 /** Fields the list views (TasksTable, project page, list_tasks) need — no heavy mapping. */
 function summaryOf(t: WorkTask) {
-  return {
+  const raw = t as WorkTaskClassificationCarrier
+  const base: Record<string, unknown> = {
     checkpoints: t.checkpoints ?? [],
     dependencies: t.dependencies ?? [],
     impacts: t.impacts ?? [],
@@ -83,6 +351,23 @@ function summaryOf(t: WorkTask) {
     objective: t.objective ?? null,
     next: t.next ?? null,
   }
+  // Persist classification into summary so list reads stay light (no full data pull).
+  // Only forward when present — never invent PRODUCT from phase/pct.
+  if (raw.classification && typeof raw.classification === 'object') {
+    base.classification = raw.classification
+  }
+  if (raw.classificationReceipt && typeof raw.classificationReceipt === 'object') {
+    base.classificationReceipt = raw.classificationReceipt
+  }
+  if (typeof raw.taskClass === 'string') base.taskClass = raw.taskClass
+  if (typeof raw.disposition === 'string') base.disposition = raw.disposition
+  if (typeof raw.classificationReceiptId === 'string') {
+    base.classificationReceiptId = raw.classificationReceiptId
+  }
+  if (typeof raw.classificationReceiptHash === 'string') {
+    base.classificationReceiptHash = raw.classificationReceiptHash
+  }
+  return base
 }
 function rowValues(boardId: string, t: WorkTask): Array<unknown> {
   return [
@@ -93,10 +378,14 @@ function rowValues(boardId: string, t: WorkTask): Array<unknown> {
 }
 const COLS = '(board_id, id, project_id, feature_contract_id, grp, phase, scope, title, updated, summary, data)'
 
-/** Reconstruct a light WorkTask (list shape) from a summary row. */
-function lightFromRow(r: Record<string, unknown>): WorkTask {
-  const s = (r.summary ?? {}) as Record<string, unknown>
-  return {
+/**
+ * Reconstruct a light WorkTask (list shape) from a summary row + optional
+ * classification extracts (data JSON paths / V3 columns). Pure for unit tests.
+ */
+export function lightFromRow(r: Record<string, unknown>): WorkTask {
+  const sRaw = parseJsonCell(r.summary)
+  const s = (sRaw && typeof sRaw === 'object' ? sRaw : {}) as Record<string, unknown>
+  const base: WorkTask = {
     id: r.id as string,
     title: (r.title as string) ?? '',
     projectId: (r.project_id as string) ?? null,
@@ -116,6 +405,54 @@ function lightFromRow(r: Record<string, unknown>): WorkTask {
     blockedReason: (r.blocked_reason as string) ?? null,
     lastReceiptAt: (r.last_receipt_at as string) ?? null,
   }
+  const cls = projectLightTaskClassification({
+    summary: s,
+    dataClassification: r.data_classification,
+    dataClassificationReceipt: r.data_classification_receipt,
+    dataTaskClass: r.data_task_class,
+    dataDisposition: r.data_disposition,
+    colTaskClass: r.task_class,
+    colDisposition: r.disposition,
+    colReceiptId: r.classification_receipt_id,
+    colReceiptHash: r.classification_receipt_hash,
+    v3Namespace: r.v3_namespace,
+  })
+  // Attach classification carrier fields only when present (adapter reads them).
+  const out = base as WorkTaskClassificationCarrier
+  if (cls.classification) out.classification = cls.classification
+  if (cls.classificationReceipt) out.classificationReceipt = cls.classificationReceipt
+  if (cls.taskClass) out.taskClass = cls.taskClass
+  if (cls.disposition) out.disposition = cls.disposition
+  if (cls.classificationReceiptId) out.classificationReceiptId = cls.classificationReceiptId
+  if (cls.classificationReceiptHash) out.classificationReceiptHash = cls.classificationReceiptHash
+
+  // Bounded control-plane projection (claim/stale/decision flags) — no full data blob.
+  const cp = projectLightTaskControlPlane({
+    summary: s,
+    dataClaimState: r.data_claim_state,
+    dataStaleDataSource: r.data_stale_data_source,
+    dataStaleDispatchPlan: r.data_stale_dispatch_plan,
+    dataStaleAccountSync: r.data_stale_account_sync,
+    dataProductStageMode: r.data_product_stage_mode,
+    dataP0Blocker: r.data_p0_blocker,
+    dataTargetGate: r.data_target_gate,
+    dataEvidencePath: r.data_evidence_path,
+    dataHasBlockingDecision: r.data_has_blocking_decision,
+    dataHasNonBlockingDecision: r.data_has_non_blocking_decision,
+  })
+  if (cp.claimState !== undefined) out.claimState = cp.claimState
+  if (cp.staleDataSource !== undefined) out.staleDataSource = cp.staleDataSource
+  if (cp.staleDispatchPlan !== undefined) out.staleDispatchPlan = cp.staleDispatchPlan
+  if (cp.staleAccountSync !== undefined) out.staleAccountSync = cp.staleAccountSync
+  if (cp.productStageMode !== undefined) out.productStageMode = cp.productStageMode
+  if (cp.p0Blocker !== undefined) out.p0Blocker = cp.p0Blocker
+  if (cp.targetGate !== undefined) out.targetGate = cp.targetGate
+  if (cp.evidence_path !== undefined) out.evidence_path = cp.evidence_path
+  if (cp.hasBlockingDecision !== undefined) out.hasBlockingDecision = cp.hasBlockingDecision
+  if (cp.hasNonBlockingDecision !== undefined) {
+    out.hasNonBlockingDecision = cp.hasNonBlockingDecision
+  }
+  return out
 }
 
 // ---- lazy backfill from the old board_docs 'tasks' blob (non-destructive) ----
@@ -137,9 +474,33 @@ export async function ensureBackfilled(boardId: string): Promise<void> {
 }
 
 // ---- reads ----
+/**
+ * Light list read: summary columns + classification slices from `data` JSON
+ * (not the full heavy mapping blob). Valid receipts survive aggregation; missing
+ * proof still fails closed in the adapter/rollup as BLOCKED:DATA_INTEGRITY.
+ */
 export async function taskSummaries(boardId: string, projectId?: string): Promise<Array<WorkTask>> {
   await ensureBackfilled(boardId)
-  const sql = `SELECT id, project_id, feature_contract_id, grp, phase, scope, title, updated, lifecycle_stage, blocked_reason, last_receipt_at, summary FROM tasks WHERE board_id=?${projectId ? ' AND project_id=?' : ''}`
+  // JSON_EXTRACT keeps list reads small while preserving data.classification + bounded
+  // control-plane fields for V3. Never SELECT full `data` blob (no N+1 / full load).
+  // V3 columns (task_class, …) may be absent pre-migration — only extract from data/summary.
+  // selectedForNextDispatch is intentionally NOT extracted (NEXT = active dispatch plan only).
+  const sql = `SELECT id, project_id, feature_contract_id, grp, phase, scope, title, updated, lifecycle_stage, blocked_reason, last_receipt_at, summary,
+    JSON_EXTRACT(data, '$.classification') AS data_classification,
+    JSON_EXTRACT(data, '$.classificationReceipt') AS data_classification_receipt,
+    JSON_UNQUOTE(JSON_EXTRACT(data, '$.taskClass')) AS data_task_class,
+    JSON_UNQUOTE(JSON_EXTRACT(data, '$.disposition')) AS data_disposition,
+    JSON_UNQUOTE(JSON_EXTRACT(data, '$.claimState')) AS data_claim_state,
+    JSON_EXTRACT(data, '$.staleDataSource') AS data_stale_data_source,
+    JSON_EXTRACT(data, '$.staleDispatchPlan') AS data_stale_dispatch_plan,
+    JSON_EXTRACT(data, '$.staleAccountSync') AS data_stale_account_sync,
+    JSON_UNQUOTE(JSON_EXTRACT(data, '$.productStageMode')) AS data_product_stage_mode,
+    JSON_EXTRACT(data, '$.p0Blocker') AS data_p0_blocker,
+    JSON_UNQUOTE(JSON_EXTRACT(data, '$.targetGate')) AS data_target_gate,
+    JSON_UNQUOTE(JSON_EXTRACT(data, '$.evidence_path')) AS data_evidence_path,
+    JSON_EXTRACT(data, '$.hasBlockingDecision') AS data_has_blocking_decision,
+    JSON_EXTRACT(data, '$.hasNonBlockingDecision') AS data_has_non_blocking_decision
+    FROM tasks WHERE board_id=?${projectId ? ' AND project_id=?' : ''}`
   const [rows] = await db().query(sql, projectId ? [boardId, projectId] : [boardId])
   return (rows as Array<Record<string, unknown>>).map(lightFromRow)
 }
@@ -667,9 +1028,9 @@ export async function upsertTaskV3(
   }
 }
 
-/** Convert V3 record → list-compatible WorkTask (legacy callers). */
+/** Convert V3 record → list-compatible WorkTask (legacy callers). Preserves classification. */
 export function taskV3ToWorkTask(r: TaskV3Record): WorkTask {
-  return {
+  const base: WorkTaskClassificationCarrier = {
     id: r.taskId,
     title: r.title,
     projectId: r.projectId,
@@ -683,7 +1044,20 @@ export function taskV3ToWorkTask(r: TaskV3Record): WorkTask {
     checkpoints: [],
     dependencies: [],
     impacts: [],
+    taskClass: r.taskClass,
+    disposition: r.disposition,
+    classificationReceipt: r.classificationReceipt,
+    classificationReceiptId: r.classificationReceiptId,
+    classificationReceiptHash: r.classificationReceiptHash,
   }
+  if (r.taskClass || r.disposition || r.classificationReceipt) {
+    base.classification = {
+      taskClass: r.taskClass,
+      disposition: r.disposition,
+      receipt: r.classificationReceipt,
+    }
+  }
+  return base
 }
 
 /** In-memory TaskV3 store for unit tests — no real DB. */

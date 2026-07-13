@@ -1,12 +1,20 @@
 import { Link, useRouterState } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import { useStore } from '@tanstack/react-store'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import { BoardLink } from '#/components/BoardLink'
 import { UserMenu } from '#/components/UserMenu'
 import { BrandMark, Icon, type IconName } from '#/lib/icons'
 import { useBoard, useBoardId, useBoardViews, useBoards } from '#/lib/board-query'
 import { fmtDate } from '#/lib/format'
+import {
+  featuresQueryOptions,
+  getDefaultControlCenterFetchers,
+  isControlCenterBoard,
+  overviewQueryOptions,
+} from '#/lib/control-center-query'
+import type { FeaturesData, OverviewData, PinnedEnvelope } from '#/server/control-center-ui'
 import { initTheme, resolvedIsDark, setSearch, setTheme, uiStore } from '#/store/ui'
 
 export const BRAND = 'Cairn'
@@ -27,6 +35,7 @@ interface NavCounts {
   log: number
 }
 
+/** Classic adaptive nav (non control-center boards). */
 const NAV: Array<NavItem | { sep: true; label: string }> = [
   { id: 'board', label: 'Board', icon: 'board', to: '/', match: (p) => p === '/' },
   { id: 'agents', label: 'Agents', icon: 'agents', to: '/agents', match: (p) => p.startsWith('/agents'), count: (n) => n.agents },
@@ -42,11 +51,112 @@ const NAV: Array<NavItem | { sep: true; label: string }> = [
   { id: 'ops', label: 'Accounts', icon: 'users', to: '/ops', match: (p) => p.startsWith('/ops') },
 ]
 
+/**
+ * Nine primary IA destinations for control-center boards (UI_CONTRACT §2).
+ * Exact label order for mfs-rebuild (and any control-center board).
+ * Task/map/design/log remain reachable as drill-downs / compatibility paths.
+ */
+export const CONTROL_CENTER_NAV_LABELS = [
+  'Overview',
+  'Work',
+  'Priority',
+  'Projects',
+  'Features / Flows',
+  'Agents / Runs',
+  'Ops / Accounts',
+  'Decisions',
+  'Evidence / Audit',
+] as const
+
+const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
+  {
+    id: 'overview',
+    label: 'Overview',
+    icon: 'board',
+    to: '/',
+    match: (p) => p === '/' || p === '',
+  },
+  {
+    id: 'work',
+    label: 'Work',
+    icon: 'check',
+    to: '/work',
+    match: (p) => p === '/work' || p.startsWith('/work?') || p.startsWith('/work/'),
+  },
+  {
+    id: 'priority',
+    label: 'Priority',
+    icon: 'flag',
+    to: '/priority',
+    match: (p) => p.startsWith('/priority'),
+  },
+  { sep: true, label: 'Structure' },
+  {
+    id: 'projects',
+    label: 'Projects',
+    icon: 'projects',
+    to: '/projects',
+    match: (p) => p.startsWith('/projects'),
+    count: (n) => n.projects,
+  },
+  {
+    id: 'features',
+    label: 'Features / Flows',
+    icon: 'features',
+    to: '/features',
+    match: (p) => p.startsWith('/features'),
+    count: (n) => n.features,
+  },
+  { sep: true, label: 'Ops' },
+  {
+    id: 'agents',
+    label: 'Agents / Runs',
+    icon: 'agents',
+    to: '/agents',
+    match: (p) => p.startsWith('/agents'),
+    count: (n) => n.agents,
+  },
+  {
+    id: 'ops',
+    label: 'Ops / Accounts',
+    icon: 'users',
+    to: '/ops',
+    match: (p) => p.startsWith('/ops'),
+  },
+  {
+    id: 'decisions',
+    label: 'Decisions',
+    icon: 'decisions',
+    to: '/decisions',
+    match: (p) => p.startsWith('/decisions'),
+    count: (n) => n.decisions,
+  },
+  {
+    id: 'evidence',
+    label: 'Evidence / Audit',
+    icon: 'log',
+    to: '/evidence',
+    match: (p) => p.startsWith('/evidence'),
+  },
+]
+
 const SECTION_TITLE: Record<string, string> = {
-  board: 'Board', agents: 'Agents', projects: 'Projects',
-  features: 'Features', tasks: 'Tasks', map: 'Dependency map', design: 'System design',
-  decisions: 'Decisions', log: 'Activity log',
-  ops: 'Agent accounts', prod: 'Path to production', guide: 'Guide',
+  board: 'Board',
+  overview: 'Overview',
+  work: 'Work',
+  priority: 'Priority',
+  agents: 'Agents / Runs',
+  projects: 'Projects',
+  features: 'Features / Flows',
+  tasks: 'Tasks',
+  map: 'Dependency map',
+  design: 'System design',
+  decisions: 'Decisions',
+  log: 'Activity log',
+  evidence: 'Evidence / Audit',
+  ops: 'Ops / Accounts',
+  prod: 'Path to production',
+  guide: 'Guide',
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -55,17 +165,22 @@ export function AppShell({ children }: { children: ReactNode }) {
   const views = useBoardViews()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const search = useStore(uiStore, (s) => s.search)
+  const controlCenter = isControlCenterBoard(boardId)
+  const navSource = controlCenter ? CONTROL_CENTER_NAV : NAV
 
   // adaptive nav: keep enabled items + any separator that precedes ≥1 enabled item
-  const visible = NAV.filter((n, i) => {
-    if (!('sep' in n)) return views.includes(n.id)
-    for (let j = i + 1; j < NAV.length; j++) {
-      const next = NAV[j]
-      if ('sep' in next) break
-      if (views.includes(next.id)) return true
-    }
-    return false
-  })
+  // control-center boards: always show the nine primary IA destinations (UI_CONTRACT §2)
+  const visible = controlCenter
+    ? navSource
+    : navSource.filter((n, i) => {
+        if (!('sep' in n)) return views.includes(n.id)
+        for (let j = i + 1; j < navSource.length; j++) {
+          const next = navSource[j]
+          if ('sep' in next) break
+          if (views.includes(next.id)) return true
+        }
+        return false
+      })
 
   useEffect(() => {
     initTheme()
@@ -74,51 +189,120 @@ export function AppShell({ children }: { children: ReactNode }) {
   // board-relative path (strip the /b/<id> scope) for nav matching + breadcrumbs
   const sub = pathname.replace(/^\/b\/[^/]+/, '') || '/'
 
-  const counts: NavCounts = {
-    agents: m.runningAgents.length,
-    projects: m.projects.length,
-    features: m.active.length,
-    decisions: m.decisions.length,
-    log: m.log.length,
-  }
+  // mfs-rebuild (CC boards): IA badges read pinned envelope counts via shared query
+  // cache (same keys as Overview/Features surfaces). No client recompute of readiness
+  // / buckets / open membership — only length/decisionCount from server payloads.
+  // Non-CC boards keep legacy boardQuery model counts.
+  const ccFetchers = useMemo(
+    () => (controlCenter ? getDefaultControlCenterFetchers() : null),
+    [controlCenter],
+  )
+  const overviewQ = useQuery({
+    ...overviewQueryOptions(
+      boardId,
+      ccFetchers?.overview ?? (async () => null as never),
+    ),
+    enabled: controlCenter && Boolean(ccFetchers),
+  })
+  const featuresQ = useQuery({
+    ...featuresQueryOptions(
+      boardId,
+      {},
+      ccFetchers?.features ?? (async () => null as never),
+    ),
+    enabled: controlCenter && Boolean(ccFetchers),
+  })
+
+  const counts: NavCounts = useMemo(() => {
+    if (!controlCenter) {
+      return {
+        agents: m.runningAgents.length,
+        projects: m.projects.length,
+        features: m.active.length,
+        decisions: m.decisions.length,
+        log: m.log.length,
+      }
+    }
+    const overviewEnv = overviewQ.data as PinnedEnvelope<OverviewData> | undefined
+    const featuresEnv = featuresQ.data as PinnedEnvelope<FeaturesData> | undefined
+    const overviewData = overviewEnv?.data
+    const featuresData = featuresEnv?.data
+    return {
+      agents: overviewData?.ongoing?.length ?? 0,
+      projects: overviewData?.projects?.length ?? 0,
+      features: featuresData
+        ? (featuresData.items?.length ? featuresData.items : featuresData.features)?.length ?? 0
+        : 0,
+      decisions: overviewData?.decisionCount ?? 0,
+      log: m.log.length,
+    }
+  }, [
+    controlCenter,
+    m.runningAgents.length,
+    m.projects.length,
+    m.active.length,
+    m.decisions.length,
+    m.log.length,
+    overviewQ.data,
+    featuresQ.data,
+  ])
 
   const activeItem =
-    (NAV.find((n) => !('sep' in n) && (n as NavItem).match(sub)) as NavItem | undefined) ??
-    (NAV[0] as NavItem)
-  const section = activeItem?.id ?? 'board'
+    (navSource.find((n) => !('sep' in n) && (n as NavItem).match(sub)) as NavItem | undefined) ??
+    (navSource.find((n) => !('sep' in n)) as NavItem)
+  const section = activeItem?.id ?? (controlCenter ? 'overview' : 'board')
 
   let crumb = ''
   const projMatch = sub.match(/^\/projects\/(.+)$/)
   const featMatch = sub.match(/^\/features\/(.+)$/)
   if (projMatch) crumb = m.projById[decodeURIComponent(projMatch[1])]?.nama ?? 'Project'
   else if (featMatch) crumb = m.featById[decodeURIComponent(featMatch[1])]?.nama ?? 'Feature'
-  const baseTitle = SECTION_TITLE[section] ?? 'Board'
+  const baseTitle = SECTION_TITLE[section] ?? (controlCenter ? 'Overview' : 'Board')
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <Link to="/" className="brand" title="All boards">
-          <BrandMark />
-          <div>
-            <div className="brand-name">{BRAND}</div>
-            <div className="brand-sub">Agent work board</div>
-          </div>
-        </Link>
+    <div
+      className={controlCenter ? 'app app--control-center' : 'app'}
+      data-control-center={controlCenter ? 'true' : 'false'}
+    >
+      <aside className="sidebar" data-control-center={controlCenter ? 'true' : 'false'}>
+        <div className="sidebar-chrome">
+          <Link to="/" className="brand" title="All boards" aria-label={`${BRAND} — all boards`}>
+            <BrandMark />
+            <div className="brand-text">
+              <div className="brand-name">{BRAND}</div>
+              <div className="brand-sub">Agent work board</div>
+            </div>
+          </Link>
 
-        <BoardSwitcher boardId={boardId} />
+          <BoardSwitcher boardId={boardId} />
+        </div>
 
-        <nav className="nav">
+        <nav
+          className="nav"
+          aria-label={controlCenter ? 'Control center' : 'Board'}
+          data-control-center={controlCenter ? 'true' : 'false'}
+        >
           {visible.map((n, i) =>
             'sep' in n ? (
-              <div key={`sep-${i}`}>
+              <div key={`sep-${i}`} className="nav-sep-block" aria-hidden="true">
                 <div className="nav-sep" />
                 <div className="nav-label">{n.label}</div>
               </div>
             ) : (
-              <BoardLink key={n.id} to={n.to} className={`nav-item ${n.match(sub) ? 'active' : ''}`}>
+              <BoardLink
+                key={n.id}
+                to={n.to}
+                className={`nav-item ${n.match(sub) ? 'active' : ''}`}
+                aria-label={n.label}
+                data-nav-id={n.id}
+              >
                 <Icon name={n.icon} size={17} className="nav-ico" />
                 <span className="lbl">{n.label}</span>
-                {n.count ? <span className="nav-count">{n.count(counts)}</span> : null}
+                {n.count ? (
+                  <span className="nav-count" aria-label={`${n.count(counts)} items`}>
+                    {n.count(counts)}
+                  </span>
+                ) : null}
               </BoardLink>
             ),
           )}
@@ -132,7 +316,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
 
       <div className="main">
-        <div className="topbar">
+        <header className="topbar">
           <h1 id="page-title">
             {crumb ? (
               <>
@@ -150,13 +334,20 @@ export function AppShell({ children }: { children: ReactNode }) {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search features, agents…"
               autoComplete="off"
-              aria-label="Search"
+              aria-label="Search features and agents"
             />
           </div>
           <ThemeButton />
           <UserMenu />
-        </div>
-        <div className="content" id="view">
+        </header>
+        <div
+          className="content"
+          id="view"
+          role="region"
+          aria-label="Main content"
+          tabIndex={0}
+          data-testid="app-main-content"
+        >
           {children}
         </div>
       </div>
@@ -168,28 +359,40 @@ function BoardSwitcher({ boardId }: { boardId: string }) {
   const boards = useBoards()
   const [open, setOpen] = useState(false)
   const current = boards.find((b) => b.id === boardId)
+  const boardName = current?.name ?? boardId
   return (
     <div className="switcher">
-      <button className="switcher-btn" onClick={() => setOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={open}>
+      <button
+        type="button"
+        className="switcher-btn"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`Switch board, current: ${boardName}`}
+      >
         <Icon name="board" size={15} />
-        <span className="switcher-name">{current?.name ?? boardId}</span>
+        <span className="switcher-name" title={boardName}>
+          {boardName}
+        </span>
         <Icon name="chevL" size={14} className="switcher-caret" />
       </button>
       {open ? (
-        <div className="switcher-menu" role="listbox">
+        <div className="switcher-menu" role="listbox" aria-label="Boards">
           {boards.map((b) => (
             <Link
               key={b.id}
               to="/b/$boardId"
               params={{ boardId: b.id }}
               className={`switcher-item ${b.id === boardId ? 'active' : ''}`}
+              role="option"
+              aria-selected={b.id === boardId}
               onClick={() => setOpen(false)}
             >
               <Icon name="board" size={14} />
               {b.name}
             </Link>
           ))}
-          <div className="nav-sep" />
+          <div className="nav-sep" aria-hidden="true" />
           <Link to="/" className="switcher-item" onClick={() => setOpen(false)}>
             <Icon name="layers" size={14} /> All boards
           </Link>
@@ -204,10 +407,11 @@ function ThemeButton() {
   const dark = resolvedIsDark()
   return (
     <button
+      type="button"
       className="icon-btn"
       id="theme-btn"
-      title="Toggle theme"
-      aria-label="Toggle theme"
+      title={dark ? 'Switch to light theme' : 'Switch to dark theme'}
+      aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
       onClick={() => setTheme(dark ? 'light' : 'dark')}
     >
       <Icon name={dark ? 'sun' : 'moon'} size={16} />
