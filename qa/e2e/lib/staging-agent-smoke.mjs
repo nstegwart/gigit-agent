@@ -34,6 +34,7 @@ import {
   buildRegisterRunArgs,
   buildSyntheticSmokeIds,
   computePlanHash,
+  loadDispatchPlanSeed,
   loadStagingManifest,
   loadStagingPin,
   runFixtureContractSelfTests,
@@ -837,6 +838,11 @@ export function createStagingSmokeMockFetch(opts = {}) {
   const expectedSha = opts.expectedSha ?? 'a'.repeat(40)
   const fencingToken = opts.fencingToken ?? `fence-mock-${crypto.randomBytes(4).toString('hex')}`
   let boardRev = pin.boardRev
+  // Derive NEXT task id from canonical dispatch-plan fixture (not a stale hardcode).
+  const nextTaskId =
+    opts.nextTaskId ??
+    loadDispatchPlanSeed()?.items?.[0]?.taskId ??
+    'task-next-1'
 
   const jsonRes = (body, status = 200) => ({
     ok: status >= 200 && status < 300,
@@ -973,7 +979,7 @@ export function createStagingSmokeMockFetch(opts = {}) {
           soleSource: 'active_dispatch_plan',
           selectedForNextDispatch: [
             {
-              taskId: 'task-staging-next-1',
+              taskId: nextTaskId,
               rank: 1,
               selectionReason: 'SYNTH staging mock',
             },
@@ -1027,7 +1033,7 @@ export function createStagingSmokeMockFetch(opts = {}) {
       if (name === 'list_tasks') {
         return toolText(body.id, {
           ok: true,
-          tasks: [{ id: 'task-staging-next-1', lifecycleStage: 'SPEC_READY' }],
+          tasks: [{ id: nextTaskId, lifecycleStage: 'SPEC_READY' }],
         })
       }
       if (name === 'get_rollup') {

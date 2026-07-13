@@ -22,7 +22,7 @@ This package is **staging-only**. It does not define or reference a production d
 
 ```text
 deploy/staging/
-  Dockerfile              # app image (preview on :3210)
+  Dockerfile              # app image (preview on :3210) + seeder sources
   docker-compose.yml      # app + mysql, loopback 33211
   env.staging.example     # template (tracked)
   .env                    # secrets + RELEASE_SHA (UNTRACKED; create on host)
@@ -33,6 +33,7 @@ deploy/staging/
     stop.sh               # down, keep volume
     status.sh             # ps + :33211 + health probe
     rollback.sh           # greenfield vs prior-SHA
+    seed-synthetic.mjs    # idempotent synthetic mfs-rebuild seed (no DROP DATABASE)
 ```
 
 ---
@@ -252,10 +253,70 @@ Expected structural facts:
 
 ---
 
+## Synthetic DB seed (before MCP smoke)
+
+Seeds **board-scoped** synthetic `mfs-rebuild` rows into the **existing** database
+`cairn_tm_v3_staging` using the shared control-center fixture builders
+(`qa/e2e/fixtures/seed/control-center-fixture.mjs`).
+
+| Rule | Value |
+|---|---|
+| DB name | **exactly** `cairn_tm_v3_staging` |
+| Board | `mfs-rebuild` only (replace/upsert board-scoped rows) |
+| DROP DATABASE | **never** |
+| Migration history | preserved (`schema_migrations` untouched) |
+| Other boards | preserved |
+| Approval | `CAIRN_STAGING_SEED_APPROVED=1` required |
+| Host | must be staging-class (`cairn-tm-v3-mysql` or `CAIRN_STAGING_DB_HOSTS`) |
+| Provenance | synthetic only; passwords/tokens never printed |
+
+Policy file: `qa/fixtures/staging/seed-policy.json`.
+
+### Exact docker compose run command
+
+From the release source checkout (after stack is up / MySQL healthy):
+
+```bash
+cd /opt/mfs/staging/cairn-taskmanager-v3/source
+
+# One-shot seed inside the app image (uses compose network DNS cairn-tm-v3-mysql).
+# CAIRN_ENV / CAIRN_DB_NAME / CAIRN_STAGING_DB_HOSTS are already forced by compose.
+sudo docker compose -f deploy/staging/docker-compose.yml --env-file deploy/staging/.env \
+  run --rm \
+  -e CAIRN_STAGING_SEED_APPROVED=1 \
+  cairn-tm-v3-app \
+  node deploy/staging/scripts/seed-synthetic.mjs
+```
+
+Expected JSON summary (no secrets): `ok: true`, `dbName: cairn_tm_v3_staging`,
+`boardId: mfs-rebuild`, `tasks: 8`, `taskHash` 64-hex, `idempotent.tasksMatch: true`.
+
+Re-run is safe (idempotent board-scoped replace).
+
+### Local contract / disposable proof (laptop; never ambient production)
+
+```bash
+# Pure gates + fixture contract (no MySQL)
+node deploy/staging/scripts/seed-synthetic.mjs --self-test
+# or:
+node qa/e2e/fixtures/seed/seed-isolated.mjs --self-test
+
+# Disposable local MySQL (cairn_tm_e2e_* only; drops itself; does not touch cairn_taskmanager)
+node deploy/staging/scripts/seed-synthetic.mjs --disposable-proof
+```
+
+### Order relative to migrations
+
+1. `compose up` (MySQL + app)
+2. Migration apply (when CLI available) against `cairn_tm_v3_staging` only
+3. **Synthetic seed** (this script) — creates baseline tables if absent; does not wipe migrations
+4. Authenticated MCP smoke
+
+---
+
 ## Out of scope for this package (follow-on)
 
-- Synthetic fixture seed under `qa/fixtures/staging/**`
-- Migration apply CLI against the live MySQL executor
+- Migration apply CLI against the live MySQL executor (separate packet)
 - SSH tunnel from a laptop (`ssh -N -L 33211:127.0.0.1:33211 …`)
 - Production deploy / production credentials / production data export
 

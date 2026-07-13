@@ -6,13 +6,13 @@
   "items": [
     {
       "rank": 1,
-      "taskId": "task-staging-next-1",
+      "taskId": "task-next-1",
       "targetGate": "SPEC_READY",
       "role": "Worker",
-      "selectionReason": "SYNTH staging: sole NEXT candidate for agent MCP smoke",
-      "priorityPortfolioId": "STAGING_SMOKE",
+      "selectionReason": "SYNTH: root dispatch selected NEXT candidate for SALES_WEB frontier",
+      "priorityPortfolioId": "SALES_WEB_RELATED_BACKEND",
       "expectedEntityRev": 0,
-      "collisionScopeLockIds": ["scope:task-staging-next-1"],
+      "collisionScopeLockIds": ["scope:task-next-1"],
       "dependencyProof": { "satisfied": true, "refs": [] }
     }
   ]

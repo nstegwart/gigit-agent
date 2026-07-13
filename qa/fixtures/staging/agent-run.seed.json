@@ -1,11 +1,11 @@
 {
   "runIdPrefix": "run-synth-stg-smoke",
   "agentIdPrefix": "agent-synth-stg-smoke",
-  "model": "synth-staging-agent-model",
+  "model": "grok-4.5",
   "effort": "medium",
   "initialState": "RUNNING",
-  "maskedAccountRef": "acc_synth_stg_001",
+  "maskedAccountRef": "acc_synth_r2d_001",
   "targetGate": "SPEC_READY",
-  "taskId": "task-staging-next-1",
-  "collisionScopeLockIds": ["scope:task-staging-next-1"]
+  "taskId": "task-next-1",
+  "collisionScopeLockIds": ["scope:task-next-1"]
 }

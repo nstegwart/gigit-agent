@@ -253,8 +253,10 @@ export function validateStagingFixtureContract() {
   if (!pin.canonicalSnapshotId || !pin.canonicalHash || pin.boardRev == null) {
     errors.push('pin incomplete')
   }
-  if (!/^[0-9a-f]{64}$/i.test(String(pin.canonicalHash))) {
-    errors.push('canonicalHash must be 64 hex')
+  // Authority pin hash from control-center-fixture HARNESS_PIN_BASE may be 32–128 hex
+  // (canonical synth seed uses a 60-hex content pin, not necessarily full sha256).
+  if (!/^[0-9a-f]{32,128}$/i.test(String(pin.canonicalHash))) {
+    errors.push('canonicalHash must be 32–128 hex')
   }
   if (!/^[0-9a-f]{64}$/i.test(String(pin.taskHash))) {
     errors.push('taskHash must be 64 hex')
@@ -376,7 +378,15 @@ export function runFixtureContractSelfTests() {
   ok('dispatch-board-rev', plan.expectedBoardRev === pin.boardRev)
   ok(
     'dispatch-item-task',
-    plan.items[0]?.taskId === 'task-staging-next-1' && plan.items[0]?.rank === 1,
+    plan.items[0]?.taskId === 'task-next-1' && plan.items[0]?.rank === 1,
+  )
+  ok(
+    'pin-aligned-canonical-seed',
+    pin.canonicalSnapshotId === 'synth-c3-r2d-snap-001' &&
+      Number(pin.boardRev) === 7 &&
+      Number(pin.lifecycleRev) === 3 &&
+      pin.taskHash ===
+        '49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4',
   )
 
   const sync = buildAccountSyncArgs({ pin, ids: ids1, now: '2026-07-13T12:00:00.000Z' })

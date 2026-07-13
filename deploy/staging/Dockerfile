@@ -52,6 +52,14 @@ LABEL cairn.deployed_sha="${CAIRN_DEPLOYED_SHA}"
 WORKDIR /app
 COPY --from=build /app /app
 
+# Synthetic staging seeder sources only (no dirty data/** board dumps).
+# Required for: node deploy/staging/scripts/seed-synthetic.mjs
+COPY qa/e2e/fixtures/seed ./qa/e2e/fixtures/seed
+COPY qa/e2e/lib/db-iso.mjs ./qa/e2e/lib/db-iso.mjs
+COPY qa/e2e/lib/probe-fail-close.mjs ./qa/e2e/lib/probe-fail-close.mjs
+COPY qa/fixtures/staging ./qa/fixtures/staging
+COPY deploy/staging/scripts ./deploy/staging/scripts
+
 EXPOSE 3210
 
 # Unauthenticated /api/healthz returns 401 when the SSR server is up (auth required).

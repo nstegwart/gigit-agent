@@ -1,0 +1,52 @@
+{
+  "policyId": "staging-synthetic-db-seed-v1",
+  "version": 1,
+  "purpose": "Idempotent board-scoped synthetic seed for cairn_tm_v3_staging before migrations/MCP smoke",
+  "syntheticOnly": true,
+  "productionDerived": false,
+  "dropDatabase": false,
+  "requiredEnv": {
+    "CAIRN_ENV": "staging",
+    "CAIRN_DB_NAME": "cairn_tm_v3_staging",
+    "CAIRN_STAGING_SEED_APPROVED": "1"
+  },
+  "databaseName": "cairn_tm_v3_staging",
+  "boardId": "mfs-rebuild",
+  "fixtureSource": "qa/e2e/fixtures/seed/control-center-fixture.mjs",
+  "seederEntry": "qa/e2e/fixtures/seed/seed-isolated.mjs --staging",
+  "deployWrapper": "deploy/staging/scripts/seed-synthetic.mjs",
+  "allowedHosts": {
+    "composeServiceDns": ["cairn-tm-v3-mysql"],
+    "knownLabels": ["cairn_tm_v3_staging", "tm-v3-staging"],
+    "envCsv": "CAIRN_STAGING_DB_HOSTS",
+    "localLoopbackRequires": "CAIRN_STAGING_SEED_ALLOW_LOCAL=1"
+  },
+  "refused": [
+    "PRODUCTION hosts (prod/production/*.mfsdev.net)",
+    "UNKNOWN_REMOTE hosts not in allowlist",
+    "any CAIRN_DB_NAME other than cairn_tm_v3_staging",
+    "CAIRN_ENV other than staging",
+    "missing CAIRN_STAGING_SEED_APPROVED=1",
+    "DROP DATABASE"
+  ],
+  "scope": {
+    "replaceBoardScoped": true,
+    "tablesTouched": [
+      "boards",
+      "board_docs",
+      "tasks",
+      "board_revisions",
+      "control_plane_snapshots",
+      "control_plane_evidence",
+      "audit_log",
+      "globals (conventions key only)"
+    ],
+    "tablesPreserved": [
+      "schema_migrations",
+      "other boards' rows",
+      "unrelated tables"
+    ]
+  },
+  "readback": ["tasks count", "taskHash", "board_revisions pin", "classifiedTasks"],
+  "provenance": "synthetic-only; never print secrets/passwords/tokens"
+}

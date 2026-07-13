@@ -2,17 +2,17 @@
   "trigger": "ORCHESTRATOR_LAUNCH",
   "accounts": [
     {
-      "maskedAccountId": "acc_synth_stg_001",
+      "maskedAccountId": "acc_synth_r2d_001",
       "status": "ACTIVE",
       "providerKind": "GROK",
-      "effectiveInUse": 0,
+      "effectiveInUse": 1,
       "effectiveCap": 3,
-      "physicalSlotsDisplay": "0/3",
+      "physicalSlotsDisplay": "1/3",
       "adaptiveQuotaState": "healthy",
       "reason": null
     },
     {
-      "maskedAccountId": "acc_synth_stg_002",
+      "maskedAccountId": "acc_synth_r2d_002",
       "status": "quarantine",
       "providerKind": "SPARK",
       "effectiveInUse": 0,
