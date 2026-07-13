@@ -86,12 +86,51 @@ export interface WorkOngoingDisplay {
   evidenceLink?: string | null
 }
 
+/** Owner humanDisplay citation (presentation wire only). */
+export interface WorkOwnerCitation {
+  field: string
+  path: string
+  note?: string
+}
+
+/**
+ * Owner humanDisplay fields projected by route adapters.
+ * Primary owner copy never invents; missing/unreviewed → CONTENT_REVIEW_REQUIRED shell.
+ */
+export interface WorkOwnerHumanFields {
+  ownerPrimaryTitle?: string | null
+  statusSentence?: string | null
+  ownerAction?: string | null
+  whyItMatters?: string | null
+  next?: string | null
+  blocker?: string | null
+  contentReviewRequired?: boolean
+  effectiveReviewStatus?: string | null
+  citations?: ReadonlyArray<WorkOwnerCitation> | null
+  /** Nested projection wire when adapter attaches full ownerHumanDisplay object. */
+  ownerHumanDisplay?: {
+    ownerPrimaryTitle?: string | null
+    statusSentence?: string | null
+    ownerAction?: string | null
+    whyItMatters?: string | null
+    next?: string | null
+    blocker?: string | null
+    contentReviewRequired?: boolean
+    effectiveReviewStatus?: string | null
+    citations?: ReadonlyArray<WorkOwnerCitation> | null
+  } | null
+}
+
 /**
  * One work list row as served by list_work_items (or equivalent).
  * `bucket`, `overlays`, `blockReason` MUST come from the server assignment.
  */
-export interface WorkItemRow {
+export interface WorkItemRow extends WorkOwnerHumanFields {
   taskId: string
+  /**
+   * Technical/system title — secondary only.
+   * Owner primary is ownerPrimaryTitle (or CONTENT_REVIEW_REQUIRED shell).
+   */
   title: string
   /** Server primary bucket — never computed in the client. */
   bucket: PrimaryBucket

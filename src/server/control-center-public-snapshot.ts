@@ -16,13 +16,16 @@ import {
   PUBLIC_SERIALIZER_VERSION,
   ensureMaskedAccountId,
   isPublicAccountStatusUnusable,
+  isPublicDomainBlockerCode,
   maskAccountRef,
   materializePublicSnapshot,
+  normalizeDomainBlockers,
   sanitizePublicValue,
   type MaterializedPublicSnapshot,
   type PublicAccountSummary,
   type PublicAggregationInput,
   type PublicBucketCounts,
+  type PublicDomainBlocker,
   type PublicFeatureSummary,
   type PublicG5Summary,
   type PublicPriorityRollup,
@@ -282,7 +285,103 @@ function mapAccounts(agg: ControlCenterAggregation): Array<PublicAccountSummary>
 }
 
 /**
- * Fail-closed gate: public materialization must not publish stale or partial aggregations.
+ * Structural section error codes — pin/schema/hash/load/authority incompleteness.
+ * These remain hard fail-closed (mapper throws → HTTP/MCP 503 STALE_OR_MISSING).
+ * Domain codes (DATA_INTEGRITY / UNCLASSIFIED / ACCOUNT_SYNC_*) are NOT structural.
+ */
+export const PUBLIC_STRUCTURAL_SECTION_CODES: ReadonlySet<string> = new Set([
+  'PIN_AUTHORITY_FALLBACK',
+  'PIN_AUTHORITY_INCOMPLETE',
+  'PIN_AUTHORITY_MISSING',
+  'REVISION_AUTHORITY_MISSING',
+  'PARTIAL_SOURCE',
+  'SCHEMA_INVALID',
+  'SCHEMA_MISMATCH',
+  'HASH_MISMATCH',
+  'SNAPSHOT_ID_MISMATCH',
+  'BOARD_MISMATCH',
+  'LOAD_FAILED',
+  'SOURCE_UNAVAILABLE',
+  'RUNTIME_UNAVAILABLE',
+  'DEFINITION_MISMATCH',
+  'CANONICAL_LOAD_FAILED',
+])
+
+export function isPublicStructuralSectionCode(code: string | null | undefined): boolean {
+  if (code == null || code === '') return false
+  const c = String(code).trim()
+  if (PUBLIC_STRUCTURAL_SECTION_CODES.has(c)) return true
+  // Prefix traps for load/schema/hash families
+  if (/^(PIN_|SCHEMA_|HASH_|LOAD_|REVISION_)/i.test(c) && !isPublicDomainBlockerCode(c)) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Collect allowlisted domain blockers from sectionErrors + rollup/account-sync signals.
+ * Never includes private task titles, comments, evidence, or account identity.
+ */
+export function collectPublicDomainBlockers(
+  agg: ControlCenterAggregation,
+): Array<PublicDomainBlocker> {
+  const raw: Array<PublicDomainBlocker> = []
+
+  for (const e of agg.sectionErrors ?? []) {
+    const code = String(e.code ?? '').trim()
+    if (!isPublicDomainBlockerCode(code)) continue
+    // Public reason = section + code only (drop free-form private messages).
+    raw.push({
+      code,
+      count: 1,
+      reason: e.section ? `section:${e.section}` : null,
+    })
+  }
+
+  const unclassified = Math.max(0, Math.floor(agg.rollup?.unclassifiedCount ?? 0))
+  if (unclassified > 0) {
+    raw.push({
+      code: 'UNCLASSIFIED',
+      count: unclassified,
+      reason: 'rollup.unclassifiedCount',
+    })
+  }
+
+  const meta = agg.accountSyncMeta
+  if (meta == null || !meta.authoritative) {
+    raw.push({
+      code: 'ACCOUNT_SYNC_MISSING',
+      count: 1,
+      reason: 'accountSyncMeta.missing',
+    })
+  } else if (meta.stale) {
+    raw.push({
+      code: 'ACCOUNT_SYNC_STALE',
+      count: 1,
+      reason: meta.staleReason
+        ? `accountSyncMeta.stale:${String(meta.staleReason).slice(0, 80)}`
+        : 'accountSyncMeta.stale',
+    })
+  } else if (meta.readbackParityOk === false) {
+    raw.push({
+      code: 'ACCOUNT_SYNC_PARITY_INVALID',
+      count: 1,
+      reason: 'accountSyncMeta.readbackParityOk=false',
+    })
+  }
+
+  return normalizeDomainBlockers(raw)
+}
+
+/**
+ * Fail-closed gate for STRUCTURAL readiness only.
+ *
+ * Business domain blockers (DATA_INTEGRITY / UNCLASSIFIED / ACCOUNT_SYNC_*) do NOT
+ * throw — caller materializes a sanitized public snapshot with forceStale + usableCapacity=0.
+ *
+ * Still throws STALE_OR_PARTIAL for:
+ * - pin.stale (authority/source pin integrity)
+ * - structural sectionErrors (pin/schema/hash/load/revision authority)
  */
 export function assertAggregationPublicReady(agg: ControlCenterAggregation): void {
   if (agg.pin.stale) {
@@ -292,16 +391,37 @@ export function assertAggregationPublicReady(agg: ControlCenterAggregation): voi
       { stale: true, staleReason: agg.pin.staleReason },
     )
   }
-  if (agg.sectionErrors.length > 0) {
+  const structural = (agg.sectionErrors ?? []).filter((e) =>
+    isPublicStructuralSectionCode(e.code),
+  )
+  if (structural.length > 0) {
     throw new ControlCenterPublicSnapshotError(
       'STALE_OR_PARTIAL',
-      'aggregation has sectionErrors — public snapshot fail-closed',
+      'aggregation has structural sectionErrors — public snapshot fail-closed',
       {
-        sectionErrorCount: agg.sectionErrors.length,
-        sectionCodes: agg.sectionErrors.map((e) => e.code),
+        sectionErrorCount: structural.length,
+        sectionCodes: structural.map((e) => e.code),
       },
     )
   }
+}
+
+/**
+ * Resolve public usableCapacity from account-sync meta, forced to 0 when domain
+ * blockers are present (fail-closed dispatch capacity on public surface).
+ */
+export function resolvePublicUsableCapacity(
+  agg: ControlCenterAggregation,
+  domainBlockers: ReadonlyArray<PublicDomainBlocker>,
+): number {
+  if (domainBlockers.length > 0) return 0
+  const meta = agg.accountSyncMeta
+  if (meta == null || !meta.authoritative || meta.stale || meta.readbackParityOk === false) {
+    return 0
+  }
+  const cap = meta.usableCapacity
+  if (typeof cap !== 'number' || !Number.isFinite(cap) || cap < 0) return 0
+  return Math.floor(cap)
 }
 
 /**
@@ -324,7 +444,7 @@ export function mapControlCenterAggregationToPublicInput(
   try {
     assertAggregationPinConsistent(agg)
     assertExpectedPin(agg.pin, opts.expectedPin)
-    // Fail-closed: never publish stale pin or partial sectionErrors as public truth.
+    // Structural pin/schema/hash only — domain blockers soft-path below.
     assertAggregationPublicReady(agg)
 
     if (!agg.pin.boardId) {
@@ -333,6 +453,10 @@ export function mapControlCenterAggregationToPublicInput(
 
     const publicPin = toPublicPin(agg.pin)
     const includeTasks = opts.includeTasks !== false
+    // Business blockers → sanitized public truth (stale=true, usableCapacity=0), never 503.
+    const domainBlockers = collectPublicDomainBlockers(agg)
+    const usableCapacity = resolvePublicUsableCapacity(agg, domainBlockers)
+    const forceStale = domainBlockers.length > 0
 
     const input: PublicAggregationInput = {
       boardId: agg.pin.boardId,
@@ -367,6 +491,9 @@ export function mapControlCenterAggregationToPublicInput(
       // Public decision COUNT only — never titles, questions, comments, evidence bodies.
       decisionCount: agg.decisions.length,
       g5: mapG5(agg),
+      usableCapacity,
+      domainBlockers,
+      forceStale,
     }
 
     // Fail-closed: reject if any forbidden/private key slipped into the public DTO.

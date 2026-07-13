@@ -55,8 +55,16 @@ import {
   type MaskedAccountRecord,
 } from '#/server/account-sync'
 import {
+  loadPinnedAuthoritativeAccountSnapshot,
+  readAuthenticatedUiAccountSourceService,
+} from '#/server/account-surface-readers'
+import {
   aggregateControlCenter,
+  attachOwnerHumanDisplayToWorkSurfaces,
+  humanDisplayEntityKey,
+  livePinFromControlCenter,
   maskAccountForUi,
+  projectOwnerHumanDisplayUi,
   type AccountSyncUiMeta,
   type AccountUiSummary,
   type AuditUiEvent,
@@ -66,10 +74,12 @@ import {
   type ControlCenterTaskInput,
   type DispatchNextUi,
   type FeatureUiSummary,
+  type OwnerHumanDisplayUiProjection,
   type ProjectUiSummary,
   type ProductiveSubstate,
   type RunUiSummary,
 } from '#/server/control-center-ui'
+import type { HumanDisplayRecord } from '#/server/human-display-persistence'
 import {
   getControlPlaneRuntimeContext,
   type ControlPlaneRuntimeContext,
@@ -1075,6 +1085,14 @@ export interface ControlCenterSourceBundle {
   materialAuditEvents?: ReadonlyArray<AuditUiEvent> | null
   /** When true, ownership was loaded from durable registry (even if empty). */
   durableOwnershipLoaded?: boolean
+  /**
+   * Durable humanDisplay rows for this board (from HumanDisplayStore.list).
+   * Absent/empty → owner surfaces fail-closed CONTENT_REVIEW_REQUIRED.
+   * Never invents PRODUCT or promotes raw technical titles.
+   */
+  humanDisplayRecords?: ReadonlyArray<HumanDisplayRecord> | null
+  /** True when store list was attempted (even if empty). */
+  humanDisplayLoaded?: boolean
 }
 
 const FLOW_BRANCHES = new Set(['success', 'fail', 'expired', 'open'])
@@ -1604,6 +1622,15 @@ export function buildControlCenterAggregationFromSources(
           nowMs: nowMsSafe,
         })
 
+  if (src.humanDisplayLoaded === false) {
+    sectionErrors.push({
+      section: 'human_display',
+      code: 'PARTIAL_SOURCE',
+      message:
+        'HumanDisplayStore list failed or unavailable; owner primary surfaces fail-closed CONTENT_REVIEW_REQUIRED',
+    })
+  }
+
   const input: ControlCenterAggregationInput = {
     pin,
     tasks,
@@ -1624,7 +1651,47 @@ export function buildControlCenterAggregationFromSources(
     frontierStateWhenEmpty: 'PRIORITY_FRONTIER_EMPTY',
   }
 
-  return aggregateControlCenter(input)
+  const agg = aggregateControlCenter(input)
+  const humanDisplayByEntityKey = buildHumanDisplayProjectionMap(
+    pin,
+    src.humanDisplayRecords,
+  )
+  return attachOwnerHumanDisplayToWorkSurfaces({
+    ...agg,
+    humanDisplayByEntityKey,
+  })
+}
+
+/**
+ * Build entity-key → owner HD projection map from durable HumanDisplay records.
+ * Uses stored sourceHash as liveSourceHash when full source recompute is not available
+ * (pin revs/snapshot still applied). Missing records are NOT invented here — callers
+ * fail-closed via resolveTaskOwnerHumanDisplay.
+ */
+export function buildHumanDisplayProjectionMap(
+  pin: ControlCenterPin,
+  records: ReadonlyArray<HumanDisplayRecord> | null | undefined,
+): Map<string, OwnerHumanDisplayUiProjection> {
+  const map = new Map<string, OwnerHumanDisplayUiProjection>()
+  if (!records) return map
+  for (const rec of records) {
+    if (
+      rec.entityKind !== 'task' &&
+      rec.entityKind !== 'project' &&
+      rec.entityKind !== 'feature'
+    ) {
+      continue
+    }
+    const entityId = String(rec.entityId ?? '').trim()
+    if (!entityId) continue
+    const proj = projectOwnerHumanDisplayUi(
+      rec.content,
+      livePinFromControlCenter(pin, rec.sourceHash),
+      { entityKind: rec.entityKind, entityId },
+    )
+    map.set(humanDisplayEntityKey(rec.entityKind, entityId), proj)
+  }
+  return map
 }
 
 /**
@@ -2168,12 +2235,25 @@ export async function loadControlCenterAggregation(
     classS,
     auditS,
     importAuditS,
+    humanDisplayS,
   ] = await Promise.all([
     ctx
       ? settle(ctx.runtime.runs.list(boardId), 'runs')
       : Promise.resolve({ ok: false as const, error: 'no runtime context' }),
+    // Authenticated UI account source service path (real projection + schema identity).
     ctx
-      ? settle(ctx.runtime.accounts.get(boardId), 'accounts')
+      ? settle(
+          readAuthenticatedUiAccountSourceService({
+            boardId,
+            accounts: ctx.runtime.accounts,
+            auth: { kind: 'system' },
+          }).then(async (uiSrc) => {
+            if (uiSrc?.readModel) return uiSrc.readModel
+            // Fall back to raw pinned snapshot when projection null (missing).
+            return loadPinnedAuthoritativeAccountSnapshot(boardId, ctx.runtime.accounts)
+          }),
+          'accounts',
+        )
       : settle(readLatestAccountSyncSnapshot(boardId), 'accounts_fallback'),
     ctx
       ? settle(ctx.runtime.plans.getActive(boardId), 'active_plan')
@@ -2193,6 +2273,12 @@ export async function loadControlCenterAggregation(
     ctx
       ? settle(ctx.controlData.imports.listImportAudit(boardId), 'import_audit')
       : Promise.resolve({ ok: false as const, error: 'no runtime context' }),
+    ctx?.humanDisplay
+      ? settle(ctx.humanDisplay.list(boardId), 'human_display')
+      : Promise.resolve({
+          ok: false as const,
+          error: 'no humanDisplay store on runtime context',
+        }),
   ])
 
   const durableRuns: RunRecord[] = durableRunsS.ok ? durableRunsS.value : emptyRunList
@@ -2204,7 +2290,7 @@ export async function loadControlCenterAggregation(
     })
   }
 
-  let accountSyncSnapshot: AccountSyncSnapshot | null = null
+  let accountSyncSnapshot: AccountSyncSnapshot | AccountSyncCcReadModel | null = null
   if (accountSnapS.ok) {
     accountSyncSnapshot = accountSnapS.value
   } else {
@@ -2341,6 +2427,17 @@ export async function loadControlCenterAggregation(
       ? emptyClass
       : null
 
+  const humanDisplayRecords: HumanDisplayRecord[] = humanDisplayS.ok
+    ? humanDisplayS.value
+    : []
+  if (!humanDisplayS.ok) {
+    sectionErrors.push({
+      section: 'human_display',
+      code: 'PARTIAL_SOURCE',
+      message: humanDisplayS.error,
+    })
+  }
+
   return buildControlCenterAggregationFromSources({
     boardId,
     raw,
@@ -2366,6 +2463,8 @@ export async function loadControlCenterAggregation(
     g5Domains,
     activePlan,
     materialAuditEvents: materialAuditEvents.length > 0 ? materialAuditEvents : null,
+    humanDisplayRecords,
+    humanDisplayLoaded: humanDisplayS.ok,
   })
 }
 

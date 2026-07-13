@@ -1814,3 +1814,171 @@ describe('health route auth/mismatch via public exports (no product edit)', () =
     expect(JSON.parse(text).code).toBe('HEALTH_UNAVAILABLE')
   })
 })
+
+describe('domain-blocker sanitized public truth (never 503 for business blockers)', () => {
+  it('forceStale + domainBlockers → 200 with usableCapacity=0 and freshness.stale=true', async () => {
+    const input = baseAggregation({
+      forceStale: true,
+      usableCapacity: 99, // must be forced to 0 by domain blockers
+      domainBlockers: [
+        { code: 'DATA_INTEGRITY', count: 2, reason: 'section:classification' },
+        { code: 'ACCOUNT_SYNC_MISSING', count: 1, reason: 'accountSyncMeta.missing' },
+        // Structural codes must be dropped from public DTO
+        { code: 'SCHEMA_INVALID', count: 1, reason: 'should-drop' },
+        { code: 'PIN_AUTHORITY_INCOMPLETE', count: 1, reason: 'should-drop' },
+      ],
+      nowMs: Date.parse('2026-07-13T00:00:10.000Z'), // young age — without forceStale would be fresh
+      publicationIntervalMs: 60_000,
+      publishedAt: '2026-07-13T00:00:00.000Z',
+    })
+
+    const snap = materializePublicSnapshot(input)
+    expect(snap.payload.freshness.stale).toBe(true)
+    expect(snap.payload.usableCapacity).toBe(0)
+    expect(snap.payload.domainBlockers.map((b) => b.code).sort()).toEqual([
+      'ACCOUNT_SYNC_MISSING',
+      'DATA_INTEGRITY',
+    ])
+    expect(snap.payload.accounts.every((a) => a.usable === false)).toBe(true)
+
+    const result = await handlePublicSnapshotGet(
+      new Request('http://local/api/public-snapshot?boardId=board-1'),
+      {
+        store: createMemoryPublicSnapshotStore(),
+        loadAggregation: async () => input,
+      },
+    )
+    expect(result.kind).toBe('ok')
+    expect(result.status).toBe(200)
+    if (result.kind === 'ok') {
+      const body = JSON.parse(result.body)
+      expect(body.freshness.stale).toBe(true)
+      expect(body.usableCapacity).toBe(0)
+      expect(body.domainBlockers.some((b: { code: string }) => b.code === 'DATA_INTEGRITY')).toBe(
+        true,
+      )
+      expect(result.headers['x-snapshot-stale']).toBe('1')
+      // No private decision/account identity
+      expect(result.body).not.toContain('PRIVATE')
+      expect(result.body).not.toContain('token')
+      expect(result.body).not.toContain('password')
+    }
+  })
+
+  it('structural load miss remains 503 STALE_OR_MISSING (negative structural)', async () => {
+    const result = await handlePublicSnapshotGet(
+      new Request('http://local/api/public-snapshot?boardId=board-missing'),
+      {
+        store: createMemoryPublicSnapshotStore(),
+        loadAggregation: async () => null,
+      },
+    )
+    expect(result.status).toBe(503)
+    if (result.kind === 'error') {
+      const body = JSON.parse(result.body)
+      expect(body.code).toBe('STALE_OR_MISSING')
+      expect(body.usableCapacity).toBeUndefined()
+      expect(body.domainBlockers).toBeUndefined()
+      expect(body.schemaVersion).toBeUndefined()
+    }
+  })
+
+  it('domain blocker change invalidates content fingerprint + ETag', () => {
+    const pin = basePin()
+    const clean = baseAggregation({ pin, forceStale: false, usableCapacity: 4, domainBlockers: [] })
+    const blocked = baseAggregation({
+      pin,
+      forceStale: true,
+      usableCapacity: 0,
+      domainBlockers: [{ code: 'UNCLASSIFIED', count: 3, reason: 'rollup.unclassifiedCount' }],
+    })
+    const fpClean = publicContentFingerprint(clean)
+    const fpBlocked = publicContentFingerprint(blocked)
+    expect(fpClean).not.toBe(fpBlocked)
+
+    const store = createMemoryPublicSnapshotStore()
+    const a = getOrMaterializePublicSnapshot({ boardId: 'board-1', store, input: clean })
+    const b = getOrMaterializePublicSnapshot({ boardId: 'board-1', store, input: blocked })
+    expect(a.etag).not.toBe(b.etag)
+    expect(b.payload.freshness.stale).toBe(true)
+    expect(b.payload.usableCapacity).toBe(0)
+  })
+
+  it('ETag/304 still works for domain-blocker snapshot; redaction preserved', async () => {
+    const input = baseAggregation({
+      forceStale: true,
+      usableCapacity: 0,
+      domainBlockers: [{ code: 'DATA_INTEGRITY', count: 1, reason: 'section:classification' }],
+      accounts: [
+        {
+          accountIdMasked: 'acc_plaintextHOSTILE99',
+          status: 'ACTIVE',
+          usable: true,
+        },
+      ],
+      runs: [
+        {
+          runId: 'run-x',
+          status: 'RUNNING',
+          accountRefMasked: 'raw-secret-account-token',
+        },
+      ],
+    })
+    const store = createMemoryPublicSnapshotStore()
+    const first = await handlePublicSnapshotGet(
+      new Request('http://local/api/public-snapshot?boardId=board-1'),
+      { store, loadAggregation: async () => input },
+    )
+    expect(first.status).toBe(200)
+    if (first.kind !== 'ok') throw new Error('expected ok')
+    const body = JSON.parse(first.body)
+    // Hostile acc_ remasked; raw identity not present
+    expect(body.accounts[0].accountIdMasked).toMatch(/^acc_\*{3}[A-Za-z0-9]{4}$/)
+    expect(first.body).not.toContain('plaintextHOSTILE')
+    expect(first.body).not.toContain('raw-secret-account-token')
+    expect(body.accounts[0].usable).toBe(false)
+
+    const etag = first.headers.etag
+    const second = await handlePublicSnapshotGet(
+      new Request('http://local/api/public-snapshot?boardId=board-1', {
+        headers: { 'if-none-match': etag },
+      }),
+      { store, loadAggregation: async () => input },
+    )
+    expect(second.status).toBe(304)
+    expect(second.kind).toBe('not_modified')
+  })
+
+  it('rate limit still 429 under domain-blocker load path (shared policy)', async () => {
+    const limiter = createPublicSnapshotRateLimiter({
+      // Tiny burst so second request fails immediately
+      policy: { burst: 1, sustainedPerMinute: 1 },
+    })
+    const input = baseAggregation({
+      forceStale: true,
+      usableCapacity: 0,
+      domainBlockers: [{ code: 'ACCOUNT_SYNC_STALE', count: 1, reason: 'sla' }],
+    })
+    const deps: PublicSnapshotDeps = {
+      store: createMemoryPublicSnapshotStore(),
+      loadAggregation: async () => input,
+      rateLimiter: limiter,
+      resolveIp: () => '203.0.113.50',
+    }
+    const r1 = await handlePublicSnapshotGet(
+      new Request('http://local/api/public-snapshot?boardId=board-1'),
+      deps,
+    )
+    expect(r1.status).toBe(200)
+    const r2 = await handlePublicSnapshotGet(
+      new Request('http://local/api/public-snapshot?boardId=board-1'),
+      deps,
+    )
+    expect(r2.status).toBe(429)
+    if (r2.kind === 'rate_limited') {
+      const body = JSON.parse(r2.body)
+      expect(body.code).toBe('RATE_LIMITED')
+      expect(r2.headers['retry-after']).toBeTruthy()
+    }
+  })
+})

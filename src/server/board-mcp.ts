@@ -7,8 +7,29 @@ import { z } from 'zod'
 import { buildModel } from '#/lib/model'
 import { deriveCheckpoints, nextEvidence, nextStage, stageReadiness } from '#/lib/readiness'
 import type { Feature } from '#/lib/types'
-import { advanceTask, computeRollup, initLifecycleStage, readAudit, readLifecycle, writeLifecycle } from '#/server/lifecycle-store'
-import { taskLifecycle } from '#/server/tasks-store'
+import {
+  advanceTaskV3,
+  computeRollup,
+  initLifecycleStage,
+  LifecycleV3Error,
+  readAudit,
+  readLifecycle,
+  submitStageEvidence,
+  V3_LIFECYCLE_RAIL,
+  writeLifecycle,
+  type AdvanceV3Input,
+  type AdvanceV3Result,
+  type LifecycleBoardPin,
+  type LifecycleV3Storage,
+  type RegisteredRun,
+  type RegisteredStageEvidence,
+  type StageReceipt,
+  type SubmitStageEvidenceInput,
+  type TaskLifecycleV3State,
+} from '#/server/lifecycle-store'
+import { computeTaskHash, setTaskLifecycle, taskLifecycle, writeAudit } from '#/server/tasks-store'
+import { readDoc, writeDoc } from '#/server/db'
+import type { LifecycleStageKey } from '#/lib/control-plane-types'
 import { decideDecision, deleteBoard, deleteProject, setQueue, updateBoard, upsertProject } from '#/server/board-store'
 import {
   addComment,
@@ -109,11 +130,14 @@ import {
   setSharedAccountSyncStore,
   type AccountSyncStore,
   type AccountSyncDeps,
+  type AccountSyncTrigger,
   type AccountProviderKind,
   type MaskedAccountStatus,
   type SyncAccountsRequest,
   type SyncAccountsResult,
 } from '#/server/account-sync'
+import { inferAccountSyncTriggerFromStatuses } from '#/server/account-sync-scheduler'
+import { readMcpListAccountsService } from '#/server/account-surface-readers'
 import {
   openDecisionV3,
   resolveDecisionV3,
@@ -206,6 +230,8 @@ let mcpReconcilerStore: ReconcilerStore | null = null
 let mcpAtomic: ControlPlaneAtomicStore | null = null
 let mcpLocks: LockStore | null = null
 let mcpIdempotency: IdempotencyStorage | null = null
+/** Test override for advance_task V3 storage (null → durable board_docs path). */
+let productLifecycleV3StorageFactory: ((boardId: string) => LifecycleV3Storage) | null = null
 /** True when setMcpPlanStore / setMcpAccountStore installed an explicit override. */
 let mcpPlanStoreExplicit = false
 let mcpAccountStoreExplicit = false
@@ -262,6 +288,7 @@ export function resetMcpControlPlaneDeps(): void {
   mcpAtomic = null
   mcpLocks = null
   mcpIdempotency = null
+  productLifecycleV3StorageFactory = null
   resetPublicSnapshotServiceForTests()
 }
 
@@ -385,6 +412,7 @@ function decisionDeps(): DecisionV3Deps {
     clock: systemClock(),
     decisions: sharedDecisionStore(),
     atomic: sharedAtomic(),
+    idempotency: sharedIdempotency(),
   }
 }
 
@@ -395,8 +423,135 @@ function reconcilerDeps(runDeps: RunRegistryDeps): ReconcilerDeps {
     locks: runDeps.locks,
     reconciler: sharedReconcilerStore(),
     atomic: runDeps.atomic,
+    idempotency: runDeps.idempotency,
   }
 }
+
+/**
+ * Notify shared account-sync scheduler of a trigger (register/heartbeat/integration/…).
+ * Uses peek (no lazy-init) so isolated unit tests without runtime context stay clean.
+ * Never enqueues secrets — masked accounts only from durable snapshot.
+ *
+ * entityExpectedRev = **current account snapshot entityRev** (never run/lock entity rev).
+ * expectedBoardRev = **post-mutation board rev** from atomic (never pre-bump envelope).
+ * Failures are NOT swallowed: fail-closed stale usableCapacity=0 + typed result.
+ */
+export type AccountSchedulerNotifyResult =
+  | { ok: true; kind: string; trigger: AccountSyncTrigger }
+  | { ok: false; code: string; message: string; trigger: AccountSyncTrigger; failClosed: true }
+
+async function notifyAccountSchedulerTrigger(
+  boardId: string,
+  trigger: AccountSyncTrigger,
+  opts: {
+    /** Post-mutation board rev when known; else loaded from atomic. */
+    expectedBoardRev?: number
+    canonicalHash: string
+    idempotencyKey: string
+    actorId: string
+  },
+): Promise<AccountSchedulerNotifyResult> {
+  const { peekAccountSyncScheduler } = await import('#/server/control-plane-runtime-context')
+  const sched = peekAccountSyncScheduler()
+  if (!sched) {
+    return {
+      ok: false,
+      code: 'ACCOUNT_SYNC_SCHEDULER_MISSING',
+      message: 'account sync scheduler not installed on runtime context',
+      trigger,
+      failClosed: true,
+    }
+  }
+  try {
+    const snap = await sharedAccountStore().get(boardId)
+    if (!snap) {
+      // No snapshot yet — nothing to publish; not a failure of the primary mutation.
+      return { ok: true, kind: 'SKIPPED_NO_SNAPSHOT', trigger }
+    }
+    const board = await sharedAtomic().getBoardState(boardId)
+    const expectedBoardRev =
+      typeof opts.expectedBoardRev === 'number' ? opts.expectedBoardRev : board.boardRev
+    // CAS against **account** entity rev (never run/lock entityRev).
+    const entityExpectedRev = snap.entityRev
+    // Masked-only: never pass through unknown secret-like fields.
+    const accounts = snap.accounts.map((a) => ({
+      maskedAccountId: a.maskedAccountId,
+      status: a.status,
+      providerKind: a.providerKind,
+      effectiveInUse: a.effectiveInUse,
+      effectiveCap: a.effectiveCap,
+      physicalSlotsDisplay: a.physicalSlotsDisplay,
+      adaptiveQuotaState: a.adaptiveQuotaState,
+      reason: a.reason,
+      statusChangedAt: a.statusChangedAt,
+    }))
+    const out = await sched.enqueue({
+      boardId,
+      sourceRevision: snap.sourceRevision + 1,
+      generatedAt: new Date().toISOString(),
+      entityExpectedRev,
+      expectedBoardRev,
+      canonicalHash: opts.canonicalHash,
+      currentPinHash: opts.canonicalHash,
+      accounts,
+      trigger,
+      idempotencyKey: opts.idempotencyKey,
+      callerRole: 'ROOT_ORCHESTRATOR',
+      actorId: opts.actorId,
+    })
+    return { ok: true, kind: out.kind, trigger }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    const code =
+      e && typeof e === 'object' && 'code' in e && typeof (e as { code: unknown }).code === 'string'
+        ? String((e as { code: string }).code)
+        : 'ACCOUNT_SYNC_NOTIFY_FAILED'
+    try {
+      await sched.failClosedStale(boardId, `NOTIFY_FAILED:${code}`)
+    } catch {
+      /* still surface typed failure below */
+    }
+    return { ok: false, code, message, trigger, failClosed: true }
+  }
+}
+
+/**
+ * Exhaustive account-sync trigger enum (MCP sync_accounts schema + domain).
+ * WAVE_CLOSE is accepted on the ROOT callable path — not an external-only gap.
+ */
+export const ACCOUNT_SYNC_TRIGGER_VALUES = [
+  'ORCHESTRATOR_LAUNCH',
+  'WAVE_LAUNCH',
+  'AGENT_LAUNCH',
+  'HEARTBEAT',
+  'MATERIAL_ASSIGNMENT',
+  'STATUS_TRANSITION',
+  'LIMIT_TRANSITION',
+  'BAN_TRANSITION',
+  'AUTH_EXPIRED_TRANSITION',
+  'ROTATION',
+  'REQUEUE',
+  'INTEGRATION_CHECKPOINT',
+  'WAVE_CLOSE',
+  'PERIODIC_HEALTH',
+] as const satisfies ReadonlyArray<AccountSyncTrigger>
+
+export type AccountSyncTriggerValue = (typeof ACCOUNT_SYNC_TRIGGER_VALUES)[number]
+
+/** Zod enum for sync_accounts.trigger (exact closed set). */
+export const ACCOUNT_SYNC_TRIGGER_Z = z.enum(
+  ACCOUNT_SYNC_TRIGGER_VALUES as unknown as [
+    AccountSyncTriggerValue,
+    ...AccountSyncTriggerValue[],
+  ],
+)
+
+/**
+ * External-adapter triggers with no in-repo callable surface.
+ * Empty: WAVE_CLOSE is accepted via ROOT sync_accounts trigger enum.
+ */
+export const ACCOUNT_SYNC_EXTERNAL_ADAPTER_TRIGGERS =
+  [] as const satisfies ReadonlyArray<AccountSyncTrigger>
 
 /**
  * Stable typed error envelope for MCP tools.
@@ -488,6 +643,16 @@ const SAFE_TYPED_ERROR_CODES = new Set([
   'PIN_AUTHORITY_INCOMPLETE',
   'PAYLOAD_UNBOUNDED',
   'MATERIALIZATION_FAILED',
+  // lifecycle V3 rail
+  'INVALID_TRANSITION',
+  'MISSING_EVIDENCE',
+  'STALE_HASH',
+  'SELF_VERIFICATION',
+  'INVALID_VERIFIER_ROLE',
+  'INVALID_MODEL_PAIRING',
+  'INVALID_THREAD',
+  'UNKNOWN_STAGE',
+  'TASK_NOT_FOUND',
   // control-data / context
   'DB_UNAVAILABLE',
   'NOT_CONFIGURED',
@@ -698,6 +863,7 @@ export const REGISTERED_WRITE_TOOL_NAMES = [
   'replace_board_snapshot',
   'set_lifecycle',
   'advance_task',
+  'submit_stage_evidence',
   'add_task_section',
   'set_task_sections',
   'update_task_section',
@@ -1013,15 +1179,18 @@ export async function runMutationGate<T extends object>(
 
 /**
  * Schema-level envelope assert for V3 tools that already own domain CAS/idempotency.
- * Ensures missing fields never pass; optional pin hash check when boardId known.
+ * Ensures missing fields never pass. When boardId is provided, pin hash is checked
+ * by default (checkPinHash defaults true) so "current canonical hash" is runtime-enforced.
  */
 export async function assertMutationEnvelopeOrThrow(
   args: Record<string, unknown>,
   opts?: { boardId?: string; checkPinHash?: boolean },
-): Promise<ParsedMutationEnvelope> {
+): Promise<ParsedMutationEnvelope & { currentPinHash?: string }> {
   const env = parseMutationEnvelope(args)
-  if (opts?.checkPinHash && opts.boardId) {
-    const pin = await resolveBoardPin(opts.boardId)
+  const boardId = opts?.boardId
+  const checkPin = boardId != null && opts?.checkPinHash !== false
+  if (checkPin && boardId) {
+    const pin = await resolveBoardPin(boardId)
     if (pin.canonicalHash !== env.subjectHash) {
       throw new McpMutationError(
         STALE_REVISION,
@@ -1029,10 +1198,11 @@ export async function assertMutationEnvelopeOrThrow(
         {
           expectedSubjectHash: env.subjectHash,
           currentSubjectHash: pin.canonicalHash,
-          boardId: opts.boardId,
+          boardId,
         },
       )
     }
+    return { ...env, currentPinHash: pin.canonicalHash }
   }
   return env
 }
@@ -1122,6 +1292,677 @@ export async function resolveAdvanceTaskPersistedAgentId(
     /* fall through */
   }
   return null
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle V3 product wiring (AC-LIFE-03/04) — ordered rail, no skip, receipts
+// ---------------------------------------------------------------------------
+
+/** Board-doc kind for V3 pin rev overlay (boardRev/lifecycleRev after advances). */
+export const LIFECYCLE_V3_PIN_DOC = 'lifecycle_v3_pin'
+
+/** Board-doc kind for V3 task state map (stage receipts + history). */
+export const LIFECYCLE_V3_TASKS_DOC = 'lifecycle_v3_tasks'
+
+const V3_STAGE_SET = new Set<string>(V3_LIFECYCLE_RAIL as ReadonlyArray<string>)
+
+export function isV3LifecycleStageKey(s: string): s is LifecycleStageKey {
+  return V3_STAGE_SET.has(s)
+}
+
+/** Map LifecycleV3Error → McpMutationError so MCP typedError surfaces domain codes. */
+export function mapLifecycleV3Error(e: unknown): never {
+  if (e instanceof LifecycleV3Error) {
+    throw new McpMutationError(e.code, e.message, { ...e.details })
+  }
+  throw e
+}
+
+/**
+ * Compatibility alias response — emitted ONLY after a valid V3 transition.
+ * Keeps legacy shape (ok/taskId/fromStage/stage/rev/implementer) + V3 pin/readback.
+ */
+export function toLegacyAdvanceCompatibilityResponse(
+  v3: AdvanceV3Result,
+): {
+  ok: true
+  taskId: string
+  fromStage: string | null
+  stage: string
+  rev: number
+  implementer: string | null
+  boardRev: number
+  lifecycleRev: number
+  entityRev: number
+  taskHash: string
+  canonicalHash: string
+  canonicalSnapshotId: string
+  receipt: StageReceipt
+  pin: AdvanceV3Result['pin']
+  readback: AdvanceV3Result['readback']
+  engine: 'advanceTaskV3'
+} {
+  return {
+    ok: true,
+    taskId: v3.taskId,
+    fromStage: v3.fromStage,
+    stage: v3.stage,
+    rev: v3.entityRev,
+    implementer: v3.receipt.authorRunId ?? null,
+    boardRev: v3.boardRev,
+    lifecycleRev: v3.lifecycleRev,
+    entityRev: v3.entityRev,
+    taskHash: v3.taskHash,
+    canonicalHash: v3.canonicalHash,
+    canonicalSnapshotId: v3.canonicalSnapshotId,
+    receipt: v3.receipt,
+    pin: v3.pin,
+    readback: v3.readback,
+    engine: 'advanceTaskV3',
+  }
+}
+
+/**
+ * Extract receiptId+receiptHash ONLY from advance args.
+ * NEVER computes hash, NEVER accepts programmatic self-promotion, NEVER builds
+ * a stage receipt body from the advance request — registry is sole authority.
+ */
+export function parseAdvanceReceiptRef(args: Record<string, unknown>): {
+  receiptId: string
+  receiptHash: string
+} {
+  const raw = args.receipt
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const r = raw as Record<string, unknown>
+    const receiptId = typeof r.receiptId === 'string' ? r.receiptId.trim() : ''
+    const receiptHash = typeof r.receiptHash === 'string' ? r.receiptHash.trim() : ''
+    if (!receiptId || !receiptHash) {
+      throw new McpMutationError(
+        'MISSING_EVIDENCE',
+        'advance_task requires receipt.receiptId + receipt.receiptHash of a program-registered stage evidence receipt (server never computes hash on advance)',
+        { receiptId, receiptHashPresent: Boolean(receiptHash) },
+      )
+    }
+    return { receiptId, receiptHash }
+  }
+  // Top-level receiptId/receiptHash (no body)
+  const receiptId =
+    typeof args.receiptId === 'string'
+      ? args.receiptId.trim()
+      : typeof args.evidence === 'object' &&
+          args.evidence &&
+          typeof (args.evidence as { receiptId?: unknown }).receiptId === 'string'
+        ? String((args.evidence as { receiptId: string }).receiptId).trim()
+        : ''
+  const receiptHash =
+    typeof args.receiptHash === 'string'
+      ? args.receiptHash.trim()
+      : typeof args.evidence === 'object' &&
+          args.evidence &&
+          typeof (args.evidence as { receiptHash?: unknown }).receiptHash === 'string'
+        ? String((args.evidence as { receiptHash: string }).receiptHash).trim()
+        : ''
+  if (!receiptId || !receiptHash) {
+    throw new McpMutationError(
+      'MISSING_EVIDENCE',
+      'advance_task accepts only registered receiptId+receiptHash — no self-created receipt body, no hash computation on advance',
+      { receiptId, receiptHashPresent: Boolean(receiptHash) },
+    )
+  }
+  return { receiptId, receiptHash }
+}
+
+/**
+ * @deprecated Use parseAdvanceReceiptRef — advance never builds receipts.
+ * Kept for tests that still import the name; always throws MISSING_EVIDENCE
+ * unless both receiptId and receiptHash are present (no hash computation).
+ */
+export function parseAdvanceStageReceipt(
+  args: Record<string, unknown>,
+  _opts?: {
+    taskHash: string
+    canonicalHash: string
+    boardRev: number
+    lifecycleRev: number
+  },
+): StageReceipt {
+  const ref = parseAdvanceReceiptRef(args)
+  // Stub only — advanceTaskV3 replaces with registry authority.
+  return {
+    receiptId: ref.receiptId,
+    receiptHash: ref.receiptHash,
+    programmatic: true,
+    taskHash: '',
+    canonicalHash: '',
+    boardRev: 0,
+    lifecycleRev: 0,
+    fields: {},
+    authorRunId: null,
+    verifierRunId: null,
+    verdict: null,
+    issuedAt: new Date(0).toISOString(),
+  }
+}
+
+export function buildAdvanceTaskV3Input(
+  boardId: string,
+  args: Record<string, unknown>,
+  envelope: ParsedMutationEnvelope,
+  pin: LifecycleBoardPin,
+  taskHash: string,
+): AdvanceV3Input {
+  const toStageRaw = String(args.toStage ?? '')
+  if (!isV3LifecycleStageKey(toStageRaw)) {
+    throw new McpMutationError(
+      'UNKNOWN_STAGE',
+      `unknown V3 stage: ${toStageRaw}. Rail: ${V3_LIFECYCLE_RAIL.join(' → ')}`,
+      { toStage: toStageRaw },
+    )
+  }
+  const expectedLifecycleRev =
+    typeof args.expectedLifecycleRev === 'number' && Number.isInteger(args.expectedLifecycleRev)
+      ? args.expectedLifecycleRev
+      : pin.lifecycleRev
+  const expectedTaskHash =
+    typeof args.expectedTaskHash === 'string' && args.expectedTaskHash.trim()
+      ? args.expectedTaskHash.trim()
+      : taskHash
+  // Only receiptId+hash — never compute or accept a full receipt body from advance.
+  const receipt = parseAdvanceStageReceipt(args)
+  return {
+    boardId,
+    taskId: String(args.id ?? ''),
+    toStage: toStageRaw,
+    byRunId: String(args.byRunId ?? ''),
+    entityExpectedRev: envelope.entityExpectedRev,
+    expectedBoardRev: envelope.expectedBoardRev,
+    expectedLifecycleRev,
+    expectedTaskHash,
+    expectedCanonicalHash: envelope.subjectHash,
+    receipt,
+    productionApprovalId:
+      typeof args.productionApprovalId === 'string' ? args.productionApprovalId : null,
+    requireOppositeModel: args.requireOppositeModel !== false,
+  }
+}
+
+/**
+ * Program-emit stage evidence (authenticated domain path).
+ * Server sets programmatic=true and computes receiptHash; immutable registry put.
+ * MCP: `submit_stage_evidence` (AGENT own-run only; ROOT accepts via advance_task).
+ * Never inserts before run/pin/task-hash/entity-rev checks (see submitStageEvidence).
+ */
+export async function submitStageEvidenceProduct(
+  boardId: string,
+  inp: Omit<SubmitStageEvidenceInput, 'boardId'>,
+): Promise<RegisteredStageEvidence & { created: boolean }> {
+  const storage = createProductLifecycleV3Storage(boardId)
+  try {
+    return await submitStageEvidence(storage, { ...inp, boardId })
+  } catch (e) {
+    mapLifecycleV3Error(e)
+  }
+}
+
+/**
+ * Comment attribution is authenticated principal only.
+ * Request author / authorType spoof fields are ignored by the MCP handler.
+ */
+export function commentAttributionFromPrincipal(
+  principal: Principal | null | undefined,
+): { author: string; authorType: 'human' | 'agent' } {
+  return {
+    author: attributionFromPrincipal(principal),
+    authorType:
+      principal?.role === 'OWNER' || principal?.channel === 'session' ? 'human' : 'agent',
+  }
+}
+
+/** Injectable product storage factory (unit tests). Null → durable board_docs + tasks + runs. */
+export function setProductLifecycleV3StorageFactory(
+  factory: ((boardId: string) => LifecycleV3Storage) | null,
+): void {
+  productLifecycleV3StorageFactory = factory
+}
+
+export function createProductLifecycleV3Storage(boardId: string): LifecycleV3Storage {
+  if (productLifecycleV3StorageFactory) return productLifecycleV3StorageFactory(boardId)
+  return createDurableLifecycleV3Storage(boardId)
+}
+
+function mapRunRecordToRegistered(run: {
+  runId: string
+  agentId: string
+  model: string
+  role: string
+  leaseExpiresAtMs?: number | null
+  state?: string
+  controllerRunId?: string | null
+  parentRunId?: string | null
+}): RegisteredRun {
+  const terminalFenced =
+    run.state === 'SUPERSEDED' || run.state === 'STALE' || run.state === 'CANCELLED'
+  const expiresAt =
+    run.leaseExpiresAtMs != null && Number.isFinite(run.leaseExpiresAtMs)
+      ? new Date(run.leaseExpiresAtMs).toISOString()
+      : '2099-01-01T00:00:00.000Z'
+  return {
+    runId: run.runId,
+    agentId: run.agentId,
+    model: run.model || 'unknown',
+    role: run.role || 'implementer',
+    threadId: run.controllerRunId || run.parentRunId || run.runId,
+    expiresAt,
+    fenced: terminalFenced,
+    registered: true,
+  }
+}
+
+/**
+ * Durable LifecycleV3Storage: pin overlay + task V3 state in board_docs,
+ * stage column via setTaskLifecycle, runs via V3 registry (+ legacy board.runs),
+ * immutable audit via writeAudit, stage evidence via controlData.stageEvidence
+ * (fallback board_docs archive when control-data unavailable).
+ */
+export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Storage {
+  type PinOverlay = { boardRev: number; lifecycleRev: number }
+  type TasksDoc = { tasks: Record<string, TaskLifecycleV3State> }
+  type EvidenceDoc = { byReceiptId: Record<string, RegisteredStageEvidence> }
+  const EVIDENCE_DOC = 'lifecycle_v3_stage_evidence'
+
+  async function loadPinOverlay(): Promise<PinOverlay | null> {
+    try {
+      const doc = await readDoc<PinOverlay | null>(boardId, LIFECYCLE_V3_PIN_DOC, null)
+      if (
+        doc &&
+        typeof doc.boardRev === 'number' &&
+        typeof doc.lifecycleRev === 'number'
+      ) {
+        return { boardRev: doc.boardRev, lifecycleRev: doc.lifecycleRev }
+      }
+    } catch {
+      /* no db / missing */
+    }
+    return null
+  }
+
+  async function loadTasksDoc(): Promise<TasksDoc> {
+    try {
+      const doc = await readDoc<TasksDoc>(boardId, LIFECYCLE_V3_TASKS_DOC, { tasks: {} })
+      return doc?.tasks ? doc : { tasks: {} }
+    } catch {
+      return { tasks: {} }
+    }
+  }
+
+  async function stageEvidenceStore() {
+    try {
+      return resolveMcpRuntimeContext().controlData.stageEvidence
+    } catch {
+      return null
+    }
+  }
+
+  return {
+    async getBoardPin(bid) {
+      if (bid !== boardId) return null
+      const base = await resolveBoardPin(boardId)
+      const overlay = await loadPinOverlay()
+      return {
+        boardId,
+        boardRev: overlay?.boardRev ?? base.boardRev,
+        lifecycleRev: overlay?.lifecycleRev ?? base.lifecycleRev,
+        canonicalSnapshotId: base.canonicalSnapshotId,
+        canonicalHash: base.canonicalHash,
+      }
+    },
+
+    async getTask(bid, taskId) {
+      if (bid !== boardId) return null
+      const doc = await loadTasksDoc()
+      if (doc.tasks[taskId]) {
+        const t = doc.tasks[taskId]
+        return {
+          ...t,
+          history: [...(t.history ?? [])],
+          stageReceipts: { ...(t.stageReceipts ?? {}) },
+        }
+      }
+      // Bootstrap from legacy task row when present.
+      try {
+        const row = await taskLifecycle(boardId, taskId)
+        if (!row) return null
+        const pin = await this.getBoardPin(boardId)
+        if (!pin) return null
+        const lc = row.lifecycle as Record<string, unknown> | null
+        if (lc && lc.v3 === true && typeof lc.taskId === 'string') {
+          return {
+            ...(lc as unknown as TaskLifecycleV3State),
+            history: Array.isArray(lc.history) ? [...(lc.history as TaskLifecycleV3State['history'])] : [],
+            stageReceipts:
+              lc.stageReceipts && typeof lc.stageReceipts === 'object'
+                ? { ...(lc.stageReceipts as TaskLifecycleV3State['stageReceipts']) }
+                : {},
+          }
+        }
+        const stage =
+          row.stage && isV3LifecycleStageKey(row.stage) ? (row.stage as LifecycleStageKey) : null
+        let taskHash = `${boardId}:${taskId}:v0`
+        try {
+          const full = await readTask(boardId, taskId)
+          if (full) {
+            taskHash = computeTaskHash({
+              id: full.id,
+              title: full.title,
+              projectId: full.projectId,
+              featureContractId: full.featureContractId,
+              objective: full.objective,
+              checkpoints: full.checkpoints,
+              dependencies: full.dependencies,
+            })
+          }
+        } catch {
+          /* keep fallback hash */
+        }
+        return {
+          taskId,
+          stage,
+          entityRev: row.rev ?? 0,
+          boardRev: pin.boardRev,
+          lifecycleRev: pin.lifecycleRev,
+          taskHash,
+          canonicalSnapshotId: pin.canonicalSnapshotId,
+          canonicalHash: pin.canonicalHash,
+          implementerRunId: row.implementerRun ?? null,
+          implementerAgentId: null,
+          implementerModel: null,
+          implementerThreadId: null,
+          history: [],
+          stageReceipts: {},
+          blockedReason: null,
+        }
+      } catch {
+        return null
+      }
+    },
+
+    async getRun(bid, runId) {
+      if (bid !== boardId) return null
+      try {
+        const v3 = await defaultRunDeps(boardId).runs.get(boardId, runId)
+        if (v3) {
+          return mapRunRecordToRegistered({
+            runId: v3.runId,
+            agentId: v3.agentId,
+            model: v3.model,
+            role: v3.role,
+            leaseExpiresAtMs: v3.leaseExpiresAtMs,
+            state: v3.state,
+            controllerRunId: v3.controllerRunId,
+            parentRunId: v3.parentRunId,
+          })
+        }
+      } catch {
+        /* fall through to legacy */
+      }
+      try {
+        const board = await readBoard(boardId)
+        const legacy = (board.runs ?? []).find((r) => r.id === runId)
+        if (legacy) {
+          return {
+            runId: legacy.id,
+            agentId: legacy.agent ?? legacy.id,
+            model: typeof (legacy as { model?: string }).model === 'string'
+              ? String((legacy as { model?: string }).model)
+              : 'legacy',
+            role: legacy.role ?? 'implementer',
+            threadId: legacy.id,
+            expiresAt: '2099-01-01T00:00:00.000Z',
+            fenced: false,
+            registered: true,
+          }
+        }
+      } catch {
+        /* missing */
+      }
+      return null
+    },
+
+    async saveTask(bid, state, nextBoard) {
+      if (bid !== boardId) {
+        throw new LifecycleV3Error('TASK_NOT_FOUND', 'board mismatch', { boardId: bid })
+      }
+      const doc = await loadTasksDoc()
+      const nextTasks: TasksDoc = {
+        tasks: {
+          ...doc.tasks,
+          [state.taskId]: {
+            ...state,
+            history: [...state.history],
+            stageReceipts: { ...state.stageReceipts },
+            boardRev: nextBoard.boardRev,
+            lifecycleRev: nextBoard.lifecycleRev,
+          },
+        },
+      }
+      await writeDoc(boardId, LIFECYCLE_V3_TASKS_DOC, nextTasks)
+      await writeDoc(boardId, LIFECYCLE_V3_PIN_DOC, {
+        boardRev: nextBoard.boardRev,
+        lifecycleRev: nextBoard.lifecycleRev,
+      })
+      // Dual-write stage column for list_tasks / rollup overlay (legacy consumers).
+      const lastEntry = state.history[state.history.length - 1]
+      await setTaskLifecycle(boardId, state.taskId, {
+        stage: state.stage ?? 'MAPPING',
+        implementerRun: state.implementerRunId,
+        history: {
+          v3: true,
+          ...state,
+          history: state.history,
+          stageReceipts: state.stageReceipts,
+        },
+        blockedReason: state.blockedReason,
+        lastReceiptAt: lastEntry?.ts ?? new Date().toISOString(),
+        expectedRev: state.entityRev > 0 ? state.entityRev - 1 : undefined,
+      })
+    },
+
+    async appendAudit(entry) {
+      await writeAudit(boardId, {
+        ts: String(entry.ts ?? new Date().toISOString()),
+        actor: entry.actor != null ? String(entry.actor) : null,
+        action: String(entry.action ?? 'advance_v3'),
+        taskId: entry.taskId != null ? String(entry.taskId) : null,
+        fromStage: entry.fromStage != null ? String(entry.fromStage) : null,
+        toStage: entry.toStage != null ? String(entry.toStage) : null,
+        detail: entry,
+      })
+    },
+
+    async getStageEvidence(bid, receiptId) {
+      if (bid !== boardId) return null
+      const store = await stageEvidenceStore()
+      if (store) {
+        try {
+          return await store.getStageEvidence(boardId, receiptId)
+        } catch {
+          /* fall through to board_docs */
+        }
+      }
+      try {
+        const doc = await readDoc<EvidenceDoc>(boardId, EVIDENCE_DOC, { byReceiptId: {} })
+        const e = doc?.byReceiptId?.[receiptId]
+        return e
+          ? { ...e, receipt: { ...e.receipt, fields: { ...e.receipt.fields } } }
+          : null
+      } catch {
+        return null
+      }
+    },
+
+    async putStageEvidence(entry) {
+      if (entry.boardId !== boardId) {
+        throw new LifecycleV3Error('TASK_NOT_FOUND', 'board mismatch on stage evidence')
+      }
+      const store = await stageEvidenceStore()
+      if (store) {
+        await store.putStageEvidence(entry)
+        return
+      }
+      // board_docs fallback (immutable insert-once)
+      const doc = await readDoc<EvidenceDoc>(boardId, EVIDENCE_DOC, { byReceiptId: {} })
+      const existing = doc.byReceiptId[entry.receipt.receiptId]
+      if (existing && existing.receipt.receiptHash !== entry.receipt.receiptHash) {
+        throw new LifecycleV3Error(
+          'STALE_HASH',
+          'stage evidence receiptId already registered with different hash (immutable)',
+          {
+            receiptId: entry.receipt.receiptId,
+            existing: existing.receipt.receiptHash,
+            next: entry.receipt.receiptHash,
+          },
+        )
+      }
+      if (!existing) {
+        await writeDoc(boardId, EVIDENCE_DOC, {
+          byReceiptId: {
+            ...doc.byReceiptId,
+            [entry.receipt.receiptId]: {
+              ...entry,
+              receipt: { ...entry.receipt, fields: { ...entry.receipt.fields } },
+            },
+          },
+        })
+      }
+    },
+  }
+}
+
+/**
+ * Product advance: always V3 ordered rail. No legacy advanceTask path.
+ * Returns compatibility alias only after a valid V3 transition.
+ */
+export async function advanceTaskProduct(
+  boardId: string,
+  args: Record<string, unknown>,
+  envelope: ParsedMutationEnvelope,
+): Promise<ReturnType<typeof toLegacyAdvanceCompatibilityResponse>> {
+  const storage = createProductLifecycleV3Storage(boardId)
+  const pin = await storage.getBoardPin(boardId)
+  if (!pin) {
+    throw new McpMutationError('TASK_NOT_FOUND', `board not found: ${boardId}`, { boardId })
+  }
+  const taskId = String(args.id ?? '')
+  if (!taskId) {
+    throw new McpMutationError('INVALID_INPUT', 'advance_task requires id (task id)')
+  }
+  const existing = await storage.getTask(boardId, taskId)
+  const taskHash =
+    typeof args.expectedTaskHash === 'string' && args.expectedTaskHash.trim()
+      ? args.expectedTaskHash.trim()
+      : existing?.taskHash ?? `${boardId}:${taskId}:v0`
+  const inp = buildAdvanceTaskV3Input(boardId, args, envelope, pin, taskHash)
+  try {
+    const result = await advanceTaskV3(storage, inp)
+    return toLegacyAdvanceCompatibilityResponse(result)
+  } catch (e) {
+    mapLifecycleV3Error(e)
+  }
+}
+
+/**
+ * Canonical boards (pin-complete OR partial pin/hash authority): init_lifecycle /
+ * set_lifecycle must not bypass ordered V3 evidence.
+ * - set_lifecycle: refuse allowSkip=true; refuse non-identity stage keys
+ * - init_lifecycle: refuse ALL seeding including MAPPING without valid V3 receipts
+ * Incomplete/missing pin on a board that already has partial canonical authority
+ * does NOT silently enable legacy evidence bypass.
+ */
+export async function assertLifecycleEvidenceBypassForbidden(
+  toolName: 'set_lifecycle' | 'init_lifecycle',
+  boardId: string,
+  args: Record<string, unknown>,
+): Promise<void> {
+  let boardState: Awaited<
+    ReturnType<ReturnType<typeof resolveMcpRuntimeContext>['controlData']['imports']['getBoardState']>
+  > = null
+  let importReadable = true
+  try {
+    boardState = await resolveMcpRuntimeContext().controlData.imports.getBoardState(boardId)
+  } catch {
+    importReadable = false
+  }
+
+  // Pure legacy boards (no import row, no pin authority) keep legacy path.
+  if (importReadable && !boardState) return
+
+  const hasPartialCanonical =
+    !!boardState &&
+    !!(
+      (boardState.canonicalSnapshotId && String(boardState.canonicalSnapshotId).trim()) ||
+      (boardState.canonicalHash && String(boardState.canonicalHash).trim()) ||
+      (boardState.subjectHash && String(boardState.subjectHash).trim())
+    )
+  const pinComplete = !!boardState && isPinComplete(boardState)
+
+  // Incomplete/missing pin with partial canonical fields OR unreadable import on a
+  // board that was expected to be canonical-bound: fail closed (no silent legacy bypass).
+  if (!importReadable || (!pinComplete && hasPartialCanonical)) {
+    throw new McpMutationError(
+      'INVALID_TRANSITION',
+      `${toolName} refused: incomplete/missing pin cannot silently enable legacy evidence bypass for canonical boards`,
+      { boardId, toolName, code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN' },
+    )
+  }
+
+  if (!pinComplete) return
+
+  if (toolName === 'set_lifecycle') {
+    if (args.allowSkip === true) {
+      throw new McpMutationError(
+        'INVALID_TRANSITION',
+        'set_lifecycle cannot set allowSkip=true on a pin-complete canonical board (ordered V3 evidence required)',
+        { boardId, toolName, code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN' },
+      )
+    }
+    const stages = Array.isArray(args.stages) ? args.stages : []
+    const keys = stages
+      .map((s) => (s && typeof s === 'object' ? String((s as { key?: string }).key ?? '') : ''))
+      .filter(Boolean)
+    if (keys.length > 0) {
+      const expected = [...V3_LIFECYCLE_RAIL]
+      const mismatch =
+        keys.length !== expected.length || keys.some((k, i) => k !== expected[i])
+      if (mismatch) {
+        throw new McpMutationError(
+          'INVALID_TRANSITION',
+          'set_lifecycle on pin-complete board must keep V3 identity nine-stage ordered rail; use advance_task for stage movement',
+          {
+            boardId,
+            toolName,
+            code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN',
+            expected: expected.join(','),
+            got: keys.join(','),
+          },
+        )
+      }
+    }
+  }
+
+  if (toolName === 'init_lifecycle') {
+    // Pin-complete: cannot seed even MAPPING without a valid V3 programmatic receipt
+    // path (advance_task). init_lifecycle is always a bypass on pin-complete boards.
+    throw new McpMutationError(
+      'INVALID_TRANSITION',
+      'init_lifecycle forbidden on pin-complete board — even MAPPING requires a valid V3 programmatic receipt via advance_task',
+      {
+        boardId,
+        toolName,
+        stage: typeof args.stage === 'string' ? args.stage : V3_LIFECYCLE_RAIL[0],
+        code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN',
+      },
+    )
+  }
 }
 
 const MASKED_STATUS_SET = new Set<string>([
@@ -3400,21 +4241,48 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
             : typeof opsRaw.sourceRevision === 'number' && Number.isInteger(opsRaw.sourceRevision)
               ? opsRaw.sourceRevision
               : env.entityExpectedRev + 1
-        const syncResult = await syncAccounts(accountSyncDeps(), {
+        const statusList = mapped.map((a) => a.status)
+        const trigger = inferAccountSyncTriggerFromStatuses(statusList, 'ORCHESTRATOR_LAUNCH')
+        const baseReq = {
           boardId,
           sourceRevision,
           generatedAt,
+          entityExpectedRev: env.entityExpectedRev,
           expectedBoardRev: env.expectedBoardRev,
+          canonicalHash: env.subjectHash,
+          currentPinHash: env.currentPinHash ?? env.subjectHash,
           accounts: mapped,
-          trigger: 'ORCHESTRATOR_LAUNCH',
+          trigger,
           idempotencyKey: env.idempotencyKey,
-          callerRole: 'ROOT_ORCHESTRATOR',
+          callerRole: 'ROOT_ORCHESTRATOR' as const,
           actorId: actorIdOf(),
-        })
+        }
+        let syncResult: SyncAccountsResult
+        const { peekAccountSyncScheduler } = await import('#/server/control-plane-runtime-context')
+        const sched = peekAccountSyncScheduler()
+        if (sched) {
+          const out = await sched.enqueue({
+            ...baseReq,
+            accounts: mapped,
+          })
+          if (!out.result) {
+            throw new McpMutationError(
+              'ACCOUNT_SYNC_STALE',
+              `replace_accounts scheduler enqueue did not publish (${out.kind})`,
+              { kind: out.kind, trigger, boardId },
+            )
+          }
+          syncResult = out.result
+        } else {
+          syncResult = await syncAccounts(accountSyncDeps(), baseReq)
+        }
         // Compatibility vault doc for legacy ops readers (after durable authority succeeds).
         const compatOps = legacyOpsCompatibilityPayload(opsRaw)
         await replaceAccounts(boardId, compatOps)
-        return jsonText(compatibilityReplaceAccountsResponse(compatOps, syncResult))
+        return jsonText({
+          ...compatibilityReplaceAccountsResponse(compatOps, syncResult),
+          trigger,
+        })
       } catch (e) {
         return asErr(e)
       }
@@ -3571,10 +4439,11 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
   )
   secureWriteTool(
     'set_lifecycle',
-    { title: 'Set lifecycle rail', description: "Fully (re)configure this board's lifecycle: ordered stages + gate rules. gated:true = reachable only via advance_task with a program-emitted receipt; verifierRole = must be passed by a run other than the implementer. allowSkip (default false) permits forward jumps; allowRegression (default true) permits moving back for repair. Each board owns its own rail.", inputSchema: { ...BOARD_ARG, stages: z.array(STAGE_OBJ).min(1), allowSkip: z.boolean().optional(), allowRegression: z.boolean().optional(), formulaVersion: z.string().optional() } },
+    { title: 'Set lifecycle rail', description: "Fully (re)configure this board's lifecycle: ordered stages + gate rules. gated:true = reachable only via advance_task with a program-emitted receipt; verifierRole = must be passed by a run other than the implementer. allowSkip (default false) permits forward jumps; allowRegression (default true) permits moving back for repair. Each board owns its own rail. Pin-complete canonical boards cannot set allowSkip or replace the V3 identity rail (ordered evidence via advance_task only).", inputSchema: { ...BOARD_ARG, stages: z.array(STAGE_OBJ).min(1), allowSkip: z.boolean().optional(), allowRegression: z.boolean().optional(), formulaVersion: z.string().optional() } },
     async (args) => {
       const boardId = await bid(args.boardId)
       try {
+        await assertLifecycleEvidenceBypassForbidden('set_lifecycle', boardId, args as Record<string, unknown>)
         const result = await runMutationGate(
           {
             toolName: 'set_lifecycle',
@@ -3616,7 +4485,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     {
       title: 'Advance task lifecycle',
       description:
-        "Move a task to a stage on this board's rail. Gated stages REQUIRE a program-emitted receipt (evidence/commitSha/deployReceipt) — no manual ticking of FUNCTIONAL/PROD_READY/LIVE. A stage with a verifierRole is refused if byRunId equals the implementer (independent verification). Pass entityExpectedRev/expectedRev (from get_task_lifecycle) to prevent a concurrent lost update. Every transition is written to the audit log. byRunId must be a registered run; ordered stages / no skips enforced by the lifecycle engine.",
+        "Move a task one ordered V3 stage (allowSkip=false). Requires registered unexpired unfenced byRunId, fresh entityExpectedRev + expectedBoardRev + expectedLifecycleRev, current task/canonical hashes, and a stage-specific programmatic receipt. Verifier stages enforce author≠verifier (run/agent/model/thread). Compatibility alias response only after a valid V3 transition. Immutable audit + readback pin on success.",
       inputSchema: {
         ...BOARD_ARG,
         id: z.string(),
@@ -3624,10 +4493,17 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         byRunId: z.string().describe('run/agent id performing the transition (required)'),
         role: z.string().optional(),
         evidence: z.record(z.string(), z.any()).optional(),
+        receipt: z.record(z.string(), z.any()).optional(),
         verdict: z.string().optional(),
         commitSha: z.string().optional(),
         deployReceipt: z.string().optional(),
         blocker: z.string().optional(),
+        expectedLifecycleRev: z.number().int().optional(),
+        expectedTaskHash: z.string().optional(),
+        productionApprovalId: z.string().optional(),
+        authorRunId: z.string().optional(),
+        verifierRunId: z.string().optional(),
+        requireOppositeModel: z.boolean().optional(),
       },
     },
     async (args) => {
@@ -3660,34 +4536,183 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           },
           async () => {
             const env = parseMutationEnvelope({ ...args, boardId })
-            const {
-              id: taskId,
-              toStage,
-              byRunId,
-              role,
-              evidence,
-              verdict,
-              commitSha,
-              deployReceipt,
-              blocker,
-            } = args
-            // Domain enforces ordered stages, evidence gates, no skips (allowSkip=false default).
-            return await advanceTask(boardId, taskId, {
-              toStage,
-              byRunId,
-              role,
-              evidence,
-              verdict,
-              commitSha,
-              deployReceipt,
-              blocker,
-              expectedRev: env.entityExpectedRev,
-            } as never)
+            // Product path: advanceTaskV3 ordered rail only (no legacy advanceTask).
+            return await advanceTaskProduct(boardId, { ...args, boardId } as Record<string, unknown>, env)
           },
         )
         return jsonText(result)
       } catch (e) {
         return asErr(e)
+      }
+    },
+  )
+  secureWriteTool(
+    'submit_stage_evidence',
+    {
+      title: 'Submit stage evidence',
+      description:
+        'AGENT program-emits immutable stage evidence for its own registered unexpired unfenced run. Server sets programmatic=true and computes receiptHash; binds task/stage/hashes/revs. Full mutation envelope required (entityExpectedRev + expectedBoardRev + canonicalHash|subjectHash + idempotencyKey). Validates current pin/task hash/lifecycle/entity rev BEFORE insert. Exact key/request replay is idempotent (no double bump/duplicate); changed body → conflict; stale rev/hash rejected. Immutable receipt create/update is domain put (exact hash replay / conflict). Advance accepts only registered receiptId+receiptHash. ROOT/OWNER cannot impersonate agent evidence.',
+      inputSchema: {
+        ...BOARD_ARG,
+        taskId: z.string(),
+        toStage: z.string(),
+        byRunId: z.string().describe('registered unexpired unfenced run that emits this receipt'),
+        fields: z.record(z.string(), z.any()).optional(),
+        taskHash: z.string(),
+        expectedLifecycleRev: z.number().int(),
+        receiptId: z.string().optional(),
+        authorRunId: z.string().optional(),
+        verifierRunId: z.string().optional(),
+        verdict: z.string().optional(),
+        /** Optional; AGENT own-run catalog check uses principal.agentId when omitted */
+        agentId: z.string().optional(),
+      },
+    },
+    async (args) => {
+      const boardId = await bid(args.boardId)
+      try {
+        // Domain-owned CAS/idempotency (like sync_accounts): entityExpectedRev is the
+        // *task* entity rev, not a stage_evidence revision-store row — so runMutationGate
+        // entity CAS cannot be used without dual-meaning the same field.
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId,
+          checkPinHash: true,
+        })
+        const byRunId = String(args.byRunId ?? '')
+        if (!byRunId) {
+          throw new McpMutationError('INVALID_INPUT', 'submit_stage_evidence requires byRunId')
+        }
+        // Pre-idempotency: missing/foreign run must not open slots or bump board.
+        const storage = createProductLifecycleV3Storage(boardId)
+        const run = await storage.getRun(boardId, byRunId)
+        if (!run || !run.registered) {
+          throw new McpMutationError(
+            'RUN_NOT_REGISTERED',
+            `byRunId ${byRunId} is not a registered run on board ${boardId}`,
+            { boardId, byRunId },
+          )
+        }
+        if (principal?.role === 'AGENT') {
+          authorizePersistedRunOwner(principal, run.agentId)
+        }
+        const toStageRaw = String(args.toStage ?? '')
+        if (!isV3LifecycleStageKey(toStageRaw)) {
+          throw new McpMutationError(
+            'UNKNOWN_STAGE',
+            `unknown V3 stage: ${toStageRaw}. Rail: ${V3_LIFECYCLE_RAIL.join(' → ')}`,
+            { toStage: toStageRaw },
+          )
+        }
+        const taskHash = String(args.taskHash ?? '').trim()
+        if (!taskHash) {
+          throw new McpMutationError('INVALID_INPUT', 'submit_stage_evidence requires taskHash')
+        }
+        const taskId = String(args.taskId ?? '')
+        if (!taskId) {
+          throw new McpMutationError('INVALID_INPUT', 'submit_stage_evidence requires taskId')
+        }
+        const expectedLifecycleRev =
+          typeof args.expectedLifecycleRev === 'number' && Number.isInteger(args.expectedLifecycleRev)
+            ? args.expectedLifecycleRev
+            : env.expectedBoardRev
+        const receiptId =
+          typeof args.receiptId === 'string' && args.receiptId.trim()
+            ? args.receiptId.trim()
+            : undefined
+
+        const ctx = resolveMcpRuntimeContext()
+        const requestBody = { ...args, boardId }
+        const begin = await beginIdempotent(ctx.idempotency, {
+          scope: {
+            actorId: actorIdOf(),
+            boardId,
+            endpoint: 'submit_stage_evidence',
+            key: env.idempotencyKey,
+          },
+          requestBody,
+          nowMs: ctx.clock.nowMs(),
+        })
+        if (begin.kind === 'REPLAY' && begin.record) {
+          const prior = begin.record.responseBody
+          if (prior === null || typeof prior !== 'object') {
+            throw new McpMutationError(
+              'DATA_INTEGRITY',
+              'idempotent replay body is not an object',
+              { toolName: 'submit_stage_evidence', boardId },
+            )
+          }
+          return jsonText({ ...(prior as Record<string, unknown>), replayed: true })
+        }
+
+        try {
+          const body = await ctx.atomic.withBoardLock(boardId, async () => {
+            const board = await ctx.atomic.getBoardState(boardId)
+            if (board.boardRev !== env.expectedBoardRev) {
+              throw new McpMutationError(
+                STALE_REVISION,
+                `board rev mismatch: expected ${env.expectedBoardRev}, current ${board.boardRev}`,
+                {
+                  expectedBoardRev: env.expectedBoardRev,
+                  currentBoardRev: board.boardRev,
+                  boardId,
+                },
+              )
+            }
+            // Domain validates product pin + task entity/hash and inserts only after checks.
+            // Board rev is CAS-checked but NOT advanced here: stage evidence is an immutable
+            // registry receipt bound to the current pin; advance_task owns board/lifecycle rev
+            // progression. Exact key/request replay (outer idem) returns prior body without
+            // re-insert; same receiptId+hash domain replay sets created:false (no duplicate).
+            const entry = await submitStageEvidenceProduct(boardId, {
+              taskId,
+              toStage: toStageRaw,
+              byRunId,
+              fields: (args.fields as Record<string, unknown> | undefined) ?? {},
+              taskHash,
+              canonicalHash: env.subjectHash,
+              boardRev: env.expectedBoardRev,
+              lifecycleRev: expectedLifecycleRev,
+              entityExpectedRev: env.entityExpectedRev,
+              receiptId,
+              authorRunId: typeof args.authorRunId === 'string' ? args.authorRunId : null,
+              verifierRunId: typeof args.verifierRunId === 'string' ? args.verifierRunId : null,
+              verdict: typeof args.verdict === 'string' ? args.verdict : null,
+            })
+            return {
+              ok: true as const,
+              boardId,
+              taskId: entry.taskId,
+              toStage: entry.toStage,
+              receiptId: entry.receipt.receiptId,
+              receiptHash: entry.receipt.receiptHash,
+              programmatic: entry.receipt.programmatic,
+              emittingRunId: entry.emittingRunId,
+              registeredAt: entry.registeredAt,
+              created: entry.created,
+              boardRev: board.boardRev,
+              boundBoardRev: entry.receipt.boardRev,
+              lifecycleRev: entry.receipt.lifecycleRev,
+              taskHash: entry.receipt.taskHash,
+              canonicalHash: entry.receipt.canonicalHash,
+              entityExpectedRev: env.entityExpectedRev,
+              idempotencyKey: env.idempotencyKey,
+            }
+          })
+          await completeIdempotent(ctx.idempotency, begin.scopeHash, 200, body, begin.requestHash)
+          return jsonText(body)
+        } catch (e) {
+          try {
+            await ctx.idempotency.delete(begin.scopeHash)
+          } catch {
+            /* ignore cleanup */
+          }
+          if (e instanceof IdempotencyError) {
+            throw new McpMutationError(e.code, e.message)
+          }
+          throw e
+        }
+      } catch (e) {
+        return jsonText(typedError(e))
       }
     },
   )
@@ -3786,10 +4811,11 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
   )
   secureWriteTool(
     'init_lifecycle',
-    { title: 'Bulk-init task stages', description: "Set the lifecycle stage for a board's tasks in one atomic UPDATE (default = onlyUninitialized). stage defaults to the rail's first stage.", inputSchema: { ...BOARD_ARG, stage: z.string().optional(), onlyUninitialized: z.boolean().optional() } },
+    { title: 'Bulk-init task stages', description: "Set the lifecycle stage for a board's tasks in one atomic UPDATE (default = onlyUninitialized). stage defaults to the rail's first stage. Pin-complete canonical boards may only seed MAPPING with onlyUninitialized=true — later stages require advance_task receipts.", inputSchema: { ...BOARD_ARG, stage: z.string().optional(), onlyUninitialized: z.boolean().optional() } },
     async (args) => {
       const boardId = await bid(args.boardId)
       try {
+        await assertLifecycleEvidenceBypassForbidden('init_lifecycle', boardId, args as Record<string, unknown>)
         const result = await runMutationGate(
           {
             toolName: 'init_lifecycle',
@@ -3997,13 +5023,14 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     {
       title: 'Add a comment',
       description:
-        'Leave a comment on a feature. Author attribution is the authenticated principal (request author is ignored).',
+        'Leave a comment on a feature. Author attribution is the authenticated principal (request author/authorType are ignored).',
       inputSchema: {
         ...BOARD_ARG,
         featureId: z.string(),
         /** @deprecated ignored — attribution is authenticated principal only */
         author: z.string().optional(),
         text: z.string().min(1),
+        /** @deprecated ignored — authorType is authenticated principal only */
         authorType: z.enum(['human', 'agent']).optional(),
       },
     },
@@ -4020,17 +5047,15 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
             requestBody: { ...args, boardId },
           },
           async () => {
-            const authorType =
-              args.authorType ??
-              (principal?.role === 'OWNER' || principal?.channel === 'session' ? 'human' : 'agent')
-            await addComment(
-              boardId,
-              args.featureId,
-              actorIdOf(), // never request author
+            // Principal attribution only — never request author / authorType spoof.
+            const { author, authorType } = commentAttributionFromPrincipal(principal)
+            await addComment(boardId, args.featureId, author, authorType, args.text)
+            return {
+              ok: true as const,
+              featureId: args.featureId,
+              author,
               authorType,
-              args.text,
-            )
-            return { ok: true as const, featureId: args.featureId }
+            }
           },
         )
         return jsonText(result)
@@ -4418,48 +5443,50 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
       const id = await bid(rawArgs.boardId)
       const filters = validateReadFilters('list_accounts', { ...rawArgs, boardId: id })
       const pin = await resolveBoardPin(id)
-      const snap = await sharedAccountStore().get(id)
-      let accounts = (snap?.accounts ?? []).map((a) => {
-        const copy = { ...(a as unknown as Record<string, unknown>) }
-        for (const k of Object.keys(copy)) {
-          if (/token|secret|password|authorization|api[_-]?key|credential/i.test(k)) {
-            delete copy[k]
-          }
-        }
-        const accountId = String(copy.maskedAccountId ?? copy.accountId ?? copy.id ?? 'unknown')
-        return {
-          ...copy,
-          id: accountId,
-          accountId,
-          status: copy.status,
-          provider: copy.providerKind ?? copy.provider ?? null,
-          createdAt: String(snap?.generatedAt ?? pin.generatedAt),
-        }
-      })
-      const status = 'status' in filters ? filters.status : undefined
-      const provider = 'provider' in filters ? filters.provider : undefined
-      if (status) accounts = accounts.filter((a) => String(a.status ?? '') === status)
-      if (provider) {
-        accounts = accounts.filter((a) => String(a.provider ?? '') === provider)
-      }
-      accounts.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)) || String(b.id).localeCompare(String(a.id)))
-      const page = paginateReadRows(
-        accounts as Array<{ createdAt: string; id: string }>,
-        {
-          cursor: filters.cursor,
-          pageSize: filters.pageSize,
-          expectedBoardRev: pin.boardRev,
+      // Real product MCP list_accounts service path (not raw store get + ad-hoc map).
+      const statusFilter =
+        'status' in filters && filters.status != null ? String(filters.status) : undefined
+      const providerFilter =
+        'provider' in filters && filters.provider != null
+          ? String(filters.provider)
+          : undefined
+      const cursorFilter =
+        filters.cursor != null && filters.cursor !== ''
+          ? String(filters.cursor)
+          : undefined
+      const pageSizeFilter =
+        typeof filters.pageSize === 'number' && Number.isFinite(filters.pageSize)
+          ? filters.pageSize
+          : undefined
+      const projected = await readMcpListAccountsService({
+        boardId: id,
+        accounts: sharedAccountStore(),
+        filters: {
+          status: statusFilter,
+          provider: providerFilter,
+          cursor: cursorFilter,
+          pageSize: pageSizeFilter,
         },
-      )
+        auth: { kind: 'system' }, // secureTool already authorized account:read
+      })
+      const rows = (projected?.accounts ?? []) as Array<{ createdAt: string; id: string }>
+      // Prefer pin-aware pagination when service did not consume board pin cursor.
+      const page = paginateReadRows(rows, {
+        cursor: cursorFilter,
+        pageSize: pageSizeFilter,
+        expectedBoardRev: pin.boardRev,
+      })
       const env = buildPinnedReadEnvelope(
         boardPinToMcpReadPin(pin),
         {
           accounts: page.items,
           items: page.items,
           pageSize: page.pageSize,
-          sourceRevision: snap?.sourceRevision ?? null,
-          stale: snap?.stale ?? true,
-          capacity: snap?.capacity ?? null,
+          sourceRevision: projected?.sourceRevision ?? null,
+          generatedAt: projected?.generatedAt ?? null,
+          schema: projected?.schema ?? null,
+          stale: projected?.stale ?? true,
+          capacity: projected?.capacity ?? null,
         },
         { method: 'list_accounts', nextCursor: page.nextCursor },
       )
@@ -5081,9 +6108,10 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     async (args) => {
       const id = await bid(args.boardId)
       try {
+        // Pin hash required: plan.canonicalHash must match current pin.
         const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
           boardId: id,
-          checkPinHash: false, // plan binds its own subject via canonicalHash arg
+          checkPinHash: true,
         })
         const plans = sharedPlanStore()
         const clock = systemClock()
@@ -5098,7 +6126,9 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
             planHash: args.planHash,
             canonicalSnapshotId: args.canonicalSnapshotId,
             canonicalHash: args.canonicalHash ?? env.subjectHash,
+            entityExpectedRev: env.entityExpectedRev,
             expectedBoardRev: env.expectedBoardRev,
+            currentPinHash: env.currentPinHash ?? env.subjectHash,
             issuedAt: args.issuedAt,
             expiresAt: args.expiresAt,
             stage: args.stage ?? 'ACTIVE',
@@ -5107,7 +6137,14 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
             callerRole: 'ROOT_ORCHESTRATOR',
           },
         )
-        return jsonText({ ok: true, ...result })
+        const boardAfter = await sharedAtomic().getBoardState(id)
+        const notify = await notifyAccountSchedulerTrigger(id, 'WAVE_LAUNCH', {
+          expectedBoardRev: boardAfter.boardRev,
+          canonicalHash: args.canonicalHash ?? env.subjectHash,
+          idempotencyKey: `acct-sched-wave-launch-${env.idempotencyKey}`,
+          actorId: actorIdOf(),
+        })
+        return jsonText({ ok: true, ...result, accountSyncNotify: notify })
       } catch (e) {
         return jsonText(typedError(e))
       }
@@ -5142,7 +6179,10 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     async (args) => {
       const id = await bid(args.boardId)
       try {
-        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>)
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId: id,
+          checkPinHash: true,
+        })
         // AGENT: never trust request agentId — attribution from principal.
         const agentId =
           principal?.role === 'AGENT'
@@ -5152,6 +6192,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           authorizePersistedRunOwner(principal, agentId)
         }
         const deps = defaultRunDeps(id, env.expectedBoardRev)
+        const canonicalHash = args.canonicalHash ?? args.subjectHash ?? env.subjectHash
         const result = await registerRun(deps, {
           boardId: id,
           runId: args.runId,
@@ -5166,11 +6207,22 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           planId: args.planId,
           planItemRank: args.planItemRank,
           maskedAccountRef: args.maskedAccountRef,
-          canonicalHash: args.canonicalHash ?? args.subjectHash ?? env.subjectHash,
+          canonicalHash,
+          currentPinHash: env.currentPinHash ?? env.subjectHash,
           collisionScopeLockIds: args.collisionScopeLockIds,
           initialState: args.initialState,
         })
-        return jsonText({ ok: true, ...result })
+        const notify = await notifyAccountSchedulerTrigger(id, 'AGENT_LAUNCH', {
+          expectedBoardRev: result.boardRev,
+          canonicalHash,
+          idempotencyKey: `acct-sched-register-${env.idempotencyKey}`,
+          actorId: agentId,
+        })
+        return jsonText({
+          ok: true,
+          ...result,
+          accountSyncNotify: notify,
+        })
       } catch (e) {
         return jsonText(typedError(e))
       }
@@ -5196,7 +6248,10 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     async (args) => {
       const id = await bid(args.boardId)
       try {
-        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>)
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId: id,
+          checkPinHash: true,
+        })
         const deps = defaultRunDeps(id, env.expectedBoardRev)
         // Authorize against persisted V3 run owner, not request agentId spoof.
         const existing = await deps.runs.get(id, args.runId)
@@ -5217,8 +6272,31 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           expectedEntityRev: env.entityExpectedRev,
           expectedBoardRev: env.expectedBoardRev,
           materialProgressAt: args.materialProgressAt,
+          idempotencyKey: env.idempotencyKey,
+          canonicalHash: env.subjectHash,
+          currentPinHash: env.currentPinHash ?? env.subjectHash,
         })
-        return jsonText({ ok: true, ...result })
+        const notify = await notifyAccountSchedulerTrigger(id, 'HEARTBEAT', {
+          expectedBoardRev: result.boardRev,
+          canonicalHash: env.subjectHash,
+          idempotencyKey: `acct-sched-hb-${env.idempotencyKey}`,
+          actorId: agentId,
+        })
+        let materialNotify: AccountSchedulerNotifyResult | null = null
+        if (typeof args.materialProgressAt === 'string' && args.materialProgressAt.trim()) {
+          materialNotify = await notifyAccountSchedulerTrigger(id, 'MATERIAL_ASSIGNMENT', {
+            expectedBoardRev: result.boardRev,
+            canonicalHash: env.subjectHash,
+            idempotencyKey: `acct-sched-material-${env.idempotencyKey}`,
+            actorId: agentId,
+          })
+        }
+        return jsonText({
+          ok: true,
+          ...result,
+          accountSyncNotify: notify,
+          ...(materialNotify ? { materialAccountSyncNotify: materialNotify } : {}),
+        })
       } catch (e) {
         return jsonText(typedError(e))
       }
@@ -5229,7 +6307,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     {
       title: 'Sync accounts',
       description:
-        'ROOT account:sync — masked accounts only; never tokens. Full mutation envelope required. Actor from principal.',
+        'ROOT account:sync — masked accounts only; never tokens. Full mutation envelope required. Actor from principal. trigger is exact enum (includes WAVE_CLOSE).',
       inputSchema: {
         ...BOARD_ARG,
         sourceRevision: z.number().int(),
@@ -5237,13 +6315,16 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         generatedAt: z.string().optional(),
         accounts: z.array(z.record(z.string(), z.any())),
         idempotencyKey: z.string().min(1),
-        trigger: z.string().optional(),
+        trigger: ACCOUNT_SYNC_TRIGGER_Z.optional(),
       },
     },
     async (args) => {
       const id = await bid(args.boardId)
       try {
-        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>)
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId: id,
+          checkPinHash: true,
+        })
         const sanitized = (args.accounts as Array<Record<string, unknown>>).map((a) => {
           const copy = { ...a }
           for (const k of Object.keys(copy)) {
@@ -5253,17 +6334,56 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           }
           return copy
         })
-        const result = await syncAccounts(accountSyncDeps(), {
+        const statusList = sanitized.map((a) => String((a as { status?: unknown }).status ?? ''))
+        const inferred = inferAccountSyncTriggerFromStatuses(statusList, 'ORCHESTRATOR_LAUNCH')
+        // Schema is exact enum; still validate closed set before domain cast.
+        let trigger: AccountSyncTrigger = inferred
+        if (typeof args.trigger === 'string' && args.trigger) {
+          const parsed = ACCOUNT_SYNC_TRIGGER_Z.safeParse(args.trigger)
+          if (!parsed.success) {
+            throw new McpMutationError(
+              'INVALID_INPUT',
+              `sync_accounts.trigger must be one of: ${ACCOUNT_SYNC_TRIGGER_VALUES.join(', ')}`,
+              { trigger: args.trigger },
+            )
+          }
+          trigger = parsed.data
+        }
+        const baseReq = {
           boardId: id,
           sourceRevision: args.sourceRevision,
           generatedAt: args.generatedAt ?? new Date().toISOString(),
+          entityExpectedRev: env.entityExpectedRev,
           expectedBoardRev: env.expectedBoardRev,
+          canonicalHash: env.subjectHash,
+          currentPinHash: env.currentPinHash ?? env.subjectHash,
           accounts: sanitized as never,
-          trigger: (args.trigger as never) ?? 'ORCHESTRATOR_LAUNCH',
+          trigger,
           idempotencyKey: env.idempotencyKey,
-          callerRole: 'ROOT_ORCHESTRATOR',
+          callerRole: 'ROOT_ORCHESTRATOR' as const,
           actorId: actorIdOf(),
-        })
+        }
+        // Prefer shared scheduler when installed (surfaces + SLA); else direct authority.
+        // Errors are NOT swallowed — typed failure only.
+        let result: Awaited<ReturnType<typeof syncAccounts>>
+        const { peekAccountSyncScheduler } = await import('#/server/control-plane-runtime-context')
+        const sched = peekAccountSyncScheduler()
+        if (sched) {
+          const out = await sched.enqueue({
+            ...baseReq,
+            accounts: sanitized as never,
+          })
+          if (!out.result) {
+            throw new McpMutationError(
+              'ACCOUNT_SYNC_STALE',
+              `scheduler enqueue did not publish (${out.kind})`,
+              { kind: out.kind, trigger, boardId: id },
+            )
+          }
+          result = out.result
+        } else {
+          result = await syncAccounts(accountSyncDeps(), baseReq)
+        }
         return jsonText({
           ok: true,
           boardId: id,
@@ -5274,6 +6394,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           stale: result.stale,
           boardRev: result.boardRev,
           replayed: result.replayed,
+          trigger,
         })
       } catch (e) {
         return jsonText(typedError(e))
@@ -5297,7 +6418,10 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     async (args) => {
       const id = await bid(args.boardId)
       try {
-        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>)
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId: id,
+          checkPinHash: true,
+        })
         const runDeps = defaultRunDeps(id, env.expectedBoardRev)
         const recDeps = reconcilerDeps(runDeps)
         // Attribution from principal — never request leaderId spoof for identity.
@@ -5315,7 +6439,11 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           boardId: id,
           leaderId,
           fencingToken,
+          entityExpectedRev: env.entityExpectedRev,
           expectedBoardRev: env.expectedBoardRev,
+          canonicalHash: env.subjectHash,
+          currentPinHash: env.currentPinHash ?? env.subjectHash,
+          idempotencyKey: env.idempotencyKey,
           maxActions: args.maxActions,
         })
         return jsonText({
@@ -5351,7 +6479,10 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     async (args) => {
       const id = await bid(args.boardId)
       try {
-        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>)
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId: id,
+          checkPinHash: true,
+        })
         const runDeps = defaultRunDeps(id, env.expectedBoardRev)
         const recDeps = reconcilerDeps(runDeps)
         const leaderId = actorIdOf()
@@ -5369,9 +6500,32 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           leaderId,
           fencingToken,
           dryRunHash: args.dryRunHash,
+          entityExpectedRev: env.entityExpectedRev,
           expectedBoardRev: env.expectedBoardRev,
+          canonicalHash: env.subjectHash,
+          currentPinHash: env.currentPinHash ?? env.subjectHash,
+          idempotencyKey: env.idempotencyKey,
         })
-        return jsonText({ ok: true, boardId: id, ...result })
+        const boardAfter = await sharedAtomic().getBoardState(id)
+        let requeueNotify: AccountSchedulerNotifyResult | null = null
+        const requeueCount =
+          result && typeof result === 'object' && 'counts' in result
+            ? Number((result as { counts?: { REQUEUE?: number } }).counts?.REQUEUE ?? 0)
+            : 0
+        if (requeueCount > 0) {
+          requeueNotify = await notifyAccountSchedulerTrigger(id, 'REQUEUE', {
+            expectedBoardRev: boardAfter.boardRev,
+            canonicalHash: env.subjectHash,
+            idempotencyKey: `acct-sched-requeue-${env.idempotencyKey}`,
+            actorId: leaderId,
+          })
+        }
+        return jsonText({
+          ok: true,
+          boardId: id,
+          ...result,
+          ...(requeueNotify ? { accountSyncNotify: requeueNotify } : {}),
+        })
       } catch (e) {
         return jsonText(typedError(e))
       }
@@ -5407,7 +6561,10 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     async (args) => {
       const id = await bid(args.boardId)
       try {
-        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>)
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId: id,
+          checkPinHash: true,
+        })
         const options =
           args.options?.map((o: { optionId: string; label: string; declining?: boolean }) => ({
             optionId: o.optionId,
@@ -5436,7 +6593,11 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           blocking: args.blocking ?? false,
           taskId: args.taskId ?? null,
           runId: args.runId ?? null,
+          entityExpectedRev: env.entityExpectedRev,
           expectedBoardRev: env.expectedBoardRev,
+          canonicalHash: env.subjectHash,
+          currentPinHash: env.currentPinHash ?? env.subjectHash,
+          idempotencyKey: env.idempotencyKey,
           actorId: actorIdOf(),
         })
         return jsonText({
@@ -5472,8 +6633,11 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     async (args) => {
       const id = await bid(args.boardId)
       try {
-        // Envelope first (fail closed on missing fields).
-        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>)
+        // Envelope first (fail closed on missing fields) + current pin hash.
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId: id,
+          checkPinHash: true,
+        })
         const store = sharedDecisionStore()
         const existing = await store.get(id, args.decisionId)
         // Not-found BEFORE domain mutation — no revision/idempotency consumption at domain layer.
@@ -5500,6 +6664,9 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           comment: args.comment ?? args.resolution ?? null,
           expectedRev: env.entityExpectedRev,
           expectedBoardRev: env.expectedBoardRev,
+          canonicalHash: env.subjectHash,
+          currentPinHash: env.currentPinHash ?? env.subjectHash,
+          idempotencyKey: env.idempotencyKey,
         })
         return jsonText({
           ok: true,
@@ -5535,7 +6702,10 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     async (args) => {
       const id = await bid(args.boardId)
       try {
-        await assertMutationEnvelopeOrThrow(args as Record<string, unknown>)
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId: id,
+          checkPinHash: true,
+        })
         const pathspecs: Array<string> =
           args.pathspecs ?? (args.pathspec ? [args.pathspec] : [])
         if (!pathspecs.length || !args.checkpointId || !args.rootAcceptanceId) {
@@ -5544,22 +6714,40 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
             'integration_lock requires rootAcceptanceId, checkpointId, and pathspec(s) — fail closed',
           )
         }
-        // Principal checkpoint/pathspec bounds (INTEGRATOR fail-closed).
+        // Principal checkpoint/pathspec bounds (INTEGRATOR fail-closed; missing bindings denied).
         enforceIntegratorLockBounds(principal, {
           checkpointId: args.checkpointId,
           pathspecs,
         })
         const { acquireIntegrationLock } = await import('#/server/locks')
-        const result = await acquireIntegrationLock(sharedLocks(), systemClock(), {
-          boardId: id,
-          repoId: args.repoId ?? id,
-          trackingBranch: args.trackingBranch ?? 'main',
-          runId: args.runId ?? `int-${Date.now()}`,
-          agentId: actorIdOf(),
-          integratorModel: args.integratorModel ?? 'grok-4.5',
-          rootAcceptanceId: args.rootAcceptanceId,
-          checkpointId: args.checkpointId,
-          pathspecs,
+        const result = await acquireIntegrationLock(
+          sharedLocks(),
+          systemClock(),
+          {
+            boardId: id,
+            repoId: args.repoId ?? id,
+            trackingBranch: args.trackingBranch ?? 'main',
+            runId: args.runId ?? `int-${Date.now()}`,
+            agentId: actorIdOf(),
+            integratorModel: args.integratorModel ?? 'grok-4.5',
+            rootAcceptanceId: args.rootAcceptanceId,
+            checkpointId: args.checkpointId,
+            pathspecs,
+            entityExpectedRev: env.entityExpectedRev,
+            expectedBoardRev: env.expectedBoardRev,
+            canonicalHash: env.subjectHash,
+            currentPinHash: env.currentPinHash ?? env.subjectHash,
+            idempotencyKey: env.idempotencyKey,
+          },
+          { atomic: sharedAtomic(), idempotency: sharedIdempotency() },
+        )
+        // Post-mutation board rev (never pre-bump env.expectedBoardRev).
+        const boardAfter = await sharedAtomic().getBoardState(id)
+        const notify = await notifyAccountSchedulerTrigger(id, 'INTEGRATION_CHECKPOINT', {
+          expectedBoardRev: boardAfter.boardRev,
+          canonicalHash: env.subjectHash,
+          idempotencyKey: `acct-sched-int-${env.idempotencyKey}`,
+          actorId: actorIdOf(),
         })
         return jsonText({
           ok: true,
@@ -5569,6 +6757,9 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           fencingToken: result.fencingToken,
           lockId: result.lockId,
           state: result.state,
+          entityRev: result.entityRev,
+          boardRev: boardAfter.boardRev,
+          accountSyncNotify: notify,
         })
       } catch (e) {
         return jsonText(typedError(e))

@@ -5,8 +5,12 @@
  * Cross-surface: loads canonical loadControlCenterAggregation, maps via
  * control-center-public-snapshot, materializes through the SAME shared
  * public-snapshot-service store + rate limiter as MCP tool/resource.
- * Fail-closed on missing pin / stale / sectionErrors / allowlist / errors —
- * never leaks private data.
+ *
+ * Semantics:
+ * - Structural pin/schema/hash/load/allowlist failures → null → 503 STALE_OR_MISSING
+ * - Pin-complete + domain blockers (DATA_INTEGRITY / UNCLASSIFIED / ACCOUNT_SYNC_*)
+ *   → sanitized public snapshot 200 with forceStale, usableCapacity=0, domainBlockers
+ * - Never leaks private decisions/account identity/secrets
  */
 import { createFileRoute } from '@tanstack/react-router'
 
@@ -67,7 +71,13 @@ export function isPublicBoardAllowed(boardId: string): boolean {
 /**
  * Build pinned public aggregation from canonical ControlCenterAggregation.
  * One materialization path shared with MCP (same mapper + serializer).
- * Returns null on any failure / allowlist miss / stale / partial (fail-closed 503).
+ *
+ * Returns null (→ 503 STALE_OR_MISSING) only for:
+ * - allowlist miss / load failure
+ * - structural pin/schema/hash/incomplete pin (mapper throws STALE_OR_PARTIAL / INVALID_PIN / …)
+ *
+ * Domain blockers (DATA_INTEGRITY / UNCLASSIFIED / ACCOUNT_SYNC_*) materialize
+ * successfully with forceStale + usableCapacity=0 — never 503 for those alone.
  */
 export async function loadPublicAggregation(
   boardId: string,
@@ -78,8 +88,7 @@ export async function loadPublicAggregation(
     if (!isPublicBoardAllowed(boardId)) return null
 
     const agg = await loadControlCenterAggregation(boardId)
-    // mapControlCenterAggregationToPublicInput enforces pin consistency,
-    // stale pin, sectionErrors fail-closed, and account redaction.
+    // Mapper: structural pin/schema hard-fail; domain blockers soft-path sanitized.
     return mapControlCenterAggregationToPublicInput(agg)
   } catch (err) {
     // Fail-closed: never invent public payload from private/partial state.

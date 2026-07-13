@@ -9,11 +9,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  advanceTaskProduct,
   assertGranularDefinitionMutationAllowed,
+  assertLifecycleEvidenceBypassForbidden,
+  assertMutationEnvelopeOrThrow,
   authorizePersistedRunOwner,
   assertRegisteredRunOrThrow,
   attributionFromPrincipal,
   boardPinFromDefinitionPin,
+  buildAdvanceTaskV3Input,
   buildCanonicalRollupTaskInputs,
   buildCanonicalSnapshotFromReplaceBoardArgs,
   compatibilityReplaceAccountsResponse,
@@ -25,6 +29,9 @@ import {
   enforceIntegratorLockBounds,
   legacyOpsCompatibilityPayload,
   legacyShapedRollupFromCanonical,
+  ACCOUNT_SYNC_EXTERNAL_ADAPTER_TRIGGERS,
+  ACCOUNT_SYNC_TRIGGER_VALUES,
+  ACCOUNT_SYNC_TRIGGER_Z,
   listRegisteredWriteToolSchemas,
   mapCanonicalFlowsToFeatureRows,
   mapCanonicalProjectsToListRows,
@@ -33,6 +40,7 @@ import {
   mapLegacyOpsAccountsToSync,
   mcpTypedErrorForTests,
   McpMutationError,
+  parseAdvanceStageReceipt,
   parseMutationEnvelope,
   registerBoardTools,
   REGISTERED_WRITE_TOOL_NAMES,
@@ -42,13 +50,23 @@ import {
   resolveBoardDefinitionAuthority,
   resolveMcpRuntimeContext,
   runMutationGate,
+  setProductLifecycleV3StorageFactory,
   setTestControlPlaneRuntimeContext,
   throwNotFound,
+  toLegacyAdvanceCompatibilityResponse,
   unclassifiedClassificationForTask,
   writeToolSchemaHasFullEnvelope,
   MUTATION_ENVELOPE_REQUIRED_KEYS,
   type McpAuthContext,
 } from '#/server/board-mcp'
+import {
+  computeStageReceiptHash,
+  createMemoryLifecycleV3Storage,
+  V3_LIFECYCLE_RAIL,
+  type RegisteredRun,
+  type TaskLifecycleV3State,
+} from '#/server/lifecycle-store'
+import type { LifecycleStageKey } from '#/lib/control-plane-types'
 import {
   CanonicalReadModelError,
   loadPinnedDefinitionReadModel,
@@ -65,13 +83,17 @@ import { createMemoryPublicSnapshotStore, type PublicAggregationInput } from '#/
 import { createPublicSnapshotRateLimiter, createMemoryRateLimitStore } from '#/server/rate-limit'
 import { PUBLIC_SERIALIZER_VERSION } from '#/server/public-snapshot'
 import {
+  heartbeatRun,
   registerRun,
   type RegisterRunRequest,
 } from '#/server/run-registry'
-import { openDecisionV3 } from '#/server/decisions-v3'
+import { openDecisionV3, resolveDecisionV3 } from '#/server/decisions-v3'
+import { publishDispatchPlan } from '#/server/control-plane-ingest'
+import { dryRunReconcile, applyReconcile } from '#/server/reconciler'
+import { acquireIntegrationLock } from '#/server/locks'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { applyImport, planImport } from '#/server/canonical-import'
-import { syncAccounts } from '#/server/account-sync'
+import { AccountSyncError, syncAccounts } from '#/server/account-sync'
 import { validateCanonicalSnapshot } from '#/server/canonical-snapshot'
 
 const BOARD = 'durable-mcp-board'
@@ -144,6 +166,7 @@ describe('durable MCP runtime context', () => {
       model: 'grok-4',
       expectedEntityRev: 0,
       expectedBoardRev: 0,
+      canonicalHash: 'b'.repeat(64),
       idempotencyKey: 'idem-dur-1',
       initialState: 'STARTING',
       capacity: openCapacity(),
@@ -184,7 +207,12 @@ describe('durable decisions + g5 stores', () => {
   it('decisions list uses controlData.decisions store', async () => {
     const ctx = resolveMcpRuntimeContext()
     const opened = await openDecisionV3(
-      { clock: ctx.clock, decisions: ctx.controlData.decisions, atomic: ctx.atomic },
+      {
+        clock: ctx.clock,
+        decisions: ctx.controlData.decisions,
+        atomic: ctx.atomic,
+        idempotency: ctx.idempotency,
+      },
       {
         boardId: BOARD,
         actorId: 'actor-durable',
@@ -193,7 +221,10 @@ describe('durable decisions + g5 stores', () => {
         type: 'POLICY',
         severity: 'MEDIUM',
         blocking: false,
+        entityExpectedRev: 0,
         expectedBoardRev: 0,
+        canonicalHash: 'b'.repeat(64),
+        idempotencyKey: 'open-decision-durable-1',
         options: [
           {
             optionId: 'yes',
@@ -345,15 +376,15 @@ describe('legacy mutation envelope hardening (AC-API-03)', () => {
     }
   })
 
-  it('exhaustive registered-write matrix: all 40 catalog writes including 9 V3', () => {
+  it('exhaustive registered-write matrix: all 41 catalog writes including 9 V3 + submit_stage_evidence', () => {
     const server = new McpServer({ name: 'write-matrix', version: '0.0.0' })
     registerBoardTools(server, authRoot())
     const writes = listRegisteredWriteToolSchemas()
     const names = new Set(writes.map((w) => w.name))
 
-    // Catalog constant must be exactly 40
-    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(40)
-    expect(writes).toHaveLength(40)
+    // Catalog constant must be exactly 41 (40 legacy/V3 + submit_stage_evidence)
+    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(41)
+    expect(writes).toHaveLength(41)
 
     const missing = REGISTERED_WRITE_TOOL_NAMES.filter((n) => !names.has(n))
     const extra = writes.map((w) => w.name).filter((n) => !(REGISTERED_WRITE_TOOL_NAMES as readonly string[]).includes(n))
@@ -376,6 +407,12 @@ describe('legacy mutation envelope hardening (AC-API-03)', () => {
       const row = writes.find((w) => w.name === n)!
       expect(writeToolSchemaHasFullEnvelope(row.schemaKeys)).toBe(true)
     }
+    expect(names.has('submit_stage_evidence')).toBe(true)
+    expect(
+      writeToolSchemaHasFullEnvelope(
+        writes.find((w) => w.name === 'submit_stage_evidence')!.schemaKeys,
+      ),
+    ).toBe(true)
 
     // Per-tool matrix assertion
     for (const w of writes) {
@@ -745,6 +782,7 @@ describe('P0 advance_task V3-only ownership (not principal-self)', () => {
       model: 'grok-4',
       expectedEntityRev: 0,
       expectedBoardRev: 0,
+      canonicalHash: 'b'.repeat(64),
       idempotencyKey: 'idem-v3-foreign',
       initialState: 'STARTING',
       capacity: openCapacity(),
@@ -764,6 +802,7 @@ describe('P0 advance_task V3-only ownership (not principal-self)', () => {
       model: 'grok-4',
       expectedEntityRev: 0,
       expectedBoardRev: 0,
+      canonicalHash: 'b'.repeat(64),
       idempotencyKey: 'idem-v3-self',
       initialState: 'STARTING',
       capacity: openCapacity(),
@@ -777,6 +816,7 @@ describe('P0 advance_task V3-only ownership (not principal-self)', () => {
       model: 'grok-4',
       expectedEntityRev: 0,
       expectedBoardRev: 0,
+      canonicalHash: 'b'.repeat(64),
       idempotencyKey: 'idem-v3-other',
       initialState: 'STARTING',
       capacity: openCapacity(),
@@ -880,7 +920,9 @@ describe('P1 replace_accounts → durable sync ingestion', () => {
         boardId,
         sourceRevision: 1,
         generatedAt: '2026-07-14T00:00:00.000Z',
+        entityExpectedRev: 0,
         expectedBoardRev: atomicBefore.boardRev,
+        canonicalHash: 'b'.repeat(64),
         accounts: mapped,
         trigger: 'ORCHESTRATOR_LAUNCH',
         idempotencyKey: 'replace-acct-idem-1',
@@ -2027,4 +2069,1362 @@ describe('granular definition mutator fail-closed / non-consume matrix', () => {
       receipt: null,
     })
   })
+})
+
+describe('LIFECYCLE V3 product wiring (advance_task → advanceTaskV3)', () => {
+  const CANON = 'c'.repeat(64)
+  const SNAP = 'snap-life-v3-product'
+  const TASK_HASH = 'task-hash-product-1'
+  const TASK = 'task-life-v3-1'
+
+  function baseTask(stage: LifecycleStageKey | null = null): TaskLifecycleV3State {
+    return {
+      taskId: TASK,
+      stage,
+      entityRev: 0,
+      boardRev: 1,
+      lifecycleRev: 1,
+      taskHash: TASK_HASH,
+      canonicalSnapshotId: SNAP,
+      canonicalHash: CANON,
+      implementerRunId: null,
+      implementerAgentId: null,
+      implementerModel: null,
+      implementerThreadId: null,
+      history: [],
+      stageReceipts: {},
+      blockedReason: null,
+    }
+  }
+
+  function makeRun(over: Partial<RegisteredRun> & Pick<RegisteredRun, 'runId' | 'role'>): RegisteredRun {
+    return {
+      agentId: `agent-${over.runId}`,
+      model: 'grok-4.5',
+      threadId: `thread-${over.runId}`,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      fenced: false,
+      registered: true,
+      ...over,
+    }
+  }
+
+  function receipt(
+    stage: LifecycleStageKey,
+    fields: Record<string, unknown>,
+    opts: {
+      authorRunId?: string | null
+      verifierRunId?: string | null
+      verdict?: string | null
+      programmatic?: boolean
+    } = {},
+  ) {
+    const partial = {
+      receiptId: `rcpt-${stage}`,
+      programmatic: opts.programmatic ?? true,
+      taskHash: TASK_HASH,
+      canonicalHash: CANON,
+      boardRev: 1,
+      lifecycleRev: 1,
+      fields,
+      authorRunId: opts.authorRunId ?? null,
+      verifierRunId: opts.verifierRunId ?? null,
+      verdict: opts.verdict ?? null,
+      issuedAt: '2026-07-13T10:00:00.000Z',
+    }
+    return { ...partial, receiptHash: computeStageReceiptHash(partial) }
+  }
+
+  function installMemoryProductStore(
+    task: TaskLifecycleV3State,
+    runs: Array<RegisteredRun>,
+    boardRev = 1,
+    lifecycleRev = 1,
+  ) {
+    const store = createMemoryLifecycleV3Storage({
+      pin: {
+        boardId: BOARD,
+        boardRev,
+        lifecycleRev,
+        canonicalSnapshotId: SNAP,
+        canonicalHash: CANON,
+      },
+      tasks: [task],
+      runs,
+    })
+    setProductLifecycleV3StorageFactory(() => store)
+    return store
+  }
+
+  async function registerReceipt(
+    store: ReturnType<typeof installMemoryProductStore>,
+    stage: LifecycleStageKey,
+    rcpt: ReturnType<typeof receipt>,
+    emittingRunId: string,
+  ) {
+    await store.putStageEvidence({
+      boardId: BOARD,
+      taskId: TASK,
+      toStage: stage,
+      receipt: rcpt,
+      emittingRunId,
+      registeredAt: rcpt.issuedAt,
+    })
+  }
+
+  afterEach(() => {
+    setProductLifecycleV3StorageFactory(null)
+  })
+
+  it('advanceTaskProduct advances MAPPING and returns compatibility alias only after V3', async () => {
+    const author = makeRun({ runId: 'run-author', role: 'implementer' })
+    const store = installMemoryProductStore(baseTask(null), [author])
+    const env = parseMutationEnvelope({
+      entityExpectedRev: 0,
+      expectedBoardRev: 1,
+      canonicalHash: CANON,
+      idempotencyKey: 'idem-advance-mapping',
+    })
+    const rcpt = receipt('MAPPING', {})
+    await registerReceipt(store, 'MAPPING', rcpt, author.runId)
+    const result = await advanceTaskProduct(
+      BOARD,
+      {
+        id: TASK,
+        toStage: 'MAPPING',
+        byRunId: author.runId,
+        receipt: { receiptId: rcpt.receiptId, receiptHash: rcpt.receiptHash },
+        expectedLifecycleRev: 1,
+        expectedTaskHash: TASK_HASH,
+      },
+      env,
+    )
+    expect(result.ok).toBe(true)
+    expect(result.engine).toBe('advanceTaskV3')
+    expect(result.stage).toBe('MAPPING')
+    expect(result.fromStage).toBeNull()
+    expect(result.rev).toBe(1)
+    expect(result.boardRev).toBe(2)
+    expect(result.lifecycleRev).toBe(2)
+    expect(result.readback.stage).toBe('MAPPING')
+    expect(result.pin.canonicalHash).toBe(CANON)
+    expect(result.receipt.receiptId).toBe(rcpt.receiptId)
+  })
+
+  it('advanceTaskProduct rejects stage skip (no legacy path)', async () => {
+    const author = makeRun({ runId: 'run-author', role: 'implementer' })
+    installMemoryProductStore(baseTask(null), [author])
+    const env = parseMutationEnvelope({
+      entityExpectedRev: 0,
+      expectedBoardRev: 1,
+      canonicalHash: CANON,
+      idempotencyKey: 'idem-skip',
+    })
+    await expect(
+      advanceTaskProduct(
+        BOARD,
+        {
+          id: TASK,
+          toStage: 'MAPPED',
+          byRunId: author.runId,
+          receipt: receipt('MAPPED', { mappingStructuralReceipt: 'x' }),
+          expectedLifecycleRev: 1,
+          expectedTaskHash: TASK_HASH,
+        },
+        env,
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+  })
+
+  it('advanceTaskProduct rejects stale entity/board rev + unregistered + fenced + self-verify', async () => {
+    const author = makeRun({
+      runId: 'run-a',
+      role: 'implementer',
+      agentId: 'same',
+      model: 'm1',
+      threadId: 't1',
+    })
+    const fenced = makeRun({ runId: 'run-fenced', role: 'implementer', fenced: true })
+    const store = installMemoryProductStore(
+      {
+        ...baseTask('MAPPED'),
+        entityRev: 1,
+        implementerRunId: 'run-a',
+        implementerAgentId: 'same',
+        implementerModel: 'm1',
+        implementerThreadId: 't1',
+      },
+      [author, fenced],
+    )
+
+    const envStale = parseMutationEnvelope({
+      entityExpectedRev: 99,
+      expectedBoardRev: 1,
+      canonicalHash: CANON,
+      idempotencyKey: 'idem-stale-ent',
+    })
+    const selfRcpt = receipt(
+      'MAP_VERIFIED',
+      { mappingReceipt: 'm', verifierVerdict: 'PASS' },
+      { authorRunId: 'run-a', verifierRunId: 'run-a', verdict: 'PASS' },
+    )
+    await expect(
+      advanceTaskProduct(
+        BOARD,
+        {
+          id: TASK,
+          toStage: 'MAP_VERIFIED',
+          byRunId: author.runId,
+          receipt: { receiptId: selfRcpt.receiptId, receiptHash: selfRcpt.receiptHash },
+          expectedLifecycleRev: 1,
+          expectedTaskHash: TASK_HASH,
+        },
+        envStale,
+      ),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    const envOk = parseMutationEnvelope({
+      entityExpectedRev: 1,
+      expectedBoardRev: 1,
+      canonicalHash: CANON,
+      idempotencyKey: 'idem-self',
+    })
+    await registerReceipt(store, 'MAP_VERIFIED', selfRcpt, author.runId)
+    await expect(
+      advanceTaskProduct(
+        BOARD,
+        {
+          id: TASK,
+          toStage: 'MAP_VERIFIED',
+          byRunId: author.runId,
+          receipt: { receiptId: selfRcpt.receiptId, receiptHash: selfRcpt.receiptHash },
+          expectedLifecycleRev: 1,
+          expectedTaskHash: TASK_HASH,
+        },
+        envOk,
+      ),
+    ).rejects.toMatchObject({ code: 'SELF_VERIFICATION' })
+
+    const neverRcpt = receipt(
+      'MAP_VERIFIED',
+      { mappingReceipt: 'm', verifierVerdict: 'PASS' },
+      {
+        authorRunId: 'run-a',
+        verifierRunId: 'never-registered',
+        verdict: 'PASS',
+      },
+    )
+    // Use distinct receiptId so immutable put succeeds
+    const neverPartial = {
+      receiptId: 'rcpt-never-reg',
+      programmatic: neverRcpt.programmatic,
+      taskHash: neverRcpt.taskHash,
+      canonicalHash: neverRcpt.canonicalHash,
+      boardRev: neverRcpt.boardRev,
+      lifecycleRev: neverRcpt.lifecycleRev,
+      fields: neverRcpt.fields,
+      authorRunId: neverRcpt.authorRunId,
+      verifierRunId: neverRcpt.verifierRunId,
+      verdict: neverRcpt.verdict,
+      issuedAt: neverRcpt.issuedAt,
+    }
+    const neverRcpt2 = {
+      ...neverPartial,
+      receiptHash: computeStageReceiptHash(neverPartial),
+    }
+    await registerReceipt(store, 'MAP_VERIFIED', neverRcpt2, 'never-registered')
+    await expect(
+      advanceTaskProduct(
+        BOARD,
+        {
+          id: TASK,
+          toStage: 'MAP_VERIFIED',
+          byRunId: 'never-registered',
+          receipt: { receiptId: neverRcpt2.receiptId, receiptHash: neverRcpt2.receiptHash },
+          expectedLifecycleRev: 1,
+          expectedTaskHash: TASK_HASH,
+        },
+        envOk,
+      ),
+    ).rejects.toMatchObject({ code: 'RUN_NOT_REGISTERED' })
+
+    // fenced author for non-verifier stage from null — use fresh store
+    setProductLifecycleV3StorageFactory(null)
+    const fenceStore = installMemoryProductStore(baseTask(null), [fenced])
+    const fenceRcpt = receipt('MAPPING', {})
+    await registerReceipt(fenceStore, 'MAPPING', fenceRcpt, fenced.runId)
+    const envFence = parseMutationEnvelope({
+      entityExpectedRev: 0,
+      expectedBoardRev: 1,
+      canonicalHash: CANON,
+      idempotencyKey: 'idem-fence',
+    })
+    await expect(
+      advanceTaskProduct(
+        BOARD,
+        {
+          id: TASK,
+          toStage: 'MAPPING',
+          byRunId: fenced.runId,
+          receipt: { receiptId: fenceRcpt.receiptId, receiptHash: fenceRcpt.receiptHash },
+          expectedLifecycleRev: 1,
+          expectedTaskHash: TASK_HASH,
+        },
+        envFence,
+      ),
+    ).rejects.toMatchObject({ code: 'FENCED' })
+  })
+
+  it('advanceTaskProduct rejects missing stage evidence', async () => {
+    const author = makeRun({ runId: 'run-a', role: 'implementer' })
+    const env = parseMutationEnvelope({
+      entityExpectedRev: 0,
+      expectedBoardRev: 1,
+      canonicalHash: CANON,
+      idempotencyKey: 'idem-missing-ev',
+    })
+    // Unregistered receipt → MISSING_EVIDENCE (no self-created promotion)
+    setProductLifecycleV3StorageFactory(null)
+    installMemoryProductStore({ ...baseTask('MAPPING'), entityRev: 1 }, [author])
+    await expect(
+      advanceTaskProduct(
+        BOARD,
+        {
+          id: TASK,
+          toStage: 'MAPPED',
+          byRunId: author.runId,
+          receipt: { receiptId: 'never-registered-rcpt', receiptHash: 'a'.repeat(64) },
+          expectedLifecycleRev: 1,
+          expectedTaskHash: TASK_HASH,
+        },
+        parseMutationEnvelope({
+          entityExpectedRev: 1,
+          expectedBoardRev: 1,
+          canonicalHash: CANON,
+          idempotencyKey: 'idem-missing-ev2',
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_EVIDENCE' })
+    void env
+  })
+
+  it('advanceTaskProduct rejects advance that omits receiptHash (no server compute)', async () => {
+    const author = makeRun({ runId: 'run-author', role: 'implementer' })
+    installMemoryProductStore(baseTask(null), [author])
+    await expect(
+      advanceTaskProduct(
+        BOARD,
+        {
+          id: TASK,
+          toStage: 'MAPPING',
+          byRunId: author.runId,
+          receipt: { receiptId: 'rcpt-only', programmatic: true },
+          expectedLifecycleRev: 1,
+          expectedTaskHash: TASK_HASH,
+        },
+        parseMutationEnvelope({
+          entityExpectedRev: 0,
+          expectedBoardRev: 1,
+          canonicalHash: CANON,
+          idempotencyKey: 'idem-no-hash',
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_EVIDENCE' })
+  })
+
+  it('toLegacyAdvanceCompatibilityResponse only after valid V3 result shape', () => {
+    const alias = toLegacyAdvanceCompatibilityResponse({
+      ok: true,
+      taskId: TASK,
+      fromStage: null,
+      stage: 'MAPPING',
+      entityRev: 1,
+      boardRev: 2,
+      lifecycleRev: 2,
+      taskHash: TASK_HASH,
+      canonicalSnapshotId: SNAP,
+      canonicalHash: CANON,
+      receipt: receipt('MAPPING', {}),
+      pin: {
+        canonicalSnapshotId: SNAP,
+        canonicalHash: CANON,
+        taskHash: TASK_HASH,
+        boardRev: 2,
+        lifecycleRev: 2,
+      },
+      readback: {
+        taskId: TASK,
+        stage: 'MAPPING',
+        canonicalSnapshotId: SNAP,
+        canonicalHash: CANON,
+        taskHash: TASK_HASH,
+        boardRev: 2,
+        lifecycleRev: 2,
+        entityRev: 1,
+        stageReceiptIds: ['rcpt-MAPPING'],
+      },
+    })
+    expect(alias.engine).toBe('advanceTaskV3')
+    expect(alias.ok).toBe(true)
+    expect(alias.rev).toBe(1)
+    expect(alias.stage).toBe('MAPPING')
+  })
+
+  it('parseAdvanceStageReceipt + buildAdvanceTaskV3Input accept only receiptId+hash (no hash compute)', () => {
+    const pin = {
+      boardId: BOARD,
+      boardRev: 3,
+      lifecycleRev: 2,
+      canonicalSnapshotId: SNAP,
+      canonicalHash: CANON,
+    }
+    // Evidence bag without receiptId+hash → MISSING_EVIDENCE (never self-created)
+    expect(() =>
+      parseAdvanceStageReceipt(
+        {
+          toStage: 'MAPPED',
+          evidence: { mappingStructuralReceipt: 'ms-1' },
+        },
+        { taskHash: TASK_HASH, canonicalHash: CANON, boardRev: 3, lifecycleRev: 2 },
+      ),
+    ).toThrow(/MISSING_EVIDENCE|registered receiptId/)
+    // programmatic:true without hash still rejected
+    expect(() =>
+      parseAdvanceStageReceipt(
+        {
+          toStage: 'MAPPED',
+          programmatic: true,
+          receipt: { receiptId: 'rcpt-x', programmatic: true },
+        },
+        { taskHash: TASK_HASH, canonicalHash: CANON, boardRev: 3, lifecycleRev: 2 },
+      ),
+    ).toThrow(/MISSING_EVIDENCE|receiptHash/)
+
+    const hash = 'a'.repeat(64)
+    const parsed = parseAdvanceStageReceipt({
+      receipt: { receiptId: 'rcpt-reg', receiptHash: hash },
+    })
+    expect(parsed.receiptId).toBe('rcpt-reg')
+    expect(parsed.receiptHash).toBe(hash)
+    // Stub fields empty — registry is authority at advance time
+    expect(parsed.fields).toEqual({})
+
+    const env = parseMutationEnvelope({
+      entityExpectedRev: 1,
+      expectedBoardRev: 3,
+      canonicalHash: CANON,
+      idempotencyKey: 'idem-build',
+    })
+    const inp = buildAdvanceTaskV3Input(
+      BOARD,
+      {
+        id: TASK,
+        toStage: 'MAPPED',
+        byRunId: 'run-1',
+        receipt: { receiptId: 'rcpt-reg', receiptHash: hash },
+        expectedLifecycleRev: 2,
+        expectedTaskHash: TASK_HASH,
+      },
+      env,
+      pin,
+      TASK_HASH,
+    )
+    expect(inp.toStage).toBe('MAPPED')
+    expect(inp.expectedBoardRev).toBe(3)
+    expect(inp.expectedLifecycleRev).toBe(2)
+    expect(inp.expectedCanonicalHash).toBe(CANON)
+    expect(inp.receipt.receiptId).toBe('rcpt-reg')
+    expect(inp.receipt.receiptHash).toBe(hash)
+
+    expect(() =>
+      buildAdvanceTaskV3Input(
+        BOARD,
+        { id: TASK, toStage: 'NOT_A_STAGE', byRunId: 'r' },
+        env,
+        pin,
+        TASK_HASH,
+      ),
+    ).toThrow(McpMutationError)
+  })
+
+  it('assertLifecycleEvidenceBypassForbidden blocks allowSkip / late init on pin-complete', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const sql = (ctx.controlData as { sql?: Parameters<typeof seedBoardRevision>[0] }).sql!
+    // Pin-complete: non-synthetic snapshot id + hash + finite revs (no snapshot row required for isPinComplete)
+    await seedBoardRevision(sql, {
+      boardId: BOARD,
+      boardRev: 5,
+      lifecycleRev: 2,
+      subjectHash: CANON,
+      canonicalSnapshotId: 'snap-complete-not-synth',
+      canonicalHash: CANON,
+      importEntityRev: 1,
+    })
+    const st = await ctx.controlData.imports.getBoardState(BOARD)
+    expect(st).not.toBeNull()
+    const { isPinComplete } = await import('#/server/canonical-read-model')
+    expect(isPinComplete(st!)).toBe(true)
+
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('set_lifecycle', BOARD, {
+        allowSkip: true,
+        stages: V3_LIFECYCLE_RAIL.map((k) => ({ key: k, label: k })),
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('set_lifecycle', BOARD, {
+        allowSkip: false,
+        stages: [
+          { key: 'TODO', label: 'Todo' },
+          { key: 'DONE', label: 'Done' },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('init_lifecycle', BOARD, {
+        stage: 'BUILT',
+        onlyUninitialized: true,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('init_lifecycle', BOARD, {
+        stage: 'MAPPING',
+        onlyUninitialized: false,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+
+    // Pin-complete: even MAPPING seed forbidden without V3 programmatic receipt path
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('init_lifecycle', BOARD, {
+        stage: 'MAPPING',
+        onlyUninitialized: true,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+  })
+
+  it('typedError surfaces Lifecycle V3 domain codes (not MCP_HANDLER_ERROR)', () => {
+    for (const code of [
+      'INVALID_TRANSITION',
+      'MISSING_EVIDENCE',
+      'STALE_HASH',
+      'SELF_VERIFICATION',
+      'FENCED',
+      'RUN_NOT_REGISTERED',
+    ] as const) {
+      const out = mcpTypedErrorForTests(new McpMutationError(code, `msg-${code}`))
+      expect(out.code).toBe(code)
+      expect(out.error).toBe(`msg-${code}`)
+    }
+  })
+
+  it('advance_task write schema includes receipt + expectedLifecycleRev fields', () => {
+    const schemas = listRegisteredWriteToolSchemas()
+    // registerBoardTools may not have run in this suite — call it once
+    const server = new McpServer({ name: 'life-v3-schema', version: '0.0.0' })
+    registerBoardTools(server, authRoot())
+    const after = listRegisteredWriteToolSchemas()
+    const advance = after.find((s) => s.name === 'advance_task')
+    expect(advance).toBeTruthy()
+    expect(advance!.schemaKeys).toEqual(
+      expect.arrayContaining([
+        'id',
+        'toStage',
+        'byRunId',
+        'receipt',
+        'expectedLifecycleRev',
+        'expectedTaskHash',
+        'expectedBoardRev',
+        'idempotencyKey',
+      ]),
+    )
+    expect(writeToolSchemaHasFullEnvelope(advance!.schemaKeys)).toBe(true)
+    void schemas
+  })
+})
+
+/**
+ * Behavioral runtime negatives for the nine V3 domain-owned write handlers.
+ * Schema-only checks are insufficient — each domain path must reject missing CAS
+ * fields and pin-hash mismatch without silent defaults.
+ */
+describe('nine V3 handlers: runtime CAS + pin-hash negatives (not schema-only)', () => {
+  const PIN = 'b'.repeat(64)
+  const V3_NINE = [
+    'publish_dispatch_plan',
+    'register_run',
+    'heartbeat_run',
+    'sync_accounts',
+    'reconcile_dry_run',
+    'reconcile_apply',
+    'open_decision_v3',
+    'resolve_decision_v3',
+    'integration_lock',
+  ] as const
+
+  it('catalog names the exact nine V3 handlers with full envelope schema', () => {
+    const server = new McpServer({ name: 'v3-neg', version: '0.0.0' })
+    registerBoardTools(server, authRoot())
+    const writes = listRegisteredWriteToolSchemas()
+    for (const name of V3_NINE) {
+      const row = writes.find((w) => w.name === name)
+      expect(row, name).toBeTruthy()
+      expect(writeToolSchemaHasFullEnvelope(row!.schemaKeys), name).toBe(true)
+    }
+    expect(V3_NINE).toHaveLength(9)
+  })
+
+  it('assertMutationEnvelopeOrThrow rejects missing CAS fields and pin mismatch for all nine', async () => {
+    for (const tool of V3_NINE) {
+      await expect(
+        assertMutationEnvelopeOrThrow(
+          { expectedBoardRev: 0, canonicalHash: PIN, idempotencyKey: `k-${tool}` },
+          { boardId: BOARD, checkPinHash: true },
+        ),
+      ).rejects.toThrow(/entityExpectedRev/)
+      await expect(
+        assertMutationEnvelopeOrThrow(
+          { entityExpectedRev: 0, expectedBoardRev: 0, idempotencyKey: `k2-${tool}` },
+          { boardId: BOARD, checkPinHash: true },
+        ),
+      ).rejects.toThrow(/canonicalHash|subjectHash/)
+      await expect(
+        assertMutationEnvelopeOrThrow(
+          {
+            entityExpectedRev: 0,
+            expectedBoardRev: 0,
+            canonicalHash: 'not-the-current-pin-hash-value',
+            idempotencyKey: `k3-${tool}`,
+          },
+          { boardId: BOARD, checkPinHash: true },
+        ),
+      ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+    }
+  })
+
+  it('sync_accounts domain rejects missing entityExpectedRev/canonicalHash + pin mismatch', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const deps = {
+      clock: ctx.clock,
+      accounts: ctx.runtime.accounts,
+      atomic: ctx.atomic,
+      idempotency: ctx.idempotency,
+    }
+    const base = {
+      boardId: BOARD,
+      sourceRevision: 1,
+      generatedAt: ctx.clock.nowISO(),
+      expectedBoardRev: 0,
+      accounts: [
+        {
+          maskedAccountId: 'mask-neg',
+          status: 'OK' as const,
+          providerKind: 'GROK' as const,
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+      ],
+      trigger: 'ORCHESTRATOR_LAUNCH' as const,
+      idempotencyKey: 'sync-neg-1',
+      callerRole: 'ROOT_ORCHESTRATOR' as const,
+    }
+    await expect(syncAccounts(deps, { ...base, canonicalHash: PIN } as never)).rejects.toBeInstanceOf(
+      AccountSyncError,
+    )
+    await expect(
+      syncAccounts(deps, { ...base, entityExpectedRev: 0 } as never),
+    ).rejects.toBeInstanceOf(AccountSyncError)
+    await expect(
+      syncAccounts(deps, {
+        ...base,
+        entityExpectedRev: 0,
+        canonicalHash: PIN,
+        currentPinHash: 'other-pin',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+  })
+
+  it('register_run + heartbeat_run domain reject missing canonicalHash / pin mismatch', async () => {
+    const deps = defaultRunDeps(BOARD, 0)
+    await expect(
+      registerRun(deps, {
+        boardId: BOARD,
+        runId: 'run-neg-1',
+        taskId: 't-1',
+        targetGate: 'G1',
+        agentId: 'a-1',
+        model: 'grok',
+        expectedEntityRev: 0,
+        expectedBoardRev: 0,
+        canonicalHash: '',
+        idempotencyKey: 'reg-neg',
+        capacity: openCapacity(),
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    await expect(
+      registerRun(deps, {
+        boardId: BOARD,
+        runId: 'run-neg-2',
+        taskId: 't-1',
+        targetGate: 'G1',
+        agentId: 'a-1',
+        model: 'grok',
+        expectedEntityRev: 0,
+        expectedBoardRev: 0,
+        canonicalHash: PIN,
+        currentPinHash: 'wrong-pin',
+        idempotencyKey: 'reg-neg-2',
+        capacity: openCapacity(),
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    await expect(
+      heartbeatRun(deps, {
+        boardId: BOARD,
+        runId: 'missing',
+        agentId: 'a-1',
+        fencingToken: 'ft',
+        heartbeatSequence: 1,
+        expectedEntityRev: 0,
+        expectedBoardRev: 0,
+        canonicalHash: '',
+        idempotencyKey: 'hb-neg',
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('open_decision_v3 + resolve_decision_v3 domain reject missing CAS', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const ddeps = {
+      clock: ctx.clock,
+      decisions: ctx.controlData.decisions,
+      atomic: ctx.atomic,
+      idempotency: ctx.idempotency,
+    }
+    await expect(
+      openDecisionV3(ddeps, {
+        boardId: BOARD,
+        actorId: 'actor',
+        question: 'q?',
+        title: 't',
+        type: 'POLICY',
+        severity: 'LOW',
+        blocking: false,
+        expectedBoardRev: 0,
+        options: [
+          {
+            optionId: 'a',
+            label: 'A',
+            declining: false,
+            requestsProductionAuthority: false,
+            requestsHoldAuthority: false,
+            requestsProviderAuthority: false,
+          },
+        ],
+      } as never),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    await expect(
+      resolveDecisionV3(ddeps, {
+        boardId: BOARD,
+        decisionId: 'nope',
+        actorId: 'owner',
+        selectedOptionId: 'a',
+        expectedRev: 0,
+        expectedBoardRev: 0,
+      } as never),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('publish_dispatch_plan domain rejects missing entityExpectedRev', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    await expect(
+      publishDispatchPlan(
+        {
+          clock: ctx.clock,
+          plans: ctx.runtime.plans,
+          atomic: ctx.atomic,
+          idempotency: ctx.idempotency,
+        },
+        {
+          boardId: BOARD,
+          planId: 'p-neg',
+          planVersion: 1,
+          planHash: 'ph',
+          canonicalSnapshotId: 'snap',
+          canonicalHash: PIN,
+          expectedBoardRev: 0,
+          issuedAt: ctx.clock.nowISO(),
+          expiresAt: ctx.clock.nowISO(),
+          stage: 'ACTIVE',
+          items: [],
+          idempotencyKey: 'pub-neg',
+          callerRole: 'ROOT_ORCHESTRATOR',
+        } as never,
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('reconcile_dry_run + reconcile_apply domain reject missing canonicalHash', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const runDeps = defaultRunDeps(BOARD, 0)
+    const recDeps = {
+      clock: runDeps.clock,
+      runs: runDeps.runs,
+      locks: runDeps.locks,
+      reconciler: ctx.runtime.reconciler,
+      atomic: runDeps.atomic,
+      idempotency: runDeps.idempotency,
+    }
+    await expect(
+      dryRunReconcile(recDeps, {
+        boardId: BOARD,
+        leaderId: 'leader',
+        fencingToken: 'ft',
+        entityExpectedRev: 0,
+        expectedBoardRev: 0,
+        idempotencyKey: 'dry-neg',
+      } as never),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+    await expect(
+      applyReconcile(recDeps, {
+        boardId: BOARD,
+        leaderId: 'leader',
+        fencingToken: 'ft',
+        dryRunHash: 'hash',
+        entityExpectedRev: 0,
+        expectedBoardRev: 0,
+        idempotencyKey: 'apply-neg',
+      } as never),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+
+  it('integration_lock domain rejects missing entityExpectedRev / canonicalHash', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    await expect(
+      acquireIntegrationLock(
+        ctx.runtime.locks,
+        ctx.clock,
+        {
+          boardId: BOARD,
+          repoId: BOARD,
+          trackingBranch: 'main',
+          runId: 'int-neg',
+          agentId: 'integrator',
+          integratorModel: 'grok-4.5',
+          rootAcceptanceId: 'ra-1',
+          checkpointId: 'cp-1',
+          pathspecs: ['src/**'],
+          expectedBoardRev: 0,
+          idempotencyKey: 'int-neg',
+        } as never,
+        { atomic: ctx.atomic, idempotency: ctx.idempotency },
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// submit_stage_evidence REAL MCP tool-call envelope + add_comment real MCP spoof
+// ---------------------------------------------------------------------------
+describe('submit_stage_evidence MCP tool + WAVE_CLOSE + add_comment real MCP', () => {
+  const TASK = 'task-evidence-close-1'
+  const TASK_HASH = 'task-hash-evidence-1'
+  const CANON = 'c'.repeat(64)
+  const SNAP = 'snap-evidence-close'
+  const AGENT_ID = 'agent-ev-mcp-1'
+  const BOARD_REV = 1
+  const LIFE_REV = 1
+
+  function agentPrincipal(agentId = AGENT_ID, boardId = BOARD): Principal {
+    return {
+      role: 'AGENT',
+      actorId: agentId,
+      agentId,
+      boardId,
+      channel: 'bearer',
+      scopes: defaultScopesForRole('AGENT'),
+      boards: [boardId],
+    }
+  }
+
+  function authAgent(agentId = AGENT_ID): McpAuthContext {
+    return {
+      principal: agentPrincipal(agentId),
+      mechanism: { kind: 'OK' },
+      bearerPresent: true,
+    }
+  }
+
+  function baseTask(stage: LifecycleStageKey | null = null): TaskLifecycleV3State {
+    return {
+      taskId: TASK,
+      stage,
+      entityRev: 0,
+      boardRev: BOARD_REV,
+      lifecycleRev: LIFE_REV,
+      taskHash: TASK_HASH,
+      canonicalSnapshotId: SNAP,
+      canonicalHash: CANON,
+      implementerRunId: null,
+      implementerAgentId: null,
+      implementerModel: null,
+      implementerThreadId: null,
+      history: [],
+      stageReceipts: {},
+      blockedReason: null,
+    }
+  }
+
+  function makeRun(
+    over: Partial<RegisteredRun> & Pick<RegisteredRun, 'runId' | 'role'>,
+  ): RegisteredRun {
+    return {
+      agentId: over.agentId ?? AGENT_ID,
+      model: 'grok-4.5',
+      threadId: `thread-${over.runId}`,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      fenced: false,
+      registered: true,
+      ...over,
+    }
+  }
+
+  /** Align product lifecycle pin + atomic board rev + durable pin hash for MCP envelope. */
+  async function installAligned(
+    task: TaskLifecycleV3State,
+    runs: Array<RegisteredRun>,
+  ) {
+    const store = createMemoryLifecycleV3Storage({
+      pin: {
+        boardId: BOARD,
+        boardRev: BOARD_REV,
+        lifecycleRev: LIFE_REV,
+        canonicalSnapshotId: SNAP,
+        canonicalHash: CANON,
+      },
+      tasks: [task],
+      runs,
+    })
+    setProductLifecycleV3StorageFactory(() => store)
+    const ctx = resolveMcpRuntimeContext()
+    await ctx.atomic.setBoardState({
+      boardId: BOARD,
+      boardRev: BOARD_REV,
+      dispatchBlocked: false,
+      dispatchBlockedReason: null,
+    })
+    const sql = (ctx.controlData as { sql?: Parameters<typeof seedBoardRevision>[0] }).sql
+    if (sql) {
+      await seedBoardRevision(sql, {
+        boardId: BOARD,
+        boardRev: BOARD_REV,
+        lifecycleRev: LIFE_REV,
+        subjectHash: CANON,
+        canonicalSnapshotId: SNAP,
+        canonicalHash: CANON,
+      })
+    }
+    return store
+  }
+
+  function envelope(over: Record<string, unknown> = {}) {
+    return {
+      boardId: BOARD,
+      taskId: TASK,
+      toStage: 'MAPPING',
+      byRunId: 'run-ev-mcp',
+      taskHash: TASK_HASH,
+      expectedLifecycleRev: LIFE_REV,
+      entityExpectedRev: 0,
+      expectedBoardRev: BOARD_REV,
+      canonicalHash: CANON,
+      idempotencyKey: 'idem-ev-default',
+      agentId: AGENT_ID,
+      ...over,
+    }
+  }
+
+  afterEach(() => {
+    setProductLifecycleV3StorageFactory(null)
+  })
+
+  it('catalog: submit_stage_evidence listed with full envelope; WAVE_CLOSE in trigger enum; external empty', () => {
+    const server = new McpServer({ name: 'ev-catalog', version: '0.0.0' })
+    registerBoardTools(server, authRoot())
+    const writes = listRegisteredWriteToolSchemas()
+    expect(REGISTERED_WRITE_TOOL_NAMES).toContain('submit_stage_evidence')
+    const row = writes.find((w) => w.name === 'submit_stage_evidence')
+    expect(row).toBeTruthy()
+    expect(writeToolSchemaHasFullEnvelope(row!.schemaKeys)).toBe(true)
+    expect(row!.schemaKeys).toEqual(
+      expect.arrayContaining([
+        'taskId',
+        'toStage',
+        'byRunId',
+        'taskHash',
+        'expectedLifecycleRev',
+        'entityExpectedRev',
+        'expectedBoardRev',
+        'canonicalHash',
+        'idempotencyKey',
+      ]),
+    )
+    expect(ACCOUNT_SYNC_TRIGGER_VALUES).toContain('WAVE_CLOSE')
+    expect(ACCOUNT_SYNC_TRIGGER_Z.safeParse('WAVE_CLOSE').success).toBe(true)
+    expect(ACCOUNT_SYNC_TRIGGER_Z.safeParse('NOT_A_TRIGGER').success).toBe(false)
+    expect(ACCOUNT_SYNC_EXTERNAL_ADAPTER_TRIGGERS).toEqual([])
+    const sync = writes.find((w) => w.name === 'sync_accounts')
+    expect(sync?.schemaKeys).toContain('trigger')
+  })
+
+  it('MCP tool positive: AGENT submit_stage_evidence emits immutable receipt (real tool call)', async () => {
+    const author = makeRun({ runId: 'run-ev-mcp', role: 'implementer', agentId: AGENT_ID })
+    const store = await installAligned(baseTask(null), [author])
+    const server = new McpServer({ name: 'ev-pos', version: '0.0.0' })
+    registerBoardTools(server, authAgent())
+
+    const res = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        receiptId: 'rcpt-mcp-pos-1',
+        idempotencyKey: 'idem-mcp-pos-1',
+      }),
+    )
+    expect(res.ok).toBe(true)
+    expect(res.receiptId).toBe('rcpt-mcp-pos-1')
+    expect(String(res.receiptHash)).toHaveLength(64)
+    expect(res.programmatic).toBe(true)
+    expect(res.emittingRunId).toBe(author.runId)
+    expect(res.created).toBe(true)
+    // Evidence CAS-checks board rev but does not advance it (advance_task owns rev chain)
+    expect(res.boardRev).toBe(BOARD_REV)
+    expect(res.taskHash).toBe(TASK_HASH)
+    expect(res.canonicalHash).toBe(CANON)
+    // Persisted registry readback
+    const got = await store.getStageEvidence(BOARD, 'rcpt-mcp-pos-1')
+    expect(got?.receipt.receiptHash).toBe(res.receiptHash)
+    expect(got?.emittingRunId).toBe(author.runId)
+  })
+
+  it('MCP tool: exact idempotency key/request replay no double bump; changed body conflict', async () => {
+    const author = makeRun({ runId: 'run-ev-mcp', role: 'implementer', agentId: AGENT_ID })
+    await installAligned(baseTask(null), [author])
+    const server = new McpServer({ name: 'ev-idem', version: '0.0.0' })
+    registerBoardTools(server, authAgent())
+    const args = envelope({
+      receiptId: 'rcpt-mcp-idem-1',
+      idempotencyKey: 'idem-mcp-exact-1',
+    })
+    const first = await callToolJson(server, 'submit_stage_evidence', args)
+    expect(first.ok).toBe(true)
+    expect(first.created).toBe(true)
+    expect(first.boardRev).toBe(BOARD_REV)
+    const second = await callToolJson(server, 'submit_stage_evidence', args)
+    expect(second.ok).toBe(true)
+    expect(second.replayed).toBe(true)
+    expect(second.receiptHash).toBe(first.receiptHash)
+    expect(second.boardRev).toBe(first.boardRev) // no double bump / no re-insert
+    expect(second.created).toBe(first.created)
+    // Same key, changed body → conflict
+    const conflict = await callToolJson(server, 'submit_stage_evidence', {
+      ...args,
+      fields: { different: true },
+    })
+    expect(conflict.ok).toBe(false)
+    expect(String(conflict.code)).toMatch(/IDEMPOTENCY_CONFLICT|CONFLICT/)
+  })
+
+  it('MCP tool: stale entity rev / board rev / hash / lifecycle rejected before insert', async () => {
+    const author = makeRun({ runId: 'run-ev-mcp', role: 'implementer', agentId: AGENT_ID })
+    const store = await installAligned(baseTask(null), [author])
+    const server = new McpServer({ name: 'ev-stale', version: '0.0.0' })
+    registerBoardTools(server, authAgent())
+
+    const staleEntity = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        entityExpectedRev: 99,
+        receiptId: 'rcpt-stale-ent',
+        idempotencyKey: 'idem-stale-ent',
+      }),
+    )
+    expect(staleEntity.ok).toBe(false)
+    expect(staleEntity.code).toBe('STALE_REVISION')
+    expect(await store.getStageEvidence(BOARD, 'rcpt-stale-ent')).toBeNull()
+
+    const staleBoard = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        expectedBoardRev: 999,
+        receiptId: 'rcpt-stale-br',
+        idempotencyKey: 'idem-stale-br',
+      }),
+    )
+    expect(staleBoard.ok).toBe(false)
+    expect(staleBoard.code).toBe('STALE_REVISION')
+    expect(await store.getStageEvidence(BOARD, 'rcpt-stale-br')).toBeNull()
+
+    const staleHash = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        canonicalHash: 'd'.repeat(64),
+        receiptId: 'rcpt-stale-hash',
+        idempotencyKey: 'idem-stale-hash',
+      }),
+    )
+    expect(staleHash.ok).toBe(false)
+    expect(staleHash.code).toBe('STALE_REVISION')
+    expect(await store.getStageEvidence(BOARD, 'rcpt-stale-hash')).toBeNull()
+
+    const staleLife = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        expectedLifecycleRev: 99,
+        receiptId: 'rcpt-stale-life',
+        idempotencyKey: 'idem-stale-life',
+      }),
+    )
+    expect(staleLife.ok).toBe(false)
+    expect(staleLife.code).toBe('STALE_REVISION')
+    expect(await store.getStageEvidence(BOARD, 'rcpt-stale-life')).toBeNull()
+
+    const badTaskHash = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        taskHash: 'wrong-task-hash',
+        receiptId: 'rcpt-stale-th',
+        idempotencyKey: 'idem-stale-th',
+      }),
+    )
+    expect(badTaskHash.ok).toBe(false)
+    expect(badTaskHash.code).toBe('STALE_HASH')
+    expect(await store.getStageEvidence(BOARD, 'rcpt-stale-th')).toBeNull()
+  })
+
+  it('MCP tool: expired / fenced / unregistered run + foreign principal owner denied', async () => {
+    const expired = makeRun({
+      runId: 'run-expired',
+      role: 'implementer',
+      expiresAt: '2020-01-01T00:00:00.000Z',
+      agentId: AGENT_ID,
+    })
+    await installAligned(baseTask(null), [expired])
+    const server = new McpServer({ name: 'ev-run', version: '0.0.0' })
+    registerBoardTools(server, authAgent())
+
+    const lease = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        byRunId: 'run-expired',
+        receiptId: 'rcpt-lease',
+        idempotencyKey: 'idem-lease',
+      }),
+    )
+    expect(lease.ok).toBe(false)
+    expect(lease.code).toBe('LEASE_EXPIRED')
+
+    const fenced = makeRun({ runId: 'run-fenced-ev', role: 'implementer', fenced: true, agentId: AGENT_ID })
+    await installAligned(baseTask(null), [fenced])
+    const fencedRes = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        byRunId: 'run-fenced-ev',
+        receiptId: 'rcpt-fenced',
+        idempotencyKey: 'idem-fenced',
+      }),
+    )
+    expect(fencedRes.ok).toBe(false)
+    expect(fencedRes.code).toBe('FENCED')
+
+    await installAligned(baseTask(null), [makeRun({ runId: 'run-ev-mcp', role: 'implementer' })])
+    const unreg = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        byRunId: 'never-registered',
+        receiptId: 'rcpt-unreg',
+        idempotencyKey: 'idem-unreg',
+      }),
+    )
+    expect(unreg.ok).toBe(false)
+    expect(unreg.code).toBe('RUN_NOT_REGISTERED')
+
+    // Foreign principal: run owned by other agent
+    const foreignRun = makeRun({
+      runId: 'run-foreign',
+      role: 'implementer',
+      agentId: 'agent-other-owner',
+    })
+    await installAligned(baseTask(null), [foreignRun])
+    const foreign = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        byRunId: 'run-foreign',
+        agentId: AGENT_ID,
+        receiptId: 'rcpt-foreign',
+        idempotencyKey: 'idem-foreign',
+      }),
+    )
+    expect(foreign.ok).toBe(false)
+    expect(String(foreign.code)).toMatch(/OWN_RUN|FORBIDDEN|AUTHORIZATION/)
+  })
+
+  it('MCP tool: same receiptId different body → STALE_HASH (immutable entity conflict)', async () => {
+    const author = makeRun({ runId: 'run-ev-mcp', role: 'implementer', agentId: AGENT_ID })
+    await installAligned(baseTask(null), [author])
+    const server = new McpServer({ name: 'ev-imm', version: '0.0.0' })
+    registerBoardTools(server, authAgent())
+    const first = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        receiptId: 'rcpt-imm-1',
+        idempotencyKey: 'idem-imm-1',
+        fields: {},
+      }),
+    )
+    expect(first.ok).toBe(true)
+    // Different idempotency key, same receiptId, different body → immutable conflict
+    const conflict = await callToolJson(
+      server,
+      'submit_stage_evidence',
+      envelope({
+        receiptId: 'rcpt-imm-1',
+        idempotencyKey: 'idem-imm-2',
+        expectedBoardRev: BOARD_REV,
+        fields: { extra: 'different' },
+      }),
+    )
+    expect(conflict.ok).toBe(false)
+    expect(conflict.code).toBe('STALE_HASH')
+  })
+
+  it('WAVE_CLOSE accepted through ROOT sync_accounts domain path (no longer external-unavailable)', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const deps = {
+      clock: ctx.clock,
+      accounts: ctx.runtime.accounts,
+      atomic: ctx.atomic,
+      idempotency: ctx.idempotency,
+    }
+    const pin = 'b'.repeat(64)
+    const board = await ctx.atomic.getBoardState(BOARD)
+    const res = await (await import('#/server/account-sync')).syncAccounts(deps, {
+      boardId: BOARD,
+      sourceRevision: 42,
+      generatedAt: ctx.clock.nowISO(),
+      entityExpectedRev: 0,
+      expectedBoardRev: board.boardRev,
+      canonicalHash: pin,
+      currentPinHash: pin,
+      accounts: [
+        {
+          maskedAccountId: 'mask-wave-close',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+          physicalSlotsDisplay: '0/20',
+        },
+      ],
+      trigger: 'WAVE_CLOSE',
+      idempotencyKey: 'idem-wave-close-1',
+      callerRole: 'ROOT_ORCHESTRATOR',
+      actorId: 'root-durable-test',
+    })
+    expect(res.acceptedCount).toBeGreaterThanOrEqual(1)
+    expect(res.stale).toBe(false)
+    expect(ACCOUNT_SYNC_TRIGGER_Z.safeParse('WAVE_CLOSE').success).toBe(true)
+    expect(ACCOUNT_SYNC_EXTERNAL_ADAPTER_TRIGGERS).not.toContain('WAVE_CLOSE')
+    expect(ACCOUNT_SYNC_EXTERNAL_ADAPTER_TRIGGERS).toEqual([])
+  })
+
+  it('add_comment REAL MCP: spoof authorType=human/author=owner → principal agent + persisted readback', async () => {
+    const { createBoard, upsertFeature, boardExists, deleteBoard, boardHash } =
+      await import('#/server/board-store')
+    const commentBoard = `ev-comment-${Date.now().toString(36)}`
+    const featureId = 'feat-comment-spoof'
+    try {
+      if (await boardExists(commentBoard)) await deleteBoard(commentBoard)
+      await createBoard(commentBoard, 'Evidence comment spoof board')
+      await upsertFeature(commentBoard, {
+        id: featureId,
+        nama: 'Comment spoof feature',
+        fase: 'build',
+      } as never)
+
+      const ctx = resolveMcpRuntimeContext()
+      const hash = await boardHash(commentBoard)
+      const boardState = await ctx.atomic.getBoardState(commentBoard)
+      const sql = (ctx.controlData as { sql?: Parameters<typeof seedBoardRevision>[0] }).sql
+      if (sql) {
+        await seedBoardRevision(sql, {
+          boardId: commentBoard,
+          boardRev: boardState.boardRev,
+          lifecycleRev: 0,
+          subjectHash: hash,
+          canonicalSnapshotId: `snap-${commentBoard}`,
+          canonicalHash: hash,
+        })
+      }
+
+      const agentId = 'agent-mcp-auth'
+      const server = new McpServer({ name: 'comment-mcp-real', version: '0.0.0' })
+      // Bind AGENT to this ephemeral board (canAccessBoard fail-closed otherwise)
+      registerBoardTools(server, {
+        principal: agentPrincipal(agentId, commentBoard),
+        mechanism: { kind: 'OK' },
+        bearerPresent: true,
+      })
+
+      const marker = `spoof-proof-${Date.now()}`
+      const addRes = await callToolJson(server, 'add_comment', {
+        boardId: commentBoard,
+        featureId,
+        text: marker,
+        // Spoof — must be ignored; attribution from authenticated AGENT principal
+        author: 'owner',
+        authorType: 'human',
+        entityExpectedRev: 0,
+        expectedBoardRev: boardState.boardRev,
+        canonicalHash: hash,
+        idempotencyKey: `idem-comment-spoof-${Date.now()}`,
+      })
+      expect(addRes.ok).toBe(true)
+      expect(addRes.author).toBe(agentId)
+      expect(addRes.authorType).toBe('agent')
+      expect(addRes.author).not.toBe('owner')
+      expect(addRes.authorType).not.toBe('human')
+
+      // Persisted readback via list_activity MCP tool
+      const activity = await callToolJson(server, 'list_activity', {
+        boardId: commentBoard,
+        pageSize: 50,
+      })
+      const items = (activity.activity as Array<Record<string, unknown>>) ?? []
+      const hit = items.find((a) => String(a.text ?? '') === marker)
+      expect(hit).toBeTruthy()
+      expect(hit!.actor).toBe(agentId)
+      expect(hit!.actorType).toBe('agent')
+    } finally {
+      try {
+        if (await boardExists(commentBoard)) await deleteBoard(commentBoard)
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  }, 30_000)
 })

@@ -710,6 +710,76 @@
   overflow-wrap: anywhere;
 }
 
+/* Owner humanDisplay block — reuses field/label density; no art redesign. */
+.ownerHumanBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.contentReviewBadge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cc-warn, #8a5200) 14%, transparent);
+  color: var(--cc-warn, #8a5200);
+  border: 1px solid color-mix(in srgb, var(--cc-warn, #8a5200) 35%, transparent);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.ownerField {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--text-dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ownerFieldLabel {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cc-text-faint, #4a5568);
+  margin-bottom: 0.1rem;
+}
+
+.ownerCitations {
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.72rem;
+  color: var(--cc-text-faint, #58616f);
+}
+
+.ownerCitationItem {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.technicalSecondary {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--cc-text-faint, #58616f);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ongoingMeta {
   display: flex;
   flex-wrap: wrap;

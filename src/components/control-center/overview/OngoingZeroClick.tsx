@@ -2,6 +2,8 @@ import styles from './overview.module.css'
 import type { OverviewOngoingItem, ProductiveState } from './types'
 import { EmptySlot } from './SurfaceBanner'
 import { SemanticIcon } from './SemanticIcon'
+import { resolveOwnerDisplay } from './ownerDisplay'
+import { OwnerHumanFields } from './OwnerHumanFields'
 
 function productiveClass(state: ProductiveState): string {
   if (state === 'PRODUCTIVE') return styles.prodProductive
@@ -30,20 +32,55 @@ function ProductiveBadge({ state }: { state: ProductiveState }) {
 }
 
 export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
+  const display = resolveOwnerDisplay({
+    technicalTitle: item.title,
+    ownerPrimaryTitle: item.ownerPrimaryTitle,
+    statusSentence: item.statusSentence,
+    ownerAction: item.ownerAction,
+    whyItMatters: item.whyItMatters,
+    next: item.next,
+    blocker: item.blocker,
+    contentReviewRequired: item.contentReviewRequired,
+    effectiveReviewStatus: item.effectiveReviewStatus,
+    citations: item.citations,
+    ownerHumanDisplay: item.ownerHumanDisplay,
+  })
+
   return (
     <li
       className={styles.ongoingCard}
       data-testid="overview-ongoing-card"
       data-task-id={item.taskId}
       data-productive-state={item.productiveState}
+      data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
+      data-owner-primary-title={display.primaryTitle}
     >
       <div className={styles.ongoingTop}>
         <div style={{ minWidth: 0 }}>
           <div className={styles.taskId}>{item.taskId}</div>
-          <h3 className={styles.ongoingTitle}>{item.title}</h3>
+          <h3
+            className={styles.ongoingTitle}
+            data-testid="overview-ongoing-owner-title"
+            data-field="ownerPrimaryTitle"
+          >
+            {display.primaryTitle}
+          </h3>
+          {/* Technical title secondary only — never owner primary. */}
+          {display.technicalTitle && display.technicalTitle !== display.primaryTitle ? (
+            <div
+              className={styles.technicalSecondary}
+              data-testid="overview-ongoing-technical-title"
+              data-field="technicalTitle"
+              title={display.technicalTitle}
+            >
+              {display.technicalTitle}
+            </div>
+          ) : null}
         </div>
         <ProductiveBadge state={item.productiveState} />
       </div>
+
+      <OwnerHumanFields display={display} testIdPrefix="overview-ongoing" />
 
       <div className={styles.ongoingMeta}>
         <span className={styles.chip}>

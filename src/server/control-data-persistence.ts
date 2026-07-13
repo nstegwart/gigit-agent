@@ -13,10 +13,16 @@ import type {
   ClassificationReceipt,
   G5DomainId,
   G5DomainRecord,
+  LifecycleStageKey,
   TaskClass,
   TaskClassificationRecord,
   TaskDisposition,
 } from '#/lib/control-plane-types'
+import type {
+  RegisteredStageEvidence,
+  StageEvidenceStore,
+  StageReceipt,
+} from '#/server/lifecycle-store'
 import type {
   DecisionOptionV3,
   DecisionSeverity,
@@ -129,6 +135,11 @@ export interface ControlDataPersistence {
   imports: MysqlImportStorage
   g5: G5DomainStore
   classification: ClassificationDataStore
+  /**
+   * Immutable lifecycle stage-evidence receipt registry (program emit only).
+   * advance_task resolves receiptId+hash here — never self-created on advance.
+   */
+  stageEvidence: StageEvidenceStore
   /** Optional pool close when this module owns the connection. */
   close?(): Promise<void>
 }
@@ -1909,6 +1920,110 @@ export function createMysqlClassificationStore(client: ControlDataSqlClient): Cl
 }
 
 // =============================================================================
+// Stage evidence receipts (immutable program-emit registry)
+// =============================================================================
+
+function mapStageEvidenceRow(r: RowDataPacket): RegisteredStageEvidence {
+  const fromJson = parseJson<RegisteredStageEvidence | null>(r.receipt_json, null)
+  if (fromJson && fromJson.receipt?.receiptId) {
+    return {
+      boardId: String(fromJson.boardId ?? r.board_id),
+      taskId: String(fromJson.taskId ?? r.task_id),
+      toStage: (fromJson.toStage ?? r.to_stage) as LifecycleStageKey,
+      emittingRunId: String(fromJson.emittingRunId ?? r.emitting_run_id),
+      registeredAt: fromJson.registeredAt ?? fromMysqlDateTime(r.registered_at) ?? new Date(0).toISOString(),
+      receipt: {
+        ...fromJson.receipt,
+        fields: { ...(fromJson.receipt.fields ?? {}) },
+      },
+    }
+  }
+  const fields = parseJson<Record<string, unknown>>(r.fields_json, {})
+  const receipt: StageReceipt = {
+    receiptId: String(r.receipt_id),
+    receiptHash: String(r.receipt_hash),
+    programmatic: bool01(r.programmatic),
+    taskHash: String(r.task_hash),
+    canonicalHash: String(r.canonical_hash),
+    boardRev: Number(r.board_rev),
+    lifecycleRev: Number(r.lifecycle_rev),
+    fields,
+    authorRunId: r.author_run_id != null ? String(r.author_run_id) : null,
+    verifierRunId: r.verifier_run_id != null ? String(r.verifier_run_id) : null,
+    verdict: r.verdict != null ? String(r.verdict) : null,
+    issuedAt: fromMysqlDateTime(r.issued_at) ?? new Date(0).toISOString(),
+  }
+  return {
+    boardId: String(r.board_id),
+    taskId: String(r.task_id),
+    toStage: String(r.to_stage) as LifecycleStageKey,
+    receipt,
+    emittingRunId: String(r.emitting_run_id),
+    registeredAt: fromMysqlDateTime(r.registered_at) ?? new Date(0).toISOString(),
+  }
+}
+
+export function createMysqlStageEvidenceStore(client: ControlDataSqlClient): StageEvidenceStore {
+  return {
+    async getStageEvidence(boardId, receiptId) {
+      const [rows] = await client.query(
+        `SELECT * FROM control_plane_stage_evidence_receipts
+         WHERE board_id=? AND receipt_id=? LIMIT 1`,
+        [boardId, receiptId],
+      )
+      const r = asRows<RowDataPacket>(rows)[0]
+      return r ? mapStageEvidenceRow(r) : null
+    },
+
+    async putStageEvidence(entry) {
+      const existing = await this.getStageEvidence(entry.boardId, entry.receipt.receiptId)
+      if (existing) {
+        assertImmutableReplay({
+          kind: 'control_plane_stage_evidence_receipts',
+          key: `${entry.boardId}::${entry.receipt.receiptId}`,
+          existingHash: existing.receipt.receiptHash,
+          nextHash: entry.receipt.receiptHash,
+          extra: {
+            existingStage: existing.toStage,
+            nextStage: entry.toStage,
+          },
+        })
+        return
+      }
+      const receipt = entry.receipt
+      await client.query(
+        `INSERT INTO control_plane_stage_evidence_receipts (
+           board_id, receipt_id, task_id, to_stage, receipt_hash, emitting_run_id,
+           programmatic, task_hash, canonical_hash, board_rev, lifecycle_rev,
+           author_run_id, verifier_run_id, verdict, issued_at, registered_at,
+           fields_json, receipt_json
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          entry.boardId,
+          receipt.receiptId,
+          entry.taskId,
+          entry.toStage,
+          receipt.receiptHash,
+          entry.emittingRunId,
+          receipt.programmatic ? 1 : 0,
+          receipt.taskHash,
+          receipt.canonicalHash,
+          receipt.boardRev,
+          receipt.lifecycleRev,
+          receipt.authorRunId ?? null,
+          receipt.verifierRunId ?? null,
+          receipt.verdict ?? null,
+          toMysqlDateTime(receipt.issuedAt),
+          toMysqlDateTime(entry.registeredAt),
+          jsonParam(receipt.fields),
+          jsonParam(entry),
+        ],
+      )
+    },
+  }
+}
+
+// =============================================================================
 // Factories
 // =============================================================================
 
@@ -1950,6 +2065,7 @@ export function createMysqlControlDataPersistence(
     imports: createMysqlImportStorage(client),
     g5: createMysqlG5DomainStore(client),
     classification: createMysqlClassificationStore(client),
+    stageEvidence: createMysqlStageEvidenceStore(client),
   }
 }
 
@@ -1970,6 +2086,7 @@ interface MemTables {
   control_plane_g5: Map<string, MemRow>
   control_plane_classification: Map<string, MemRow>
   control_plane_classification_receipts: Map<string, MemRow>
+  control_plane_stage_evidence_receipts: Map<string, MemRow>
 }
 
 function emptyTables(): MemTables {
@@ -1984,6 +2101,7 @@ function emptyTables(): MemTables {
     control_plane_g5: new Map(),
     control_plane_classification: new Map(),
     control_plane_classification_receipts: new Map(),
+    control_plane_stage_evidence_receipts: new Map(),
   }
 }
 
@@ -2499,6 +2617,39 @@ export function createMemoryControlDataSql(): ControlDataSqlClient & {
         issued_at: p[13],
         expires_at: p[14],
         receipt_json: parseJson(p[15], null),
+      })
+      return [{ affectedRows: 1 } as ResultSetHeader, []]
+    }
+    if (/FROM control_plane_stage_evidence_receipts/i.test(s) && /^SELECT/i.test(s)) {
+      const key = `${p[0]}::${p[1]}`
+      const row = tables.control_plane_stage_evidence_receipts.get(key)
+      return [row ? [row as RowDataPacket] : [], []]
+    }
+    if (/^INSERT INTO control_plane_stage_evidence_receipts/i.test(s)) {
+      const key = `${p[0]}::${p[1]}`
+      const existing = tables.control_plane_stage_evidence_receipts.get(key)
+      if (existing) {
+        return [{ affectedRows: 0 } as ResultSetHeader, []]
+      }
+      tables.control_plane_stage_evidence_receipts.set(key, {
+        board_id: p[0],
+        receipt_id: p[1],
+        task_id: p[2],
+        to_stage: p[3],
+        receipt_hash: p[4],
+        emitting_run_id: p[5],
+        programmatic: p[6],
+        task_hash: p[7],
+        canonical_hash: p[8],
+        board_rev: p[9],
+        lifecycle_rev: p[10],
+        author_run_id: p[11],
+        verifier_run_id: p[12],
+        verdict: p[13],
+        issued_at: p[14],
+        registered_at: p[15],
+        fields_json: parseJson(p[16], {}),
+        receipt_json: parseJson(p[17], null),
       })
       return [{ affectedRows: 1 } as ResultSetHeader, []]
     }

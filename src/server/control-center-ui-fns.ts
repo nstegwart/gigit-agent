@@ -7,7 +7,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 
-import { requireView, AuthError } from '#/server/auth'
+import { requireView, AuthError, currentUser } from '#/server/auth'
 import { loadControlCenterAggregation } from '#/server/control-center-ui-adapter'
 import {
   envelopeError,
@@ -25,6 +25,11 @@ import {
   type PinnedEnvelope,
   type UiSurfaceState,
 } from '#/server/control-center-ui'
+import {
+  readOpsAccountSourceService,
+} from '#/server/account-surface-readers'
+import { peekControlPlaneRuntimeContext } from '#/server/control-plane-runtime-context'
+import { getSharedAccountSyncStore } from '#/server/account-sync'
 import type { PrimaryBucket, StaleOverlayKind } from '#/lib/control-plane-types'
 import type { Json } from '#/lib/types'
 
@@ -187,7 +192,38 @@ export const getControlCenterAgentsFn = createServerFn({ method: 'GET' })
 export const getControlCenterOpsFn = createServerFn({ method: 'GET' })
   .validator(boardArgs)
   .handler(async ({ data }): Promise<ControlCenterWireEnvelope> => {
-    return withBoardAgg(data.boardId, 'ops', (agg) => projectOps(agg))
+    try {
+      await requireView(data.boardId)
+      const user = await currentUser()
+      const ctx = peekControlPlaneRuntimeContext()
+      const accounts = ctx?.runtime.accounts ?? getSharedAccountSyncStore()
+      // Ops product account source service (real serializer + auth + schema identity).
+      const opsAccount = await readOpsAccountSourceService({
+        boardId: data.boardId,
+        accounts,
+        auth: {
+          kind: 'session',
+          user: user
+            ? { id: user.id, role: user.role, boards: user.boards }
+            : null,
+        },
+      })
+      const agg = await loadControlCenterAggregation(data.boardId)
+      const env = projectOps(agg)
+      // Stamp ops account source identity onto wire data when present (same revision proof).
+      if (opsAccount && env.data && typeof env.data === 'object') {
+        const stamped = {
+          ...env.data,
+          sourceRevision: env.data.sourceRevision ?? opsAccount.sourceRevision,
+          accountGeneratedAt: env.data.accountGeneratedAt ?? opsAccount.generatedAt,
+          opsAccountSchema: opsAccount.schema,
+        }
+        return toWireEnvelope({ ...env, data: stamped })
+      }
+      return toWireEnvelope(env)
+    } catch (e) {
+      return mapAuthError(e, 'ops')
+    }
   })
 
 export const getControlCenterDecisionsFn = createServerFn({ method: 'GET' })

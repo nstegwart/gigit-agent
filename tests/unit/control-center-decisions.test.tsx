@@ -29,9 +29,9 @@ function item(
     ownerId: null,
     resolverId: null,
     selectedOptionId: null,
-    expectedRev: null,
-    boardRev: null,
-    entityRev: null,
+    expectedRev: 1,
+    boardRev: 1,
+    entityRev: 1,
     scopedApprovalId: null,
     auditIds: [],
     ownerActions: ['Resolve blocking decision', 'Snooze unavailable (blocking)'],
@@ -117,19 +117,27 @@ describe('DecisionsScreen', () => {
           decisionId: 'b1',
           title: 'Blocker',
           blocking: true,
+          entityRev: 1,
+          boardRev: 1,
+          options: [{ optionId: 'go', label: 'Go' }],
           ownerActions: ['Resolve blocking decision', 'Snooze unavailable (blocking)'],
         })}
+        actions={{
+          onResolve: vi.fn(),
+          onReject: vi.fn(),
+          onAcknowledge: vi.fn(),
+          onSnooze: vi.fn(),
+        }}
       />,
     )
     const card = screen.getByTestId('decision-card')
     expect(card.getAttribute('data-blocking')).toBe('true')
     expect(within(card).getByTestId('decision-snooze').textContent).toMatch(/Cannot hide/)
-    expect(screen.getAllByTestId('decision-owner-action').map((el) => el.textContent)).toEqual(
-      expect.arrayContaining([
-        expect.stringMatching(/Resolve blocking/),
-        expect.stringMatching(/Snooze unavailable/),
-      ]),
+    expect(within(card).queryByTestId('decision-action-snooze')).toBeNull()
+    expect(within(card).getByTestId('decision-action-snooze-blocked').textContent).toMatch(
+      /Snooze unavailable/,
     )
+    expect(within(card).getByTestId('decision-action-acknowledge').tagName).toBe('BUTTON')
   })
 
   it('renders full projected fields when provided (no invent)', () => {

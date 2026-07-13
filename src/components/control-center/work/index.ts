@@ -15,6 +15,14 @@ export type { WorkPaginationProps } from './WorkPagination'
 export { WorkRow } from './WorkRow'
 export type { WorkRowProps } from './WorkRow'
 
+export { OwnerHumanFields } from './OwnerHumanFields'
+export { resolveOwnerDisplay } from './ownerDisplay'
+export type {
+  OwnerDisplayCitation,
+  OwnerDisplayInput,
+  OwnerDisplayResolved,
+} from './ownerDisplay'
+
 export { WorkList } from './WorkList'
 export type { WorkListProps } from './WorkList'
 
@@ -40,6 +48,8 @@ export type {
   WorkReconciliationDisplay,
   WorkOngoingDisplay,
   WorkItemRow,
+  WorkOwnerHumanFields,
+  WorkOwnerCitation,
   WorkPageState,
   WorkDeepLinkFilters,
   WorkBucketCounts,

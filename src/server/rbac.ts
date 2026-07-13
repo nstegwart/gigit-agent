@@ -375,10 +375,25 @@ export function assertIntegratorBounds(
   opts: { pathspec?: string | null; checkpointId?: string | null },
 ): void {
   if (principal.role !== 'INTEGRATOR') return
-  if (opts.checkpointId && principal.checkpointId && opts.checkpointId !== principal.checkpointId) {
+  // Missing principal bindings = deny (fail closed). Never soft-pass unbound integrators.
+  if (!principal.checkpointId || !String(principal.checkpointId).trim()) {
+    throw new RbacError(
+      'INTEGRATOR_PATH_BOUNDED',
+      'integrator missing checkpoint binding',
+      403,
+    )
+  }
+  if (!principal.pathspecs || principal.pathspecs.length === 0) {
+    throw new RbacError(
+      'INTEGRATOR_PATH_BOUNDED',
+      'integrator missing pathspec bindings',
+      403,
+    )
+  }
+  if (opts.checkpointId && opts.checkpointId !== principal.checkpointId) {
     throw new RbacError('INTEGRATOR_PATH_BOUNDED', 'checkpoint outside integrator binding', 403)
   }
-  if (opts.pathspec && principal.pathspecs && principal.pathspecs.length > 0) {
+  if (opts.pathspec) {
     const ok = principal.pathspecs.some(
       (p) => opts.pathspec === p || opts.pathspec!.startsWith(p.replace(/\*\*$/, '')),
     )
@@ -509,6 +524,9 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   { name: 'replace_board_snapshot', kind: 'write', scopes: ['import:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
   { name: 'set_lifecycle', kind: 'write', scopes: ['lifecycle:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
   { name: 'advance_task', kind: 'write', scopes: ['lifecycle:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR', 'AGENT'] },
+  // Stage evidence program-emit — AGENT own registered run only; ROOT may accept via advance_task but must not impersonate.
+  // scopes any-of: run:write (default AGENT) or lifecycle:write (elevated).
+  { name: 'submit_stage_evidence', kind: 'write', scopes: ['run:write', 'lifecycle:write'], roles: ['AGENT'], ownRun: true },
   { name: 'add_task_section', kind: 'write', scopes: ['import:write', 'lifecycle:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR', 'AGENT'] },
   { name: 'set_task_sections', kind: 'write', scopes: ['import:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
   { name: 'update_task_section', kind: 'write', scopes: ['import:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR', 'AGENT'] },
@@ -679,12 +697,21 @@ export function authorizeToolCall(
     (name === 'register_run' ||
       name === 'heartbeat_run' ||
       name === 'upsert_run' ||
-      name === 'set_run_status')
+      name === 'set_run_status' ||
+      name === 'submit_stage_evidence')
   ) {
     return {
       ok: false,
       code: 'OWNER_EVIDENCE_IMPERSONATION_DENIED',
       message: 'OWNER cannot impersonate agent run evidence',
+    }
+  }
+  // ROOT may accept stage receipts via advance_task but must not emit agent evidence.
+  if (principal.role === 'ROOT_ORCHESTRATOR' && name === 'submit_stage_evidence') {
+    return {
+      ok: false,
+      code: 'OWNER_EVIDENCE_IMPERSONATION_DENIED',
+      message: 'ROOT cannot impersonate agent stage evidence (accept via advance_task only)',
     }
   }
   if (principal.role === 'ROOT_ORCHESTRATOR' && (args.productionApprovalId || args.grantOwnerProductionApproval)) {

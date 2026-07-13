@@ -291,23 +291,48 @@ export function agentsEnvelopeToProps(
   const d = envelope.data
   const boardId = envelope.boardId
 
-  const ongoing: AgentOngoingRowView[] = d.ongoing.map((o) => ({
-    taskId: o.taskId,
-    title: o.title,
-    targetGate: o.targetGate,
-    agentId: o.agentId,
-    role: o.role,
-    model: o.model,
-    effort: o.effort,
-    maskedAccount: safeMaskedAccountDisplay(o.maskedAccount),
-    startedAge: formatAgeSeconds(o.startedAgeSeconds),
-    heartbeatAge: formatAgeSeconds(o.heartbeatAgeSeconds),
-    materialProgressAge: formatAgeSeconds(o.materialProgressAgeSeconds),
-    productiveSubstate: o.productiveSubstate,
-    evidenceLink: o.evidenceLink,
-    taskHref: taskDetailHref(boardId, o.taskId),
-    overlays: [...o.overlays],
-  }))
+  const ongoing = d.ongoing.map((o) => {
+    const hdRaw = (o as { ownerHumanDisplay?: unknown }).ownerHumanDisplay
+    const hd =
+      hdRaw && typeof hdRaw === 'object'
+        ? (hdRaw as {
+            ownerPrimaryTitle?: string
+            statusSentence?: string
+            ownerAction?: string
+            whyItMatters?: string
+            next?: string
+            blocker?: string
+            contentReviewRequired?: boolean
+            effectiveReviewStatus?: string
+          })
+        : null
+    return {
+      taskId: o.taskId,
+      // Technical title retained; owner primary is ownerHumanDisplay fields.
+      title: o.title,
+      targetGate: o.targetGate,
+      agentId: o.agentId,
+      role: o.role,
+      model: o.model,
+      effort: o.effort,
+      maskedAccount: safeMaskedAccountDisplay(o.maskedAccount),
+      startedAge: formatAgeSeconds(o.startedAgeSeconds),
+      heartbeatAge: formatAgeSeconds(o.heartbeatAgeSeconds),
+      materialProgressAge: formatAgeSeconds(o.materialProgressAgeSeconds),
+      productiveSubstate: o.productiveSubstate,
+      evidenceLink: o.evidenceLink,
+      taskHref: taskDetailHref(boardId, o.taskId),
+      overlays: [...o.overlays],
+      ownerPrimaryTitle: hd?.ownerPrimaryTitle ?? null,
+      statusSentence: hd?.statusSentence ?? null,
+      ownerAction: hd?.ownerAction ?? null,
+      whyItMatters: hd?.whyItMatters ?? null,
+      next: hd?.next ?? null,
+      blocker: hd?.blocker ?? null,
+      contentReviewRequired: hd?.contentReviewRequired ?? true,
+      effectiveReviewStatus: hd?.effectiveReviewStatus ?? 'CONTENT_REVIEW_REQUIRED',
+    }
+  }) as AgentOngoingRowView[]
 
   // Bounded server pagination only: when `items` is present (even empty), use it.
   // Never fall back to full `runs` when the page is honestly empty.

@@ -123,12 +123,46 @@ export interface PublicG5Summary {
   domainRequiredCount: number
 }
 
+/**
+ * Allowlisted business/domain blocker codes that may appear on a sanitized
+ * public snapshot (pin-complete aggregation with domain issues).
+ * Structural pin/schema/hash/load failures are NOT domain blockers — they 503.
+ */
+export const PUBLIC_DOMAIN_BLOCKER_CODES = [
+  'DATA_INTEGRITY',
+  'UNCLASSIFIED',
+  'UNCLASSIFIED_TASK_CLASS',
+  'UNCLASSIFIED_DISPOSITION',
+  'ACCOUNT_SYNC_MISSING',
+  'ACCOUNT_SYNC_STALE',
+  'ACCOUNT_SYNC_PARITY_INVALID',
+] as const
+
+export type PublicDomainBlockerCode = (typeof PUBLIC_DOMAIN_BLOCKER_CODES)[number]
+
+export const PUBLIC_DOMAIN_BLOCKER_CODE_SET: ReadonlySet<string> = new Set(
+  PUBLIC_DOMAIN_BLOCKER_CODES,
+)
+
+export function isPublicDomainBlockerCode(code: string | null | undefined): boolean {
+  if (code == null || code === '') return false
+  return PUBLIC_DOMAIN_BLOCKER_CODE_SET.has(String(code).trim())
+}
+
+/** Explicit allowlisted domain blocker count/reason (no private identity). */
+export interface PublicDomainBlocker {
+  code: PublicDomainBlockerCode | string
+  count: number
+  /** Short public reason token/phrase — never secrets, comments, evidence bodies. */
+  reason?: string | null
+}
+
 export interface PublicFreshness {
   generatedAt: string
   publishedAt: string
   /** Publication interval used for stale detection (ms). */
   publicationIntervalMs: number
-  /** True when age > 2 * publicationIntervalMs (alert threshold). */
+  /** True when age > 2 * publicationIntervalMs (alert threshold) OR forceStale. */
   stale: boolean
   ageMs: number
 }
@@ -169,6 +203,18 @@ export interface PublicAggregationInput {
   /** Public decision COUNT only — never titles/text. */
   decisionCount: number
   g5: PublicG5Summary
+  /**
+   * Usable dispatch capacity. Domain blockers / missing account-sync force 0.
+   * Default 0 when omitted (fail-closed public surface).
+   */
+  usableCapacity?: number
+  /** Allowlisted business blockers (DATA_INTEGRITY / UNCLASSIFIED / ACCOUNT_SYNC_*). */
+  domainBlockers?: ReadonlyArray<PublicDomainBlocker>
+  /**
+   * When true, force freshness.stale=true even if age is within the publication
+   * interval (domain-blocker sanitized truth path).
+   */
+  forceStale?: boolean
 }
 
 export interface PublicSnapshotPayload {
@@ -187,6 +233,10 @@ export interface PublicSnapshotPayload {
   accounts: Array<PublicAccountSummary>
   decisionCount: number
   g5: PublicG5Summary
+  /** Fail-closed usable capacity for public consumers (domain blockers → 0). */
+  usableCapacity: number
+  /** Explicit allowlisted domain blocker counts/reasons (never private fields). */
+  domainBlockers: Array<PublicDomainBlocker>
   freshness: PublicFreshness
   etag: string
   payloadSha256: string
@@ -384,8 +434,45 @@ export function publicContentFingerprint(input: PublicAggregationInput): string 
     accounts: input.accounts ?? [],
     decisionCount: input.decisionCount,
     g5: input.g5,
+    usableCapacity: Math.max(0, Math.floor(input.usableCapacity ?? 0)),
+    domainBlockers: normalizeDomainBlockers(input.domainBlockers),
+    forceStale: Boolean(input.forceStale),
   }
   return sha256Hex(stableStringify(body))
+}
+
+/**
+ * Sanitize + sort domain blockers to allowlisted codes only.
+ * Drops unknown codes (structural codes must not leak into public DTO as soft blockers).
+ */
+export function normalizeDomainBlockers(
+  blockers: ReadonlyArray<PublicDomainBlocker> | null | undefined,
+): Array<PublicDomainBlocker> {
+  if (!blockers || blockers.length === 0) return []
+  const byCode = new Map<string, PublicDomainBlocker>()
+  for (const b of blockers) {
+    const code = String(b?.code ?? '').trim()
+    if (!isPublicDomainBlockerCode(code)) continue
+    const count = Math.max(0, Math.floor(Number(b.count) || 0))
+    if (count <= 0) continue
+    const reason =
+      b.reason == null || b.reason === ''
+        ? null
+        : String(b.reason).slice(0, 240).replace(/[\u0000-\u001f]/g, ' ')
+    const prev = byCode.get(code)
+    if (prev) {
+      byCode.set(code, {
+        code,
+        count: prev.count + count,
+        reason: prev.reason ?? reason,
+      })
+    } else {
+      byCode.set(code, { code, count, reason })
+    }
+  }
+  return [...byCode.values()].sort((a, b) =>
+    a.code < b.code ? -1 : a.code > b.code ? 1 : 0,
+  )
 }
 
 function sortById<T extends { id: string }>(arr: ReadonlyArray<T>): Array<T> {
@@ -466,6 +553,17 @@ export function materializePublicSnapshot(input: PublicAggregationInput): Materi
       publicationIntervalMs,
       nowMs,
     })
+    // Domain-blocker sanitized truth: force stale=true (still 200, never 503).
+    if (input.forceStale) {
+      freshness.stale = true
+    }
+
+    const domainBlockers = normalizeDomainBlockers(input.domainBlockers)
+    // Fail-closed: any domain blocker or omitted capacity → usableCapacity=0.
+    let usableCapacity = Math.max(0, Math.floor(input.usableCapacity ?? 0))
+    if (domainBlockers.length > 0 || input.forceStale) {
+      usableCapacity = 0
+    }
 
     const projects = sortById(
       (input.projects ?? []).map((p) => ({
@@ -511,7 +609,13 @@ export function materializePublicSnapshot(input: PublicAggregationInput): Materi
           status,
           provider: a.provider ?? null,
           // Caller may set usable=false for sync parity; never promote unusable statuses.
-          usable: forcedUnusable ? false : Boolean(a.usable),
+          // Domain blockers also force all accounts unusable on public surface.
+          usable:
+            domainBlockers.length > 0 || input.forceStale
+              ? false
+              : forcedUnusable
+                ? false
+                : Boolean(a.usable),
         }
       }),
     )
@@ -532,6 +636,8 @@ export function materializePublicSnapshot(input: PublicAggregationInput): Materi
       accounts,
       decisionCount: Math.max(0, Math.floor(input.decisionCount)),
       g5: { ...input.g5 },
+      usableCapacity,
+      domainBlockers,
       freshness,
     }
 

@@ -43,6 +43,16 @@ import {
   type PageParams,
 } from './cursor'
 import { contributesUsableCapacity, type MaskedAccountStatus } from './account-sync'
+import {
+  resolveOwnerHumanDisplay,
+  type HumanDisplayCitation,
+  type HumanDisplayEntityKind,
+  type HumanDisplayLivePin,
+  type HumanDisplayMissionQuestionLink,
+  type HumanDisplayAcceptanceLink,
+  type HumanDisplayReviewStatus,
+  type HumanDisplayV1,
+} from './human-display'
 
 // ---------------------------------------------------------------------------
 // Schema / pin / envelope
@@ -234,6 +244,42 @@ export function envelopeForbidden(
 
 export type ProductiveSubstate = 'PRODUCTIVE' | 'IDLE' | 'STALLED'
 
+/**
+ * Owner-facing humanDisplay projection for control-center DTOs.
+ * Fail-closed: when primary is null, ownerPrimaryTitle/statusSentence/… come from
+ * blockedShell (CONTENT_REVIEW_REQUIRED) — never from raw technical title alone.
+ */
+export interface OwnerHumanDisplayUiProjection {
+  /** REVIEWED+fresh owner primary copy; null when content review required. */
+  primary: HumanDisplayV1 | null
+  /** Always present shell for list visibility (CONTENT_REVIEW_REQUIRED). */
+  blockedShell: HumanDisplayV1
+  effectiveReviewStatus: HumanDisplayReviewStatus
+  contentReviewRequired: boolean
+  /**
+   * Owner-facing primary title. From primary when ready; otherwise blockedShell.title.
+   * NEVER the raw technical task/decision title.
+   */
+  ownerPrimaryTitle: string
+  /** Status sentence from owner-facing copy (primary.current or blockedShell.current). */
+  statusSentence: string
+  ownerAction: string
+  whyItMatters: string
+  next: string
+  blocker: string
+  citations: ReadonlyArray<HumanDisplayCitation>
+  acceptanceLinks: ReadonlyArray<HumanDisplayAcceptanceLink>
+  missionQuestionLinks: ReadonlyArray<HumanDisplayMissionQuestionLink>
+  /** Pin bindings from owner-facing display (snapshot/hash/revs/sourceHash). */
+  pin: {
+    snapshotId: string | null
+    boardRev: number | null
+    lifecycleRev: number | null
+    canonicalHash: string | null
+    sourceHash: string
+  }
+}
+
 /** Zero-click ONGOING row fields (UI_CONTRACT §7) — server-derived ages. */
 export interface OngoingUiRow {
   taskId: string
@@ -254,6 +300,8 @@ export interface OngoingUiRow {
   evidenceLink: string | null
   bucket: 'ONGOING'
   overlays: Array<StaleOverlayKind>
+  /** Owner humanDisplay projection (fail-closed when missing/unreviewed). */
+  ownerHumanDisplay?: OwnerHumanDisplayUiProjection | null
 }
 
 export interface WorkTaskUiRow {
@@ -277,6 +325,27 @@ export interface WorkTaskUiRow {
   /** Stable cursor keys */
   createdAt: string
   id: string
+  /** Owner humanDisplay projection (fail-closed when missing/unreviewed). */
+  ownerHumanDisplay?: OwnerHumanDisplayUiProjection | null
+}
+
+/**
+ * Task detail DTO — owner humanDisplay + technical identifiers demoted.
+ * Primary owner surface uses ownerHumanDisplay.ownerPrimaryTitle, never raw title alone.
+ */
+export interface TaskDetailUiDto {
+  taskId: string
+  /** Technical title (secondary / technical mode only). */
+  technicalTitle: string
+  projectId: string | null
+  featureId: string | null
+  bucket: PrimaryBucket | null
+  overlays: Array<StaleOverlayKind>
+  blockReason: string | null
+  lifecycleStage: string | null
+  targetGate: string | null
+  claimState: string | null
+  ownerHumanDisplay: OwnerHumanDisplayUiProjection
 }
 
 export interface ProjectUiSummary {
@@ -584,6 +653,11 @@ export interface ControlCenterAggregation {
   nowMs: number
   /** C2 account-sync authority meta (Ops); null when producer omitted. */
   accountSyncMeta: AccountSyncUiMeta | null
+  /**
+   * Pre-resolved owner humanDisplay by entity key `${kind}:${id}` (usually task:taskId).
+   * Absent key → projectors fail-closed via resolveOwnerHumanDisplayUi(null, …).
+   */
+  humanDisplayByEntityKey?: Map<string, OwnerHumanDisplayUiProjection>
 }
 
 function emptyDispatchNext(): DispatchNextUi {
@@ -859,6 +933,160 @@ export function aggregateControlCenter(
 }
 
 // ---------------------------------------------------------------------------
+// Owner humanDisplay projection (fail-closed CONTENT_REVIEW_REQUIRED)
+// ---------------------------------------------------------------------------
+
+export function humanDisplayEntityKey(
+  entityKind: HumanDisplayEntityKind,
+  entityId: string,
+): string {
+  return `${entityKind}:${entityId}`
+}
+
+/**
+ * Project resolveOwnerHumanDisplay into a UI DTO field set.
+ * Never promotes raw technical title as owner primary.
+ */
+export function projectOwnerHumanDisplayUi(
+  display: HumanDisplayV1 | null | undefined,
+  live: HumanDisplayLivePin,
+  opts: { entityKind: HumanDisplayEntityKind; entityId: string },
+): OwnerHumanDisplayUiProjection {
+  const resolved = resolveOwnerHumanDisplay(display, live, opts)
+  const contentReviewRequired =
+    resolved.evaluation.releaseBlocker === 'CONTENT_REVIEW_REQUIRED' ||
+    resolved.primary == null
+  const ownerFacing = resolved.primary ?? resolved.blockedShell
+  return {
+    primary: resolved.primary,
+    blockedShell: resolved.blockedShell,
+    effectiveReviewStatus: resolved.evaluation.effectiveReviewStatus,
+    contentReviewRequired,
+    ownerPrimaryTitle: ownerFacing.title,
+    statusSentence: ownerFacing.current,
+    ownerAction: ownerFacing.ownerAction,
+    whyItMatters: ownerFacing.why,
+    next: ownerFacing.next,
+    blocker: ownerFacing.blocker,
+    citations: [...ownerFacing.citations],
+    acceptanceLinks: [...ownerFacing.acceptanceLinks],
+    missionQuestionLinks: [...ownerFacing.missionQuestionLinks],
+    pin: {
+      snapshotId: ownerFacing.snapshotId ?? live.canonicalSnapshotId ?? null,
+      boardRev:
+        typeof ownerFacing.boardRev === 'number'
+          ? ownerFacing.boardRev
+          : (live.boardRev ?? null),
+      lifecycleRev:
+        typeof ownerFacing.lifecycleRev === 'number'
+          ? ownerFacing.lifecycleRev
+          : (live.lifecycleRev ?? null),
+      canonicalHash:
+        ownerFacing.canonicalHash ?? live.canonicalHash ?? null,
+      sourceHash: ownerFacing.sourceHash || live.liveSourceHash || '',
+    },
+  }
+}
+
+/** Live pin from control-center pin + optional live source hash. */
+export function livePinFromControlCenter(
+  pin: ControlCenterPin,
+  liveSourceHash?: string | null,
+): HumanDisplayLivePin {
+  return {
+    canonicalSnapshotId: pin.canonicalSnapshotId,
+    canonicalHash: pin.canonicalHash,
+    boardRev: pin.boardRev,
+    lifecycleRev: pin.lifecycleRev,
+    liveSourceHash:
+      (typeof liveSourceHash === 'string' && liveSourceHash.length > 0
+        ? liveSourceHash
+        : null) ??
+      pin.canonicalHash ??
+      '',
+  }
+}
+
+/**
+ * Lookup or fail-closed owner HD for a task entity.
+ * Missing map / missing key → CONTENT_REVIEW_REQUIRED blockedShell (never technical title).
+ */
+export function resolveTaskOwnerHumanDisplay(
+  agg: Pick<ControlCenterAggregation, 'pin' | 'humanDisplayByEntityKey'>,
+  taskId: string,
+): OwnerHumanDisplayUiProjection {
+  const key = humanDisplayEntityKey('task', taskId)
+  const hit = agg.humanDisplayByEntityKey?.get(key)
+  if (hit) return hit
+  return projectOwnerHumanDisplayUi(null, livePinFromControlCenter(agg.pin), {
+    entityKind: 'task',
+    entityId: taskId,
+  })
+}
+
+/**
+ * Attach ownerHumanDisplay onto work + ongoing rows (mutates copies).
+ * Technical `title` remains for technical mode; owner primary uses ownerHumanDisplay.
+ */
+export function attachOwnerHumanDisplayToWorkSurfaces(
+  agg: ControlCenterAggregation,
+): ControlCenterAggregation {
+  const workRows = agg.workRows.map((row) => ({
+    ...row,
+    ownerHumanDisplay: resolveTaskOwnerHumanDisplay(agg, row.taskId),
+  }))
+  const ongoing = agg.ongoing.map((row) => ({
+    ...row,
+    ownerHumanDisplay: resolveTaskOwnerHumanDisplay(agg, row.taskId),
+  }))
+  return { ...agg, workRows, ongoing }
+}
+
+/** Task detail DTO for a single task id (fail-closed humanDisplay). */
+export function projectTaskDetail(
+  agg: ControlCenterAggregation,
+  taskId: string,
+): TaskDetailUiDto | null {
+  const row =
+    agg.workRows.find((r) => r.taskId === taskId) ??
+    null
+  const ownerHumanDisplay = resolveTaskOwnerHumanDisplay(agg, taskId)
+  if (!row) {
+    // Task may only appear on ongoing / outside work list — still project fail-closed HD.
+    const ongoing = agg.ongoing.find((o) => o.taskId === taskId)
+    if (!ongoing && !agg.assignmentsByTaskId.has(taskId)) return null
+    return {
+      taskId,
+      technicalTitle: ongoing?.title ?? taskId,
+      projectId: null,
+      featureId: null,
+      bucket: ongoing ? 'ONGOING' : (agg.assignmentsByTaskId.get(taskId)?.primary ?? null),
+      overlays: ongoing
+        ? [...ongoing.overlays]
+        : [...(agg.assignmentsByTaskId.get(taskId)?.overlays ?? [])],
+      blockReason: agg.assignmentsByTaskId.get(taskId)?.blockReason ?? null,
+      lifecycleStage: null,
+      targetGate: ongoing?.targetGate ?? null,
+      claimState: null,
+      ownerHumanDisplay,
+    }
+  }
+  return {
+    taskId: row.taskId,
+    technicalTitle: row.title,
+    projectId: row.projectId,
+    featureId: row.featureId,
+    bucket: row.bucket,
+    overlays: [...row.overlays],
+    blockReason: row.blockReason,
+    lifecycleStage: row.lifecycleStage,
+    targetGate: row.targetGate,
+    claimState: row.claimState,
+    ownerHumanDisplay,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Surface data shapes
 // ---------------------------------------------------------------------------
 
@@ -1022,6 +1250,11 @@ export interface DecisionUiRow {
   featureId: string | null
   taskId: string | null
   runId: string | null
+  /**
+   * Owner humanDisplay for the decision surface (fail-closed shell when no
+   * reviewed content). Never promotes raw technical decision title as owner primary.
+   */
+  ownerHumanDisplay?: OwnerHumanDisplayUiProjection | null
 }
 
 export interface DecisionsData {
@@ -1115,7 +1348,12 @@ export function projectOverview(
       missingDomains: [...agg.g5.missingDomains],
     },
     dispatchNext: agg.dispatchNext,
-    ongoing: agg.ongoing.map((o) => ({ ...o, overlays: [...o.overlays] })),
+    ongoing: agg.ongoing.map((o) => ({
+      ...o,
+      overlays: [...o.overlays],
+      ownerHumanDisplay:
+        o.ownerHumanDisplay ?? resolveTaskOwnerHumanDisplay(agg, o.taskId),
+    })),
     decisionCount: agg.decisions.length,
     topDecision: top
       ? {
@@ -1182,7 +1420,12 @@ export function projectWork(
     overlays: { ...agg.rollup.overlays },
     trackedWorkDenominator: agg.rollup.trackedWorkDenominator,
     filter: { bucket, overlay, staleFamily },
-    items: page.items.map((i) => ({ ...i, overlays: [...i.overlays] })),
+    items: page.items.map((i) => ({
+      ...i,
+      overlays: [...i.overlays],
+      ownerHumanDisplay:
+        i.ownerHumanDisplay ?? resolveTaskOwnerHumanDisplay(agg, i.taskId),
+    })),
     pageSize: page.pageSize,
     dispatchNext: agg.dispatchNext,
   })
@@ -1315,7 +1558,12 @@ export function projectAgents(
     runs: page.items.map((r) => ({ ...r })),
     items: page.items.map((r) => ({ ...r })),
     pageSize: page.pageSize,
-    ongoing: agg.ongoing.map((o) => ({ ...o, overlays: [...o.overlays] })),
+    ongoing: agg.ongoing.map((o) => ({
+      ...o,
+      overlays: [...o.overlays],
+      ownerHumanDisplay:
+        o.ownerHumanDisplay ?? resolveTaskOwnerHumanDisplay(agg, o.taskId),
+    })),
   })
   let surfaceState = baseSurfaceState(agg)
   surfaceState = withEmptyIfZero(surfaceState, page.items.length + agg.ongoing.length, false)
@@ -1398,8 +1646,16 @@ export function projectOps(
 /**
  * Map DecisionV3 → authenticated public UI row.
  * Omits private comment and authority-broadening option flags. Never invents dates/ids.
+ * Owner humanDisplay: fail-closed CONTENT_REVIEW_REQUIRED shell when no reviewed copy —
+ * never promotes raw technical decision title as owner primary.
  */
-export function projectDecisionUiRow(d: DecisionV3Record): DecisionUiRow {
+export function projectDecisionUiRow(
+  d: DecisionV3Record,
+  opts?: {
+    pin?: ControlCenterPin
+    humanDisplayByEntityKey?: Map<string, OwnerHumanDisplayUiProjection>
+  },
+): DecisionUiRow {
   const question =
     typeof d.question === 'string' && d.question.length > 0 ? d.question : null
   const agentRecommendation =
@@ -1408,6 +1664,28 @@ export function projectDecisionUiRow(d: DecisionV3Record): DecisionUiRow {
       : d.agentRecommendation === null || d.agentRecommendation === undefined
         ? null
         : String(d.agentRecommendation)
+
+  // Prefer linked task HD when present; else fail-closed shell for decision id.
+  let ownerHumanDisplay: OwnerHumanDisplayUiProjection | null = null
+  if (opts?.pin) {
+    const taskId =
+      typeof d.taskId === 'string' && d.taskId.length > 0 ? d.taskId : null
+    if (taskId) {
+      const key = humanDisplayEntityKey('task', taskId)
+      ownerHumanDisplay =
+        opts.humanDisplayByEntityKey?.get(key) ??
+        projectOwnerHumanDisplayUi(null, livePinFromControlCenter(opts.pin), {
+          entityKind: 'task',
+          entityId: taskId,
+        })
+    } else {
+      ownerHumanDisplay = projectOwnerHumanDisplayUi(
+        null,
+        livePinFromControlCenter(opts.pin),
+        { entityKind: 'task', entityId: d.decisionId },
+      )
+    }
+  }
 
   return {
     decisionId: d.decisionId,
@@ -1440,6 +1718,7 @@ export function projectDecisionUiRow(d: DecisionV3Record): DecisionUiRow {
     featureId: d.featureId ?? null,
     taskId: d.taskId ?? null,
     runId: d.runId ?? null,
+    ownerHumanDisplay,
   }
 }
 
@@ -1448,7 +1727,10 @@ export function projectDecisions(
   opts: { cursor?: string | null; pageSize?: number | null } = {},
 ): PinnedEnvelope<DecisionsData> {
   const rows: Array<DecisionUiRow & { id: string }> = agg.decisions.map((d) => ({
-    ...projectDecisionUiRow(d),
+    ...projectDecisionUiRow(d, {
+      pin: agg.pin,
+      humanDisplayByEntityKey: agg.humanDisplayByEntityKey,
+    }),
     id: d.decisionId,
   }))
   // Decision order is compareDecisionsV3 (not createdAt DESC). Paginate by array index

@@ -4,18 +4,20 @@ import {
   createFakeClock,
   createMemoryControlPlaneAtomicStore,
 } from '#/server/board-store'
-import { createMemoryIdempotencyStorage } from '#/server/idempotency'
+import { createMemoryIdempotencyStorage, requestHashOf } from '#/server/idempotency'
 import {
   acquireCollisionLocks,
   acquireIntegrationLock,
   assertSafeLockPath,
   createMemoryLockStore,
+  integrationLockIdempotencyRequestBody,
   LockError,
   normalizePath,
   pathsOverlap,
   releaseCollisionLocks,
   scopesCollide,
   supersedeCollisionLock,
+  type AcquireIntegrationRequest,
 } from '#/server/locks'
 import {
   applyReconcile,
@@ -23,6 +25,7 @@ import {
   classifyRunForReconcile,
   createMemoryReconcilerStore,
   dryRunReconcile,
+  reconcileDryRunIdempotencyRequestBody,
   tasksWithReconciliationPending,
   type ReconcilerDeps,
 } from '#/server/reconciler'
@@ -103,7 +106,7 @@ function harness(startMs = Date.parse('2026-07-13T10:00:00.000Z')) {
     idempotency,
     getCapacity: async () => openCapacity(),
   }
-  const recDeps: ReconcilerDeps = { clock, runs, locks, reconciler, atomic }
+  const recDeps: ReconcilerDeps = { clock, runs, locks, reconciler, atomic, idempotency }
   return { clock, locks, runs, atomic, idempotency, reconciler, runDeps, recDeps }
 }
 
@@ -233,7 +236,11 @@ describe('AC-LOCK collision + integration locks', () => {
     ] as const) {
       await expect(
         acquireIntegrationLock(locks, clock, {
-          boardId: BOARD,
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-lock',
+      idempotencyKey: 'ilk-1',
+      boardId: BOARD,
           repoId: 'gigit-agent',
           trackingBranch: 'main',
           runId: `int-bad-${pathspecs[0]}`,
@@ -242,14 +249,18 @@ describe('AC-LOCK collision + integration locks', () => {
           rootAcceptanceId: 'ra-1',
           checkpointId: 'cp-1',
           pathspecs: [...pathspecs],
-        }),
+        }, { atomic: createMemoryControlPlaneAtomicStore([{ boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null }]), idempotency: createMemoryIdempotencyStorage() }),
       ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
       expect(locks.snapshot().integration.length).toBe(before)
     }
     // Non-exact integrator model (substring "grok") rejected
     await expect(
       acquireIntegrationLock(locks, clock, {
-        boardId: BOARD,
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-lock',
+      idempotencyKey: 'ilk-2',
+      boardId: BOARD,
         repoId: 'gigit-agent',
         trackingBranch: 'main',
         runId: 'int-bad-model',
@@ -258,7 +269,7 @@ describe('AC-LOCK collision + integration locks', () => {
         rootAcceptanceId: 'ra-1',
         checkpointId: 'cp-1',
         pathspecs: ['src/**'],
-      }),
+      }, { atomic: createMemoryControlPlaneAtomicStore([{ boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null }]), idempotency: createMemoryIdempotencyStorage() }),
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
     expect(locks.snapshot().integration.length).toBe(before)
   })
@@ -329,6 +340,10 @@ describe('AC-LOCK collision + integration locks', () => {
   it('AC-LOCK-03: exactly one live integrator per repoId+trackingBranch', async () => {
     const { locks, clock } = harness()
     await acquireIntegrationLock(locks, clock, {
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-lock',
+      idempotencyKey: 'ilk-3',
       boardId: BOARD,
       repoId: 'gigit-agent',
       trackingBranch: 'main',
@@ -338,10 +353,14 @@ describe('AC-LOCK collision + integration locks', () => {
       rootAcceptanceId: 'ra-1',
       checkpointId: 'cp-1',
       pathspecs: ['src/**'],
-    })
+    }, { atomic: createMemoryControlPlaneAtomicStore([{ boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null }]), idempotency: createMemoryIdempotencyStorage() })
     await expect(
       acquireIntegrationLock(locks, clock, {
-        boardId: BOARD,
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-lock',
+      idempotencyKey: 'ilk-4',
+      boardId: BOARD,
         repoId: 'gigit-agent',
         trackingBranch: 'main',
         runId: 'int-2',
@@ -350,7 +369,7 @@ describe('AC-LOCK collision + integration locks', () => {
         rootAcceptanceId: 'ra-2',
         checkpointId: 'cp-2',
         pathspecs: ['src/**'],
-      }),
+      }, { atomic: createMemoryControlPlaneAtomicStore([{ boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null }]), idempotency: createMemoryIdempotencyStorage() }),
     ).rejects.toMatchObject({ code: 'INTEGRATION_LOCKED' })
   })
 
@@ -498,6 +517,7 @@ describe('AC-INGEST register/heartbeat run registry', () => {
   it('QUEUED has no lease/claim; leased states enforce fencing', async () => {
     const h = harness()
     const q = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       boardId: BOARD,
       runId: 'run-q',
       taskId: 'T-Q',
@@ -514,7 +534,9 @@ describe('AC-INGEST register/heartbeat run registry', () => {
 
     await expect(
       heartbeatRun(h.runDeps, {
-        boardId: BOARD,
+      idempotencyKey: 'hb-idem-1',
+      canonicalHash: 'canon-run',
+      boardId: BOARD,
         runId: 'run-q',
         agentId: 'agent-q',
         fencingToken: 'x',
@@ -528,6 +550,7 @@ describe('AC-INGEST register/heartbeat run registry', () => {
   it('heartbeat: owning agent only, monotonic sequence, duplicate replay, material vs liveness', async () => {
     const h = harness()
     const reg = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       boardId: BOARD,
       runId: 'run-hb',
       taskId: 'T-HB',
@@ -543,7 +566,9 @@ describe('AC-INGEST register/heartbeat run registry', () => {
 
     await expect(
       heartbeatRun(h.runDeps, {
-        boardId: BOARD,
+      idempotencyKey: 'hb-idem-2',
+      canonicalHash: 'canon-run',
+      boardId: BOARD,
         runId: 'run-hb',
         agentId: 'intruder',
         fencingToken: reg.fencingToken!,
@@ -555,7 +580,9 @@ describe('AC-INGEST register/heartbeat run registry', () => {
 
     await expect(
       heartbeatRun(h.runDeps, {
-        boardId: BOARD,
+      idempotencyKey: 'hb-idem-3',
+      canonicalHash: 'canon-run',
+      boardId: BOARD,
         runId: 'run-hb',
         agentId: 'owner',
         fencingToken: 'wrong-fence',
@@ -566,6 +593,8 @@ describe('AC-INGEST register/heartbeat run registry', () => {
     ).rejects.toMatchObject({ code: 'FENCED' })
 
     const hb1 = await heartbeatRun(h.runDeps, {
+      idempotencyKey: 'hb-idem-4',
+      canonicalHash: 'canon-run',
       boardId: BOARD,
       runId: 'run-hb',
       agentId: 'owner',
@@ -578,6 +607,8 @@ describe('AC-INGEST register/heartbeat run registry', () => {
     expect(hb1.replayed).toBe(false)
 
     const dup = await heartbeatRun(h.runDeps, {
+      idempotencyKey: 'hb-idem-5',
+      canonicalHash: 'canon-run',
       boardId: BOARD,
       runId: 'run-hb',
       agentId: 'owner',
@@ -592,6 +623,8 @@ describe('AC-INGEST register/heartbeat run registry', () => {
     // (without advancing clock past lease expiry).
     const oldProgress = new Date(h.clock.nowMs() - RUN_STALL_MS - 1).toISOString()
     const mat = await heartbeatRun(h.runDeps, {
+      idempotencyKey: 'hb-idem-6',
+      canonicalHash: 'canon-run',
       boardId: BOARD,
       runId: 'run-hb',
       agentId: 'owner',
@@ -606,6 +639,8 @@ describe('AC-INGEST register/heartbeat run registry', () => {
 
     // Fresh material progress recovers
     const recovered = await heartbeatRun(h.runDeps, {
+      idempotencyKey: 'hb-idem-7',
+      canonicalHash: 'canon-run',
       boardId: BOARD,
       runId: 'run-hb',
       agentId: 'owner',
@@ -630,6 +665,7 @@ describe('AC-INGEST register/heartbeat run registry', () => {
   it('expired lease rejects heartbeat; terminal preserves history', async () => {
     const h = harness()
     const reg = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       boardId: BOARD,
       runId: 'run-lease',
       taskId: 'T-L',
@@ -644,7 +680,9 @@ describe('AC-INGEST register/heartbeat run registry', () => {
     h.clock.advance(61_000)
     await expect(
       heartbeatRun(h.runDeps, {
-        boardId: BOARD,
+      idempotencyKey: 'hb-idem-8',
+      canonicalHash: 'canon-run',
+      boardId: BOARD,
         runId: 'run-lease',
         agentId: 'owner',
         fencingToken: reg.fencingToken!,
@@ -656,6 +694,7 @@ describe('AC-INGEST register/heartbeat run registry', () => {
 
     // Re-register path for terminate: fresh run
     const reg2 = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       boardId: BOARD,
       runId: 'run-term',
       taskId: 'T-T',
@@ -702,13 +741,15 @@ describe('AC-INGEST register/heartbeat run registry', () => {
     }
     const results = await Promise.allSettled([
       registerRun(h.runDeps, {
-        ...base,
+      canonicalHash: 'canon-run',
+      ...base,
         runId: 'run-race-a',
         agentId: 'a',
         idempotencyKey: 'race-a',
       }),
       registerRun(h.runDeps, {
-        ...base,
+      canonicalHash: 'canon-run',
+      ...base,
         runId: 'run-race-b',
         agentId: 'b',
         idempotencyKey: 'race-b',
@@ -770,6 +811,7 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
   it('single-leader dry-run + apply same hash + idempotent rerun', async () => {
     const h = harness()
     const reg = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       boardId: BOARD,
       runId: 'run-rec',
       taskId: 'T-REC',
@@ -789,6 +831,9 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
       leaderId: 'leader-1',
     })
     const dry = await dryRunReconcile(h.recDeps, {
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-run',
+      idempotencyKey: 'dry-idem-1',
       boardId: BOARD,
       leaderId: 'leader-1',
       fencingToken: leader.fencingToken,
@@ -802,6 +847,9 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
     expect(pending).toContain('T-REC')
 
     const apply1 = await applyReconcile(h.recDeps, {
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-run',
+      idempotencyKey: 'apply-idem-1',
       boardId: BOARD,
       leaderId: 'leader-1',
       fencingToken: leader.fencingToken,
@@ -817,6 +865,9 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
     expect(after?.history.some((x) => x.reason.startsWith('reconcile:'))).toBe(true)
 
     const apply2 = await applyReconcile(h.recDeps, {
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-run',
+      idempotencyKey: 'apply-idem-2',
       boardId: BOARD,
       leaderId: 'leader-1',
       fencingToken: leader.fencingToken,
@@ -843,6 +894,10 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
     })
     await expect(
       dryRunReconcile(h.recDeps, {
+        entityExpectedRev: 0,
+        expectedBoardRev: 0,
+        canonicalHash: 'canon-run',
+        idempotencyKey: 'dry-idem-2',
         boardId: BOARD,
         leaderId: 'leader-cap',
         fencingToken: leader.fencingToken,
@@ -860,6 +915,10 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
 
     await expect(
       dryRunReconcile(h.recDeps, {
+        entityExpectedRev: 0,
+        expectedBoardRev: 0,
+        canonicalHash: 'canon-run',
+        idempotencyKey: 'dry-idem-3',
         boardId: BOARD,
         leaderId: 'leader-adv',
         fencingToken: 'wrong-fence',
@@ -868,14 +927,20 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
 
     await expect(
       dryRunReconcile(h.recDeps, {
+        entityExpectedRev: 0,
+        expectedBoardRev: 999,
+        canonicalHash: 'canon-run',
+        idempotencyKey: 'dry-idem-4',
         boardId: BOARD,
         leaderId: 'leader-adv',
         fencingToken: leader.fencingToken,
-        expectedBoardRev: 999,
       }),
     ).rejects.toMatchObject({ code: 'STALE_REVISION' })
 
     const dry = await dryRunReconcile(h.recDeps, {
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-run',
+      idempotencyKey: 'dry-idem-5',
       boardId: BOARD,
       leaderId: 'leader-adv',
       fencingToken: leader.fencingToken,
@@ -884,7 +949,10 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
 
     await expect(
       applyReconcile(h.recDeps, {
-        boardId: BOARD,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-run',
+      idempotencyKey: 'apply-idem-3',
+      boardId: BOARD,
         leaderId: 'leader-adv',
         fencingToken: leader.fencingToken,
         dryRunHash: 'deadbeef' + dry.dryRunHash.slice(8),
@@ -895,7 +963,10 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
     // Wrong board rev on apply with known hash
     await expect(
       applyReconcile(h.recDeps, {
-        boardId: BOARD,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-run',
+      idempotencyKey: 'apply-idem-4',
+      boardId: BOARD,
         leaderId: 'leader-adv',
         fencingToken: leader.fencingToken,
         dryRunHash: dry.dryRunHash,
@@ -908,7 +979,11 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
     const { locks, clock } = harness()
     await expect(
       acquireIntegrationLock(locks, clock, {
-        boardId: BOARD,
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-lock',
+      idempotencyKey: 'ilk-5',
+      boardId: BOARD,
         repoId: 'gigit-agent',
         trackingBranch: 'main',
         runId: 'int-bad',
@@ -917,12 +992,16 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
         rootAcceptanceId: '',
         checkpointId: 'cp-1',
         pathspecs: ['src/**'],
-      }),
+      }, { atomic: createMemoryControlPlaneAtomicStore([{ boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null }]), idempotency: createMemoryIdempotencyStorage() }),
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
 
     await expect(
       acquireIntegrationLock(locks, clock, {
-        boardId: BOARD,
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-lock',
+      idempotencyKey: 'ilk-6',
+      boardId: BOARD,
         repoId: 'gigit-agent',
         trackingBranch: 'main',
         runId: 'int-bad2',
@@ -931,7 +1010,7 @@ describe('AC-BUCKET-07 + reconciler dry-run/apply/idempotency', () => {
         rootAcceptanceId: 'ra-1',
         checkpointId: 'cp-1',
         pathspecs: [],
-      }),
+      }, { atomic: createMemoryControlPlaneAtomicStore([{ boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null }]), idempotency: createMemoryIdempotencyStorage() }),
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
   })
 
@@ -994,7 +1073,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     const runId = 'run-missing-cap'
     await expect(
       registerRun(deps, {
-        ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
         runId,
         model: 'grok-4.5',
         idempotencyKey: 'miss-1',
@@ -1015,6 +1095,7 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     // undefined capacity + no getCapacity (property absent)
     const runId2 = 'run-missing-cap-2'
     const err = await registerRun(deps, {
+      canonicalHash: 'canon-run',
       ...baseReq,
       runId: runId2,
       model: 'gpt-5.3-codex-spark',
@@ -1069,7 +1150,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
 
       await expect(
         registerRun(h.runDeps, {
-          ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
           runId,
           model: 'grok-4.5',
           idempotencyKey: `bad-usable-${c.label}`,
@@ -1091,7 +1173,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     // Zero usable still denied (CAPACITY path, not INVALID)
     await expect(
       registerRun(h.runDeps, {
-        ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
         runId: 'run-zero-usable',
         model: 'grok-4.5',
         idempotencyKey: 'zero-usable',
@@ -1127,7 +1210,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     ] as const) {
       await expect(
         registerRun(h.runDeps, {
-          ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
           runId,
           model,
           idempotencyKey: `stale-${runId}`,
@@ -1147,7 +1231,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
 
     await expect(
       registerRun(h.runDeps, {
-        ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
         runId: 'run-blocked',
         model: 'grok-4.5',
         idempotencyKey: 'blocked-1',
@@ -1177,6 +1262,7 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
 
     // Success: GROK_ONLY + Grok MUST create run row + HELD collision lock
     const allowed = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-grok-ok',
       model: 'grok-4.5',
@@ -1215,7 +1301,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     ] as const) {
       await expect(
         registerRun(h.runDeps, {
-          ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
           runId,
           model,
           idempotencyKey: `deny-${runId}`,
@@ -1236,6 +1323,7 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     const before = await captureMutationSurface(h)
 
     const grok = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-open-grok',
       model: 'grok-4.5',
@@ -1247,6 +1335,7 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     expect(grok.fencingToken).toBeTruthy()
 
     const spark = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-open-spark',
       model: 'gpt-5.3-codex-spark',
@@ -1257,6 +1346,7 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     expect(spark.state).toBe('STARTING')
 
     const sol = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-open-sol',
       model: 'gpt-5.6-sol',
@@ -1283,7 +1373,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     const beforeDeny = await captureMutationSurface(h)
     await expect(
       registerRun(h.runDeps, {
-        ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
         runId: 'run-open-deny-spark',
         model: 'gpt-5.3-codex-spark',
         idempotencyKey: 'open-deny-s',
@@ -1303,6 +1394,7 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     }
     // Pre-existing unrelated run (OPEN path) to prove freeze of mixed surface
     await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-preexisting',
       model: 'grok-4.5',
@@ -1316,7 +1408,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
 
     await expect(
       registerRun(blockedDeps, {
-        ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
         runId: 'run-loader-blocked',
         model: 'gpt-5.3-codex-spark',
         idempotencyKey: 'loader-block',
@@ -1339,7 +1432,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     const before = await captureMutationSurface(h)
     await expect(
       registerRun(h.runDeps, {
-        ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
         runId: 'run-pre-lock',
         model: 'gpt-5.3-codex-spark',
         idempotencyKey: 'pre-lock',
@@ -1360,6 +1454,7 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     const h = harness()
     // Idempotent replay under OPEN capacity
     const reg = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-sem-1',
       model: 'grok-4.5',
@@ -1370,6 +1465,7 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     })
     expect(reg.fencingToken).toBeTruthy()
     const replay = await registerRun(h.runDeps, {
+      canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-sem-1',
       model: 'grok-4.5',
@@ -1384,7 +1480,9 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     // Fence: wrong token on heartbeat
     await expect(
       heartbeatRun(h.runDeps, {
-        boardId: BOARD,
+      idempotencyKey: 'hb-idem-9',
+      canonicalHash: 'canon-run',
+      boardId: BOARD,
         runId: 'run-sem-1',
         agentId: 'agent-cap',
         fencingToken: 'wrong-fence',
@@ -1397,7 +1495,8 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     // Collision: second run same scope rejected
     await expect(
       registerRun(h.runDeps, {
-        ...baseReq,
+      canonicalHash: 'canon-run',
+      ...baseReq,
         runId: 'run-sem-collide',
         model: 'gpt-5.3-codex-spark',
         agentId: 'agent-other',
@@ -1430,5 +1529,1140 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     expect(term2.state).toBe('SUCCEEDED')
     const final = await h.runs.get(BOARD, 'run-sem-1')
     expect(final?.state).toBe('SUCCEEDED')
+  })
+})
+
+describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/integration', () => {
+  it('register: missing envelope fields reject; pin mismatch STALE; no board bump on register/replay', async () => {
+    const h = harness()
+    const board0 = await h.atomic.getBoardState(BOARD)
+    expect(board0.boardRev).toBe(0)
+
+    await expect(
+      registerRun(h.runDeps, {
+        boardId: BOARD,
+        runId: 'run-env-miss',
+        taskId: 'T-E',
+        targetGate: 'FUNCTIONAL',
+        agentId: 'a',
+        model: 'grok-4.5',
+        expectedEntityRev: 0,
+        expectedBoardRev: 0,
+        idempotencyKey: 'env-miss',
+        canonicalHash: '',
+        capacity: openCapacity(),
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    await expect(
+      registerRun(h.runDeps, {
+        boardId: BOARD,
+        runId: 'run-env-pin',
+        taskId: 'T-E',
+        targetGate: 'FUNCTIONAL',
+        agentId: 'a',
+        model: 'grok-4.5',
+        canonicalHash: 'canon-A',
+        currentPinHash: 'canon-B',
+        expectedEntityRev: 0,
+        expectedBoardRev: 0,
+        idempotencyKey: 'env-pin',
+        capacity: openCapacity(),
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    await expect(
+      registerRun(h.runDeps, {
+        boardId: BOARD,
+        runId: 'run-env-board',
+        taskId: 'T-E',
+        targetGate: 'FUNCTIONAL',
+        agentId: 'a',
+        model: 'grok-4.5',
+        canonicalHash: 'canon-A',
+        expectedEntityRev: 0,
+        expectedBoardRev: 99,
+        idempotencyKey: 'env-board',
+        capacity: openCapacity(),
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    const reg = await registerRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-env-ok',
+      taskId: 'T-E',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'a',
+      model: 'grok-4.5',
+      canonicalHash: 'canon-A',
+      currentPinHash: 'canon-A',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'env-ok',
+      initialState: 'RUNNING',
+      capacity: openCapacity(),
+    })
+    expect(reg.replayed).toBe(false)
+    expect(reg.entityRev).toBe(1)
+    expect(reg.boardRev).toBe(0)
+    const afterReg = await h.atomic.getBoardState(BOARD)
+    expect(afterReg.boardRev).toBe(0) // register never bumps board
+
+    // Exact replay must include the same material envelope (currentPinHash is hashed).
+    const replay = await registerRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-env-ok',
+      taskId: 'T-E',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'a',
+      model: 'grok-4.5',
+      canonicalHash: 'canon-A',
+      currentPinHash: 'canon-A',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'env-ok',
+      initialState: 'RUNNING',
+      capacity: openCapacity(),
+    })
+    expect(replay.replayed).toBe(true)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(0)
+
+    // Same key, different body → IDEMPOTENCY_CONFLICT
+    await expect(
+      registerRun(h.runDeps, {
+        boardId: BOARD,
+        runId: 'run-env-other',
+        taskId: 'T-OTHER',
+        targetGate: 'FUNCTIONAL',
+        agentId: 'a',
+        model: 'grok-4.5',
+        canonicalHash: 'canon-A',
+        expectedEntityRev: 0,
+        expectedBoardRev: 0,
+        idempotencyKey: 'env-ok',
+        initialState: 'RUNNING',
+        capacity: openCapacity(),
+      }),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+  })
+
+  it('heartbeat: idempotency required; 24h key replay; entity/board CAS; pin mismatch; no board bump', async () => {
+    const h = harness()
+    const reg = await registerRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-hb-env',
+      taskId: 'T-HB-E',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'owner',
+      model: 'grok-4.5',
+      canonicalHash: 'canon-hb',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-hb-env',
+      initialState: 'RUNNING',
+      capacity: openCapacity(),
+    })
+
+    await expect(
+      heartbeatRun(h.runDeps, {
+        boardId: BOARD,
+        runId: 'run-hb-env',
+        agentId: 'owner',
+        fencingToken: reg.fencingToken!,
+        heartbeatSequence: 1,
+        expectedEntityRev: 1,
+        expectedBoardRev: 0,
+        idempotencyKey: '',
+        canonicalHash: 'canon-hb',
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    await expect(
+      heartbeatRun(h.runDeps, {
+        boardId: BOARD,
+        runId: 'run-hb-env',
+        agentId: 'owner',
+        fencingToken: reg.fencingToken!,
+        heartbeatSequence: 1,
+        expectedEntityRev: 1,
+        expectedBoardRev: 0,
+        idempotencyKey: 'hb-env-pin',
+        canonicalHash: 'canon-hb',
+        currentPinHash: 'wrong-pin',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    await expect(
+      heartbeatRun(h.runDeps, {
+        boardId: BOARD,
+        runId: 'run-hb-env',
+        agentId: 'owner',
+        fencingToken: reg.fencingToken!,
+        heartbeatSequence: 1,
+        expectedEntityRev: 99,
+        expectedBoardRev: 0,
+        idempotencyKey: 'hb-env-ent',
+        canonicalHash: 'canon-hb',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    await expect(
+      heartbeatRun(h.runDeps, {
+        boardId: BOARD,
+        runId: 'run-hb-env',
+        agentId: 'owner',
+        fencingToken: reg.fencingToken!,
+        heartbeatSequence: 1,
+        expectedEntityRev: 1,
+        expectedBoardRev: 7,
+        idempotencyKey: 'hb-env-brd',
+        canonicalHash: 'canon-hb',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    const boardBefore = (await h.atomic.getBoardState(BOARD)).boardRev
+    const hb1 = await heartbeatRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-hb-env',
+      agentId: 'owner',
+      fencingToken: reg.fencingToken!,
+      heartbeatSequence: 1,
+      expectedEntityRev: 1,
+      expectedBoardRev: 0,
+      idempotencyKey: 'hb-env-1',
+      canonicalHash: 'canon-hb',
+      currentPinHash: 'canon-hb',
+    })
+    expect(hb1.replayed).toBe(false)
+    expect(hb1.entityRev).toBe(2)
+    expect(hb1.boardRev).toBe(boardBefore)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardBefore)
+
+    // 24h idempotency exact-key replay (not sequence-level)
+    const hbReplay = await heartbeatRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-hb-env',
+      agentId: 'owner',
+      fencingToken: reg.fencingToken!,
+      heartbeatSequence: 1,
+      expectedEntityRev: 1,
+      expectedBoardRev: 0,
+      idempotencyKey: 'hb-env-1',
+      canonicalHash: 'canon-hb',
+    })
+    expect(hbReplay.replayed).toBe(true)
+    expect(hbReplay.entityRev).toBe(2)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardBefore)
+
+    // Same key, different body → conflict
+    await expect(
+      heartbeatRun(h.runDeps, {
+        boardId: BOARD,
+        runId: 'run-hb-env',
+        agentId: 'owner',
+        fencingToken: reg.fencingToken!,
+        heartbeatSequence: 2,
+        expectedEntityRev: 2,
+        expectedBoardRev: 0,
+        idempotencyKey: 'hb-env-1',
+        canonicalHash: 'canon-hb',
+      }),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+  })
+
+  it('reconcile dry/apply: expectedBoardRev required; dry no board bump; apply one bump; same-hash re-apply no second bump', async () => {
+    const h = harness()
+    await registerRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-rec-env',
+      taskId: 'T-REC-E',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-rec',
+      model: 'grok-4.5',
+      canonicalHash: 'canon-rec',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-rec-env',
+      initialState: 'RUNNING',
+      capacity: openCapacity(),
+    })
+    h.clock.advance(60_000 + 30_000 + 1)
+
+    const leader = await claimReconcilerLeadership(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-env',
+    })
+
+    await expect(
+      dryRunReconcile(h.recDeps, {
+        boardId: BOARD,
+        leaderId: 'leader-env',
+        fencingToken: leader.fencingToken,
+        entityExpectedRev: 0,
+        expectedBoardRev: Number.NaN,
+        canonicalHash: 'canon-rec',
+        idempotencyKey: 'dry-env-miss',
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    await expect(
+      dryRunReconcile(h.recDeps, {
+        boardId: BOARD,
+        leaderId: 'leader-env',
+        fencingToken: leader.fencingToken,
+        entityExpectedRev: 0,
+        expectedBoardRev: 0,
+        canonicalHash: 'canon-rec',
+        currentPinHash: 'other',
+        idempotencyKey: 'dry-env-pin',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    const boardBeforeDry = (await h.atomic.getBoardState(BOARD)).boardRev
+    const dry = await dryRunReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-env',
+      fencingToken: leader.fencingToken,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-rec',
+      currentPinHash: 'canon-rec',
+      idempotencyKey: 'dry-env-1',
+    })
+    expect(dry.dryRunHash).toBeTruthy()
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardBeforeDry) // dry: no bump
+
+    // dry-run idempotent replay (same key+body)
+    const dryReplay = await dryRunReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-env',
+      fencingToken: leader.fencingToken,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-rec',
+      idempotencyKey: 'dry-env-1',
+    })
+    expect(dryReplay.dryRunHash).toBe(dry.dryRunHash)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardBeforeDry)
+
+    const apply1 = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-env',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-rec',
+      currentPinHash: 'canon-rec',
+      idempotencyKey: 'apply-env-1',
+    })
+    expect(apply1.applied).toBe(true)
+    expect(apply1.idempotentReplay).toBe(false)
+    expect(apply1.boardRev).toBe(boardBeforeDry + 1)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardBeforeDry + 1)
+
+    // Same dryRunHash re-apply (domain idempotent) — no second board bump
+    const apply2 = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-env',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0,
+      expectedBoardRev: apply1.boardRev,
+      canonicalHash: 'canon-rec',
+      idempotencyKey: 'apply-env-2',
+    })
+    expect(apply2.idempotentReplay).toBe(true)
+    expect(apply2.boardRev).toBe(boardBeforeDry + 1)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardBeforeDry + 1)
+
+    // Exact 24h key replay for apply
+    const applyKeyReplay = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-env',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-rec',
+      idempotencyKey: 'apply-env-1',
+    })
+    expect(applyKeyReplay.boardRev).toBe(apply1.boardRev)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardBeforeDry + 1)
+  })
+
+  it('reconcile_dry_run idempotency hash: timeBudgetMs + full material body + conflict matrix + exact replay no bump', async () => {
+    const baseOpts = {
+      leaderId: 'leader-hash',
+      fencingToken: 'fence-hash-1',
+      maxActions: 50,
+      timeBudgetMs: 2_500,
+      cursor: 'run-cursor-a' as string | null,
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-dry-hash',
+    }
+
+    const body = reconcileDryRunIdempotencyRequestBody(baseOpts)
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        'canonicalHash',
+        'cursor',
+        'entityExpectedRev',
+        'expectedBoardRev',
+        'fencingToken',
+        'leaderId',
+        'maxActions',
+        'timeBudgetMs',
+      ].sort(),
+    )
+    // Non-material must not leak into hash body
+    expect(body).not.toHaveProperty('idempotencyKey')
+    expect(body).not.toHaveProperty('boardId')
+    expect(body).not.toHaveProperty('currentPinHash')
+    expect(body.timeBudgetMs).toBe(2_500)
+    expect(body.maxActions).toBe(50)
+
+    const baseHash = requestHashOf(body)
+    type MaterialKey = keyof ReturnType<typeof reconcileDryRunIdempotencyRequestBody>
+    const fieldMutations: Array<{ field: MaterialKey; next: unknown }> = [
+      { field: 'leaderId', next: 'leader-hash-other' },
+      { field: 'fencingToken', next: 'fence-hash-2' },
+      { field: 'maxActions', next: 99 },
+      { field: 'timeBudgetMs', next: 9_999 },
+      { field: 'cursor', next: 'run-cursor-b' },
+      { field: 'entityExpectedRev', next: 1 },
+      { field: 'expectedBoardRev', next: 1 },
+      { field: 'canonicalHash', next: 'canon-dry-hash-b' },
+    ]
+    for (const m of fieldMutations) {
+      const mutated = { ...body, [m.field]: m.next }
+      expect(requestHashOf(mutated), `hash must change when ${m.field} changes`).not.toBe(baseHash)
+    }
+    // Null-normalized optionals still participate when set to a different value
+    expect(
+      requestHashOf(reconcileDryRunIdempotencyRequestBody({ ...baseOpts, timeBudgetMs: undefined })),
+    ).not.toBe(baseHash)
+    expect(
+      requestHashOf(reconcileDryRunIdempotencyRequestBody({ ...baseOpts, maxActions: undefined })),
+    ).not.toBe(baseHash)
+    // Exact same material body → identical stable hash (key order independent)
+    expect(requestHashOf({ ...body })).toBe(baseHash)
+    expect(
+      requestHashOf({
+        canonicalHash: body.canonicalHash,
+        timeBudgetMs: body.timeBudgetMs,
+        expectedBoardRev: body.expectedBoardRev,
+        entityExpectedRev: body.entityExpectedRev,
+        cursor: body.cursor,
+        maxActions: body.maxActions,
+        fencingToken: body.fencingToken,
+        leaderId: body.leaderId,
+      }),
+    ).toBe(baseHash)
+
+    // --- dry-run path: exact replay no board bump; same-key timeBudgetMs change => conflict ---
+    const h = harness()
+    await registerRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-dry-hash',
+      taskId: 'T-DRY-HASH',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-dry-hash',
+      model: 'grok-4.5',
+      canonicalHash: 'canon-dry-hash',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-dry-hash',
+      initialState: 'RUNNING',
+      capacity: openCapacity(),
+    })
+    h.clock.advance(60_000 + 30_000 + 1)
+
+    const leader = await claimReconcilerLeadership(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-hash',
+    })
+    const board0 = (await h.atomic.getBoardState(BOARD)).boardRev
+
+    const dryReq = {
+      boardId: BOARD,
+      leaderId: 'leader-hash',
+      fencingToken: leader.fencingToken,
+      maxActions: 50,
+      timeBudgetMs: 2_500,
+      cursor: null as string | null,
+      entityExpectedRev: 0,
+      expectedBoardRev: board0,
+      canonicalHash: 'canon-dry-hash',
+      currentPinHash: 'canon-dry-hash',
+      idempotencyKey: 'dry-hash-matrix',
+    }
+
+    const dry1 = await dryRunReconcile(h.recDeps, dryReq)
+    expect(dry1.dryRunHash).toBeTruthy()
+    expect(dry1.timeBudgetMs).toBe(2_500)
+    expect(dry1.maxActions).toBe(50)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(board0) // dry: no bump
+
+    // Exact same key+body replay — same dryRunHash, no board bump
+    const dryReplay = await dryRunReconcile(h.recDeps, dryReq)
+    expect(dryReplay.dryRunId).toBe(dry1.dryRunId)
+    expect(dryReplay.dryRunHash).toBe(dry1.dryRunHash)
+    expect(dryReplay.timeBudgetMs).toBe(dry1.timeBudgetMs)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(board0)
+
+    // Same key + changed timeBudgetMs => IDEMPOTENCY_CONFLICT
+    await expect(
+      dryRunReconcile(h.recDeps, { ...dryReq, timeBudgetMs: 9_999 }),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(board0)
+
+    // Same key + other material field drifts that still pass pre-hash validation
+    const dryConflicts: Array<{
+      label: string
+      patch: Partial<typeof dryReq>
+    }> = [
+      { label: 'maxActions', patch: { maxActions: 10 } },
+      { label: 'cursor', patch: { cursor: 'run-dry-hash' } },
+      { label: 'canonicalHash', patch: { canonicalHash: 'canon-DRIFT', currentPinHash: 'canon-DRIFT' } },
+      { label: 'expectedBoardRev', patch: { expectedBoardRev: board0 + 1 } },
+    ]
+    for (const c of dryConflicts) {
+      await expect(
+        dryRunReconcile(h.recDeps, { ...dryReq, ...c.patch }),
+        `same key + changed ${c.label} must IDEMPOTENCY_CONFLICT`,
+      ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+    }
+    // entityExpectedRev ≠ 0 hits create-entity gate before idempotency → STALE_REVISION
+    await expect(
+      dryRunReconcile(h.recDeps, { ...dryReq, entityExpectedRev: 1 }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    // No mutation / no board bump from conflict attempts
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(board0)
+
+    // Different key still allowed (not a conflict on the prior key)
+    const dryOtherKey = await dryRunReconcile(h.recDeps, {
+      ...dryReq,
+      timeBudgetMs: 9_999,
+      idempotencyKey: 'dry-hash-other-key',
+    })
+    expect(dryOtherKey.timeBudgetMs).toBe(9_999)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(board0)
+  })
+
+  it('integration lock: full envelope CAS/replay; create bumps once; renew no board bump', async () => {
+    const h = harness()
+    const gate = { atomic: h.atomic, idempotency: h.idempotency }
+    const board0 = (await h.atomic.getBoardState(BOARD)).boardRev
+
+    await expect(
+      acquireIntegrationLock(
+        h.locks,
+        h.clock,
+        {
+          boardId: BOARD,
+          repoId: 'gigit-agent',
+          trackingBranch: 'main',
+          runId: 'int-env-1',
+          agentId: 'integrator-1',
+          integratorModel: 'grok-4.5',
+          rootAcceptanceId: 'ra-1',
+          checkpointId: 'cp-1',
+          pathspecs: ['src/**'],
+          entityExpectedRev: 0,
+          expectedBoardRev: 0,
+          canonicalHash: 'canon-ilk',
+          currentPinHash: 'wrong',
+          idempotencyKey: 'ilk-env-pin',
+        },
+        gate,
+      ),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    await expect(
+      acquireIntegrationLock(
+        h.locks,
+        h.clock,
+        {
+          boardId: BOARD,
+          repoId: 'gigit-agent',
+          trackingBranch: 'main',
+          runId: 'int-env-1',
+          agentId: 'integrator-1',
+          integratorModel: 'grok-4.5',
+          rootAcceptanceId: 'ra-1',
+          checkpointId: 'cp-1',
+          pathspecs: ['src/**'],
+          entityExpectedRev: 0,
+          expectedBoardRev: 99,
+          canonicalHash: 'canon-ilk',
+          idempotencyKey: 'ilk-env-brd',
+        },
+        gate,
+      ),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    const created = await acquireIntegrationLock(
+      h.locks,
+      h.clock,
+      {
+        boardId: BOARD,
+        repoId: 'gigit-agent',
+        trackingBranch: 'main',
+        runId: 'int-env-1',
+        agentId: 'integrator-1',
+        integratorModel: 'grok-4.5',
+        rootAcceptanceId: 'ra-1',
+        checkpointId: 'cp-1',
+        pathspecs: ['src/**'],
+        entityExpectedRev: 0,
+        expectedBoardRev: board0,
+        canonicalHash: 'canon-ilk',
+        currentPinHash: 'canon-ilk',
+        idempotencyKey: 'ilk-env-create',
+      },
+      gate,
+    )
+    expect(created.entityRev).toBe(1)
+    expect(created.state).toBe('HELD')
+    const afterCreate = (await h.atomic.getBoardState(BOARD)).boardRev
+    expect(afterCreate).toBe(board0 + 1)
+
+    // Idempotent replay of create — no second board bump
+    const replay = await acquireIntegrationLock(
+      h.locks,
+      h.clock,
+      {
+        boardId: BOARD,
+        repoId: 'gigit-agent',
+        trackingBranch: 'main',
+        runId: 'int-env-1',
+        agentId: 'integrator-1',
+        integratorModel: 'grok-4.5',
+        rootAcceptanceId: 'ra-1',
+        checkpointId: 'cp-1',
+        pathspecs: ['src/**'],
+        entityExpectedRev: 0,
+        expectedBoardRev: board0,
+        canonicalHash: 'canon-ilk',
+        idempotencyKey: 'ilk-env-create',
+      },
+      gate,
+    )
+    expect(replay.lockId).toBe(created.lockId)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(afterCreate)
+
+    // Renew with entity CAS — no board bump
+    const renewed = await acquireIntegrationLock(
+      h.locks,
+      h.clock,
+      {
+        boardId: BOARD,
+        repoId: 'gigit-agent',
+        trackingBranch: 'main',
+        runId: 'int-env-1',
+        agentId: 'integrator-1',
+        integratorModel: 'grok-4.5',
+        rootAcceptanceId: 'ra-1',
+        checkpointId: 'cp-1',
+        pathspecs: ['src/**'],
+        entityExpectedRev: created.entityRev,
+        expectedBoardRev: afterCreate,
+        canonicalHash: 'canon-ilk',
+        idempotencyKey: 'ilk-env-renew',
+      },
+      gate,
+    )
+    expect(renewed.entityRev).toBe(created.entityRev + 1)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(afterCreate)
+
+    // Stale entity on renew
+    await expect(
+      acquireIntegrationLock(
+        h.locks,
+        h.clock,
+        {
+          boardId: BOARD,
+          repoId: 'gigit-agent',
+          trackingBranch: 'main',
+          runId: 'int-env-1',
+          agentId: 'integrator-1',
+          integratorModel: 'grok-4.5',
+          rootAcceptanceId: 'ra-1',
+          checkpointId: 'cp-1',
+          pathspecs: ['src/**'],
+          entityExpectedRev: 1,
+          expectedBoardRev: afterCreate,
+          canonicalHash: 'canon-ilk',
+          idempotencyKey: 'ilk-env-stale-ent',
+        },
+        gate,
+      ),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+  })
+
+  it('integration_lock idempotency hash: full material body + conflict matrix + exact replay no bump', async () => {
+    const baseReq: AcquireIntegrationRequest = {
+      boardId: BOARD,
+      repoId: 'gigit-agent',
+      trackingBranch: 'main',
+      runId: 'int-hash-1',
+      agentId: 'integrator-1',
+      integratorModel: 'grok-4.5',
+      rootAcceptanceId: 'ra-approval-1',
+      checkpointId: 'cp-1',
+      pathspecs: ['src/**', 'tests/**'],
+      leaseMs: 90_000,
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-ilk-hash',
+      idempotencyKey: 'ilk-hash-matrix',
+    }
+
+    const body = integrationLockIdempotencyRequestBody(baseReq)
+    // Independent verifier contract: material fields present (including former exclusions + leaseMs).
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        'agentId',
+        'canonicalHash',
+        'checkpointId',
+        'entityExpectedRev',
+        'expectedBoardRev',
+        'integratorModel',
+        'leaseMs',
+        'pathspecs',
+        'repoId',
+        'rootAcceptanceId',
+        'runId',
+        'trackingBranch',
+      ].sort(),
+    )
+    // Non-material must not leak into hash body
+    expect(body).not.toHaveProperty('idempotencyKey')
+    expect(body).not.toHaveProperty('boardId')
+    expect(body).not.toHaveProperty('currentPinHash')
+    // leaseMs is material (effective duration)
+    expect(body.leaseMs).toBe(90_000)
+    // Omitted leaseMs canonicalizes to DEFAULT_LOCK_LEASE_MS
+    const { leaseMs: _omitLease, ...noLease } = baseReq
+    void _omitLease
+    expect(integrationLockIdempotencyRequestBody(noLease as AcquireIntegrationRequest).leaseMs).toBe(
+      60_000,
+    )
+    expect(
+      requestHashOf(integrationLockIdempotencyRequestBody({ ...baseReq, leaseMs: 60_000 })),
+    ).toBe(
+      requestHashOf(
+        integrationLockIdempotencyRequestBody(noLease as AcquireIntegrationRequest),
+      ),
+    )
+
+    const baseHash = requestHashOf(body)
+    // pathspecs copy is isolated
+    expect(body.pathspecs).not.toBe(baseReq.pathspecs)
+    expect(body.pathspecs).toEqual(baseReq.pathspecs)
+
+    type MaterialKey = keyof ReturnType<typeof integrationLockIdempotencyRequestBody>
+    const fieldMutations: Array<{ field: MaterialKey; next: unknown }> = [
+      { field: 'repoId', next: 'other-repo' },
+      { field: 'trackingBranch', next: 'develop' },
+      { field: 'runId', next: 'int-hash-2' },
+      { field: 'agentId', next: 'integrator-2' },
+      { field: 'integratorModel', next: 'grok-4.5-alt' },
+      { field: 'rootAcceptanceId', next: 'ra-approval-2' },
+      { field: 'checkpointId', next: 'cp-2' },
+      { field: 'pathspecs', next: ['src/**'] },
+      { field: 'entityExpectedRev', next: 1 },
+      { field: 'expectedBoardRev', next: 1 },
+      { field: 'canonicalHash', next: 'canon-ilk-hash-b' },
+      { field: 'leaseMs', next: 120_000 },
+    ]
+    for (const m of fieldMutations) {
+      const mutated = { ...body, [m.field]: m.next }
+      expect(requestHashOf(mutated), `hash must change when ${m.field} changes`).not.toBe(baseHash)
+    }
+    // Exact same material body → identical stable hash (key order independent via stableStringify)
+    expect(requestHashOf({ ...body })).toBe(baseHash)
+    expect(
+      requestHashOf({
+        leaseMs: body.leaseMs,
+        canonicalHash: body.canonicalHash,
+        pathspecs: [...body.pathspecs],
+        rootAcceptanceId: body.rootAcceptanceId,
+        agentId: body.agentId,
+        integratorModel: body.integratorModel,
+        expectedBoardRev: body.expectedBoardRev,
+        entityExpectedRev: body.entityExpectedRev,
+        checkpointId: body.checkpointId,
+        runId: body.runId,
+        trackingBranch: body.trackingBranch,
+        repoId: body.repoId,
+      }),
+    ).toBe(baseHash)
+
+    // --- acquire path: exact replay no board bump / preserves expiry; same-key material change => conflict ---
+    const h = harness()
+    const gate = { atomic: h.atomic, idempotency: h.idempotency }
+    const board0 = (await h.atomic.getBoardState(BOARD)).boardRev
+
+    const created = await acquireIntegrationLock(h.locks, h.clock, baseReq, gate)
+    expect(created.entityRev).toBe(1)
+    expect(created.rootAcceptanceId).toBe('ra-approval-1')
+    expect(created.integratorModel).toBe('grok-4.5')
+    expect(created.fencingToken).toBeTruthy()
+    expect(created.leaseExpiresAtMs).toBe(created.acquiredAtMs + 90_000)
+    const afterCreate = (await h.atomic.getBoardState(BOARD)).boardRev
+    expect(afterCreate).toBe(board0 + 1)
+
+    // Exact replay — no second lock row, no board bump, expiry preserved (no lease bump)
+    const replay = await acquireIntegrationLock(h.locks, h.clock, baseReq, gate)
+    expect(replay.lockId).toBe(created.lockId)
+    expect(replay.fencingToken).toBe(created.fencingToken)
+    expect(replay.entityRev).toBe(created.entityRev)
+    expect(replay.leaseExpiresAtMs).toBe(created.leaseExpiresAtMs)
+    expect(replay.acquiredAtMs).toBe(created.acquiredAtMs)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(afterCreate)
+    expect(h.locks.snapshot().integration.filter((r) => r.state === 'HELD')).toHaveLength(1)
+
+    // Same key + changed approval (rootAcceptanceId) => IDEMPOTENCY_CONFLICT
+    await expect(
+      acquireIntegrationLock(
+        h.locks,
+        h.clock,
+        { ...baseReq, rootAcceptanceId: 'ra-approval-DRIFT' },
+        gate,
+      ),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(afterCreate)
+    expect(h.locks.snapshot().integration.filter((r) => r.state === 'HELD')).toHaveLength(1)
+
+    // Same key + changed leaseMs => IDEMPOTENCY_CONFLICT (must not silently extend/shorten lease)
+    await expect(
+      acquireIntegrationLock(
+        h.locks,
+        h.clock,
+        { ...baseReq, leaseMs: 120_000 },
+        gate,
+      ),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+    // Expiry must still be the original create value after conflict
+    expect(
+      h.locks.snapshot().integration.find((r) => r.lockId === created.lockId)?.leaseExpiresAtMs,
+    ).toBe(created.leaseExpiresAtMs)
+
+    // Same key + changed material fields that still pass pre-hash validation
+    const acquireConflicts: Array<{ label: string; patch: Partial<AcquireIntegrationRequest> }> = [
+      { label: 'checkpointId', patch: { checkpointId: 'cp-DRIFT' } },
+      { label: 'pathspecs', patch: { pathspecs: ['lib/**'] } },
+      { label: 'runId', patch: { runId: 'int-hash-DRIFT' } },
+      { label: 'repoId', patch: { repoId: 'other-repo' } },
+      { label: 'trackingBranch', patch: { trackingBranch: 'feature/x' } },
+      { label: 'canonicalHash', patch: { canonicalHash: 'canon-DRIFT' } },
+      { label: 'entityExpectedRev', patch: { entityExpectedRev: 99 } },
+      { label: 'expectedBoardRev', patch: { expectedBoardRev: afterCreate } },
+      { label: 'leaseMs', patch: { leaseMs: 30_000 } },
+    ]
+    for (const c of acquireConflicts) {
+      await expect(
+        acquireIntegrationLock(h.locks, h.clock, { ...baseReq, ...c.patch }, gate),
+        `same key + changed ${c.label} must IDEMPOTENCY_CONFLICT`,
+      ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+    }
+    // Model change hits model gate before idempotency (still INVALID_INPUT); hash matrix above
+    // already proves integratorModel participates in the canonical hash.
+    await expect(
+      acquireIntegrationLock(
+        h.locks,
+        h.clock,
+        { ...baseReq, integratorModel: 'not-the-integrator' },
+        gate,
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+
+    // No mutation from conflict attempts
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(afterCreate)
+    const held = h.locks.snapshot().integration.filter((r) => r.state === 'HELD')
+    expect(held).toHaveLength(1)
+    expect(held[0]?.lockId).toBe(created.lockId)
+    expect(held[0]?.fencingToken).toBe(created.fencingToken)
+    expect(held[0]?.rootAcceptanceId).toBe('ra-approval-1')
+    expect(held[0]?.leaseExpiresAtMs).toBe(created.leaseExpiresAtMs)
+
+    // Single live lock preserved: different key + different run still INTEGRATION_LOCKED
+    await expect(
+      acquireIntegrationLock(
+        h.locks,
+        h.clock,
+        {
+          ...baseReq,
+          runId: 'int-hash-other',
+          agentId: 'integrator-other',
+          rootAcceptanceId: 'ra-other',
+          idempotencyKey: 'ilk-hash-other',
+          expectedBoardRev: afterCreate,
+        },
+        gate,
+      ),
+    ).rejects.toMatchObject({ code: 'INTEGRATION_LOCKED' })
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(afterCreate)
+
+    // Renew CAS (same run) still works; no board bump; fencing preserved identity
+    const renewed = await acquireIntegrationLock(
+      h.locks,
+      h.clock,
+      {
+        ...baseReq,
+        entityExpectedRev: created.entityRev,
+        expectedBoardRev: afterCreate,
+        idempotencyKey: 'ilk-hash-renew',
+      },
+      gate,
+    )
+    expect(renewed.entityRev).toBe(created.entityRev + 1)
+    expect(renewed.fencingToken).toBe(created.fencingToken)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(afterCreate)
+    expect(h.locks.snapshot().integration.filter((r) => r.state === 'HELD')).toHaveLength(1)
+  })
+})
+
+/**
+ * Behavioral matrix: reconcile_apply entity CAS (STRICT).
+ *
+ * | Case | dryRunHash | idempotencyKey | entityExpectedRev | expectedBoardRev | pin | Result |
+ * | first apply | new | new | 0 (current) | current | match | applied, bump board once |
+ * | first apply stale entity | new | new | ≠0 | current | match | STALE_REVISION |
+ * | exact key+body replay | same | same | same body | same body | match | REPLAY, no mutation |
+ * | new key + already-applied + current entity | same | new | 0 (current) | current | match | already-applied, no mutation |
+ * | new key + already-applied + arbitrary entity | same | new | arbitrary | current | match | STALE_REVISION |
+ * | new key + already-applied + stale board | same | new | 0 | stale | match | STALE_REVISION |
+ * | pin/canonical mismatch | any | new | 0 | current | mismatch | STALE_REVISION |
+ */
+describe('reconcile_apply entity CAS behavioral matrix', () => {
+  async function setupApplied() {
+    const h = harness()
+    await registerRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-cas-mtx',
+      taskId: 'T-CAS-MTX',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-cas',
+      model: 'grok-4.5',
+      canonicalHash: 'canon-cas',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-cas-mtx',
+      initialState: 'RUNNING',
+    })
+    h.clock.advance(60_000 + 30_000 + 1)
+    const leader = await claimReconcilerLeadership(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-cas',
+    })
+    const boardBeforeDry = (await h.atomic.getBoardState(BOARD)).boardRev
+    const dry = await dryRunReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-cas',
+      fencingToken: leader.fencingToken,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-cas',
+      currentPinHash: 'canon-cas',
+      idempotencyKey: 'dry-cas-mtx',
+    })
+    return { h, leader, dry, boardBeforeDry }
+  }
+
+  it('matrix: first apply requires exact entity rev 0; bumps board once', async () => {
+    const { h, leader, dry, boardBeforeDry } = await setupApplied()
+
+    await expect(
+      applyReconcile(h.recDeps, {
+        boardId: BOARD,
+        leaderId: 'leader-cas',
+        fencingToken: leader.fencingToken,
+        dryRunHash: dry.dryRunHash,
+        entityExpectedRev: 99,
+        expectedBoardRev: boardBeforeDry,
+        canonicalHash: 'canon-cas',
+        currentPinHash: 'canon-cas',
+        idempotencyKey: 'apply-cas-stale-entity-first',
+      }),
+    ).rejects.toMatchObject({
+      code: 'STALE_REVISION',
+      details: expect.objectContaining({ entityExpectedRev: 99, currentEntityRev: 0 }),
+    })
+
+    const apply1 = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-cas',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-cas',
+      currentPinHash: 'canon-cas',
+      idempotencyKey: 'apply-cas-first',
+    })
+    expect(apply1.applied).toBe(true)
+    expect(apply1.idempotentReplay).toBe(false)
+    expect(apply1.boardRev).toBe(boardBeforeDry + 1)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardBeforeDry + 1)
+  })
+
+  it('matrix: exact same request/key replays without mutation', async () => {
+    const { h, leader, dry, boardBeforeDry } = await setupApplied()
+    const apply1 = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-cas',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-cas',
+      currentPinHash: 'canon-cas',
+      idempotencyKey: 'apply-cas-replay-key',
+    })
+    const boardAfter = (await h.atomic.getBoardState(BOARD)).boardRev
+
+    const replay = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-cas',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-cas',
+      currentPinHash: 'canon-cas',
+      idempotencyKey: 'apply-cas-replay-key',
+    })
+    expect(replay.boardRev).toBe(apply1.boardRev)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardAfter)
+  })
+
+  it('matrix: new key + already-applied dryRunHash + current entity rev → already-applied, no mutation', async () => {
+    const { h, leader, dry, boardBeforeDry } = await setupApplied()
+    const apply1 = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-cas',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-cas',
+      currentPinHash: 'canon-cas',
+      idempotencyKey: 'apply-cas-orig',
+    })
+    const boardAfter = (await h.atomic.getBoardState(BOARD)).boardRev
+    const runAfter = await h.runs.get(BOARD, 'run-cas-mtx')
+    const historyLen = runAfter?.history.length ?? 0
+
+    const already = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-cas',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0, // exact current (create-semantic apply entity, no bump on domain replay)
+      expectedBoardRev: boardAfter,
+      canonicalHash: 'canon-cas',
+      currentPinHash: 'canon-cas',
+      idempotencyKey: 'apply-cas-new-key-current-rev',
+    })
+    expect(already.idempotentReplay).toBe(true)
+    expect(already.appliedCount).toBe(0)
+    expect(already.boardRev).toBe(apply1.boardRev)
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardAfter)
+    const runAgain = await h.runs.get(BOARD, 'run-cas-mtx')
+    expect(runAgain?.history.length).toBe(historyLen)
+  })
+
+  it('matrix: new key + already-applied dryRunHash + arbitrary entityExpectedRev → STALE_REVISION', async () => {
+    const { h, leader, dry, boardBeforeDry } = await setupApplied()
+    await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-cas',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-cas',
+      currentPinHash: 'canon-cas',
+      idempotencyKey: 'apply-cas-for-arb',
+    })
+    const boardAfter = (await h.atomic.getBoardState(BOARD)).boardRev
+    const boardFrozen = boardAfter
+
+    for (const badRev of [1, 42, 999, -1]) {
+      await expect(
+        applyReconcile(h.recDeps, {
+          boardId: BOARD,
+          leaderId: 'leader-cas',
+          fencingToken: leader.fencingToken,
+          dryRunHash: dry.dryRunHash,
+          entityExpectedRev: badRev,
+          expectedBoardRev: boardAfter,
+          canonicalHash: 'canon-cas',
+          currentPinHash: 'canon-cas',
+          idempotencyKey: `apply-cas-arb-${badRev}`,
+        }),
+      ).rejects.toMatchObject({
+        code: 'STALE_REVISION',
+        details: expect.objectContaining({
+          entityExpectedRev: badRev,
+          currentEntityRev: 0,
+        }),
+      })
+    }
+    // No mutation from failed CAS attempts
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardFrozen)
+  })
+
+  it('matrix: new key + already-applied + stale board rev → STALE_REVISION', async () => {
+    const { h, leader, dry, boardBeforeDry } = await setupApplied()
+    await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-cas',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      entityExpectedRev: 0,
+      expectedBoardRev: boardBeforeDry,
+      canonicalHash: 'canon-cas',
+      currentPinHash: 'canon-cas',
+      idempotencyKey: 'apply-cas-for-board',
+    })
+    const boardAfter = (await h.atomic.getBoardState(BOARD)).boardRev
+
+    await expect(
+      applyReconcile(h.recDeps, {
+        boardId: BOARD,
+        leaderId: 'leader-cas',
+        fencingToken: leader.fencingToken,
+        dryRunHash: dry.dryRunHash,
+        entityExpectedRev: 0,
+        expectedBoardRev: boardAfter + 7,
+        canonicalHash: 'canon-cas',
+        currentPinHash: 'canon-cas',
+        idempotencyKey: 'apply-cas-stale-board',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+    expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(boardAfter)
+  })
+
+  it('matrix: pin/canonical mismatch still STALE_REVISION (before domain path)', async () => {
+    const { h, leader, dry, boardBeforeDry } = await setupApplied()
+    await expect(
+      applyReconcile(h.recDeps, {
+        boardId: BOARD,
+        leaderId: 'leader-cas',
+        fencingToken: leader.fencingToken,
+        dryRunHash: dry.dryRunHash,
+        entityExpectedRev: 0,
+        expectedBoardRev: boardBeforeDry,
+        canonicalHash: 'canon-cas',
+        currentPinHash: 'other-pin',
+        idempotencyKey: 'apply-cas-pin-miss',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
   })
 })

@@ -2,13 +2,18 @@
  * Durable control-plane runtime context — process-singleton via global Symbol.
  *
  * Exposes injected MySQL control-data + runtime persistence (useNamedLock:true),
- * shared clock / idempotency / revision authority, and MySQL ControlPlaneAtomicStore.
+ * shared clock / idempotency / revision authority, MySQL ControlPlaneAtomicStore,
+ * and one process-shared AccountSyncScheduler (SLA publish coordinator) with a
+ * single unref'd autonomous tick loop per context (cleanup on reset).
  *
  * - Lazy init on first getControlPlaneRuntimeContext()
  * - Production / server: fail-closed when DB config or client unavailable (no silent memory)
  * - Tests: setTestControlPlaneRuntimeContext / resetControlPlaneRuntimeContextForTests only
+ * - Default surface publisher: four product consumer service paths (MCP/API/UI/Ops)
+ * - Autonomous tick loop: mandatory onError + onFatalError → STALE / usableCapacity=0
+ *   + ACCOUNT_SYNC_LOOP_FATAL secondary path (never empty catch)
  *
- * Does NOT wire board-mcp (out of scope).
+ * Exposes getAccountSyncScheduler() for board-mcp trigger wiring.
  */
 import type { ControlPlaneAtomicStore, ControlPlaneClock } from './board-store'
 import { createSystemClock } from './board-store'
@@ -34,6 +39,30 @@ import {
   createMysqlControlPlaneAtomicStoreStrict,
 } from './mysql-control-plane-atomic'
 import { createMemoryControlPlaneAtomicStore } from './board-store'
+import {
+  createMemoryBackedMysqlHumanDisplayStore,
+  createMemoryHumanDisplayStore,
+  createMysqlHumanDisplayStore,
+  type HumanDisplayStore,
+} from './human-display-persistence'
+import {
+  createAccountSyncSchedulerFromAuthority,
+  createAccountSyncSchedulerLoopOnError,
+  createAccountSyncSchedulerLoopOnFatalError,
+  createDurableAccountSyncSurfaceReaders,
+  createIndependentAccountSyncSurfacePublisher,
+  startAccountSyncSchedulerLoop,
+  type AccountSyncLoopAlertEvent,
+  type AccountSyncLoopFatalEvent,
+  type AccountSyncScheduler,
+  type AccountSyncSchedulerLoopHandle,
+  type AccountSyncSurfacePublisher,
+  type AccountSyncSurfaceReaders,
+} from './account-sync-scheduler'
+import {
+  createMemoryMetricsRegistry,
+  type MetricsRegistry,
+} from './observability'
 
 // ---------------------------------------------------------------------------
 // Global symbol holder (survives HMR / multi-import identity)
@@ -47,7 +76,8 @@ export type ControlPlaneRuntimeContextMode = 'mysql' | 'memory' | 'test'
 
 /**
  * Shared server context packet for control-plane durable stores.
- * One clock + one revision + one idempotency authority per process.
+ * One clock + one revision + one idempotency authority + one account-sync
+ * SLA scheduler per process (scheduler state survives HTTP/MCP requests).
  */
 export interface ControlPlaneRuntimeContext {
   mode: ControlPlaneRuntimeContextMode
@@ -62,12 +92,31 @@ export interface ControlPlaneRuntimeContext {
   revisions: RevisionStore
   /** Shared idempotency authority (same object as controlData.idempotency). */
   idempotency: IdempotencyStorage
+  /**
+   * Versioned owner humanDisplay store (task/project/feature).
+   * Missing/stale/unreviewed → CONTENT_REVIEW_REQUIRED via store.get resolve path.
+   */
+  humanDisplay: HumanDisplayStore
+  /**
+   * Process-shared account-sync SLA scheduler (enqueue/tick/flush).
+   * Wired to runtime.accounts + atomic + idempotency + this.clock.
+   * Per-board coalescing / deadlines live on this instance (in-process durable).
+   * board-mcp consumes via getAccountSyncScheduler() — do not construct a second one.
+   */
+  accountSyncScheduler: AccountSyncScheduler
+  /**
+   * Unref timer loop handle (one per context). Null when autoStartLoop=false
+   * (unit tests that drive tick() manually). Always stop via cleanup helpers.
+   */
+  accountSyncSchedulerLoop: AccountSyncSchedulerLoopHandle | null
 }
 
 interface ContextHolder {
   instance: ControlPlaneRuntimeContext | null
   /** Test-only override; takes precedence over lazy production instance. */
   testOverride: ControlPlaneRuntimeContext | null
+  /** Active loop for the lazy production instance (stopped on reset). */
+  productionLoop: AccountSyncSchedulerLoopHandle | null
 }
 
 type GlobalWithContext = typeof globalThis & {
@@ -78,10 +127,18 @@ function getHolder(): ContextHolder {
   const g = globalThis as GlobalWithContext
   let holder = g[CONTROL_PLANE_RUNTIME_CONTEXT_SYMBOL]
   if (!holder) {
-    holder = { instance: null, testOverride: null }
+    holder = { instance: null, testOverride: null, productionLoop: null }
     g[CONTROL_PLANE_RUNTIME_CONTEXT_SYMBOL] = holder
   }
+  // Backward-compat for hot-reload holders missing productionLoop.
+  if (!('productionLoop' in holder) || holder.productionLoop === undefined) {
+    ;(holder as ContextHolder).productionLoop = null
+  }
   return holder
+}
+
+function stopLoop(handle: AccountSyncSchedulerLoopHandle | null | undefined): void {
+  if (handle && handle.isRunning()) handle.stop()
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +256,125 @@ export interface BuildMysqlContextOptions {
    * Unit tests that inject clients may set false.
    */
   requireDbConfig?: boolean
+  /**
+   * Optional multi-surface publisher for the attached AccountSyncScheduler.
+   * Default: independent durable readers over runtime.accounts (MCP/API/UI/Ops).
+   * Construction fails closed if any reader is absent.
+   */
+  surfacePublisher?: AccountSyncSurfacePublisher
+  /** Optional independent surface readers (used when surfacePublisher omitted). */
+  surfaceReaders?: AccountSyncSurfaceReaders
+  /** Optional pre-built scheduler (tests). Default: wired from authority stores. */
+  accountSyncScheduler?: AccountSyncScheduler
+  /**
+   * When true (default for production mysql build), start unref tick loop.
+   * Unit tests usually set false and call tick() with a fake clock.
+   * Production loop always supplies mandatory onError (never swallows tick rejection).
+   */
+  autoStartSchedulerLoop?: boolean
+  /** Override loop interval (ms). */
+  schedulerLoopIntervalMs?: number
+  /**
+   * Alert/audit callback for autonomous tick rejections (production loop).
+   * Invoked after watched boards are marked ACCOUNT_SYNC_STALE / usableCapacity=0.
+   */
+  onAccountSyncLoopAlert?: (event: AccountSyncLoopAlertEvent) => void | Promise<void>
+  /** Optional test override for loop onError (must still fail-closed boards). */
+  accountSyncLoopOnError?: (err: unknown) => void | Promise<void>
+  /**
+   * Optional test override for secondary onFatalError (ACCOUNT_SYNC_LOOP_FATAL).
+   * Production default: createAccountSyncSchedulerLoopOnFatalError + control-data audit.
+   */
+  accountSyncLoopOnFatalError?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
+  /** Durable alert when secondary fatal path fires. */
+  onAccountSyncLoopFatal?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
+  /**
+   * Runtime-owned metrics registry injected into FATAL emit / tertiary sink.
+   * Default: process-local createMemoryMetricsRegistry() when omitted.
+   */
+  metrics?: MetricsRegistry
+}
+
+/**
+ * Attach one AccountSyncScheduler to runtime authority pieces.
+ * Same clock + accounts + atomic + idempotency as the rest of the context.
+ * Default surface publisher: independent durable readers (not process Map echo).
+ * Fails closed when readers cannot be constructed for all four surfaces.
+ */
+function attachAccountSyncScheduler(input: {
+  clock: ControlPlaneClock
+  accounts: ControlPlaneRuntimePersistence['accounts']
+  atomic: ControlPlaneAtomicStore
+  idempotency: IdempotencyStorage
+  surfacePublisher?: AccountSyncSurfacePublisher
+  surfaceReaders?: AccountSyncSurfaceReaders
+  accountSyncScheduler?: AccountSyncScheduler
+}): AccountSyncScheduler {
+  if (input.accountSyncScheduler) return input.accountSyncScheduler
+  let surfacePublisher = input.surfacePublisher
+  if (!surfacePublisher) {
+    const readers =
+      input.surfaceReaders ?? createDurableAccountSyncSurfaceReaders(input.accounts)
+    // Fail closed: missing any of mcp/api/ui/ops aborts context construction.
+    surfacePublisher = createIndependentAccountSyncSurfacePublisher({
+      readers,
+      recordShared: true,
+    })
+  }
+  return createAccountSyncSchedulerFromAuthority({
+    clock: input.clock,
+    accounts: input.accounts,
+    atomic: input.atomic,
+    idempotency: input.idempotency,
+    surfacePublisher,
+    surfaceReaders: input.surfaceReaders,
+  })
+}
+
+function maybeStartLoop(
+  scheduler: AccountSyncScheduler,
+  opts: {
+    autoStart?: boolean
+    intervalMs?: number
+    /** Mandatory when autoStart; production fail-closed + alert. */
+    onError?: (err: unknown) => void | Promise<void>
+    /** Mandatory secondary when primary rejects. */
+    onFatalError?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
+    onAlert?: (event: AccountSyncLoopAlertEvent) => void | Promise<void>
+    onFatalAlert?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
+    appendAudit?: (entry: Record<string, unknown>) => void | Promise<void>
+    nowMs?: () => number
+    /** Runtime-owned metrics (FATAL emit + tertiary sink). */
+    metrics?: MetricsRegistry
+  },
+): AccountSyncSchedulerLoopHandle | null {
+  if (opts.autoStart === false) return null
+  // Runtime owns the registry: inject provided or create process-local default.
+  const metrics = opts.metrics ?? createMemoryMetricsRegistry(opts.nowMs)
+  const onError =
+    opts.onError ??
+    createAccountSyncSchedulerLoopOnError({
+      scheduler,
+      onAlert: opts.onAlert,
+      nowMs: opts.nowMs,
+    })
+  const onFatalError =
+    opts.onFatalError ??
+    createAccountSyncSchedulerLoopOnFatalError({
+      scheduler,
+      appendAudit: opts.appendAudit,
+      onAlert: opts.onFatalAlert,
+      nowMs: opts.nowMs,
+      metrics,
+    })
+  return startAccountSyncSchedulerLoop(scheduler, {
+    intervalMs: opts.intervalMs,
+    unref: true,
+    onError,
+    onFatalError,
+    metrics,
+    appendAudit: opts.appendAudit,
+  })
 }
 
 /**
@@ -270,7 +446,31 @@ export function buildMysqlControlPlaneRuntimeContext(
   }
 
   const atomic = createMysqlControlPlaneAtomicStoreStrict(sqlExecutor)
+  const humanDisplay = createMysqlHumanDisplayStore(sqlExecutor)
   const clock = opts.clock ?? createSystemClock()
+  const accountSyncScheduler = attachAccountSyncScheduler({
+    clock,
+    accounts: runtime.accounts,
+    atomic,
+    idempotency: controlData.idempotency,
+    surfacePublisher: opts.surfacePublisher,
+    surfaceReaders: opts.surfaceReaders,
+    accountSyncScheduler: opts.accountSyncScheduler,
+  })
+  // Production/server default: start autonomous unref loop with mandatory
+  // onError + onFatalError (STALE + ACCOUNT_SYNC_LOOP_FATAL; never empty swallow).
+  const autoStart = opts.autoStartSchedulerLoop ?? true
+  const accountSyncSchedulerLoop = maybeStartLoop(accountSyncScheduler, {
+    autoStart,
+    intervalMs: opts.schedulerLoopIntervalMs,
+    onError: opts.accountSyncLoopOnError,
+    onFatalError: opts.accountSyncLoopOnFatalError,
+    onAlert: opts.onAccountSyncLoopAlert,
+    onFatalAlert: opts.onAccountSyncLoopFatal,
+    appendAudit: (entry) => controlData.imports.appendAudit(entry),
+    nowMs: () => clock.nowMs(),
+    metrics: opts.metrics,
+  })
 
   return {
     mode: 'mysql',
@@ -280,6 +480,9 @@ export function buildMysqlControlPlaneRuntimeContext(
     atomic,
     revisions: controlData.revisions,
     idempotency: controlData.idempotency,
+    humanDisplay,
+    accountSyncScheduler,
+    accountSyncSchedulerLoop,
   }
 }
 
@@ -290,11 +493,51 @@ export function buildMysqlControlPlaneRuntimeContext(
 export function createMemoryControlPlaneRuntimeContext(opts?: {
   clock?: ControlPlaneClock
   seedBoards?: Parameters<typeof createMemoryControlPlaneAtomicStore>[0]
+  /** Optional pre-built humanDisplay store (tests). Default: pure memory store. */
+  humanDisplay?: HumanDisplayStore
+  /** Optional multi-surface publisher for attached scheduler (tests). */
+  surfacePublisher?: AccountSyncSurfacePublisher
+  surfaceReaders?: AccountSyncSurfaceReaders
+  /** Optional pre-built scheduler (tests). Default: wired from memory authority. */
+  accountSyncScheduler?: AccountSyncScheduler
+  /**
+   * Default false for memory/unit contexts (tests drive tick() with fake clock).
+   * Set true to exercise the unref loop in process (mandatory onError supplied).
+   */
+  autoStartSchedulerLoop?: boolean
+  schedulerLoopIntervalMs?: number
+  onAccountSyncLoopAlert?: (event: AccountSyncLoopAlertEvent) => void | Promise<void>
+  accountSyncLoopOnError?: (err: unknown) => void | Promise<void>
+  accountSyncLoopOnFatalError?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
+  onAccountSyncLoopFatal?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
+  /** Runtime-owned metrics for FATAL emit / tertiary sink. */
+  metrics?: MetricsRegistry
 }): ControlPlaneRuntimeContext {
   const controlData = createMemoryBackedControlDataPersistence()
   const runtime = createMemoryControlPlaneRuntimePersistence()
   const atomic = createMemoryControlPlaneAtomicStore(opts?.seedBoards ?? [])
+  const humanDisplay = opts?.humanDisplay ?? createMemoryHumanDisplayStore()
   const clock = opts?.clock ?? createSystemClock()
+  const accountSyncScheduler = attachAccountSyncScheduler({
+    clock,
+    accounts: runtime.accounts,
+    atomic,
+    idempotency: controlData.idempotency,
+    surfacePublisher: opts?.surfacePublisher,
+    surfaceReaders: opts?.surfaceReaders,
+    accountSyncScheduler: opts?.accountSyncScheduler,
+  })
+  const accountSyncSchedulerLoop = maybeStartLoop(accountSyncScheduler, {
+    autoStart: opts?.autoStartSchedulerLoop === true,
+    intervalMs: opts?.schedulerLoopIntervalMs,
+    onError: opts?.accountSyncLoopOnError,
+    onFatalError: opts?.accountSyncLoopOnFatalError,
+    onAlert: opts?.onAccountSyncLoopAlert,
+    onFatalAlert: opts?.onAccountSyncLoopFatal,
+    appendAudit: (entry) => controlData.imports.appendAudit(entry),
+    nowMs: () => clock.nowMs(),
+    metrics: opts?.metrics,
+  })
   return {
     mode: 'memory',
     clock,
@@ -303,6 +546,9 @@ export function createMemoryControlPlaneRuntimeContext(opts?: {
     atomic,
     revisions: controlData.revisions,
     idempotency: controlData.idempotency,
+    humanDisplay,
+    accountSyncScheduler,
+    accountSyncSchedulerLoop,
   }
 }
 
@@ -312,6 +558,17 @@ export function createMemoryControlPlaneRuntimeContext(opts?: {
  */
 export function createMemorySqlBackedControlPlaneRuntimeContext(opts?: {
   clock?: ControlPlaneClock
+  surfacePublisher?: AccountSyncSurfacePublisher
+  surfaceReaders?: AccountSyncSurfaceReaders
+  accountSyncScheduler?: AccountSyncScheduler
+  autoStartSchedulerLoop?: boolean
+  schedulerLoopIntervalMs?: number
+  onAccountSyncLoopAlert?: (event: AccountSyncLoopAlertEvent) => void | Promise<void>
+  accountSyncLoopOnError?: (err: unknown) => void | Promise<void>
+  accountSyncLoopOnFatalError?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
+  onAccountSyncLoopFatal?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
+  /** Runtime-owned metrics for FATAL emit / tertiary sink. */
+  metrics?: MetricsRegistry
 }): ControlPlaneRuntimeContext & {
   atomicExec: ReturnType<typeof createMemoryAtomicSqlExecutor>
 } {
@@ -320,7 +577,29 @@ export function createMemorySqlBackedControlPlaneRuntimeContext(opts?: {
   const atomicExec = createMemoryAtomicSqlExecutor()
   // Chain lock for pure unit (useNamedLock false); multi-process path tested separately.
   const atomic = createMysqlControlPlaneAtomicStore(atomicExec, { useNamedLock: false })
+  // MySQL humanDisplay adapter over in-memory HD SQL (tables distinct from atomic).
+  const humanDisplay = createMemoryBackedMysqlHumanDisplayStore()
   const clock = opts?.clock ?? createSystemClock()
+  const accountSyncScheduler = attachAccountSyncScheduler({
+    clock,
+    accounts: runtimeBundle.accounts,
+    atomic,
+    idempotency: controlData.idempotency,
+    surfacePublisher: opts?.surfacePublisher,
+    surfaceReaders: opts?.surfaceReaders,
+    accountSyncScheduler: opts?.accountSyncScheduler,
+  })
+  const accountSyncSchedulerLoop = maybeStartLoop(accountSyncScheduler, {
+    autoStart: opts?.autoStartSchedulerLoop === true,
+    intervalMs: opts?.schedulerLoopIntervalMs,
+    onError: opts?.accountSyncLoopOnError,
+    onFatalError: opts?.accountSyncLoopOnFatalError,
+    onAlert: opts?.onAccountSyncLoopAlert,
+    onFatalAlert: opts?.onAccountSyncLoopFatal,
+    appendAudit: (entry) => controlData.imports.appendAudit(entry),
+    nowMs: () => clock.nowMs(),
+    metrics: opts?.metrics,
+  })
   return {
     mode: 'memory',
     clock,
@@ -329,6 +608,9 @@ export function createMemorySqlBackedControlPlaneRuntimeContext(opts?: {
     atomic,
     revisions: controlData.revisions,
     idempotency: controlData.idempotency,
+    humanDisplay,
+    accountSyncScheduler,
+    accountSyncSchedulerLoop,
     atomicExec,
   }
 }
@@ -366,28 +648,44 @@ export function getControlPlaneRuntimeContext(
     }
   }
 
-  holder.instance = buildMysqlControlPlaneRuntimeContext({ env, requireDbConfig: true })
+  holder.instance = buildMysqlControlPlaneRuntimeContext({
+    env,
+    requireDbConfig: true,
+    autoStartSchedulerLoop: true,
+  })
+  holder.productionLoop = holder.instance.accountSyncSchedulerLoop
   return holder.instance
 }
 
 /**
  * Test-only: install a memory/injected context as the process singleton override.
  * Production code must never call this.
+ * Stops any prior production loop; does not auto-start the override's loop
+ * (caller opts via createMemoryControlPlaneRuntimeContext autoStartSchedulerLoop).
  */
 export function setTestControlPlaneRuntimeContext(
   ctx: ControlPlaneRuntimeContext | null,
 ): void {
   const holder = getHolder()
+  stopLoop(holder.productionLoop)
+  holder.productionLoop = null
+  // If replacing a previous override that had a loop, stop it.
+  stopLoop(holder.testOverride?.accountSyncSchedulerLoop)
   holder.testOverride = ctx
 }
 
 /**
  * Test-only: clear override + cached production instance so the next get() re-inits.
+ * Stops every scheduler loop started by this holder.
  */
 export function resetControlPlaneRuntimeContextForTests(): void {
   const holder = getHolder()
+  stopLoop(holder.testOverride?.accountSyncSchedulerLoop)
+  stopLoop(holder.instance?.accountSyncSchedulerLoop)
+  stopLoop(holder.productionLoop)
   holder.testOverride = null
   holder.instance = null
+  holder.productionLoop = null
 }
 
 /** True when a test override is installed. */
@@ -399,4 +697,22 @@ export function hasTestControlPlaneRuntimeContext(): boolean {
 export function peekControlPlaneRuntimeContext(): ControlPlaneRuntimeContext | null {
   const holder = getHolder()
   return holder.testOverride ?? holder.instance
+}
+
+/**
+ * Narrow getter for the process-shared AccountSyncScheduler.
+ * board-mcp (and other request handlers) must use this instead of constructing
+ * a new scheduler — so coalesced heartbeats / deadlines survive across requests.
+ */
+export function getAccountSyncScheduler(
+  env: NodeJS.ProcessEnv = process.env,
+): AccountSyncScheduler {
+  return getControlPlaneRuntimeContext(env).accountSyncScheduler
+}
+
+/**
+ * Peek scheduler without lazy-init (null when no context is installed).
+ */
+export function peekAccountSyncScheduler(): AccountSyncScheduler | null {
+  return peekControlPlaneRuntimeContext()?.accountSyncScheduler ?? null
 }

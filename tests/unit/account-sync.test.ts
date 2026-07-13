@@ -7,6 +7,7 @@ import {
 import {
   ACCOUNT_PERIODIC_HEALTH_MS,
   ACCOUNT_PUBLISH_SLA_MS,
+  ACCOUNT_SYNC_READBACK_SURFACES,
   AccountSyncError,
   authorizeProviderAssignment,
   CAP_REASON_GROK_MAJORITY_NO_RECOVERY,
@@ -16,15 +17,20 @@ import {
   evaluateAccountSyncFreshness,
   evaluateCapacityPolicy,
   getSharedAccountSyncStore,
+  isCoalescableAccountSyncTrigger,
+  isImmediateAccountSyncTrigger,
   projectAccountSyncCcReadModel,
   readLatestAccountSyncSnapshot,
   recordAccountReadback,
   resetSharedAccountSyncStore,
   resolveProviderKindFromModel,
   setSharedAccountSyncStore,
+  surfacesHaveParity,
   syncAccounts,
+  syncAccountsIdempotencyBody,
   type AccountSyncDeps,
   type MaskedAccountRecord,
+  type SyncAccountsRequest,
 } from '#/server/account-sync'
 import {
   resetMcpControlPlaneDeps,
@@ -34,7 +40,7 @@ import {
   buildControlCenterAggregationFromSources,
 } from '#/server/control-center-ui-adapter'
 import { projectOps } from '#/server/control-center-ui'
-import { createMemoryIdempotencyStorage } from '#/server/idempotency'
+import { createMemoryIdempotencyStorage, requestHashOf } from '#/server/idempotency'
 import {
   createMemoryDispatchPlanStore,
   computePlanHash,
@@ -434,6 +440,36 @@ describe('AC-CAP capacity policy', () => {
 })
 
 describe('AC-ACCOUNT sync SLA + fail-closed', () => {
+  it('exports readback surfaces + coalesce helpers for scheduler foundation', () => {
+    expect(ACCOUNT_SYNC_READBACK_SURFACES).toEqual(['mcp', 'api', 'ui', 'ops'])
+    expect(isCoalescableAccountSyncTrigger('HEARTBEAT')).toBe(true)
+    expect(isImmediateAccountSyncTrigger('ORCHESTRATOR_LAUNCH')).toBe(true)
+    expect(
+      surfacesHaveParity(
+        {
+          mcp: { sourceRevision: 1, generatedAt: 't' },
+          api: { sourceRevision: 1, generatedAt: 't' },
+          ui: { sourceRevision: 1, generatedAt: 't' },
+          ops: { sourceRevision: 1, generatedAt: 't' },
+        },
+        1,
+        't',
+      ),
+    ).toBe(true)
+    expect(
+      surfacesHaveParity(
+        {
+          mcp: { sourceRevision: 1, generatedAt: 't' },
+          api: { sourceRevision: 1, generatedAt: 't' },
+          ui: null,
+          ops: { sourceRevision: 1, generatedAt: 't' },
+        },
+        1,
+        't',
+      ),
+    ).toBe(false)
+  })
+
   it('AC-ACCOUNT-01..05: triggers publish masked state with sourceRevision/generatedAt', async () => {
     const d = deps()
     const triggers = [
@@ -444,11 +480,14 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       'WAVE_CLOSE',
     ] as const
     let boardRev = 0
+    let entityExpectedRev = 0
     for (const trigger of triggers) {
       const res = await syncAccounts(d, {
         boardId: BOARD,
         sourceRevision: 1000 + boardRev,
         generatedAt: d.clock.nowISO(),
+        entityExpectedRev,
+        canonicalHash: 'canon-test-pin',
         expectedBoardRev: boardRev,
         accounts: [
           {
@@ -468,6 +507,7 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       expect(res.sourceRevision).toBe(1000 + boardRev)
       expect(res.stale).toBe(false)
       boardRev = res.boardRev
+      entityExpectedRev = (await d.accounts.get(BOARD))!.entityRev
       d.clock.advance(1000)
     }
     const audit = await d.atomic.listAudit(BOARD)
@@ -480,6 +520,8 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       boardId: BOARD,
       sourceRevision: 1,
       generatedAt: d.clock.nowISO(),
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
       expectedBoardRev: 0,
       accounts: [{ maskedAccountId: 'a1', status: 'OK', providerKind: 'GROK', effectiveInUse: 0, effectiveCap: 5 }],
       trigger: 'PERIODIC_HEALTH',
@@ -499,10 +541,13 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
     // After readback with matching generatedAt - wait, generatedAt on readback uses clock now which may differ
     // Re-publish and complete parity within window
     const gen = d.clock.nowISO()
+    const prevEntityRev = (await d.accounts.get(BOARD))!.entityRev
     const pub = await syncAccounts(d, {
       boardId: BOARD,
       sourceRevision: 2,
       generatedAt: gen,
+      entityExpectedRev: prevEntityRev,
+      canonicalHash: 'canon-test-pin',
       expectedBoardRev: (await d.atomic.getBoardState(BOARD)).boardRev,
       accounts: [{ maskedAccountId: 'a1', status: 'OK', providerKind: 'GROK', effectiveInUse: 0, effectiveCap: 5 }],
       trigger: 'PERIODIC_HEALTH',
@@ -535,6 +580,8 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       boardId: BOARD,
       sourceRevision: 42,
       generatedAt: gen,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
       expectedBoardRev: 0,
       accounts: [
         {
@@ -594,6 +641,9 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
     })
     await expect(
       publishDispatchPlan(ingestDeps, {
+        entityExpectedRev: 0,
+        // Pin match required so fail-closed path is DISPATCH_BLOCKED (stale capacity), not STALE_REVISION.
+        currentPinHash: 'c',
         boardId: BOARD,
         planId: 'p1',
         planVersion: 1,
@@ -629,7 +679,8 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
     // Stale zero capacity → AUTHORIZATION_REQUIRED (fail closed); board remains dispatchBlocked.
     await expect(
       registerRun(runDeps, {
-        boardId: BOARD,
+      canonicalHash: 'canon-run',
+      boardId: BOARD,
         runId: 'r1',
         taskId: 'T-1',
         targetGate: 'FUNCTIONAL',
@@ -656,6 +707,8 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       boardId: BOARD,
       sourceRevision: 7,
       generatedAt: gen,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
       expectedBoardRev: 0,
       accounts: [
         {
@@ -692,6 +745,8 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       boardId: BOARD,
       sourceRevision: 1,
       generatedAt: d.clock.nowISO(),
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
       expectedBoardRev: 0,
       accounts: [
         {
@@ -730,7 +785,9 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
         boardId: BOARD,
         sourceRevision: 1,
         generatedAt: d.clock.nowISO(),
-        expectedBoardRev: 0,
+        entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
+      expectedBoardRev: 0,
         accounts: [],
         trigger: 'HEARTBEAT',
         idempotencyKey: 'bad',
@@ -743,7 +800,9 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
         boardId: BOARD,
         sourceRevision: 1,
         generatedAt: d.clock.nowISO(),
-        expectedBoardRev: 0,
+        entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
+      expectedBoardRev: 0,
         accounts: [],
         trigger: 'HEARTBEAT',
         idempotencyKey: 'all',
@@ -755,11 +814,14 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
 
   it('idempotent sync_accounts replay', async () => {
     const d = deps()
+    // Identical body both times (including entityExpectedRev) — second call is pure replay.
     const body = {
       boardId: BOARD,
       sourceRevision: 9,
       generatedAt: d.clock.nowISO(),
+      entityExpectedRev: 0,
       expectedBoardRev: 0,
+      canonicalHash: 'canon-test-pin',
       accounts: [
         {
           maskedAccountId: 'm1',
@@ -772,11 +834,242 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       trigger: 'HEARTBEAT' as const,
       idempotencyKey: 'idem-acct',
       callerRole: 'ROOT_ORCHESTRATOR' as const,
+      health: { cpuPercent: 10, ramHealthy: true, loadHealthy: true },
+      genuineReadyPacketCount: 12,
     }
     const a = await syncAccounts(d, body)
     const b = await syncAccounts(d, body)
     expect(b.replayed).toBe(true)
     expect(b.sourceRevision).toBe(a.sourceRevision)
+  })
+
+  it('sync_accounts same key + changed health/genuineReadyPacketCount → IDEMPOTENCY_CONFLICT', async () => {
+    const d = deps()
+    const base: SyncAccountsRequest = {
+      boardId: BOARD,
+      sourceRevision: 11,
+      generatedAt: d.clock.nowISO(),
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-test-pin',
+      accounts: [
+        {
+          maskedAccountId: 'm1',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+      ],
+      trigger: 'HEARTBEAT',
+      idempotencyKey: 'idem-health-conflict',
+      callerRole: 'ROOT_ORCHESTRATOR',
+      health: { cpuPercent: 10, ramHealthy: true, loadHealthy: true },
+      genuineReadyPacketCount: 20,
+    }
+    const first = await syncAccounts(d, base)
+    expect(first.replayed).toBe(false)
+
+    await expect(
+      syncAccounts(d, {
+        ...base,
+        health: { cpuPercent: 50, ramHealthy: true, loadHealthy: true },
+      }),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+
+    await expect(
+      syncAccounts(d, {
+        ...base,
+        genuineReadyPacketCount: 99,
+      }),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+
+    // Exact same body still replays (no board rev bump on conflict paths).
+    const replay = await syncAccounts(d, base)
+    expect(replay.replayed).toBe(true)
+    expect(replay.boardRev).toBe(first.boardRev)
+  })
+
+  it('sync_accounts per-field conflict matrix (material fields in hash)', async () => {
+    const base: SyncAccountsRequest = {
+      boardId: BOARD,
+      sourceRevision: 3,
+      generatedAt: '2026-07-13T12:00:00.000Z',
+      entityExpectedRev: 0,
+      expectedBoardRev: 0,
+      canonicalHash: 'canon-matrix-pin',
+      accounts: [
+        {
+          maskedAccountId: 'm1',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 1,
+          effectiveCap: 5,
+          physicalSlotsDisplay: '1/20',
+          adaptiveQuotaState: 'HEALTHY',
+          reason: null,
+          statusChangedAt: null,
+        },
+      ],
+      trigger: 'HEARTBEAT',
+      idempotencyKey: 'unused-for-hash',
+      callerRole: 'ROOT_ORCHESTRATOR',
+      actorId: 'actor-matrix',
+      health: { cpuPercent: 15, ramHealthy: true, loadHealthy: true },
+      genuineReadyPacketCount: 30,
+      accountsAllFlag: false,
+    }
+    const baseHash = requestHashOf(syncAccountsIdempotencyBody(base))
+
+    type FieldCase = { name: string; patch: Partial<SyncAccountsRequest> }
+    const cases: Array<FieldCase> = [
+      // Previously omitted capacity inputs (must now change hash):
+      {
+        name: 'health.cpuPercent',
+        patch: { health: { cpuPercent: 80, ramHealthy: true, loadHealthy: true } },
+      },
+      {
+        name: 'health.ramHealthy',
+        patch: { health: { cpuPercent: 15, ramHealthy: false, loadHealthy: true } },
+      },
+      {
+        name: 'health.loadHealthy',
+        patch: { health: { cpuPercent: 15, ramHealthy: true, loadHealthy: false } },
+      },
+      { name: 'genuineReadyPacketCount', patch: { genuineReadyPacketCount: 60 } },
+      { name: 'health null vs present', patch: { health: undefined } },
+      { name: 'genuineReadyPacketCount null', patch: { genuineReadyPacketCount: undefined } },
+      // Remaining material fields affecting capacity/result:
+      { name: 'sourceRevision', patch: { sourceRevision: 4 } },
+      { name: 'generatedAt', patch: { generatedAt: '2026-07-13T12:00:01.000Z' } },
+      { name: 'entityExpectedRev', patch: { entityExpectedRev: 1 } },
+      { name: 'expectedBoardRev', patch: { expectedBoardRev: 2 } },
+      { name: 'canonicalHash', patch: { canonicalHash: 'other-pin' } },
+      { name: 'trigger', patch: { trigger: 'ORCHESTRATOR_LAUNCH' } },
+      { name: 'callerRole', patch: { callerRole: 'MFS_SYNC' } },
+      { name: 'actorId', patch: { actorId: 'actor-other' } },
+      { name: 'accountsAllFlag', patch: { accountsAllFlag: true } },
+      {
+        name: 'accounts.status',
+        patch: {
+          accounts: [
+            {
+              maskedAccountId: 'm1',
+              status: 'LIMIT',
+              providerKind: 'GROK',
+              effectiveInUse: 1,
+              effectiveCap: 5,
+            },
+          ],
+        },
+      },
+      {
+        name: 'accounts.providerKind',
+        patch: {
+          accounts: [
+            {
+              maskedAccountId: 'm1',
+              status: 'OK',
+              providerKind: 'SPARK',
+              effectiveInUse: 1,
+              effectiveCap: 5,
+            },
+          ],
+        },
+      },
+      {
+        name: 'accounts.effectiveInUse',
+        patch: {
+          accounts: [
+            {
+              maskedAccountId: 'm1',
+              status: 'OK',
+              providerKind: 'GROK',
+              effectiveInUse: 4,
+              effectiveCap: 5,
+            },
+          ],
+        },
+      },
+      {
+        name: 'accounts.effectiveCap',
+        patch: {
+          accounts: [
+            {
+              maskedAccountId: 'm1',
+              status: 'OK',
+              providerKind: 'GROK',
+              effectiveInUse: 1,
+              effectiveCap: 10,
+            },
+          ],
+        },
+      },
+      {
+        name: 'accounts.maskedAccountId',
+        patch: {
+          accounts: [
+            {
+              maskedAccountId: 'm2',
+              status: 'OK',
+              providerKind: 'GROK',
+              effectiveInUse: 1,
+              effectiveCap: 5,
+            },
+          ],
+        },
+      },
+    ]
+
+    for (const c of cases) {
+      const mutated = { ...base, ...c.patch }
+      const h = requestHashOf(syncAccountsIdempotencyBody(mutated))
+      expect(h, `field ${c.name} must change idempotency hash`).not.toBe(baseHash)
+    }
+
+    // Exact clone → same hash.
+    const clone: SyncAccountsRequest = {
+      ...base,
+      accounts: base.accounts.map((a) => ({ ...a })),
+      health: base.health ? { ...base.health } : undefined,
+    }
+    expect(requestHashOf(syncAccountsIdempotencyBody(clone))).toBe(baseHash)
+  })
+
+  it('rejects missing entityExpectedRev / canonicalHash and pin hash mismatch (no silent default)', async () => {
+    const d = deps()
+    const base = {
+      boardId: BOARD,
+      sourceRevision: 1,
+      generatedAt: d.clock.nowISO(),
+      expectedBoardRev: 0,
+      accounts: [
+        {
+          maskedAccountId: 'm1',
+          status: 'OK' as const,
+          providerKind: 'GROK' as const,
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+      ],
+      trigger: 'HEARTBEAT' as const,
+      idempotencyKey: 'cas-neg-1',
+      callerRole: 'ROOT_ORCHESTRATOR' as const,
+    }
+    await expect(
+      syncAccounts(d, { ...base, canonicalHash: 'canon-test-pin' } as never),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+    await expect(
+      syncAccounts(d, { ...base, entityExpectedRev: 0 } as never),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+    await expect(
+      syncAccounts(d, {
+        ...base,
+        entityExpectedRev: 0,
+        canonicalHash: 'canon-test-pin',
+        currentPinHash: 'different-pin-hash',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
   })
 })
 
@@ -814,6 +1107,8 @@ describe('shared account-sync store (MCP ↔ control-center parity)', () => {
       boardId: BOARD,
       sourceRevision,
       generatedAt,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
       expectedBoardRev: 0,
       accounts: [
         {
@@ -977,7 +1272,9 @@ describe('shared account-sync store (MCP ↔ control-center parity)', () => {
         boardId: BOARD,
         sourceRevision: 1,
         generatedAt: clock.nowISO(),
+        entityExpectedRev: 0,
         expectedBoardRev: 0,
+        canonicalHash: 'canon-test-pin',
         accounts: [grok('acc_tmp')],
         trigger: 'HEARTBEAT',
         idempotencyKey: 'tmp-reset',

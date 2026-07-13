@@ -436,6 +436,106 @@
   margin-top: 2px;
 }
 
+/* Owner humanDisplay block — field density only; no art redesign. */
+.ownerHumanBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.contentReviewBadge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--wk-warn, #8a5200) 12%, transparent);
+  color: var(--wk-warn, #8a5200);
+  border: 1px solid color-mix(in srgb, var(--wk-warn, #8a5200) 30%, transparent);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.ownerField {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  color: var(--text-dim, #58616f);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ownerFieldLabel {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #4a5568;
+  margin-bottom: 0.05rem;
+}
+
+.ownerAction {
+  margin-top: 2px;
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--r-sm, 8px);
+  background: var(--surface-2, #f4f6f9);
+  border: 1px solid var(--border-soft, #edf0f5);
+  font-size: 0.8125rem;
+  color: var(--text, #171a21);
+}
+
+.ownerActionLabel {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #4a5568;
+  margin-bottom: 0.15rem;
+}
+
+.ownerCitations {
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.72rem;
+  color: #4a5568;
+}
+
+.ownerCitationItem {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.citationMono {
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
+.citationNote {
+  color: var(--text-dim, #58616f);
+}
+
+.technicalSecondary {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  color: #4a5568;
+  margin-top: 2px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

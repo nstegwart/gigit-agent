@@ -172,22 +172,132 @@ export function useSetLifecycle() {
     },
   })
 }
-export interface AdvancePayload {
+/**
+ * Programmatic stage receipt for V3 HTTP advance. `programmatic: true` is required —
+ * owner/human hand-typed evidence is authority-invalid.
+ */
+export type AdvanceProgrammaticReceipt = {
+  programmatic: true
+  receiptId?: string
+  taskHash?: string
+  canonicalHash?: string
+  boardRev?: number
+  lifecycleRev?: number
+  fields?: Record<string, string | number | boolean | null>
+  authorRunId?: string | null
+  verifierRunId?: string | null
+  verdict?: string | null
+  issuedAt?: string
+  receiptHash?: string
+} & Record<string, unknown>
+
+/**
+ * Server-provided V3 advance packet (without target stage). UI must not invent revs,
+ * hashes, run ids, or receipts — only an agent/server-emitted complete packet is valid.
+ */
+export interface AdvanceV3Packet {
   taskId: string
-  toStage: string
-  byRunId?: string
+  entityExpectedRev: number
+  expectedBoardRev: number
+  expectedLifecycleRev: number
+  expectedTaskHash: string
+  canonicalHash: string
+  idempotencyKey: string
+  /** Registered implementer/author run id (never fabricated "human"). */
+  byRunId: string
+  authorRunId: string
+  verifierRunId: string
+  receipt: AdvanceProgrammaticReceipt
+  role?: string
+  evidence?: Record<string, unknown>
   verdict?: string
   commitSha?: string
   deployReceipt?: string
-  evidence?: Record<string, unknown>
   blocker?: string
+  productionApprovalId?: string
+  requireOppositeModel?: boolean
+  /** Optional aliases accepted by HTTP schema; prefer canonicalHash / entityExpectedRev. */
+  subjectHash?: string
+  expectedEntityRev?: number
   expectedRev?: number
 }
+
+/** Exact full V3 HTTP advance body (boardId injected by useAdvanceTask). */
+export interface AdvancePayload extends AdvanceV3Packet {
+  toStage: string
+}
+
+const FABRICATED_RUN_IDS = new Set(['human', 'owner', 'ui', 'manual', ''])
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === 'string' && v.trim().length > 0
+}
+
+function isInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v)
+}
+
+/**
+ * Fail-closed: true only when every required V3 field is present and no fabricated
+ * owner/human run identity is used. Incomplete / legacy shapes are rejected.
+ */
+export function isCompleteAdvanceV3Packet(value: unknown): value is AdvanceV3Packet {
+  if (value == null || typeof value !== 'object') return false
+  const v = value as Record<string, unknown>
+  if (!isNonEmptyString(v.taskId)) return false
+  if (!isInt(v.entityExpectedRev) && !isInt(v.expectedEntityRev) && !isInt(v.expectedRev)) return false
+  if (!isInt(v.expectedBoardRev)) return false
+  if (!isInt(v.expectedLifecycleRev)) return false
+  if (!isNonEmptyString(v.expectedTaskHash)) return false
+  const hash = isNonEmptyString(v.canonicalHash)
+    ? v.canonicalHash
+    : isNonEmptyString(v.subjectHash)
+      ? v.subjectHash
+      : ''
+  if (!hash) return false
+  if (!isNonEmptyString(v.idempotencyKey)) return false
+  if (!isNonEmptyString(v.byRunId) || FABRICATED_RUN_IDS.has(v.byRunId.trim().toLowerCase())) return false
+  if (!isNonEmptyString(v.authorRunId) || FABRICATED_RUN_IDS.has(v.authorRunId.trim().toLowerCase())) {
+    return false
+  }
+  if (
+    !isNonEmptyString(v.verifierRunId) ||
+    FABRICATED_RUN_IDS.has(v.verifierRunId.trim().toLowerCase())
+  ) {
+    return false
+  }
+  const receipt = v.receipt
+  if (receipt == null || typeof receipt !== 'object') return false
+  if ((receipt as { programmatic?: unknown }).programmatic !== true) return false
+  return true
+}
+
+/** Build mutation payload from a validated packet + target stage. Does not invent fields. */
+export function toAdvancePayload(packet: AdvanceV3Packet, toStage: string): AdvancePayload {
+  if (!isNonEmptyString(toStage)) {
+    throw new Error('toStage is required for V3 advance')
+  }
+  if (!isCompleteAdvanceV3Packet(packet)) {
+    throw new Error('incomplete V3 advance packet — refuse mutation')
+  }
+  return { ...packet, toStage }
+}
+
 export function useAdvanceTask() {
   const qc = useQueryClient()
   const boardId = useBoardId()
   return useMutation({
-    mutationFn: (v: AdvancePayload) => csrfServerCall(advanceTaskFn, { ...v, boardId }),
+    mutationFn: (v: AdvancePayload) => {
+      // Runtime fail-closed: never forward legacy / partial / fabricated payloads.
+      if (!isCompleteAdvanceV3Packet(v) || !isNonEmptyString(v.toStage)) {
+        return Promise.reject(
+          new Error(
+            'AdvancePayload incomplete or authority-invalid — full V3 packet required (entityExpectedRev, expectedBoardRev, expectedLifecycleRev, hashes, idempotencyKey, registered runs, programmatic receipt)',
+          ),
+        )
+      }
+      return csrfServerCall(advanceTaskFn, { ...v, boardId })
+    },
     onSuccess: (_r, v) => {
       void qc.invalidateQueries({ queryKey: ['task-lc', boardId, v.taskId] })
       void qc.invalidateQueries({ queryKey: ['rollup', boardId] })

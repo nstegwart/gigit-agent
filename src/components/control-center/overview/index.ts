@@ -8,6 +8,8 @@ export { OngoingZeroClick, OngoingCard } from './OngoingZeroClick'
 export { LowerPanels } from './LowerPanels'
 export { SurfaceBanner, OverviewSkeleton, EmptySlot } from './SurfaceBanner'
 export { SemanticIcon, bucketToneClass } from './SemanticIcon'
+export { OwnerHumanFields } from './OwnerHumanFields'
+export { resolveOwnerDisplay } from './ownerDisplay'
 export type {
   OverviewProps,
   OverviewSurfaceState,
@@ -18,6 +20,8 @@ export type {
   OverviewGlobalCard,
   OverviewBucketStrip,
   OverviewOngoingItem,
+  OverviewOwnerHumanFields,
+  OverviewOwnerCitation,
   OverviewLowerPanels,
   OverviewProjectSummary,
   OverviewLifecycleSummary,
@@ -29,4 +33,9 @@ export type {
   TypedErrorShape,
   PriorityNonPriorityReason,
 } from './types'
+export type {
+  OwnerDisplayCitation,
+  OwnerDisplayInput,
+  OwnerDisplayResolved,
+} from './ownerDisplay'
 export { PRIMARY_BUCKETS, BUCKET_LABELS } from './types'

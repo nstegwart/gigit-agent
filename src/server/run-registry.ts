@@ -147,8 +147,12 @@ export interface RegisterRunRequest {
   model: string
   effort?: string
   maskedAccountRef?: string | null
-  canonicalHash?: string | null
+  /** Required pin/canonical subject hash (full envelope). */
+  canonicalHash: string
+  /** When set (MCP pin), must equal canonicalHash. */
+  currentPinHash?: string | null
   collisionScopeLockIds?: Array<string>
+  /** Create requires 0 — no silent default. */
   expectedEntityRev: number
   expectedBoardRev: number
   idempotencyKey: string
@@ -193,6 +197,11 @@ export interface HeartbeatRunRequest {
   materialProgressAt?: string | null
   expectedEntityRev: number
   expectedBoardRev: number
+  /** 24h idempotency — required for full AC-API-03 enforcement. */
+  idempotencyKey: string
+  /** Required pin/canonical subject hash (full envelope). */
+  canonicalHash: string
+  currentPinHash?: string | null
 }
 
 export interface HeartbeatRunResult {
@@ -242,6 +251,37 @@ function requestHash(body: unknown): string {
       .join(',')}}`
   }
   return createHash('sha256').update(stable(body)).digest('hex')
+}
+
+/**
+ * Canonical idempotency request body for register_run.
+ * Covers every material request/envelope field except idempotencyKey itself.
+ * Same key + any material difference (incl. initialState/role/revisions) →
+ * IDEMPOTENCY_CONFLICT; exact same → replay / no board-rev bump.
+ */
+export function canonicalRegisterRunRequestBody(req: RegisterRunRequest): Record<string, unknown> {
+  return {
+    boardId: req.boardId,
+    runId: req.runId,
+    planId: req.planId ?? null,
+    planItemRank: req.planItemRank ?? null,
+    taskId: req.taskId,
+    targetGate: req.targetGate,
+    role: req.role ?? null,
+    agentId: req.agentId,
+    model: req.model,
+    effort: req.effort ?? 'medium',
+    maskedAccountRef: req.maskedAccountRef ?? null,
+    canonicalHash: req.canonicalHash ?? null,
+    currentPinHash: req.currentPinHash ?? null,
+    collisionScopeLockIds: [...(req.collisionScopeLockIds ?? [])].sort(),
+    expectedEntityRev: req.expectedEntityRev,
+    expectedBoardRev: req.expectedBoardRev,
+    initialState: req.initialState ?? 'STARTING',
+    actorRole: req.actorRole ?? null,
+    // Capacity snapshot is material: different usable/mode with same key must conflict.
+    capacity: req.capacity ?? null,
+  }
 }
 
 /**
@@ -353,34 +393,63 @@ export async function registerRun(
   if (!req.idempotencyKey) {
     throw new RunRegistryError('INVALID_INPUT', 'idempotencyKey required')
   }
+  if (typeof req.expectedEntityRev !== 'number' || !Number.isInteger(req.expectedEntityRev)) {
+    throw new RunRegistryError(
+      'INVALID_INPUT',
+      'expectedEntityRev is required (create=0) — no silent default',
+    )
+  }
+  if (typeof req.expectedBoardRev !== 'number' || !Number.isInteger(req.expectedBoardRev)) {
+    throw new RunRegistryError('INVALID_INPUT', 'expectedBoardRev is required — no silent default')
+  }
+  if (!req.canonicalHash || !String(req.canonicalHash).trim()) {
+    throw new RunRegistryError('INVALID_INPUT', 'canonicalHash is required (current pin hash)')
+  }
+  if (
+    req.currentPinHash != null &&
+    req.currentPinHash !== '' &&
+    req.currentPinHash !== req.canonicalHash
+  ) {
+    throw new RunRegistryError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
+      expectedCanonicalHash: req.canonicalHash,
+      currentPinHash: req.currentPinHash,
+    })
+  }
+  // Create semantics: entity must not yet exist → expectedEntityRev === 0
+  if (req.expectedEntityRev !== 0) {
+    throw new RunRegistryError(
+      'STALE_REVISION',
+      'register_run create requires expectedEntityRev 0',
+      { expectedEntityRev: req.expectedEntityRev, currentEntityRev: 0 },
+    )
+  }
 
   // Provider assignment authorization BEFORE idempotency / board lock / claim / audit (R5-02).
   // Missing/stale/null/NaN/non-finite/negative usable → fail closed; no optional bypass.
   await authorizeRegisterCapacity(deps, req)
 
-  const begin = await beginIdempotent(deps.idempotency, {
-    scope: {
-      actorId: req.agentId,
-      boardId: req.boardId,
-      endpoint: 'register_run',
-      key: req.idempotencyKey,
-    },
-    requestBody: {
+  let begin
+  try {
+    begin = await beginIdempotent(deps.idempotency, {
+      scope: {
+        actorId: req.agentId,
+        boardId: req.boardId,
+        endpoint: 'register_run',
+        key: req.idempotencyKey,
+      },
+      // Full material envelope — omit only idempotencyKey (scope key).
+      // Must include initialState/role/revisions so same key + any change conflicts.
+      requestBody: canonicalRegisterRunRequestBody(req),
+      // Unique runId binding is owned by register_run only (not heartbeat / locks).
       runId: req.runId,
-      planId: req.planId ?? null,
-      planItemRank: req.planItemRank ?? null,
-      taskId: req.taskId,
-      targetGate: req.targetGate,
-      agentId: req.agentId,
-      model: req.model,
-      effort: req.effort ?? 'medium',
-      maskedAccountRef: req.maskedAccountRef ?? null,
-      canonicalHash: req.canonicalHash ?? null,
-      collisionScopeLockIds: req.collisionScopeLockIds ?? [],
-    },
-    runId: req.runId,
-    nowMs: deps.clock.nowMs(),
-  })
+      nowMs: deps.clock.nowMs(),
+    })
+  } catch (e) {
+    if (e instanceof IdempotencyError) {
+      throw new RunRegistryError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
 
   if (begin.kind === 'REPLAY' && begin.record) {
     const body = begin.record.responseBody as RegisterRunResult
@@ -567,7 +636,66 @@ export async function heartbeatRun(
   deps: RunRegistryDeps,
   req: HeartbeatRunRequest,
 ): Promise<HeartbeatRunResult> {
-  return deps.runs.withBoardLock(req.boardId, async () => {
+  if (!req.idempotencyKey || !String(req.idempotencyKey).trim()) {
+    throw new RunRegistryError('INVALID_INPUT', 'idempotencyKey is required for heartbeat_run')
+  }
+  if (typeof req.expectedEntityRev !== 'number' || !Number.isInteger(req.expectedEntityRev)) {
+    throw new RunRegistryError('INVALID_INPUT', 'expectedEntityRev is required — no silent default')
+  }
+  if (typeof req.expectedBoardRev !== 'number' || !Number.isInteger(req.expectedBoardRev)) {
+    throw new RunRegistryError('INVALID_INPUT', 'expectedBoardRev is required — no silent default')
+  }
+  if (!req.canonicalHash || !String(req.canonicalHash).trim()) {
+    throw new RunRegistryError('INVALID_INPUT', 'canonicalHash is required (current pin hash)')
+  }
+  if (
+    req.currentPinHash != null &&
+    req.currentPinHash !== '' &&
+    req.currentPinHash !== req.canonicalHash
+  ) {
+    throw new RunRegistryError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
+      expectedCanonicalHash: req.canonicalHash,
+      currentPinHash: req.currentPinHash,
+    })
+  }
+
+  // 24h idempotency before board lock — exact replay, conflict on different body.
+  // Do NOT bind runId here: register_run already owns unique runId binding; heartbeats
+  // are multi-shot with per-sequence keys and would false-conflict (scope mismatch).
+  let begin
+  try {
+    begin = await beginIdempotent(deps.idempotency, {
+      scope: {
+        actorId: req.agentId,
+        boardId: req.boardId,
+        endpoint: 'heartbeat_run',
+        key: req.idempotencyKey.trim(),
+      },
+      requestBody: {
+        runId: req.runId,
+        agentId: req.agentId,
+        fencingToken: req.fencingToken,
+        heartbeatSequence: req.heartbeatSequence,
+        materialProgressAt: req.materialProgressAt ?? null,
+        expectedEntityRev: req.expectedEntityRev,
+        expectedBoardRev: req.expectedBoardRev,
+        canonicalHash: req.canonicalHash,
+      },
+      nowMs: deps.clock.nowMs(),
+    })
+  } catch (e) {
+    if (e instanceof IdempotencyError) {
+      throw new RunRegistryError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
+  if (begin.kind === 'REPLAY' && begin.record) {
+    const body = begin.record.responseBody as HeartbeatRunResult
+    return { ...body, replayed: true }
+  }
+
+  try {
+    const response = await deps.runs.withBoardLock(req.boardId, async () => {
     const rec = await deps.runs.get(req.boardId, req.runId)
     if (!rec) {
       throw new RunRegistryError('RUN_NOT_REGISTERED', `run not registered: ${req.runId}`, {
@@ -591,7 +719,7 @@ export async function heartbeatRun(
       })
     }
 
-    // Duplicate sequence → replay prior response
+    // Duplicate sequence → replay prior response (no entity/board bump)
     if (req.heartbeatSequence === rec.heartbeatSequence && rec.lastHeartbeatResponse) {
       return { ...rec.lastHeartbeatResponse, replayed: true }
     }
@@ -774,8 +902,23 @@ export async function heartbeatRun(
       lastHeartbeatResponse: response,
     }
     await deps.runs.put(next)
+    // Heartbeat mutates entity rev only — never bumps board rev (no double-bump).
     return response
-  })
+    })
+
+    await completeIdempotent(deps.idempotency, begin.scopeHash, 200, response, begin.requestHash)
+    return response
+  } catch (e) {
+    try {
+      await deps.idempotency.delete(begin.scopeHash)
+    } catch {
+      /* ignore cleanup */
+    }
+    if (e instanceof IdempotencyError) {
+      throw new RunRegistryError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
 }
 
 export async function terminateRun(
@@ -919,9 +1062,5 @@ export function classifyRunProductivity(rec: RunRecord, nowMs: number): 'PRODUCT
 }
 
 export function hashRegisterBody(req: RegisterRunRequest): string {
-  return requestHash({
-    runId: req.runId,
-    taskId: req.taskId,
-    planId: req.planId ?? null,
-  })
+  return requestHash(canonicalRegisterRunRequestBody(req))
 }

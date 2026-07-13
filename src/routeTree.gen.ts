@@ -15,6 +15,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as BBoardIdRouteImport } from './routes/b.$boardId'
 import { Route as ApiPublicSnapshotRouteImport } from './routes/api.public-snapshot'
 import { Route as ApiHealthzRouteImport } from './routes/api.healthz'
+import { Route as ApiAccountsRouteImport } from './routes/api.accounts'
 import { Route as AdminUsersRouteImport } from './routes/admin.users'
 import { Route as BBoardIdIndexRouteImport } from './routes/b.$boardId.index'
 import { Route as BBoardIdWorkRouteImport } from './routes/b.$boardId.work'
@@ -61,6 +62,11 @@ const ApiPublicSnapshotRoute = ApiPublicSnapshotRouteImport.update({
 const ApiHealthzRoute = ApiHealthzRouteImport.update({
   id: '/api/healthz',
   path: '/api/healthz',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAccountsRoute = ApiAccountsRouteImport.update({
+  id: '/api/accounts',
+  path: '/api/accounts',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminUsersRoute = AdminUsersRouteImport.update({
@@ -156,6 +162,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
   '/admin/users': typeof AdminUsersRoute
+  '/api/accounts': typeof ApiAccountsRoute
   '/api/healthz': typeof ApiHealthzRoute
   '/api/public-snapshot': typeof ApiPublicSnapshotRoute
   '/b/$boardId': typeof BBoardIdRouteWithChildren
@@ -181,6 +188,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
   '/admin/users': typeof AdminUsersRoute
+  '/api/accounts': typeof ApiAccountsRoute
   '/api/healthz': typeof ApiHealthzRoute
   '/api/public-snapshot': typeof ApiPublicSnapshotRoute
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
@@ -206,6 +214,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
   '/admin/users': typeof AdminUsersRoute
+  '/api/accounts': typeof ApiAccountsRoute
   '/api/healthz': typeof ApiHealthzRoute
   '/api/public-snapshot': typeof ApiPublicSnapshotRoute
   '/b/$boardId': typeof BBoardIdRouteWithChildren
@@ -233,6 +242,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/mcp'
     | '/admin/users'
+    | '/api/accounts'
     | '/api/healthz'
     | '/api/public-snapshot'
     | '/b/$boardId'
@@ -258,6 +268,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/mcp'
     | '/admin/users'
+    | '/api/accounts'
     | '/api/healthz'
     | '/api/public-snapshot'
     | '/b/$boardId/agents'
@@ -282,6 +293,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/mcp'
     | '/admin/users'
+    | '/api/accounts'
     | '/api/healthz'
     | '/api/public-snapshot'
     | '/b/$boardId'
@@ -308,6 +320,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   McpRoute: typeof McpRoute
   AdminUsersRoute: typeof AdminUsersRoute
+  ApiAccountsRoute: typeof ApiAccountsRoute
   ApiHealthzRoute: typeof ApiHealthzRoute
   ApiPublicSnapshotRoute: typeof ApiPublicSnapshotRoute
   BBoardIdRoute: typeof BBoardIdRouteWithChildren
@@ -355,6 +368,13 @@ declare module '@tanstack/react-router' {
       path: '/api/healthz'
       fullPath: '/api/healthz'
       preLoaderRoute: typeof ApiHealthzRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/accounts': {
+      id: '/api/accounts'
+      path: '/api/accounts'
+      fullPath: '/api/accounts'
+      preLoaderRoute: typeof ApiAccountsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin/users': {
@@ -526,6 +546,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   McpRoute: McpRoute,
   AdminUsersRoute: AdminUsersRoute,
+  ApiAccountsRoute: ApiAccountsRoute,
   ApiHealthzRoute: ApiHealthzRoute,
   ApiPublicSnapshotRoute: ApiPublicSnapshotRoute,
   BBoardIdRoute: BBoardIdRouteWithChildren,

@@ -43,6 +43,106 @@ function asSeverity(v: string | null | undefined): DecisionSeverity {
   return 'MEDIUM'
 }
 
+/**
+ * Presentation wire for owner humanDisplay (fail-closed).
+ * Never invents copy; maps server OwnerHumanDisplayUiProjection only.
+ */
+export type OwnerHumanDisplayView = {
+  contentReviewRequired: boolean
+  effectiveReviewStatus: string
+  /** Owner primary title — blockedShell when content review required. */
+  ownerPrimaryTitle: string
+  statusSentence: string
+  ownerAction: string
+  whyItMatters: string
+  next: string
+  blocker: string
+  citations: ReadonlyArray<{ field: string; path: string; note?: string }>
+  missionQuestionLinks: ReadonlyArray<{
+    questionId: string
+    field?: string
+    note?: string
+  }>
+  acceptanceLinks: ReadonlyArray<{ id?: string; path: string; summary?: string }>
+  pin: {
+    snapshotId: string | null
+    boardRev: number | null
+    lifecycleRev: number | null
+    canonicalHash: string | null
+    sourceHash: string
+  }
+}
+
+function mapOwnerHumanDisplayView(
+  raw: unknown,
+): OwnerHumanDisplayView | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const pinRaw =
+    o.pin && typeof o.pin === 'object'
+      ? (o.pin as Record<string, unknown>)
+      : null
+  const citations = Array.isArray(o.citations)
+    ? o.citations.map((c) => {
+        const row = (c ?? {}) as Record<string, unknown>
+        return {
+          field: String(row.field ?? ''),
+          path: String(row.path ?? ''),
+          note: typeof row.note === 'string' ? row.note : undefined,
+        }
+      })
+    : []
+  const missionQuestionLinks = Array.isArray(o.missionQuestionLinks)
+    ? o.missionQuestionLinks.map((m) => {
+        const row = (m ?? {}) as Record<string, unknown>
+        return {
+          questionId: String(row.questionId ?? ''),
+          field: typeof row.field === 'string' ? row.field : undefined,
+          note: typeof row.note === 'string' ? row.note : undefined,
+        }
+      })
+    : []
+  const acceptanceLinks = Array.isArray(o.acceptanceLinks)
+    ? o.acceptanceLinks.map((a) => {
+        const row = (a ?? {}) as Record<string, unknown>
+        return {
+          id: typeof row.id === 'string' ? row.id : undefined,
+          path: String(row.path ?? ''),
+          summary: typeof row.summary === 'string' ? row.summary : undefined,
+        }
+      })
+    : []
+  return {
+    contentReviewRequired: Boolean(o.contentReviewRequired),
+    effectiveReviewStatus: String(o.effectiveReviewStatus ?? 'CONTENT_REVIEW_REQUIRED'),
+    ownerPrimaryTitle: String(o.ownerPrimaryTitle ?? ''),
+    statusSentence: String(o.statusSentence ?? ''),
+    ownerAction: String(o.ownerAction ?? ''),
+    whyItMatters: String(o.whyItMatters ?? ''),
+    next: String(o.next ?? ''),
+    blocker: String(o.blocker ?? ''),
+    citations,
+    missionQuestionLinks,
+    acceptanceLinks,
+    pin: {
+      snapshotId:
+        pinRaw && typeof pinRaw.snapshotId === 'string' ? pinRaw.snapshotId : null,
+      boardRev:
+        pinRaw && typeof pinRaw.boardRev === 'number' ? pinRaw.boardRev : null,
+      lifecycleRev:
+        pinRaw && typeof pinRaw.lifecycleRev === 'number'
+          ? pinRaw.lifecycleRev
+          : null,
+      canonicalHash:
+        pinRaw && typeof pinRaw.canonicalHash === 'string'
+          ? pinRaw.canonicalHash
+          : null,
+      sourceHash:
+        pinRaw && typeof pinRaw.sourceHash === 'string' ? pinRaw.sourceHash : '',
+    },
+  }
+}
+
 /** Optional wire fields some projectors may attach; never invent when absent. */
 type OverviewLowerWire = {
   lifecycle?: ReadonlyArray<{ stage?: string; count?: number }>
@@ -191,6 +291,13 @@ export function overviewEnvelopeToProps(
       : top && 'question' in top
         ? ((top as { question: string | null }).question ?? null)
         : null
+  // Owner humanDisplay on topDecision when server projects it (optional wire).
+  // Never invent ownerAction from blocking; missing/unreviewed → fail-closed fields.
+  const topHd = top
+    ? mapOwnerHumanDisplayView(
+        (top as { ownerHumanDisplay?: unknown }).ownerHumanDisplay,
+      )
+    : null
   const decision =
     d.decisionCount > 0 || top
       ? {
@@ -199,15 +306,26 @@ export function overviewEnvelopeToProps(
           topItem: top
             ? {
                 decisionId: top.decisionId,
+                // Technical title retained for secondary/tech mode only.
                 title: top.title,
                 // Real question only — never synthesize from title.
                 question: topQuestion,
                 severity: asSeverity(top.severity),
                 blocking: top.blocking,
-                ownerAction: top.blocking
-                  ? 'Resolve blocking decision'
-                  : 'Review decision',
+                // Owner action ONLY from projected humanDisplay — never invent
+                // "Resolve blocking decision" / "Review decision" as owner primary copy.
+                ownerAction: topHd?.ownerAction ?? '',
                 status: top.status,
+                ownerHumanDisplay: topHd,
+                ownerPrimaryTitle: topHd?.ownerPrimaryTitle ?? null,
+                statusSentence: topHd?.statusSentence ?? null,
+                whyItMatters: topHd?.whyItMatters ?? null,
+                next: topHd?.next ?? null,
+                blocker: topHd?.blocker ?? null,
+                contentReviewRequired: topHd?.contentReviewRequired ?? true,
+                effectiveReviewStatus:
+                  topHd?.effectiveReviewStatus ?? 'CONTENT_REVIEW_REQUIRED',
+                citations: topHd?.citations ?? null,
               }
             : null,
         }
@@ -287,22 +405,38 @@ export function overviewEnvelopeToProps(
       onSelectBucket: opts.onSelectBucket,
       onToggleStale: opts.onToggleStale,
     },
-    ongoing: d.ongoing.map((o) => ({
-      taskId: o.taskId,
-      title: o.title,
-      targetGate: o.targetGate,
-      agentId: o.agentId,
-      role: o.role,
-      model: o.model ?? '—',
-      effort: o.effort ?? '—',
-      maskedAccount: o.maskedAccount ?? '—',
-      startedAge: formatAgeSeconds(o.startedAgeSeconds),
-      heartbeatAge: formatAgeSeconds(o.heartbeatAgeSeconds),
-      materialProgressAge: formatAgeSeconds(o.materialProgressAgeSeconds),
-      productiveState: o.productiveSubstate,
-      evidenceLabel: o.evidenceLink ? 'evidence' : 'no evidence',
-      evidenceHref: o.evidenceLink,
-    })),
+    ongoing: d.ongoing.map((o) => {
+      const hd = mapOwnerHumanDisplayView(
+        (o as { ownerHumanDisplay?: unknown }).ownerHumanDisplay,
+      )
+      return {
+        taskId: o.taskId,
+        // Technical title retained for technical mode; owner primary is ownerHumanDisplay.
+        title: o.title,
+        targetGate: o.targetGate,
+        agentId: o.agentId,
+        role: o.role,
+        model: o.model ?? '—',
+        effort: o.effort ?? '—',
+        maskedAccount: o.maskedAccount ?? '—',
+        startedAge: formatAgeSeconds(o.startedAgeSeconds),
+        heartbeatAge: formatAgeSeconds(o.heartbeatAgeSeconds),
+        materialProgressAge: formatAgeSeconds(o.materialProgressAgeSeconds),
+        productiveState: o.productiveSubstate,
+        evidenceLabel: o.evidenceLink ? 'evidence' : 'no evidence',
+        evidenceHref: o.evidenceLink,
+        ownerHumanDisplay: hd,
+        // Owner-facing title: never fall back to technical title when HD requires review.
+        ownerPrimaryTitle: hd?.ownerPrimaryTitle ?? null,
+        statusSentence: hd?.statusSentence ?? null,
+        ownerAction: hd?.ownerAction ?? null,
+        whyItMatters: hd?.whyItMatters ?? null,
+        next: hd?.next ?? null,
+        blocker: hd?.blocker ?? null,
+        contentReviewRequired: hd?.contentReviewRequired ?? true,
+        effectiveReviewStatus: hd?.effectiveReviewStatus ?? 'CONTENT_REVIEW_REQUIRED',
+      }
+    }),
     lower: {
       projects: d.projects.map((pr) => ({
         projectId: pr.id,
@@ -489,7 +623,7 @@ export function workEnvelopeToProps(
     ]),
   )
 
-  const items: WorkItemRow[] = d.items.map((row) => {
+  const items = d.items.map((row) => {
     const bucket = (row.bucket ?? opts.activeBucket) as PrimaryBucket
     const join = ongoingByTask.get(row.taskId)
     const nextWhy = nextReasonByTask.get(row.taskId)
@@ -497,8 +631,12 @@ export function workEnvelopeToProps(
       typeof row.claimState === 'string' && row.claimState.length > 0
         ? row.claimState
         : null
+    const hd = mapOwnerHumanDisplayView(
+      (row as { ownerHumanDisplay?: unknown }).ownerHumanDisplay,
+    )
     return {
       taskId: row.taskId,
+      // Technical title for technical mode only — owner primary is ownerHumanDisplay.
       title: row.title,
       bucket,
       overlays: row.overlays,
@@ -518,8 +656,29 @@ export function workEnvelopeToProps(
           }
         : null,
       detailHref: `/b/${encodeURIComponent(opts.boardId)}/tasks/${encodeURIComponent(row.taskId)}`,
+      ownerHumanDisplay: hd,
+      ownerPrimaryTitle: hd?.ownerPrimaryTitle ?? null,
+      statusSentence: hd?.statusSentence ?? null,
+      ownerAction: hd?.ownerAction ?? null,
+      whyItMatters: hd?.whyItMatters ?? null,
+      next: hd?.next ?? null,
+      blocker: hd?.blocker ?? null,
+      contentReviewRequired: hd?.contentReviewRequired ?? true,
+      effectiveReviewStatus: hd?.effectiveReviewStatus ?? 'CONTENT_REVIEW_REQUIRED',
     }
-  })
+  }) as Array<
+    WorkItemRow & {
+      ownerHumanDisplay: OwnerHumanDisplayView | null
+      ownerPrimaryTitle: string | null
+      statusSentence: string | null
+      ownerAction: string | null
+      whyItMatters: string | null
+      next: string | null
+      blocker: string | null
+      contentReviewRequired: boolean
+      effectiveReviewStatus: string
+    }
+  >
 
   return {
     state,
@@ -732,6 +891,14 @@ function mapDecisionRowToView(row: Record<string, unknown>): DecisionItemView {
   if (!Array.isArray(row.evidence)) absentFields.push('evidence')
   if (recommendation == null) absentFields.push('agentRecommendation')
 
+  const hd = mapOwnerHumanDisplayView(row.ownerHumanDisplay)
+  // Prefer humanDisplay ownerAction when projected; else presentational action labels.
+  const hdOwnerAction = hd?.ownerAction
+  const resolvedOwnerActions =
+    hdOwnerAction && hdOwnerAction.length > 0
+      ? [hdOwnerAction, ...ownerActions.filter((a) => a !== hdOwnerAction)]
+      : ownerActions
+
   return {
     decisionId: String(row.decisionId ?? ''),
     title: String(row.title ?? ''),
@@ -758,9 +925,27 @@ function mapDecisionRowToView(row: Record<string, unknown>): DecisionItemView {
     featureId: readOptionalString(row, 'featureId'),
     taskId: readOptionalString(row, 'taskId'),
     runId: readOptionalString(row, 'runId'),
-    ownerActions,
+    ownerActions: resolvedOwnerActions,
     partialFields: absentFields.length > 0,
     absentFields,
+    // Extended owner HD wire (not on DecisionItemView yet — cast-safe excess for consumers).
+    ownerHumanDisplay: hd,
+    ownerPrimaryTitle: hd?.ownerPrimaryTitle ?? null,
+    statusSentence: hd?.statusSentence ?? null,
+    whyItMatters: hd?.whyItMatters ?? null,
+    next: hd?.next ?? null,
+    blocker: hd?.blocker ?? null,
+    contentReviewRequired: hd?.contentReviewRequired ?? true,
+    effectiveReviewStatus: hd?.effectiveReviewStatus ?? 'CONTENT_REVIEW_REQUIRED',
+  } as DecisionItemView & {
+    ownerHumanDisplay: OwnerHumanDisplayView | null
+    ownerPrimaryTitle: string | null
+    statusSentence: string | null
+    whyItMatters: string | null
+    next: string | null
+    blocker: string | null
+    contentReviewRequired: boolean
+    effectiveReviewStatus: string
   }
 }
 

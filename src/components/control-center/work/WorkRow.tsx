@@ -8,6 +8,8 @@ import {
 } from './labels'
 import type { WorkItemRow } from './types'
 import styles from './work.module.css'
+import { resolveOwnerDisplay } from './ownerDisplay'
+import { OwnerHumanFields } from './OwnerHumanFields'
 
 const BADGE_CLASS: Record<(typeof BUCKET_SEMANTICS)[PrimaryBucket]['tone'], string> = {
   done: styles.badgeDone,
@@ -188,6 +190,74 @@ function ReasonLine({ item }: { item: WorkItemRow }) {
   )
 }
 
+function ownerDisplayFor(item: WorkItemRow) {
+  return resolveOwnerDisplay({
+    technicalTitle: item.title,
+    ownerPrimaryTitle: item.ownerPrimaryTitle,
+    statusSentence: item.statusSentence,
+    ownerAction: item.ownerAction,
+    whyItMatters: item.whyItMatters,
+    next: item.next,
+    blocker: item.blocker,
+    contentReviewRequired: item.contentReviewRequired,
+    effectiveReviewStatus: item.effectiveReviewStatus,
+    citations: item.citations,
+    ownerHumanDisplay: item.ownerHumanDisplay,
+  })
+}
+
+function TitleBlock({
+  item,
+  href,
+  onActivate,
+}: {
+  item: WorkItemRow
+  href?: string
+  onActivate?: WorkRowProps['onActivate']
+}) {
+  const display = ownerDisplayFor(item)
+  const titleClass = styles.taskTitle
+  const titleNode = href ? (
+    <a
+      href={href}
+      className={titleClass}
+      data-testid={`work-row-link-${item.taskId}`}
+      data-field="ownerPrimaryTitle"
+      onClick={(e) => {
+        e.stopPropagation()
+        handleActivate(item, onActivate, e)
+      }}
+    >
+      {display.primaryTitle}
+    </a>
+  ) : (
+    <div className={titleClass} data-testid="work-row-owner-title" data-field="ownerPrimaryTitle">
+      {display.primaryTitle}
+    </div>
+  )
+
+  return (
+    <div
+      data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
+      data-owner-primary-title={display.primaryTitle}
+    >
+      {titleNode}
+      <div className={styles.taskId}>{item.taskId}</div>
+      {display.technicalTitle && display.technicalTitle !== display.primaryTitle ? (
+        <div
+          className={styles.technicalSecondary}
+          data-testid="work-row-technical-title"
+          data-field="technicalTitle"
+          title={display.technicalTitle}
+        >
+          {display.technicalTitle}
+        </div>
+      ) : null}
+      <OwnerHumanFields display={display} testIdPrefix="work-row" />
+    </div>
+  )
+}
+
 /**
  * SPA onActivate on primary click only. Modifier / non-primary clicks keep
  * native <a href={detailHref}> (open-in-new-tab, middle-click).
@@ -213,6 +283,7 @@ function handleActivate(
 
 /**
  * Work list row. Displays server bucket/reason only — never classifies.
+ * Owner primary title from humanDisplay; never raw technical title as primary.
  * Completed rows remain DONE with reconciliation/stale/beyond-stage overlays.
  * Drilldown: prefers native <a href={detailHref}> for accessible navigation;
  * optional onActivate intercepts for SPA navigate while keeping href for
@@ -220,6 +291,7 @@ function handleActivate(
  */
 export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
   const href = item.detailHref ?? undefined
+  const display = ownerDisplayFor(item)
 
   if (asCard) {
     // Card shell is a div (not <a>/<button>): may contain title + evidence links.
@@ -232,6 +304,7 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
         data-task-id={item.taskId}
         data-bucket={item.bucket}
         data-detail-href={href ?? undefined}
+        data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
         tabIndex={0}
         onClick={(e) => {
           if ((e.target as HTMLElement).closest('a')) return
@@ -245,24 +318,7 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
         }}
       >
         <div className={styles.cardHeader}>
-          <div>
-            {href ? (
-              <a
-                href={href}
-                className={styles.taskTitle}
-                data-testid={`work-row-link-${item.taskId}`}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  handleActivate(item, onActivate, e)
-                }}
-              >
-                {item.title}
-              </a>
-            ) : (
-              <div className={styles.taskTitle}>{item.title}</div>
-            )}
-            <div className={styles.taskId}>{item.taskId}</div>
-          </div>
+          <TitleBlock item={item} href={href} onActivate={onActivate} />
           <BucketBadge bucket={item.bucket} />
         </div>
         <OverlayBadges overlays={item.overlays} />
@@ -286,6 +342,7 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
       data-task-id={item.taskId}
       data-bucket={item.bucket}
       data-detail-href={href ?? undefined}
+      data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
       tabIndex={0}
       onClick={() => handleActivate(item, onActivate)}
       onKeyDown={(e) => {
@@ -300,22 +357,7 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
       }}
     >
       <td>
-        {href ? (
-          <a
-            href={href}
-            className={styles.taskTitle}
-            data-testid={`work-row-link-${item.taskId}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              handleActivate(item, onActivate, e)
-            }}
-          >
-            {item.title}
-          </a>
-        ) : (
-          <div className={styles.taskTitle}>{item.title}</div>
-        )}
-        <div className={styles.taskId}>{item.taskId}</div>
+        <TitleBlock item={item} href={href} onActivate={onActivate} />
         <ReasonLine item={item} />
         <ReconciliationBlock item={item} />
         <OngoingBlock item={item} />

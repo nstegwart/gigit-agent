@@ -635,7 +635,7 @@ describe('control-center-public-snapshot mapper', () => {
     expect(badParity.accounts?.[0]?.usable).toBe(false)
   })
 
-  it('fail-closed: pin.stale or sectionErrors → STALE_OR_PARTIAL', () => {
+  it('fail-closed: pin.stale or structural sectionErrors → STALE_OR_PARTIAL', () => {
     const agg = buildAgg()
     const stalePin = {
       ...agg,
@@ -662,5 +662,85 @@ describe('control-center-public-snapshot mapper', () => {
       expect(e).toBeInstanceOf(ControlCenterPublicSnapshotError)
       expect((e as ControlCenterPublicSnapshotError).code).toBe('STALE_OR_PARTIAL')
     }
+
+    // Schema/hash structural codes also hard-fail (never soft domain path).
+    for (const code of ['SCHEMA_INVALID', 'HASH_MISMATCH', 'PIN_AUTHORITY_INCOMPLETE']) {
+      try {
+        mapControlCenterAggregationToPublicInput({
+          ...agg,
+          sectionErrors: [{ section: 'revisions', code, message: 'structural' }],
+        })
+        expect.unreachable(`should throw for ${code}`)
+      } catch (e) {
+        expect((e as ControlCenterPublicSnapshotError).code).toBe('STALE_OR_PARTIAL')
+      }
+    }
+  })
+
+  it('domain blockers DATA_INTEGRITY / ACCOUNT_SYNC_MISSING → sanitized soft path (not throw)', () => {
+    const base = buildAgg()
+
+    // DATA_INTEGRITY section + valid pin → materialize with forceStale, usableCapacity=0
+    const di = mapControlCenterAggregationToPublicInput({
+      ...base,
+      sectionErrors: [
+        {
+          section: 'classification',
+          code: 'DATA_INTEGRITY',
+          message: 'No valid V3 classification receipts — private detail must not leak as reason',
+        },
+      ],
+    })
+    expect(di.forceStale).toBe(true)
+    expect(di.usableCapacity).toBe(0)
+    expect(di.domainBlockers?.some((b) => b.code === 'DATA_INTEGRITY')).toBe(true)
+    // Reason is section-scoped only — free-form private message stripped.
+    const diBlocker = di.domainBlockers?.find((b) => b.code === 'DATA_INTEGRITY')
+    expect(diBlocker?.reason).toBe('section:classification')
+    expect(JSON.stringify(di)).not.toContain('private detail')
+
+    // ACCOUNT_SYNC_MISSING via sectionError
+    const asm = mapControlCenterAggregationToPublicInput({
+      ...base,
+      sectionErrors: [
+        {
+          section: 'accounts',
+          code: 'ACCOUNT_SYNC_MISSING',
+          message: 'No authoritative C2 AccountSyncSnapshot',
+        },
+      ],
+    })
+    expect(asm.forceStale).toBe(true)
+    expect(asm.usableCapacity).toBe(0)
+    expect(asm.domainBlockers?.some((b) => b.code === 'ACCOUNT_SYNC_MISSING')).toBe(true)
+
+    // Missing account-sync meta alone (no sectionError) still domain-blocks.
+    const noMeta = mapControlCenterAggregationToPublicInput({
+      ...base,
+      accountSyncMeta: null,
+    })
+    expect(noMeta.forceStale).toBe(true)
+    expect(noMeta.usableCapacity).toBe(0)
+    expect(noMeta.domainBlockers?.some((b) => b.code === 'ACCOUNT_SYNC_MISSING')).toBe(true)
+    expect(noMeta.accounts?.every((a) => a.usable === false)).toBe(true)
+
+    // Materialize succeeds (never 503 path) with stale freshness forced.
+    const mat = materializePublicSnapshotFromControlCenter({
+      ...base,
+      sectionErrors: [
+        { section: 'classification', code: 'DATA_INTEGRITY', message: 'unclassified' },
+      ],
+    })
+    expect(mat.payload.freshness.stale).toBe(true)
+    expect(mat.payload.usableCapacity).toBe(0)
+    expect(mat.payload.domainBlockers.some((b) => b.code === 'DATA_INTEGRITY')).toBe(true)
+    expect(mat.payload.schemaVersion).toBe(PUBLIC_SNAPSHOT_SCHEMA)
+  })
+
+  it('healthy pin-complete aggregation exposes usableCapacity without forceStale', () => {
+    const input = mapControlCenterAggregationToPublicInput(buildAgg())
+    expect(input.forceStale).toBe(false)
+    expect(input.usableCapacity).toBe(4)
+    expect(input.domainBlockers ?? []).toEqual([])
   })
 })

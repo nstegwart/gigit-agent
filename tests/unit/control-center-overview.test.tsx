@@ -47,6 +47,17 @@ function ongoingItem(
   partial: Partial<OverviewOngoingItem> &
     Pick<OverviewOngoingItem, 'taskId' | 'title' | 'productiveState'>,
 ): OverviewOngoingItem {
+  // Default reviewed owner primary so zero-click field tests still exercise happy path.
+  // Fail-closed CONTENT_REVIEW_REQUIRED is covered by dedicated owner-display tests.
+  const forceShell = partial.contentReviewRequired === true
+  const ownerDefaults = forceShell
+    ? {}
+    : {
+        ownerPrimaryTitle: partial.ownerPrimaryTitle ?? partial.title,
+        contentReviewRequired: false as const,
+        effectiveReviewStatus: partial.effectiveReviewStatus ?? 'REVIEWED',
+        statusSentence: partial.statusSentence ?? 'Sedang dikerjakan.',
+      }
   return {
     targetGate: 'FUNCTIONAL',
     agentId: 'agent-1',
@@ -59,6 +70,7 @@ function ongoingItem(
     materialProgressAge: '3m',
     evidenceLabel: 'receipt/sha',
     evidenceHref: '/b/mfs/evidence/r1',
+    ...ownerDefaults,
     ...partial,
   }
 }
@@ -66,22 +78,59 @@ function ongoingItem(
 function decisionSection(
   overrides: Partial<OverviewDecisionSection> = {},
 ): OverviewDecisionSection {
+  // Default reviewed owner primary so sticky/a11y decision tests still exercise happy path.
+  // Fail-closed CONTENT_REVIEW_REQUIRED / non-REVIEWED is covered by dedicated HD tests.
+  const topOverride = overrides.topItem
+  const forceShell = topOverride?.contentReviewRequired === true
+  const reviewedDefaults = forceShell
+    ? {}
+    : {
+        ownerPrimaryTitle:
+          topOverride?.ownerPrimaryTitle ??
+          topOverride?.title ??
+          'Approve capacity floor',
+        contentReviewRequired: false as const,
+        effectiveReviewStatus: topOverride?.effectiveReviewStatus ?? 'REVIEWED',
+        statusSentence:
+          topOverride?.statusSentence ?? 'Keputusan menunggu tindakan pemilik.',
+      }
+  const baseTop = {
+    decisionId: 'dec-1',
+    title: 'Approve capacity floor',
+    question: 'Raise Grok floor to 60?',
+    severity: 'CRITICAL' as const,
+    blocking: true,
+    ownerAction: 'Choose option A or B; blocking decisions cannot be snoozed.',
+    options: [
+      { optionId: 'a', label: 'Approve raise' },
+      { optionId: 'b', label: 'Keep current' },
+    ],
+    ...reviewedDefaults,
+  }
   return {
     count: 2,
     topSeverity: 'CRITICAL',
-    topItem: {
-      decisionId: 'dec-1',
-      title: 'Approve capacity floor',
-      question: 'Raise Grok floor to 60?',
-      severity: 'CRITICAL',
-      blocking: true,
-      ownerAction: 'Choose option A or B; blocking decisions cannot be snoozed.',
-      options: [
-        { optionId: 'a', label: 'Approve raise' },
-        { optionId: 'b', label: 'Keep current' },
-      ],
-    },
     ...overrides,
+    topItem: topOverride
+      ? {
+          ...baseTop,
+          ...reviewedDefaults,
+          ...topOverride,
+          // Re-apply reviewed defaults only when caller did not force shell / status.
+          ...(forceShell
+            ? {}
+            : {
+                ownerPrimaryTitle:
+                  topOverride.ownerPrimaryTitle ??
+                  topOverride.title ??
+                  baseTop.ownerPrimaryTitle,
+                contentReviewRequired:
+                  topOverride.contentReviewRequired ?? false,
+                effectiveReviewStatus:
+                  topOverride.effectiveReviewStatus ?? 'REVIEWED',
+              }),
+        }
+      : baseTop,
   }
 }
 
@@ -249,6 +298,120 @@ describe('control-center overview components', () => {
       .getAllByTestId('overview-ongoing-card')
       .map((el) => el.getAttribute('data-task-id'))
     expect(ids).toEqual(['z-last', 'a-first'])
+  })
+
+  it('owner humanDisplay: reviewed primary never uses technical title as primary', () => {
+    render(
+      <OngoingZeroClick
+        items={[
+          ongoingItem({
+            taskId: 't-hd-ok',
+            title: '[FC-77] technical only',
+            productiveState: 'PRODUCTIVE',
+            ownerPrimaryTitle: 'Selesaikan wire human display',
+            contentReviewRequired: false,
+            effectiveReviewStatus: 'REVIEWED',
+            statusSentence: 'Sedang dikerjakan oleh implementer.',
+            whyItMatters: 'Owner perlu salinan manusia, bukan kode teknis.',
+            next: 'Lanjutkan implementasi komponen.',
+            blocker: 'Tidak ada.',
+            ownerAction: 'Pantau progress zero-click.',
+            citations: [
+              { field: 'title', path: 'humanDisplay.title', note: 'reviewed' },
+            ],
+          }),
+        ]}
+      />,
+    )
+    const card = screen.getByTestId('overview-ongoing-card')
+    expect(card.getAttribute('data-content-review-required')).toBe('false')
+    expect(screen.getByTestId('overview-ongoing-owner-title').textContent).toBe(
+      'Selesaikan wire human display',
+    )
+    // Technical title demoted to secondary; must not be primary h3.
+    expect(screen.getByTestId('overview-ongoing-technical-title').textContent).toBe(
+      '[FC-77] technical only',
+    )
+    expect(screen.getByTestId('overview-ongoing-status').textContent).toMatch(
+      /Sedang dikerjakan/,
+    )
+    expect(screen.getByTestId('overview-ongoing-why').textContent).toMatch(/salinan manusia/)
+    expect(screen.getByTestId('overview-ongoing-next').textContent).toMatch(/Lanjutkan/)
+    expect(screen.getByTestId('overview-ongoing-blocker').textContent).toMatch(/Tidak ada/)
+    expect(screen.getByTestId('overview-ongoing-action').textContent).toMatch(/Pantau/)
+    expect(screen.getByTestId('overview-ongoing-citations').textContent).toMatch(
+      /humanDisplay\.title/,
+    )
+    expect(screen.queryByTestId('overview-ongoing-review-badge')).toBeNull()
+  })
+
+  it('owner humanDisplay: missing/unreviewed → CONTENT_REVIEW_REQUIRED shell, never technical primary', () => {
+    render(
+      <OngoingZeroClick
+        items={[
+          {
+            taskId: 't-hd-shell',
+            title: '[FC-99] raw technical must not be primary',
+            targetGate: 'FUNCTIONAL',
+            agentId: 'a1',
+            role: 'implementer',
+            model: 'grok',
+            effort: 'high',
+            maskedAccount: 'm***',
+            startedAge: '1m',
+            heartbeatAge: '5s',
+            materialProgressAge: '1m',
+            productiveState: 'PRODUCTIVE',
+            evidenceLabel: 'none',
+            // No ownerPrimaryTitle — fail closed
+          },
+        ]}
+      />,
+    )
+    const card = screen.getByTestId('overview-ongoing-card')
+    expect(card.getAttribute('data-content-review-required')).toBe('true')
+    const primary = screen.getByTestId('overview-ongoing-owner-title')
+    expect(primary.textContent).toBe('CONTENT_REVIEW_REQUIRED')
+    expect(primary.textContent).not.toContain('[FC-99]')
+    expect(screen.getByTestId('overview-ongoing-review-badge').textContent).toMatch(
+      /CONTENT_REVIEW_REQUIRED/,
+    )
+    expect(screen.getByTestId('overview-ongoing-technical-title').textContent).toContain(
+      '[FC-99]',
+    )
+  })
+
+  it('owner humanDisplay: projected blocked shell title used when contentReviewRequired', () => {
+    render(
+      <OngoingZeroClick
+        items={[
+          ongoingItem({
+            taskId: 't-hd-blocked',
+            title: 'tech-run-title',
+            productiveState: 'IDLE',
+            contentReviewRequired: true,
+            effectiveReviewStatus: 'CONTENT_REVIEW_REQUIRED',
+            ownerPrimaryTitle: 'Konten pemilik memerlukan peninjauan',
+            statusSentence: 'Status peninjauan: CONTENT_REVIEW_REQUIRED.',
+            whyItMatters: 'Salinan teknis mentah tidak boleh menjadi teks utama bagi pemilik.',
+            next: 'Lengkapi humanDisplay dan minta peninjauan independen.',
+            blocker: 'CONTENT_REVIEW_REQUIRED — salinan hilang, basi, konflik, atau belum ditinjau.',
+            ownerAction: 'Tinjau atau tugaskan peninjauan salinan manusia untuk item ini.',
+            citations: [
+              { field: 'reviewStatus', path: 'humanDisplay.evaluateHumanDisplay' },
+            ],
+          }),
+        ]}
+      />,
+    )
+    const primary = screen.getByTestId('overview-ongoing-owner-title')
+    expect(primary.textContent).toBe('Konten pemilik memerlukan peninjauan')
+    expect(primary.textContent).not.toContain('tech-run-title')
+    expect(screen.getByTestId('overview-ongoing-review-badge')).toBeTruthy()
+    expect(screen.getByTestId('overview-ongoing-status').textContent).toMatch(
+      /CONTENT_REVIEW_REQUIRED/,
+    )
+    expect(screen.getByTestId('overview-ongoing-action').textContent).toMatch(/Tinjau/)
   })
 
   it('Needs Your Decision sticky pill shows count, severity, expand (controlled)', () => {
@@ -448,6 +611,9 @@ describe('control-center overview components', () => {
       topItem: {
         decisionId: 'dec-nb',
         title: 'Non-blocking call',
+        ownerPrimaryTitle: 'Non-blocking call',
+        contentReviewRequired: false,
+        effectiveReviewStatus: 'REVIEWED',
         question: 'Approve optional change?',
         severity: 'MEDIUM',
         blocking: false,
@@ -471,14 +637,169 @@ describe('control-center overview components', () => {
     expect(screen.getByTestId('overview-decision-pill')).toBeTruthy()
   })
 
-  it('decision card shows exact owner action and elevated blocking chrome', () => {
+  it('decision card shows owner action from humanDisplay and elevated blocking chrome', () => {
     render(<Overview {...populatedProps({ surfaceState: 'needs-human' })} />)
     const card = screen.getByTestId('overview-decision-card')
     expect(attr(card, 'data-blocking')).toBe('true')
-    expect(within(card).getByText(/Exact owner action/i)).toBeTruthy()
+    expect(within(card).getByText(/Owner action/i)).toBeTruthy()
     expect(
       within(card).getByText(/Choose option A or B; blocking decisions cannot be snoozed/),
     ).toBeTruthy()
+    // Reviewed fixture defaults: owner primary ready.
+    expect(attr(card, 'data-content-review-required')).toBe('false')
+  })
+
+  it('overview decision: reviewed humanDisplay primary + fields; technical secondary only', () => {
+    render(
+      <NeedsYourDecision
+        decision={decisionSection({
+          count: 1,
+          topSeverity: 'HIGH',
+          topItem: {
+            decisionId: 'dec-hd-ok',
+            title: '[DEC-TECH] raw technical must not be primary',
+            ownerPrimaryTitle: 'Setujui kenaikan kapasitas Grok',
+            contentReviewRequired: false,
+            effectiveReviewStatus: 'REVIEWED',
+            question: 'Naikkan floor Grok ke 60?',
+            severity: 'HIGH',
+            blocking: true,
+            ownerAction: 'Pilih opsi A atau B; keputusan blocking tidak bisa di-snooze.',
+            whyItMatters: 'Kapasitas membatasi throughput prioritas.',
+            next: 'Tinjau opsi dan putuskan.',
+            blocker: 'Menunggu keputusan pemilik.',
+            statusSentence: 'Keputusan blocking menunggu owner.',
+            citations: [{ field: 'title', path: 'humanDisplay.title', note: 'reviewed' }],
+            options: [
+              { optionId: 'a', label: 'Setujui' },
+              { optionId: 'b', label: 'Tolak' },
+            ],
+          },
+        })}
+        enableStickyPill={false}
+      />,
+    )
+    const card = screen.getByTestId('overview-decision-card')
+    expect(card.getAttribute('data-content-review-required')).toBe('false')
+    expect(screen.getByTestId('overview-decision-owner-title').textContent).toBe(
+      'Setujui kenaikan kapasitas Grok',
+    )
+    expect(screen.getByTestId('overview-decision-owner-title').textContent).not.toContain(
+      '[DEC-TECH]',
+    )
+    expect(screen.getByTestId('overview-decision-technical-title').textContent).toContain(
+      '[DEC-TECH]',
+    )
+    expect(screen.getByTestId('overview-decision-status').textContent).toMatch(/blocking/)
+    expect(screen.getByTestId('overview-decision-why').textContent).toMatch(/Kapasitas/)
+    expect(screen.getByTestId('overview-decision-next').textContent).toMatch(/Tinjau/)
+    expect(screen.getByTestId('overview-decision-blocker').textContent).toMatch(/Menunggu/)
+    expect(screen.getByTestId('overview-decision-action').textContent).toMatch(/Pilih opsi/)
+    expect(screen.getByTestId('overview-decision-citations').textContent).toMatch(
+      /humanDisplay\.title/,
+    )
+    expect(screen.queryByTestId('overview-decision-review-badge')).toBeNull()
+    expect(card.textContent).not.toMatch(/Resolve blocking decision/)
+  })
+
+  it('overview decision: missing humanDisplay → CONTENT_REVIEW_REQUIRED, never technical primary or invented action', () => {
+    render(
+      <NeedsYourDecision
+        decision={{
+          count: 1,
+          topSeverity: 'CRITICAL',
+          topItem: {
+            decisionId: 'dec-hd-shell',
+            title: '[DEC-99] technical only',
+            question: 'Should we ship?',
+            severity: 'CRITICAL',
+            blocking: true,
+            ownerAction: '',
+          },
+        }}
+        enableStickyPill={false}
+      />,
+    )
+    const card = screen.getByTestId('overview-decision-card')
+    expect(card.getAttribute('data-content-review-required')).toBe('true')
+    const primary = screen.getByTestId('overview-decision-owner-title')
+    expect(primary.textContent).toBe('CONTENT_REVIEW_REQUIRED')
+    expect(primary.textContent).not.toContain('[DEC-99]')
+    expect(screen.getByTestId('overview-decision-review-badge').textContent).toMatch(
+      /CONTENT_REVIEW_REQUIRED/,
+    )
+    expect(screen.getByTestId('overview-decision-technical-title').textContent).toContain(
+      '[DEC-99]',
+    )
+    expect(card.textContent).not.toMatch(/Resolve blocking decision/)
+    expect(card.textContent).not.toMatch(/Review decision/)
+    expect(screen.queryByTestId('overview-decision-action')).toBeNull()
+  })
+
+  it('adversarial: GENERATED_NEEDS_REVIEW / BLOCKED / CONFLICT fail-closed even if contentReviewRequired=false', () => {
+    const statuses = [
+      'GENERATED_NEEDS_REVIEW',
+      'BLOCKED',
+      'BLOCKED_MISSING_SOURCE',
+      'CONFLICT',
+      'CONTENT_REVIEW_REQUIRED',
+    ] as const
+
+    for (const status of statuses) {
+      const { unmount } = render(
+        <OngoingZeroClick
+          items={[
+            ongoingItem({
+              taskId: `t-adv-${status}`,
+              title: `[TECH-${status}] must not be primary`,
+              productiveState: 'PRODUCTIVE',
+              contentReviewRequired: false,
+              effectiveReviewStatus: status,
+              ownerPrimaryTitle: `Generated title for ${status}`,
+              ownerAction: 'Invented action must not mark ready',
+              statusSentence: 'Should still show content-review shell badge.',
+            }),
+          ]}
+        />,
+      )
+      const card = screen.getByTestId('overview-ongoing-card')
+      expect(card.getAttribute('data-content-review-required')).toBe('true')
+      expect(screen.getByTestId('overview-ongoing-review-badge')).toBeTruthy()
+      const primary = screen.getByTestId('overview-ongoing-owner-title')
+      expect(primary.textContent).not.toContain(`[TECH-${status}]`)
+      expect(primary.textContent).toBe(`Generated title for ${status}`)
+      unmount()
+    }
+
+    for (const status of statuses) {
+      const { unmount } = render(
+        <NeedsYourDecision
+          decision={{
+            count: 1,
+            topSeverity: 'HIGH',
+            topItem: {
+              decisionId: `dec-adv-${status}`,
+              title: `[DEC-TECH-${status}]`,
+              question: 'Q?',
+              severity: 'HIGH',
+              blocking: true,
+              contentReviewRequired: false,
+              effectiveReviewStatus: status,
+              ownerPrimaryTitle: `Decision generated ${status}`,
+              ownerAction: 'Do not invent ready state',
+            },
+          }}
+          enableStickyPill={false}
+        />,
+      )
+      const card = screen.getByTestId('overview-decision-card')
+      expect(card.getAttribute('data-content-review-required')).toBe('true')
+      expect(screen.getByTestId('overview-decision-review-badge')).toBeTruthy()
+      expect(screen.getByTestId('overview-decision-owner-title').textContent).not.toContain(
+        `[DEC-TECH-${status}]`,
+      )
+      unmount()
+    }
   })
 
   it('PRIORITY card shows N-A majority semantics without inventing PASS', () => {

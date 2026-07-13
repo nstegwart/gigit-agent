@@ -26,6 +26,7 @@
  *   node qa/e2e/fixtures/seed/seed-isolated.mjs --disposable-proof
  *   CAIRN_ENV=staging CAIRN_STAGING_SEED_APPROVED=1 … node qa/e2e/fixtures/seed/seed-isolated.mjs --staging
  */
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -48,9 +49,16 @@ import {
   buildHarnessPin,
   buildSyntheticTasks,
   computeTaskHash,
+  stableStringifyPlan,
   validateFixtureContract,
   CANONICAL_TASK_IDS,
 } from './control-center-fixture.mjs'
+
+/** Real definition schema — never store TM_UI_CONTRACT_V1 as a control_plane snapshot. */
+export const CANONICAL_TASK_SNAPSHOT_SCHEMA = 'MFS_CANONICAL_TASK_SNAPSHOT_V1'
+/** UI contract is for harness/screenshot manifests only — not pin/canonical complete. */
+export const UI_CONTRACT_SCHEMA = 'TM_UI_CONTRACT_V1'
+export const CANONICALIZATION_ALGORITHM = 'stable-sorted-json-sha256-v1'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -301,6 +309,220 @@ export async function ensureBaselineTables(db) {
 }
 
 /**
+ * Produce a real MFS_CANONICAL_TASK_SNAPSHOT_V1 envelope from synthetic seed tasks.
+ * TM_UI_CONTRACT_V1 stubs must NEVER be written as control_plane_snapshots —
+ * that schema is UI harness only and must not be treated as pin-complete canonical.
+ *
+ * Definition-only payload (no lifecycle stage/evidence fields on tasks).
+ * Hash = sha256(stable-sorted JSON of payload) matching server produceCanonicalSnapshot.
+ *
+ * @returns {{ schemaVersion: string, manifest: object, payload: object, payloadSha256: string }}
+ */
+export function produceSyntheticCanonicalSnapshot({
+  boardId,
+  pin,
+  boundTasks,
+  now,
+  producerVersion,
+}) {
+  const projectIds = new Set()
+  const featureIds = new Set()
+  const tasks = []
+  const classifications = []
+  const featureContractJoins = []
+  const primaryOwnerships = []
+  const dependencies = []
+  const acceptancePaths = []
+
+  for (const t of boundTasks ?? []) {
+    const id = String(t.id)
+    const projectId = t.project_id ? String(t.project_id) : null
+    const featureId = t.feature_contract_id ? String(t.feature_contract_id) : null
+    if (projectId) projectIds.add(projectId)
+    if (featureId) featureIds.add(featureId)
+
+    // Definition-only task row — strip lifecycle fields so schema validation accepts.
+    tasks.push({
+      id,
+      projectId,
+      featureContractId: featureId,
+      title: t.title ?? null,
+      objective: null,
+    })
+
+    const cls = t.data?.classification
+    if (cls && cls.taskClass && cls.disposition) {
+      const taskClass = String(cls.taskClass)
+      const disposition = String(cls.disposition)
+      // Only emit valid V3 class/disposition pairs; skip incomplete (UNCLASSIFIED path).
+      if (
+        (taskClass === 'PRODUCT' ||
+          taskClass === 'CONTROL_PLANE' ||
+          taskClass === 'UNCLASSIFIED') &&
+        (disposition === 'ACTIVE' ||
+          disposition === 'HOLD' ||
+          disposition === 'EXCLUDE' ||
+          disposition === 'UNCLASSIFIED')
+      ) {
+        classifications.push({
+          taskId: id,
+          taskClass,
+          disposition,
+          membershipPortfolioId: cls.receipt?.membershipPortfolioId ?? null,
+          membershipProofHash: cls.receipt?.membershipProofHash ?? null,
+          receiptId: cls.receipt?.receiptId ?? null,
+          receiptHash: cls.receipt?.receiptHash ?? null,
+        })
+      }
+    }
+
+    if (featureId) {
+      featureContractJoins.push({ featureContractId: featureId, taskId: id })
+    }
+    primaryOwnerships.push({
+      taskId: id,
+      ownerId: `owner-synth-${projectId ?? 'board'}`,
+    })
+
+    const deps = Array.isArray(t.data?.dependencies) ? t.data.dependencies : []
+    for (const dep of deps) {
+      if (dep) dependencies.push({ fromTaskId: String(dep), toTaskId: id })
+    }
+
+    if (t.data?.evidence_path) {
+      acceptancePaths.push({
+        id: `ap-${id}`,
+        taskId: id,
+        path: String(t.data.evidence_path),
+        kind: 'evidence_path',
+      })
+    }
+  }
+
+  const projects = [...projectIds].sort().map((id) => ({ id, name: id }))
+  // One synthetic flow + node per project (required graph skeleton).
+  const flows = projects.map((p) => ({
+    id: `flow-${p.id}`,
+    projectId: p.id,
+    name: `Flow ${p.id}`,
+  }))
+  const nodes = flows.map((f) => ({
+    id: `node-${f.id}`,
+    flowId: f.id,
+    projectId: f.projectId,
+    name: `Node ${f.id}`,
+  }))
+  const nodeJoins = tasks
+    .filter((t) => t.projectId)
+    .map((t) => ({
+      nodeId: `node-flow-${t.projectId}`,
+      taskId: t.id,
+    }))
+
+  const byId = (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  const byTaskId = (a, b) =>
+    a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0
+  const byDep = (a, b) => {
+    const f = a.fromTaskId < b.fromTaskId ? -1 : a.fromTaskId > b.fromTaskId ? 1 : 0
+    if (f !== 0) return f
+    return a.toTaskId < b.toTaskId ? -1 : a.toTaskId > b.toTaskId ? 1 : 0
+  }
+  const byFc = (a, b) => {
+    const f =
+      a.featureContractId < b.featureContractId
+        ? -1
+        : a.featureContractId > b.featureContractId
+          ? 1
+          : 0
+    if (f !== 0) return f
+    return a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0
+  }
+  const byNode = (a, b) => {
+    const n = a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0
+    if (n !== 0) return n
+    return a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0
+  }
+
+  const payload = {
+    projects: [...projects].sort(byId),
+    flows: [...flows].sort(byId),
+    nodes: [...nodes].sort(byId),
+    tasks: [...tasks].sort(byId),
+    dependencies: [...dependencies].sort(byDep),
+    featureContractJoins: [...featureContractJoins].sort(byFc),
+    nodeJoins: [...nodeJoins].sort(byNode),
+    primaryOwnerships: [...primaryOwnerships].sort(byTaskId),
+    classifications: [...classifications].sort(byTaskId),
+    anchors: [],
+    acceptancePaths: [...acceptancePaths].sort(byId),
+  }
+
+  const payloadSha256 = createHash('sha256')
+    .update(stableStringifyPlan(payload))
+    .digest('hex')
+
+  // Pin subject hash = server canonicalSubjectHash(snapshot)
+  // sha256(stableStringify({ snapshotId, payloadSha256, boardId }))
+  const canonicalHash = createHash('sha256')
+    .update(
+      stableStringifyPlan({
+        snapshotId: pin.canonicalSnapshotId,
+        payloadSha256,
+        boardId,
+      }),
+    )
+    .digest('hex')
+
+  const generatedAt = now ?? new Date(0).toISOString()
+  const manifest = {
+    schemaVersion: CANONICAL_TASK_SNAPSHOT_SCHEMA,
+    boardId,
+    snapshotId: pin.canonicalSnapshotId,
+    sourceRepoId: 'synthetic/control-center-seed',
+    // Hex commit stand-in (7–64 chars); not a real git SHA for synthetic seed.
+    sourceCommitSha: payloadSha256.slice(0, 40),
+    generatedAt,
+    canonicalizationAlgorithm: CANONICALIZATION_ALGORITHM,
+    payloadSha256,
+    distinctCounts: {
+      projects: payload.projects.length,
+      flows: payload.flows.length,
+      nodes: payload.nodes.length,
+      tasks: payload.tasks.length,
+      dependencies: payload.dependencies.length,
+      featureContractJoins: payload.featureContractJoins.length,
+      nodeJoins: payload.nodeJoins.length,
+      classifications: payload.classifications.length,
+      anchors: 0,
+      acceptancePaths: payload.acceptancePaths.length,
+      primaryOwnerships: payload.primaryOwnerships.length,
+    },
+    producerVersion: producerVersion ?? 'seed-isolated-canonical-v1',
+    // Honest seed marker (manifest extension; not part of payload hash).
+    syntheticSeed: true,
+    uiContractSchema: UI_CONTRACT_SCHEMA,
+    note: 'TM_UI_CONTRACT_V1 is harness-only; pin authority uses MFS_CANONICAL_TASK_SNAPSHOT_V1',
+  }
+
+  return {
+    schemaVersion: CANONICAL_TASK_SNAPSHOT_SCHEMA,
+    manifest,
+    payload,
+    payloadSha256,
+    /** Use as board_revisions.subject_hash / pin.canonicalHash for loadable pin. */
+    canonicalHash,
+  }
+}
+
+/**
+ * Guard: never treat TM_UI_CONTRACT_V1 (or any non-canonical schema) as pin-complete.
+ * Used by self-tests and as documentation for loaders.
+ */
+export function isCanonicalCompleteSchema(schemaVersion) {
+  return String(schemaVersion ?? '').trim() === CANONICAL_TASK_SNAPSHOT_SCHEMA
+}
+
+/**
  * Delete only board-scoped rows for the synthetic board, then insert fresh fixture.
  * Does NOT DROP DATABASE, does NOT truncate unrelated boards/tables, does NOT
  * touch schema_migrations.
@@ -418,6 +640,29 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
     )
   }
 
+  // Real MFS_CANONICAL_TASK_SNAPSHOT_V1 — never TM_UI_CONTRACT_V1 as pin authority.
+  // TM_UI_CONTRACT_V1 is screenshot/harness schema only; treating it as complete was a
+  // false pin that caused SCHEMA_INVALID / mismatch on definition load.
+  const canonical = produceSyntheticCanonicalSnapshot({
+    boardId,
+    pin,
+    boundTasks,
+    now,
+    producerVersion: producerVersion ?? 'seed-isolated-canonical-v1',
+  })
+  if (!isCanonicalCompleteSchema(canonical.schemaVersion)) {
+    throw new Error(
+      `seed refused non-canonical schema for control_plane_snapshots: ${canonical.schemaVersion}`,
+    )
+  }
+  if (canonical.schemaVersion === UI_CONTRACT_SCHEMA) {
+    throw new Error('seed refused TM_UI_CONTRACT_V1 as control_plane snapshot (not canonical complete)')
+  }
+
+  // subject_hash must equal server canonicalSubjectHash(snapshot) for pin-complete load.
+  // Prefer produced canonicalHash over fixture pin.canonicalHash (harness residual).
+  const pinSubjectHash = canonical.canonicalHash
+
   await db.query(
     `INSERT INTO board_revisions (board_id, board_rev, lifecycle_rev, subject_hash, canonical_snapshot_id)
      VALUES (?,?,?,?,?)`,
@@ -425,39 +670,29 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
       boardId,
       pin.boardRev,
       pin.lifecycleRev,
-      pin.canonicalHash.slice(0, 64),
+      pinSubjectHash,
       pin.canonicalSnapshotId,
     ],
   )
 
   await db.query(
     `INSERT INTO control_plane_snapshots
-      (board_id, snapshot_id, schema_version, payload_sha256, board_rev, lifecycle_rev, generated_at, producer_version, payload_json)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
+      (board_id, snapshot_id, schema_version, source_repo_id, source_commit_sha, payload_sha256, board_rev, lifecycle_rev, generated_at, producer_version, payload_json)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     [
       boardId,
       pin.canonicalSnapshotId,
-      'TM_UI_CONTRACT_V1',
-      pin.canonicalHash.slice(0, 64),
+      CANONICAL_TASK_SNAPSHOT_SCHEMA,
+      canonical.manifest.sourceRepoId,
+      canonical.manifest.sourceCommitSha,
+      canonical.payloadSha256,
       pin.boardRev,
       pin.lifecycleRev,
       now.slice(0, 23).replace('T', ' '),
-      producerVersion,
-      JSON.stringify({
-        synthetic: true,
-        boardId,
-        taskHash: pin.taskHash,
-        overlays: [
-          'DONE',
-          'ONGOING',
-          'NEXT',
-          'QUEUED',
-          'BLOCKED',
-          'RECON',
-          'STALE',
-          'missing-proof',
-        ],
-      }),
+      canonical.manifest.producerVersion,
+      // payload_json = definition payload only (server reconstructSnapshotFromRegistryRow).
+      // Manifest fields live in columns; never store TM_UI_CONTRACT_V1 as schema_version.
+      JSON.stringify(canonical.payload),
     ],
   )
 
@@ -945,6 +1180,42 @@ export function runSeedSelfTests() {
     pin.taskHash?.slice(0, 12),
   )
   ok('board-id-default', DEFAULT_BOARD_ID === 'mfs-rebuild')
+
+  // Seed hardening: real MFS_CANONICAL_TASK_SNAPSHOT_V1, never TM_UI as complete.
+  const synthCanon = produceSyntheticCanonicalSnapshot({
+    boardId: DEFAULT_BOARD_ID,
+    pin,
+    boundTasks: tasks,
+    now,
+    producerVersion: 'seed-self-test',
+  })
+  ok(
+    'canonical-schema-is-mfs-v1',
+    synthCanon.schemaVersion === CANONICAL_TASK_SNAPSHOT_SCHEMA,
+    synthCanon.schemaVersion,
+  )
+  ok(
+    'tm-ui-contract-never-canonical-complete',
+    !isCanonicalCompleteSchema(UI_CONTRACT_SCHEMA),
+    UI_CONTRACT_SCHEMA,
+  )
+  ok(
+    'canonical-payload-sha256-hex',
+    /^[0-9a-f]{64}$/i.test(synthCanon.payloadSha256),
+    synthCanon.payloadSha256?.slice(0, 12),
+  )
+  ok(
+    'canonical-payload-has-tasks',
+    Array.isArray(synthCanon.payload.tasks) && synthCanon.payload.tasks.length === tasks.length,
+    String(synthCanon.payload.tasks?.length),
+  )
+  ok(
+    'canonical-no-lifecycle-on-tasks',
+    synthCanon.payload.tasks.every(
+      (t) => t.lifecycleStage == null && t.lifecycle_stage == null,
+    ),
+    'lifecycle-free',
+  )
 
   // Gate: missing approval
   const g1 = assertStagingSeedAllowed({

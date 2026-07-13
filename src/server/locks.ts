@@ -6,7 +6,13 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 
-import type { ControlPlaneClock } from './board-store'
+import type { ControlPlaneAtomicStore, ControlPlaneClock } from './board-store'
+import {
+  beginIdempotent,
+  completeIdempotent,
+  type IdempotencyStorage,
+  IdempotencyError,
+} from './idempotency'
 
 // ---- constants ----
 
@@ -67,6 +73,8 @@ export type LockErrorCode =
   | 'AUTHOR_VERIFIER_CONFLICT'
   | 'INVALID_INPUT'
   | 'LOCK_NOT_FOUND'
+  | 'STALE_REVISION'
+  | 'IDEMPOTENCY_CONFLICT'
 
 export class LockError extends Error {
   readonly code: LockErrorCode
@@ -581,6 +589,69 @@ export interface AcquireIntegrationRequest {
   checkpointId: string
   pathspecs: Array<string>
   leaseMs?: number
+  /** Create requires 0; renew CAS current lock entityRev. */
+  entityExpectedRev: number
+  expectedBoardRev: number
+  canonicalHash: string
+  currentPinHash?: string | null
+  idempotencyKey: string
+}
+
+export interface IntegrationLockGateDeps {
+  atomic: ControlPlaneAtomicStore
+  idempotency: IdempotencyStorage
+}
+
+/**
+ * Material request envelope for integration_lock idempotency hashing.
+ *
+ * Every material field must participate so same-key body mutations conflict
+ * (approval/model/repo/branch/run/agent/checkpoint/pathspecs/revs/hash/leaseMs).
+ * Board/actor/endpoint/key live in idempotency *scope* (not this body).
+ * Non-material: currentPinHash (pin probe only), idempotencyKey (scope key).
+ *
+ * leaseMs is material: it controls leaseExpiresAtMs on create/renew. Same key
+ * with a different lease duration must IDEMPOTENCY_CONFLICT — never silently
+ * replay a shorter/longer lease. Omitted leaseMs is canonicalized to
+ * DEFAULT_LOCK_LEASE_MS so default and explicit-default are equivalent.
+ *
+ * Independent verifiers previously observed rootAcceptanceId + integratorModel
+ * missing from the hash body — that allowed silent approval/model drift under
+ * the same key. Both remain required here. leaseMs was later added after a
+ * follow-on finding that lease duration could drift under the same key.
+ */
+export function integrationLockIdempotencyRequestBody(
+  req: AcquireIntegrationRequest,
+): Readonly<{
+  repoId: string
+  trackingBranch: string
+  runId: string
+  agentId: string
+  integratorModel: string
+  rootAcceptanceId: string
+  checkpointId: string
+  pathspecs: ReadonlyArray<string>
+  entityExpectedRev: number
+  expectedBoardRev: number
+  canonicalHash: string
+  leaseMs: number
+}> {
+  return {
+    repoId: req.repoId,
+    trackingBranch: req.trackingBranch,
+    runId: req.runId,
+    agentId: req.agentId,
+    integratorModel: req.integratorModel,
+    rootAcceptanceId: req.rootAcceptanceId,
+    checkpointId: req.checkpointId,
+    // Copy; array order is material (stableStringify preserves array order).
+    pathspecs: [...req.pathspecs],
+    entityExpectedRev: req.entityExpectedRev,
+    expectedBoardRev: req.expectedBoardRev,
+    canonicalHash: req.canonicalHash,
+    // Effective lease duration (create/renew both use the same default).
+    leaseMs: req.leaseMs ?? DEFAULT_LOCK_LEASE_MS,
+  }
 }
 
 /** Exactly one live COMMIT_INTEGRATE per repoId+trackingBranch. */
@@ -588,6 +659,7 @@ export async function acquireIntegrationLock(
   store: LockStore,
   clock: ControlPlaneClock,
   req: AcquireIntegrationRequest,
+  gate: IntegrationLockGateDeps,
 ): Promise<IntegrationLockRecord> {
   if (!req.rootAcceptanceId) {
     throw new LockError('INVALID_INPUT', 'rootAcceptanceId required for integration lock')
@@ -597,6 +669,31 @@ export async function acquireIntegrationLock(
   }
   if (!req.pathspecs?.length) {
     throw new LockError('INVALID_INPUT', 'pathspecs required for integration lock')
+  }
+  if (typeof req.entityExpectedRev !== 'number' || !Number.isInteger(req.entityExpectedRev)) {
+    throw new LockError(
+      'INVALID_INPUT',
+      'entityExpectedRev is required (create=0, renew=current) — no silent default',
+    )
+  }
+  if (typeof req.expectedBoardRev !== 'number' || !Number.isInteger(req.expectedBoardRev)) {
+    throw new LockError('INVALID_INPUT', 'expectedBoardRev is required — no silent default')
+  }
+  if (!req.canonicalHash || !String(req.canonicalHash).trim()) {
+    throw new LockError('INVALID_INPUT', 'canonicalHash is required (current pin hash)')
+  }
+  if (!req.idempotencyKey || !String(req.idempotencyKey).trim()) {
+    throw new LockError('INVALID_INPUT', 'idempotencyKey is required')
+  }
+  if (
+    req.currentPinHash != null &&
+    req.currentPinHash !== '' &&
+    req.currentPinHash !== req.canonicalHash
+  ) {
+    throw new LockError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
+      expectedCanonicalHash: req.canonicalHash,
+      currentPinHash: req.currentPinHash,
+    })
   }
   // Exact supported Grok integrator identity only (no substring /grok/i).
   if (req.integratorModel.trim() !== 'grok-4.5') {
@@ -611,51 +708,114 @@ export async function acquireIntegrationLock(
     assertSafeLockPath(ps, 'integration pathspec')
   }
 
-  return store.withBoardLock(req.boardId, async () => {
-    const now = clock.nowMs()
-    const existing = await store.getIntegration(req.boardId, req.repoId, req.trackingBranch)
-    if (existing && isLiveIntegration(existing, now) && existing.runId !== req.runId) {
-      throw new LockError(
-        'INTEGRATION_LOCKED',
-        `exactly one live COMMIT_INTEGRATE per repoId+trackingBranch; held by ${existing.runId}`,
-        {
-          repoId: req.repoId,
-          trackingBranch: req.trackingBranch,
-          heldByRunId: existing.runId,
-        },
-      )
+  // Do NOT bind runId on begin: register_run owns unique runId binding; integration
+  // create/renew are separate endpoints that would false-conflict on the same runId.
+  let begin
+  try {
+    begin = await beginIdempotent(gate.idempotency, {
+      scope: {
+        actorId: req.agentId,
+        boardId: req.boardId,
+        endpoint: 'integration_lock',
+        key: req.idempotencyKey.trim(),
+      },
+      requestBody: integrationLockIdempotencyRequestBody(req),
+      nowMs: clock.nowMs(),
+    })
+  } catch (e) {
+    if (e instanceof IdempotencyError) {
+      throw new LockError('IDEMPOTENCY_CONFLICT', e.message)
     }
-    if (existing && isLiveIntegration(existing, now) && existing.runId === req.runId) {
-      const renewed: IntegrationLockRecord = {
-        ...existing,
-        leaseExpiresAtMs: now + (req.leaseMs ?? DEFAULT_LOCK_LEASE_MS),
-        entityRev: existing.entityRev + 1,
+    throw e
+  }
+  if (begin.kind === 'REPLAY' && begin.record) {
+    return begin.record.responseBody as IntegrationLockRecord
+  }
+
+  try {
+    const board = await gate.atomic.getBoardState(req.boardId)
+    if (req.expectedBoardRev !== board.boardRev) {
+      throw new LockError('STALE_REVISION', 'board rev mismatch on integration_lock', {
+        expectedBoardRev: req.expectedBoardRev,
+        currentBoardRev: board.boardRev,
+      })
+    }
+
+    const rec = await store.withBoardLock(req.boardId, async () => {
+      const now = clock.nowMs()
+      const existing = await store.getIntegration(req.boardId, req.repoId, req.trackingBranch)
+      if (existing && isLiveIntegration(existing, now) && existing.runId !== req.runId) {
+        throw new LockError(
+          'INTEGRATION_LOCKED',
+          `exactly one live COMMIT_INTEGRATE per repoId+trackingBranch; held by ${existing.runId}`,
+          {
+            repoId: req.repoId,
+            trackingBranch: req.trackingBranch,
+            heldByRunId: existing.runId,
+          },
+        )
       }
-      await store.putIntegration(renewed)
-      return renewed
-    }
-    const rec: IntegrationLockRecord = {
-      boardId: req.boardId,
-      lockId: `ilk-${req.repoId}-${req.trackingBranch}-${req.runId}`,
-      repoId: req.repoId,
-      trackingBranch: req.trackingBranch,
-      runId: req.runId,
-      agentId: req.agentId,
-      integratorModel: req.integratorModel,
-      rootAcceptanceId: req.rootAcceptanceId,
-      checkpointId: req.checkpointId,
-      pathspecs: [...req.pathspecs],
-      fencingToken: `fence-int-${randomUUID()}`,
-      fencingVersion: 1,
-      state: 'HELD',
-      leaseExpiresAtMs: now + (req.leaseMs ?? DEFAULT_LOCK_LEASE_MS),
-      acquiredAtMs: now,
-      releasedAtMs: null,
-      entityRev: 1,
-    }
-    await store.putIntegration(rec)
+      if (existing && isLiveIntegration(existing, now) && existing.runId === req.runId) {
+        // Renew: CAS current entity rev; no board-rev bump on renew.
+        if (req.entityExpectedRev !== existing.entityRev) {
+          throw new LockError('STALE_REVISION', 'entity rev mismatch on integration_lock renew', {
+            entityExpectedRev: req.entityExpectedRev,
+            currentEntityRev: existing.entityRev,
+          })
+        }
+        const renewed: IntegrationLockRecord = {
+          ...existing,
+          leaseExpiresAtMs: now + (req.leaseMs ?? DEFAULT_LOCK_LEASE_MS),
+          entityRev: existing.entityRev + 1,
+        }
+        await store.putIntegration(renewed)
+        return renewed
+      }
+      // Create: entityExpectedRev must be 0.
+      if (req.entityExpectedRev !== 0) {
+        throw new LockError(
+          'STALE_REVISION',
+          'integration_lock create requires entityExpectedRev 0',
+          { entityExpectedRev: req.entityExpectedRev, currentEntityRev: 0 },
+        )
+      }
+      const next: IntegrationLockRecord = {
+        boardId: req.boardId,
+        lockId: `ilk-${req.repoId}-${req.trackingBranch}-${req.runId}`,
+        repoId: req.repoId,
+        trackingBranch: req.trackingBranch,
+        runId: req.runId,
+        agentId: req.agentId,
+        integratorModel: req.integratorModel,
+        rootAcceptanceId: req.rootAcceptanceId,
+        checkpointId: req.checkpointId,
+        pathspecs: [...req.pathspecs],
+        fencingToken: `fence-int-${randomUUID()}`,
+        fencingVersion: 1,
+        state: 'HELD',
+        leaseExpiresAtMs: now + (req.leaseMs ?? DEFAULT_LOCK_LEASE_MS),
+        acquiredAtMs: now,
+        releasedAtMs: null,
+        entityRev: 1,
+      }
+      await store.putIntegration(next)
+      // Single board-rev bump on create only (not renew / not replay).
+      await gate.atomic.bumpBoardRev(req.boardId)
+      return next
+    })
+    await completeIdempotent(gate.idempotency, begin.scopeHash, 200, rec, begin.requestHash)
     return rec
-  })
+  } catch (e) {
+    try {
+      await gate.idempotency.delete(begin.scopeHash)
+    } catch {
+      /* ignore */
+    }
+    if (e instanceof IdempotencyError) {
+      throw new LockError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
 }
 
 export async function releaseIntegrationLock(

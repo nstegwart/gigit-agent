@@ -41,8 +41,19 @@ const PAGE: WorkPageState = {
 }
 
 function row(partial: Partial<WorkItemRow> & Pick<WorkItemRow, 'taskId' | 'title' | 'bucket'>): WorkItemRow {
+  // Default reviewed owner primary for existing display fixtures (happy path).
+  // Explicit contentReviewRequired:true / missing owner fields covered by owner-display tests.
+  const forceShell = partial.contentReviewRequired === true
+  const ownerDefaults = forceShell
+    ? {}
+    : {
+        ownerPrimaryTitle: partial.ownerPrimaryTitle ?? partial.title,
+        contentReviewRequired: false as const,
+        effectiveReviewStatus: partial.effectiveReviewStatus ?? 'REVIEWED',
+      }
   return {
     overlays: [],
+    ...ownerDefaults,
     ...partial,
   }
 }
@@ -414,6 +425,141 @@ describe('WorkRow display rules', () => {
     expect(screen.getByTestId('work-row-reason').textContent).toBe(
       'HARD_BLOCKER · waiting on provider',
     )
+  })
+
+  it('owner humanDisplay: reviewed primary title + fields; technical title secondary only', () => {
+    render(
+      <table>
+        <tbody>
+          <WorkRow
+            item={row({
+              taskId: 't-hd-ok',
+              title: '[FC-77] technical only',
+              bucket: 'ONGOING',
+              ownerPrimaryTitle: 'Selesaikan list work human display',
+              contentReviewRequired: false,
+              effectiveReviewStatus: 'REVIEWED',
+              statusSentence: 'Sedang dikerjakan.',
+              whyItMatters: 'Owner membaca salinan manusia.',
+              next: 'Tutup AC owner primary.',
+              blocker: 'Tidak ada.',
+              ownerAction: 'Pantau progress.',
+              citations: [{ field: 'title', path: 'humanDisplay.title' }],
+              detailHref: '/b/mfs-rebuild/tasks/t-hd-ok',
+            })}
+          />
+        </tbody>
+      </table>,
+    )
+    const link = screen.getByTestId('work-row-link-t-hd-ok')
+    expect(link.textContent).toBe('Selesaikan list work human display')
+    expect(link.textContent).not.toContain('[FC-77]')
+    expect(screen.getByTestId('work-row-technical-title').textContent).toContain('[FC-77]')
+    expect(screen.getByTestId('work-row-status').textContent).toMatch(/Sedang dikerjakan/)
+    expect(screen.getByTestId('work-row-why').textContent).toMatch(/salinan manusia/)
+    expect(screen.getByTestId('work-row-next').textContent).toMatch(/Tutup AC/)
+    expect(screen.getByTestId('work-row-blocker').textContent).toMatch(/Tidak ada/)
+    expect(screen.getByTestId('work-row-action').textContent).toMatch(/Pantau/)
+    expect(screen.getByTestId('work-row-citations').textContent).toMatch(/humanDisplay\.title/)
+    expect(screen.queryByTestId('work-row-review-badge')).toBeNull()
+    expect(screen.getByTestId('work-row-t-hd-ok').getAttribute('data-content-review-required')).toBe(
+      'false',
+    )
+  })
+
+  it('owner humanDisplay: missing projection → CONTENT_REVIEW_REQUIRED shell, never technical primary', () => {
+    render(
+      <table>
+        <tbody>
+          <WorkRow
+            item={{
+              taskId: 't-hd-shell',
+              title: '[FC-99] raw technical must not be primary',
+              bucket: 'BLOCKED',
+              overlays: [],
+              // no owner fields → fail closed
+            }}
+          />
+        </tbody>
+      </table>,
+    )
+    const rowEl = screen.getByTestId('work-row-t-hd-shell')
+    expect(rowEl.getAttribute('data-content-review-required')).toBe('true')
+    expect(screen.getByTestId('work-row-owner-title').textContent).toBe('CONTENT_REVIEW_REQUIRED')
+    expect(screen.getByTestId('work-row-owner-title').textContent).not.toContain('[FC-99]')
+    expect(screen.getByTestId('work-row-review-badge').textContent).toMatch(
+      /CONTENT_REVIEW_REQUIRED/,
+    )
+    expect(screen.getByTestId('work-row-technical-title').textContent).toContain('[FC-99]')
+  })
+
+  it('owner humanDisplay: blocked shell title preferred over technical when contentReviewRequired', () => {
+    render(
+      <table>
+        <tbody>
+          <WorkRow
+            item={row({
+              taskId: 't-hd-blocked',
+              title: 'tech-run-title',
+              bucket: 'BLOCKED',
+              contentReviewRequired: true,
+              effectiveReviewStatus: 'CONTENT_REVIEW_REQUIRED',
+              ownerPrimaryTitle: 'Konten pemilik memerlukan peninjauan',
+              statusSentence: 'Status peninjauan: CONTENT_REVIEW_REQUIRED.',
+              ownerAction: 'Tinjau atau tugaskan peninjauan salinan manusia untuk item ini.',
+              whyItMatters: 'Salinan teknis mentah tidak boleh menjadi teks utama bagi pemilik.',
+            })}
+          />
+        </tbody>
+      </table>,
+    )
+    expect(screen.getByTestId('work-row-owner-title').textContent).toBe(
+      'Konten pemilik memerlukan peninjauan',
+    )
+    expect(screen.getByTestId('work-row-owner-title').textContent).not.toContain('tech-run-title')
+    expect(screen.getByTestId('work-row-review-badge')).toBeTruthy()
+    expect(screen.getByTestId('work-row-action').textContent).toMatch(/Tinjau/)
+  })
+
+  it('adversarial: GENERATED_NEEDS_REVIEW / BLOCKED / CONFLICT fail-closed even if contentReviewRequired=false', () => {
+    const statuses = [
+      'GENERATED_NEEDS_REVIEW',
+      'BLOCKED',
+      'BLOCKED_MISSING_SOURCE',
+      'CONFLICT',
+      'CONTENT_REVIEW_REQUIRED',
+    ] as const
+
+    for (const status of statuses) {
+      const { unmount } = render(
+        <table>
+          <tbody>
+            <WorkRow
+              item={row({
+                taskId: `t-adv-${status}`,
+                title: `[TECH-${status}] must not be primary`,
+                bucket: 'ONGOING',
+                contentReviewRequired: false,
+                effectiveReviewStatus: status,
+                ownerPrimaryTitle: `Generated work title ${status}`,
+                ownerAction: 'Invented action must not mark ready',
+                // No detailHref so owner-title testid is present (link path uses work-row-link-*).
+              })}
+            />
+          </tbody>
+        </table>,
+      )
+      const rowEl = screen.getByTestId(`work-row-t-adv-${status}`)
+      expect(rowEl.getAttribute('data-content-review-required')).toBe('true')
+      expect(screen.getByTestId('work-row-review-badge')).toBeTruthy()
+      expect(screen.getByTestId('work-row-owner-title').textContent).not.toContain(
+        `[TECH-${status}]`,
+      )
+      expect(screen.getByTestId('work-row-owner-title').textContent).toBe(
+        `Generated work title ${status}`,
+      )
+      unmount()
+    }
   })
 })
 

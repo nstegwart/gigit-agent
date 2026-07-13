@@ -1,10 +1,22 @@
 // The task's PRIMARY progress = the whole delivery path (§4 of the readiness
 // contract), not the M01–M20 mapping alone. Header (ready%, proven stage, next
 // gate, required proof) + a vertical stage timeline with per-stage readiness %,
-// and the mapping checklist nested under the "mapping" stage. Stages are
-// engine/receipt-gated — clicking a non-gated stage advances it (human).
+// and the mapping checklist nested under the "mapping" stage.
+//
+// Stage advances are V3-only and authority-gated: the UI never fabricates
+// owner/human evidence or partial envelopes. Mutation fires only when a
+// server/agent-provided complete V3 packet is explicitly supplied.
 import { useState } from 'react'
-import { useAdvanceTask, useCanEdit, useLifecycle, useTaskLifecycle } from '#/lib/board-query'
+import {
+  isCompleteAdvanceV3Packet,
+  toAdvancePayload,
+  useAdvanceTask,
+  useBoardId,
+  useCanEdit,
+  useLifecycle,
+  useTaskLifecycle,
+  type AdvanceV3Packet,
+} from '#/lib/board-query'
 import { deriveCheckpoints, nextEvidence, resolvedReadiness } from '#/lib/readiness'
 import { Icon } from '#/lib/icons'
 import { fmtDate } from '#/lib/format'
@@ -12,7 +24,28 @@ import type { LifecycleHistoryEntry, LifecycleStage, TaskCheckpoint } from '#/li
 
 const tone = (s: LifecycleStage) => `tone-${s.color ?? 'indigo'}`
 
-export function LifecycleRail({ taskId, checkpoints, fallbackStage }: { taskId: string; checkpoints?: Array<TaskCheckpoint>; fallbackStage?: string | null }) {
+/** Owner-readable reason when UI lacks a complete V3 advance packet. */
+export const ADVANCE_NEEDS_AGENT_REASON =
+  'Stage advance needs a complete agent V3 packet (registered author/verifier runs, entity/board/lifecycle revs, task+canonical hashes, idempotency key, programmatic receipt). Owner UI cannot invent these. Use an agent via Agents / Runs, or open Decision if a human decision is required.'
+
+export type LifecycleRailProps = {
+  taskId: string
+  checkpoints?: Array<TaskCheckpoint>
+  fallbackStage?: string | null
+  /**
+   * Explicit server/agent-provided V3 advance packet. When missing or incomplete,
+   * mutation controls stay disabled (fail-closed). Never fabricate this in UI.
+   */
+  advancePacket?: AdvanceV3Packet | null
+}
+
+export function LifecycleRail({
+  taskId,
+  checkpoints,
+  fallbackStage,
+  advancePacket = null,
+}: LifecycleRailProps) {
+  const boardId = useBoardId()
   const cfg = useLifecycle()
   const canEdit = useCanEdit()
   const { data: lc } = useTaskLifecycle(taskId)
@@ -45,13 +78,31 @@ export function LifecycleRail({ taskId, checkpoints, fallbackStage }: { taskId: 
   const dc = deriveCheckpoints(readyPct, cps)
   const ckDone = dc.done
 
+  const packetOk =
+    isCompleteAdvanceV3Packet(advancePacket) &&
+    advancePacket.taskId === taskId
+  const agentsHref = boardId ? `/b/${boardId}/agents` : '/login'
+  const decisionsHref = boardId ? `/b/${boardId}/decisions` : '/login'
+
   const move = (toStage: string) => {
     setErr(null)
-    advance.mutate({ taskId, toStage, byRunId: 'human', expectedRev: lc?.rev }, { onError: (e) => setErr(e instanceof Error ? e.message : String(e)) })
+    // Fail-closed: never call mutation without a complete current V3 packet.
+    if (!packetOk || !advancePacket) {
+      setErr(ADVANCE_NEEDS_AGENT_REASON)
+      return
+    }
+    try {
+      const payload = toAdvancePayload(advancePacket, toStage)
+      advance.mutate(payload, {
+        onError: (e) => setErr(e instanceof Error ? e.message : String(e)),
+      })
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
   }
 
   return (
-    <section className="section">
+    <section className="section" data-testid="lifecycle-rail">
       <div className="sec-head">
         <Icon name="branch" className="nav-ico" />
         <h2>Ready-production</h2>
@@ -67,36 +118,77 @@ export function LifecycleRail({ taskId, checkpoints, fallbackStage }: { taskId: 
         </div>
       </div>
 
+      {!packetOk ? (
+        <div
+          className="rail-needs-agent"
+          data-testid="lifecycle-advance-needs-agent"
+          role="status"
+        >
+          <Icon name="lock" size={13} />{' '}
+          <span data-testid="lifecycle-advance-needs-agent-reason">{ADVANCE_NEEDS_AGENT_REASON}</span>
+          {' '}
+          <a href={agentsHref} data-testid="lifecycle-advance-agents-link">
+            Agents / Runs
+          </a>
+          {' · '}
+          <a href={decisionsHref} data-testid="lifecycle-advance-decisions-link">
+            Decision
+          </a>
+        </div>
+      ) : null}
+
       <div className="rail">
         {stages.map((s, i) => {
           const state = i < curIdx ? 'done' : i === curIdx ? 'current' : 'todo'
-          const clickable = canEdit && i !== curIdx && !s.gated && !advance.isPending
+          // Clickable only when admin + complete V3 packet + non-gated + not current.
+          const clickable = canEdit && packetOk && i !== curIdx && !s.gated && !advance.isPending
           const isLive = i > milestoneIdx && (readiness[s.key] ?? 0) >= 100
           const pctLabel = isLive ? 'LIVE' : `${readiness[s.key] ?? 0}%`
           const stageHist = history.filter((h) => h.stage === s.key)
           const req = [...(s.requiresEvidence ?? []), ...(s.verifierRole ? [`${s.verifierRole} verdict`] : [])]
-          const hasDetail = !clickable && (req.length > 0 || stageHist.length > 0)
-          const cls = `rail-step ${tone(s)} is-${state}${clickable ? ' is-click' : ''}${hasDetail ? ' is-click' : ''}${s.gated && i !== curIdx ? ' is-gated' : ''}`
+          const needsAgentForStage = canEdit && !packetOk && i !== curIdx && !s.gated
+          const hasDetail = !clickable && (req.length > 0 || stageHist.length > 0 || needsAgentForStage || (s.gated && i !== curIdx))
+          const cls = `rail-step ${tone(s)} is-${state}${clickable ? ' is-click' : ''}${hasDetail ? ' is-click' : ''}${s.gated && i !== curIdx ? ' is-gated' : ''}${needsAgentForStage ? ' is-gated' : ''}`
           const inner = (
             <>
               <span className="rail-dot">{state === 'done' ? <Icon name="check" size={11} /> : null}</span>
-              <span className="rail-name">{s.label}{s.gated ? <Icon name="lock" size={11} className="rail-lock" /> : null}</span>
+              <span className="rail-name">{s.label}{s.gated || needsAgentForStage ? <Icon name="lock" size={11} className="rail-lock" /> : null}</span>
               <span className={`rail-pct ${isLive ? 'is-live' : ''}`}>{pctLabel}</span>
             </>
           )
           return (
             <div key={s.key}>
               {clickable ? (
-                <button type="button" className={cls} onClick={() => move(s.key)} title={`Move to ${s.label}`}>{inner}</button>
+                <button
+                  type="button"
+                  className={cls}
+                  data-testid={`lifecycle-advance-${s.key}`}
+                  onClick={() => move(s.key)}
+                  title={`Move to ${s.label}`}
+                >
+                  {inner}
+                </button>
               ) : hasDetail ? (
-                <button type="button" className={cls} onClick={() => setOpenRows((p) => { const n = new Set(p); if (n.has(s.key)) n.delete(s.key); else n.add(s.key); return n })}>{inner}</button>
+                <button
+                  type="button"
+                  className={cls}
+                  data-testid={`lifecycle-stage-${s.key}`}
+                  onClick={() => setOpenRows((p) => { const n = new Set(p); if (n.has(s.key)) n.delete(s.key); else n.add(s.key); return n })}
+                >
+                  {inner}
+                </button>
               ) : (
-                <div className={cls}>{inner}</div>
+                <div className={cls} data-testid={`lifecycle-stage-${s.key}`}>{inner}</div>
               )}
               {hasDetail && openRows.has(s.key) ? (
                 <div className="rail-detail">
                   {req.length ? <div className="rail-req">Required proof: {req.join(', ')}</div> : null}
                   {i > curIdx && s.gated ? <div className="rail-lockreason"><Icon name="lock" size={11} /> Locked — advance from {stages[i - 1]?.label ?? '—'} with a program-emitted receipt (advance_task)</div> : null}
+                  {needsAgentForStage ? (
+                    <div className="rail-lockreason" data-testid={`lifecycle-stage-needs-agent-${s.key}`}>
+                      <Icon name="lock" size={11} /> Needs agent action — complete V3 packet required (see Agents / Runs or Decision)
+                    </div>
+                  ) : null}
                   {stageHist.map((h, hi) => (
                     <div className="rail-hist" key={hi}>
                       {h.verdict ? <span className="lc-verdict">{h.verdict}</span> : null}
@@ -133,7 +225,7 @@ export function LifecycleRail({ taskId, checkpoints, fallbackStage }: { taskId: 
           )
         })}
       </div>
-      {err ? <p className="rail-err"><Icon name="alert" size={13} /> {err}</p> : null}
+      {err ? <p className="rail-err" data-testid="lifecycle-rail-err"><Icon name="alert" size={13} /> {err}</p> : null}
 
       {history.length ? (
         <div className="lc-history">

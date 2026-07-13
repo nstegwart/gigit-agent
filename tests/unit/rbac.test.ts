@@ -656,20 +656,40 @@ describe('authorizeToolCall role/tool matrix', () => {
     )
   })
 
-  it('OWNER denied register_run / heartbeat_run / upsert_run / set_run_status (evidence impersonation)', () => {
+  it('OWNER denied register_run / heartbeat_run / upsert_run / set_run_status / submit_stage_evidence (evidence impersonation)', () => {
     // W7 / W11 / B2: cover all agent-run evidence write tools, not only register_run
     const owner = principal('OWNER')
-    for (const tool of ['register_run', 'heartbeat_run', 'upsert_run', 'set_run_status'] as const) {
+    for (const tool of [
+      'register_run',
+      'heartbeat_run',
+      'upsert_run',
+      'set_run_status',
+      'submit_stage_evidence',
+    ] as const) {
       const r = authorizeToolCall(owner, tool, { agentId: 'any-agent' })
       expect(r.ok, tool).toBe(false)
       expect(r.code, tool).toBe('OWNER_EVIDENCE_IMPERSONATION_DENIED')
     }
   })
 
+  it('ROOT denied submit_stage_evidence (cannot impersonate agent evidence; accept via advance only)', () => {
+    const root = principal('ROOT_ORCHESTRATOR')
+    const r = authorizeToolCall(root, 'submit_stage_evidence', { agentId: 'any' })
+    expect(r.ok).toBe(false)
+    expect(r.code).toBe('OWNER_EVIDENCE_IMPERSONATION_DENIED')
+    expect(isToolListable(root, 'submit_stage_evidence')).toBe(false)
+  })
+
   it('AGENT unbound agentId denied on ownRun tools (fail-closed, no soft-pass)', () => {
     // W8 / B1: authorizeToolCall path — missing principal.agentId must deny
     const unbound = principal('AGENT', { agentId: null })
-    for (const tool of ['register_run', 'heartbeat_run', 'upsert_run', 'set_run_status'] as const) {
+    for (const tool of [
+      'register_run',
+      'heartbeat_run',
+      'upsert_run',
+      'set_run_status',
+      'submit_stage_evidence',
+    ] as const) {
       const foreign = authorizeToolCall(unbound, tool, { agentId: 'foreign-agent-99' })
       expect(foreign.ok, `${tool} foreign`).toBe(false)
       expect(foreign.code, `${tool} foreign`).toBe('OWN_RUN_ONLY')
@@ -681,8 +701,12 @@ describe('authorizeToolCall role/tool matrix', () => {
     const bound = principal('AGENT', { agentId: 'agent-a' })
     expect(authorizeToolCall(bound, 'register_run', { agentId: 'agent-a' }).ok).toBe(true)
     expect(authorizeToolCall(bound, 'heartbeat_run', { agentId: 'agent-a' }).ok).toBe(true)
+    expect(authorizeToolCall(bound, 'submit_stage_evidence', { agentId: 'agent-a' }).ok).toBe(true)
     expect(authorizeToolCall(bound, 'register_run', { agentId: 'agent-b' }).ok).toBe(false)
     expect(authorizeToolCall(bound, 'heartbeat_run', { agentId: 'agent-b' }).code).toBe('OWN_RUN_ONLY')
+    expect(authorizeToolCall(bound, 'submit_stage_evidence', { agentId: 'agent-b' }).code).toBe(
+      'OWN_RUN_ONLY',
+    )
   })
 
   it('ROOT may upsert_run / set_run_status via lifecycle; AGENT needs binding', () => {
@@ -1457,5 +1481,29 @@ describe('canonical MCP tool catalog (MCP_TOOL_SPECS)', () => {
     expect(authorizeToolCall(owner, 'not_a_real_tool').ok).toBe(false)
     expect(authorizeToolCall(owner, 'not_a_real_tool').code).toBe('AUTHORIZATION_REQUIRED')
     expect(listHumanSafeToolNames(owner)).not.toContain('not_a_real_tool')
+  })
+})
+
+
+describe('INTEGRATOR missing bindings fail-closed', () => {
+  it('denies INTEGRATOR without checkpoint/pathspec bindings', () => {
+    const unbound: Principal = {
+      role: 'INTEGRATOR',
+      actorId: 'int-unbound',
+      channel: 'bearer',
+      scopes: defaultScopesForRole('INTEGRATOR'),
+      boards: ['mfs-rebuild'],
+    }
+    expect(() => assertIntegratorBounds(unbound, { pathspec: 'src/x.ts', checkpointId: 'cp-1' })).toThrow(
+      /missing checkpoint|missing pathspec/,
+    )
+    const noPath: Principal = {
+      ...unbound,
+      checkpointId: 'cp-1',
+      pathspecs: [],
+    }
+    expect(() => assertIntegratorBounds(noPath, { pathspec: 'src/x.ts', checkpointId: 'cp-1' })).toThrow(
+      /missing pathspec/,
+    )
   })
 })

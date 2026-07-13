@@ -1,4 +1,19 @@
-import type { DecisionItemView, DecisionSeverity } from './types'
+import {
+  actionLabel,
+  decisionActionAvailability,
+  decisionMutationRevs,
+  defaultSnoozedUntil,
+  isExpiredDecisionStatus,
+  resolveDecisionOwnerDisplay,
+} from './decisionActions'
+import type {
+  DecisionActionError,
+  DecisionActionHandlers,
+  DecisionActionKind,
+  DecisionItemView,
+  DecisionSeverity,
+  DecisionsPinView,
+} from './types'
 import styles from './decisions.module.css'
 
 /** Existing board-scoped detail routes only — never invent private paths. */
@@ -58,44 +73,83 @@ function displayOrDash(v: string | number | null | undefined): string {
 export function DecisionCard({
   item,
   boardId,
+  pin,
+  canAct = true,
+  pending = false,
+  pendingAction = null,
+  actionError = null,
+  actions,
 }: {
   item: DecisionItemView
   /** Required for entity deep links to existing project/feature/task/agents routes. */
   boardId: string
+  pin?: DecisionsPinView | null
+  canAct?: boolean
+  pending?: boolean
+  pendingAction?: DecisionActionKind | null
+  actionError?: DecisionActionError | null
+  actions?: DecisionActionHandlers
 }) {
   const qId = `dec-q-${item.decisionId}`
   const optId = `dec-opt-${item.decisionId}`
   const evId = `dec-ev-${item.decisionId}`
   const recId = `dec-rec-${item.decisionId}`
   const errId = `dec-err-${item.decisionId}`
-  const titleRaw = item.title?.trim() ?? ''
+  const actErrId = `dec-act-err-${item.decisionId}`
+  const owner = resolveDecisionOwnerDisplay(item)
+  const avail = decisionActionAvailability(item, { canAct })
+  const revs = decisionMutationRevs(item, pin?.boardRev)
+  const expired = isExpiredDecisionStatus(item.status)
   const questionRaw = item.question?.trim() ?? ''
-  const titleDisplay =
-    titleRaw && titleRaw !== item.decisionId
-      ? titleRaw
-      : titleRaw || 'Decision needs your action'
   const questionIsDup =
     !questionRaw ||
-    questionRaw === titleRaw ||
+    questionRaw === item.title?.trim() ||
     questionRaw === item.decisionId ||
-    (titleRaw === item.decisionId && questionRaw === item.decisionId)
+    questionRaw === owner.technicalTitle
 
   const selectedDeclining =
     item.selectedOptionId &&
     item.options.some((o) => o.optionId === item.selectedOptionId && o.declining)
 
+  const busy = pending
+  const missingRevs = revs == null && (avail.canResolve || avail.canAcknowledge || avail.canReject || avail.canSnooze)
+
+  function basePayload() {
+    if (!revs) {
+      throw new Error('CAS revs unavailable')
+    }
+    return {
+      boardId,
+      decisionId: item.decisionId,
+      expectedRev: revs.expectedRev,
+      expectedBoardRev: revs.expectedBoardRev,
+    }
+  }
+
+  async function run(fn: (() => void | Promise<void>) | undefined) {
+    if (!fn || busy) return
+    await fn()
+  }
+
   return (
     <article
-      className={`${styles.card}${item.blocking ? ` ${styles.cardBlocking}` : ''}`}
+      className={`${styles.card}${item.blocking ? ` ${styles.cardBlocking}` : ''}${
+        expired ? ` ${styles.cardExpired}` : ''
+      }`}
       data-testid="decision-card"
       data-decision-id={item.decisionId}
       data-blocking={item.blocking ? 'true' : 'false'}
       data-severity={item.severity}
       data-status={item.status}
       data-partial={item.partialFields ? 'true' : 'false'}
+      data-content-review-required={owner.contentReviewRequired ? 'true' : 'false'}
+      data-effective-review-status={owner.effectiveReviewStatus}
       data-selected-option={item.selectedOptionId ?? undefined}
       data-selected-declining={selectedDeclining ? 'true' : 'false'}
+      data-pending={busy ? 'true' : 'false'}
+      data-pending-action={busy && pendingAction ? pendingAction : undefined}
       aria-labelledby={`dec-title-${item.decisionId}`}
+      aria-busy={busy || undefined}
     >
       <div className={styles.cardHead}>
         <span className={`${styles.chip} ${severityClass(item.severity)}`}>
@@ -112,6 +166,14 @@ export function DecisionCard({
             Blocking
           </span>
         ) : null}
+        {owner.contentReviewRequired ? (
+          <span
+            className={`${styles.chip} ${styles.contentReviewBadge}`}
+            data-testid="decision-content-review"
+          >
+            CONTENT_REVIEW_REQUIRED
+          </span>
+        ) : null}
         {item.status === 'REJECTED' ? (
           <span className={`${styles.chip} ${styles.statusRejected}`} data-testid="decision-rejected-badge">
             Rejected (not declined option)
@@ -122,14 +184,63 @@ export function DecisionCard({
             Declined option (RESOLVED)
           </span>
         ) : null}
+        {expired ? (
+          <span className={`${styles.chip} ${styles.statusRejected}`} data-testid="decision-expired-badge">
+            Expired
+          </span>
+        ) : null}
         <span className={styles.decisionId} title={item.decisionId}>
           {item.decisionId}
         </span>
       </div>
 
-      <h3 id={`dec-title-${item.decisionId}`} className={styles.title}>
-        {titleDisplay}
+      <h3 id={`dec-title-${item.decisionId}`} className={styles.title} data-testid="decision-owner-title">
+        {owner.primaryTitle}
       </h3>
+
+      {owner.statusSentence ? (
+        <p className={styles.statusSentence} data-testid="decision-status-sentence">
+          {owner.statusSentence}
+        </p>
+      ) : null}
+
+      {owner.ownerAction ? (
+        <p className={styles.ownerActionLine} data-testid="decision-owner-action-copy">
+          <span className={styles.fieldLabel}>Owner action</span>
+          <span className={styles.fieldValue}>{owner.ownerAction}</span>
+        </p>
+      ) : null}
+
+      {(owner.whyItMatters || owner.next || owner.blocker) && (
+        <dl className={styles.hdGrid} data-testid="decision-human-display">
+          {owner.whyItMatters ? (
+            <div className={styles.metaCell}>
+              <dt>Why it matters</dt>
+              <dd data-testid="decision-why">{owner.whyItMatters}</dd>
+            </div>
+          ) : null}
+          {owner.next ? (
+            <div className={styles.metaCell}>
+              <dt>Next</dt>
+              <dd data-testid="decision-next">{owner.next}</dd>
+            </div>
+          ) : null}
+          {owner.blocker ? (
+            <div className={styles.metaCell}>
+              <dt>Blocker</dt>
+              <dd data-testid="decision-blocker">{owner.blocker}</dd>
+            </div>
+          ) : null}
+        </dl>
+      )}
+
+      {owner.contentReviewRequired &&
+      owner.technicalTitle &&
+      owner.technicalTitle !== owner.primaryTitle ? (
+        <p className={styles.technicalTitleNote} data-testid="decision-technical-title">
+          Technical: {owner.technicalTitle}
+        </p>
+      ) : null}
 
       <div className={styles.field}>
         <span className={styles.fieldLabel} id={qId}>
@@ -372,19 +483,171 @@ export function DecisionCard({
         </p>
       ) : null}
 
-      <div className={styles.actions} aria-label="Owner actions">
-        {item.ownerActions.map((label, i) => (
-          <span
-            key={`${item.decisionId}-act-${i}`}
-            className={`${styles.actionHint}${
-              i === 0 ? ` ${styles.actionHintPrimary}` : ''
-            }${item.blocking && /snooze/i.test(label) ? ` ${styles.actionHintBlocked}` : ''}`}
-            data-testid="decision-owner-action"
+      {expired ? (
+        <div
+          className={`${styles.banner} ${styles.bannerCompact} ${styles.banner_error}`}
+          role="status"
+          data-testid="decision-expired-state"
+        >
+          <p className={styles.bannerTitle}>Decision expired</p>
+          <p className={styles.bannerBody}>
+            This request closed by expiry. No acknowledge, resolve, reject, or snooze actions.
+          </p>
+        </div>
+      ) : null}
+
+      {actionError ? (
+        <p
+          id={actErrId}
+          className={styles.fieldError}
+          role="alert"
+          data-testid="decision-action-error"
+          data-error-code={actionError.code}
+        >
+          <strong>{actionError.code}</strong>
+          {actionError.message ? `: ${actionError.message}` : null}
+          {actionError.action ? ` (${actionError.action})` : null}
+        </p>
+      ) : null}
+
+      {missingRevs ? (
+        <p className={styles.fieldError} role="status" data-testid="decision-rev-missing">
+          CAS revisions missing — cannot mutate safely.
+        </p>
+      ) : null}
+
+      <div className={styles.actions} aria-label="Owner actions" data-testid="decision-actions">
+        {avail.canAcknowledge ? (
+          <button
+            type="button"
+            className={`${styles.actionBtn} ${styles.actionBtnPrimary}`}
+            data-testid="decision-action-acknowledge"
+            data-action="acknowledge"
+            disabled={busy || !revs || !actions?.onAcknowledge}
+            aria-disabled={busy || !revs || !actions?.onAcknowledge ? true : undefined}
+            onClick={() =>
+              void run(() => actions?.onAcknowledge?.({ ...basePayload() }))
+            }
           >
-            {label}
+            {busy && pendingAction === 'acknowledge'
+              ? 'Acknowledging…'
+              : actionLabel('acknowledge')}
+          </button>
+        ) : null}
+
+        {avail.canResolve && item.options.length > 0
+          ? item.options.map((o) => (
+              <button
+                key={o.optionId}
+                type="button"
+                className={`${styles.actionBtn}${
+                  o.declining ? ` ${styles.actionBtnSecondary}` : ` ${styles.actionBtnPrimary}`
+                }`}
+                data-testid="decision-action-resolve"
+                data-action="resolve"
+                data-option-id={o.optionId}
+                data-declining={o.declining ? 'true' : 'false'}
+                disabled={busy || !revs || !actions?.onResolve}
+                aria-disabled={busy || !revs || !actions?.onResolve ? true : undefined}
+                title={
+                  o.declining
+                    ? 'Declining option resolves as RESOLVED (not REJECTED)'
+                    : `Resolve with ${o.label}`
+                }
+                onClick={() =>
+                  void run(() =>
+                    actions?.onResolve?.({
+                      ...basePayload(),
+                      selectedOptionId: o.optionId,
+                    }),
+                  )
+                }
+              >
+                {busy && pendingAction === 'resolve'
+                  ? 'Resolving…'
+                  : o.declining
+                    ? `Decline: ${o.label}`
+                    : `Resolve: ${o.label}`}
+              </button>
+            ))
+          : null}
+
+        {avail.canResolve && item.options.length === 0 ? (
+          <span
+            className={styles.actionHint}
+            data-testid="decision-action-resolve-unavailable"
+          >
+            Resolve needs projected options
           </span>
-        ))}
+        ) : null}
+
+        {avail.canReject ? (
+          <button
+            type="button"
+            className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
+            data-testid="decision-action-reject"
+            data-action="reject"
+            disabled={busy || !revs || !actions?.onReject}
+            aria-disabled={busy || !revs || !actions?.onReject ? true : undefined}
+            title="Reject the request itself (not a declining option)"
+            onClick={() => void run(() => actions?.onReject?.({ ...basePayload() }))}
+          >
+            {busy && pendingAction === 'reject' ? 'Rejecting…' : actionLabel('reject')}
+          </button>
+        ) : null}
+
+        {avail.canSnooze ? (
+          <button
+            type="button"
+            className={`${styles.actionBtn} ${styles.actionBtnSecondary}`}
+            data-testid="decision-action-snooze"
+            data-action="snooze"
+            disabled={busy || !revs || !actions?.onSnooze}
+            aria-disabled={busy || !revs || !actions?.onSnooze ? true : undefined}
+            onClick={() =>
+              void run(() =>
+                actions?.onSnooze?.({
+                  ...basePayload(),
+                  snoozedUntil: defaultSnoozedUntil(),
+                }),
+              )
+            }
+          >
+            {busy && pendingAction === 'snooze' ? 'Snoozing…' : actionLabel('snooze')}
+          </button>
+        ) : item.blocking && isOpenDecisionStatusLocal(item.status) ? (
+          <span
+            className={`${styles.actionHint} ${styles.actionHintBlocked}`}
+            data-testid="decision-action-snooze-blocked"
+            title={avail.snoozeBlockedReason ?? undefined}
+          >
+            Snooze unavailable (blocking)
+          </span>
+        ) : null}
+
+        {!avail.canAcknowledge &&
+        !avail.canResolve &&
+        !avail.canReject &&
+        !avail.canSnooze &&
+        !expired
+          ? item.ownerActions.map((label, i) => (
+              <span
+                key={`${item.decisionId}-hint-${i}`}
+                className={`${styles.actionHint}${
+                  i === 0 ? ` ${styles.actionHintPrimary}` : ''
+                }`}
+                data-testid="decision-owner-action"
+              >
+                {label}
+              </span>
+            ))
+          : null}
       </div>
     </article>
   )
+}
+
+function isOpenDecisionStatusLocal(status: string): boolean {
+  const s = status.toUpperCase()
+  return s === 'OPEN' || s === 'ACKNOWLEDGED'
 }

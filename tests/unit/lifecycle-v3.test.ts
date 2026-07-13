@@ -5,17 +5,22 @@ import {
   buildLifecycleReadback,
   computeStageReceiptHash,
   createMemoryLifecycleV3Storage,
+  createMemoryStageEvidenceStore,
   evaluateLifecycleEnumMapping,
   planLifecycleEnumMigration,
+  submitStageEvidence,
   LifecycleV3Error,
   LIFECYCLE_MAPPING_TYPES,
   V3_IDENTITY_LIFECYCLE_CONFIG,
-  V3_LIFECYCLE_RAIL,
+  V3_LIFECYCLE_RAIL, // nine-stage ordered rail
+  type AdvanceV3Input,
   type LifecycleMappingRow,
   type RegisteredRun,
   type StageReceipt,
   type TaskLifecycleV3State,
 } from '#/server/lifecycle-store'
+import { createMysqlStageEvidenceStore } from '#/server/control-data-persistence'
+import { createMemoryControlDataSql } from '#/server/control-data-persistence'
 import {
   computeTaskHash,
   createMemoryTaskV3Store,
@@ -116,6 +121,25 @@ function storageFor(
     tasks: [task],
     runs,
   })
+}
+
+/** Register program-emitted receipt then advance (required by registry gate). */
+async function advanceWithEvidence(
+  store: ReturnType<typeof storageFor>,
+  inp: AdvanceV3Input,
+  opts?: { skipRegister?: boolean },
+) {
+  if (!opts?.skipRegister) {
+    await store.putStageEvidence({
+      boardId: inp.boardId,
+      taskId: inp.taskId,
+      toStage: inp.toStage,
+      receipt: inp.receipt,
+      emittingRunId: inp.byRunId,
+      registeredAt: inp.receipt.issuedAt,
+    })
+  }
+  return advanceTaskV3(store, inp)
 }
 
 const STAGE_FIELDS: Record<LifecycleStageKey, Record<string, unknown>> = {
@@ -269,7 +293,7 @@ describe('V3 ordered stage receipts — full rail advance', () => {
         verdict: isVer ? 'PASS' : null,
       })
 
-      const result = await advanceTaskV3(store, {
+      const result = await advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: stage,
@@ -304,12 +328,179 @@ describe('V3 ordered stage receipts — full rail advance', () => {
   })
 })
 
+describe('V3 exhaustive per-stage positive (each of nine stages alone)', () => {
+  const predecessors: Record<LifecycleStageKey, LifecycleStageKey | null> = {
+    MAPPING: null,
+    MAPPED: 'MAPPING',
+    MAP_VERIFIED: 'MAPPED',
+    BUILT: 'MAP_VERIFIED',
+    FUNCTIONAL: 'BUILT',
+    INTEGRATED: 'FUNCTIONAL',
+    STAGING_PROVEN: 'INTEGRATED',
+    PROD_READY: 'STAGING_PROVEN',
+    LIVE_VERIFIED: 'PROD_READY',
+  }
+
+  for (const stage of V3_LIFECYCLE_RAIL) {
+    it(`positive: advances exactly to ${stage} with stage-specific receipt`, async () => {
+      const from = predecessors[stage]
+      const entityRev = from ? V3_LIFECYCLE_RAIL.indexOf(from) + 1 : 0
+      const author = run({
+        runId: 'run-author',
+        role: 'implementer',
+        agentId: 'agent-a',
+        model: 'grok-4.5',
+        threadId: 'th-a',
+      })
+      const verifierRole =
+        V3_IDENTITY_LIFECYCLE_CONFIG.stages.find((s) => s.key === stage)?.verifierRole ?? 'verifier'
+      const verifier = run({
+        runId: 'run-v',
+        role: verifierRole,
+        agentId: 'agent-v',
+        model: 'claude-opus',
+        threadId: 'th-v',
+      })
+      const isVer = VERIFIER_STAGES.has(stage)
+      const task = {
+        ...baseTask(from),
+        entityRev,
+        implementerRunId: from ? author.runId : null,
+        implementerAgentId: from ? author.agentId : null,
+        implementerModel: from ? author.model : null,
+        implementerThreadId: from ? author.threadId : null,
+      }
+      const store = storageFor(task, [author, verifier])
+      const byRunId = isVer ? verifier.runId : author.runId
+      const receipt = makeReceipt(stage, STAGE_FIELDS[stage], {
+        authorRunId: author.runId,
+        verifierRunId: isVer ? verifier.runId : null,
+        verdict: isVer ? 'PASS' : null,
+      })
+      const result = await advanceWithEvidence(store, {
+        boardId: BOARD,
+        taskId: TASK,
+        toStage: stage,
+        byRunId,
+        entityExpectedRev: entityRev,
+        expectedBoardRev: 1,
+        expectedLifecycleRev: 1,
+        expectedTaskHash: TASK_HASH,
+        expectedCanonicalHash: CANON,
+        receipt,
+        productionApprovalId: stage === 'LIVE_VERIFIED' ? 'owner-prod-appr-1' : null,
+      })
+      expect(result.ok).toBe(true)
+      expect(result.stage).toBe(stage)
+      expect(result.fromStage).toBe(from)
+      expect(result.readback.stage).toBe(stage)
+      expect(result.receipt.receiptId).toBe(receipt.receiptId)
+      // Immutable history append + audit
+      const after = await store.getTask(BOARD, TASK)
+      expect(after?.history).toHaveLength(1)
+      expect(after?.history[0]?.toStage).toBe(stage)
+      expect(after?.stageReceipts[stage]?.receiptHash).toBe(receipt.receiptHash)
+      expect(store.audits().some((a) => a.action === 'advance_v3')).toBe(true)
+    })
+  }
+})
+
+describe('V3 exhaustive per-stage negative — missing evidence field', () => {
+  const requiredField: Partial<Record<LifecycleStageKey, string>> = {
+    MAPPED: 'mappingStructuralReceipt',
+    MAP_VERIFIED: 'mappingReceipt',
+    BUILT: 'implementationReceipt',
+    FUNCTIONAL: 'runtimePositive',
+    INTEGRATED: 'integrateReceipt',
+    STAGING_PROVEN: 'stagingApi',
+    PROD_READY: 'g5EvidenceComplete',
+    LIVE_VERIFIED: 'deployReceipt',
+  }
+
+  for (const stage of V3_LIFECYCLE_RAIL) {
+    if (stage === 'MAPPING') {
+      it('MAPPING with non-programmatic receipt is MISSING_EVIDENCE', async () => {
+        const store = storageFor(baseTask(null), [run({ runId: 'r1', role: 'implementer' })])
+        const receipt = makeReceipt('MAPPING', {}, { programmatic: false })
+        await expect(
+          advanceWithEvidence(store, {
+            boardId: BOARD,
+            taskId: TASK,
+            toStage: 'MAPPING',
+            byRunId: 'r1',
+            entityExpectedRev: 0,
+            expectedBoardRev: 1,
+            expectedLifecycleRev: 1,
+            expectedTaskHash: TASK_HASH,
+            expectedCanonicalHash: CANON,
+            receipt,
+          }),
+        ).rejects.toMatchObject({ code: 'MISSING_EVIDENCE' })
+      })
+      continue
+    }
+    const field = requiredField[stage]!
+    it(`${stage} missing ${field} → MISSING_EVIDENCE`, async () => {
+      const fromIdx = V3_LIFECYCLE_RAIL.indexOf(stage) - 1
+      const from = V3_LIFECYCLE_RAIL[fromIdx]!
+      const author = run({
+        runId: 'run-a',
+        role: 'implementer',
+        agentId: 'a',
+        model: 'm1',
+        threadId: 't1',
+      })
+      const verifier = run({
+        runId: 'run-v',
+        role:
+          V3_IDENTITY_LIFECYCLE_CONFIG.stages.find((s) => s.key === stage)?.verifierRole ??
+          'verifier',
+        agentId: 'v',
+        model: 'm2',
+        threadId: 't2',
+      })
+      const task = {
+        ...baseTask(from),
+        entityRev: fromIdx + 1,
+        implementerRunId: author.runId,
+        implementerAgentId: author.agentId,
+        implementerModel: author.model,
+        implementerThreadId: author.threadId,
+      }
+      const store = storageFor(task, [author, verifier])
+      const fields = { ...STAGE_FIELDS[stage] }
+      delete fields[field]
+      const isVer = VERIFIER_STAGES.has(stage)
+      const receipt = makeReceipt(stage, fields, {
+        authorRunId: author.runId,
+        verifierRunId: isVer ? verifier.runId : null,
+        verdict: isVer ? 'PASS' : null,
+      })
+      await expect(
+        advanceWithEvidence(store, {
+          boardId: BOARD,
+          taskId: TASK,
+          toStage: stage,
+          byRunId: isVer ? verifier.runId : author.runId,
+          entityExpectedRev: fromIdx + 1,
+          expectedBoardRev: 1,
+          expectedLifecycleRev: 1,
+          expectedTaskHash: TASK_HASH,
+          expectedCanonicalHash: CANON,
+          receipt,
+          productionApprovalId: stage === 'LIVE_VERIFIED' ? 'owner-x' : null,
+        }),
+      ).rejects.toMatchObject({ code: 'MISSING_EVIDENCE' })
+    })
+  }
+})
+
 describe('V3 transition rejections', () => {
   it('rejects stage skip when allowSkip=false', async () => {
     const store = storageFor(baseTask(null), [run({ runId: 'r1', role: 'implementer' })])
     const receipt = makeReceipt('MAPPED', STAGE_FIELDS.MAPPED)
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPED', // skips MAPPING
@@ -324,11 +515,40 @@ describe('V3 transition rejections', () => {
     ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
   })
 
+  it('rejects skip from mid-rail (BUILT → INTEGRATED)', async () => {
+    const store = storageFor(
+      {
+        ...baseTask('BUILT'),
+        entityRev: 4,
+        implementerRunId: 'r1',
+        implementerAgentId: 'a',
+        implementerModel: 'm1',
+        implementerThreadId: 't1',
+      },
+      [run({ runId: 'r1', role: 'implementer', agentId: 'a', model: 'm1', threadId: 't1' })],
+    )
+    const receipt = makeReceipt('INTEGRATED', STAGE_FIELDS.INTEGRATED)
+    await expect(
+      advanceWithEvidence(store, {
+        boardId: BOARD,
+        taskId: TASK,
+        toStage: 'INTEGRATED',
+        byRunId: 'r1',
+        entityExpectedRev: 4,
+        expectedBoardRev: 1,
+        expectedLifecycleRev: 1,
+        expectedTaskHash: TASK_HASH,
+        expectedCanonicalHash: CANON,
+        receipt,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+  })
+
   it('rejects stale entity rev', async () => {
     const store = storageFor(baseTask('MAPPING'), [run({ runId: 'r1', role: 'implementer' })])
     const receipt = makeReceipt('MAPPED', STAGE_FIELDS.MAPPED)
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPED',
@@ -347,7 +567,7 @@ describe('V3 transition rejections', () => {
     const store = storageFor(baseTask('MAPPING'), [run({ runId: 'r1', role: 'implementer' })])
     const receipt = makeReceipt('MAPPED', STAGE_FIELDS.MAPPED)
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPED',
@@ -366,7 +586,7 @@ describe('V3 transition rejections', () => {
     const store = storageFor(baseTask('MAPPING'), [run({ runId: 'r1', role: 'implementer' })])
     const receipt = makeReceipt('MAPPED', STAGE_FIELDS.MAPPED, { taskHash: 'wrong' })
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPED',
@@ -385,7 +605,7 @@ describe('V3 transition rejections', () => {
     const store = storageFor(baseTask('MAPPING'), [run({ runId: 'r1', role: 'implementer' })])
     const receipt = makeReceipt('MAPPED', {}) // missing mappingStructuralReceipt
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPED',
@@ -417,7 +637,7 @@ describe('V3 transition rejections', () => {
       verdict: 'PASS',
     })
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAP_VERIFIED',
@@ -456,7 +676,7 @@ describe('V3 transition rejections', () => {
       verdict: 'PASS',
     })
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAP_VERIFIED',
@@ -495,7 +715,7 @@ describe('V3 transition rejections', () => {
       verdict: 'PASS',
     })
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAP_VERIFIED',
@@ -535,7 +755,7 @@ describe('V3 transition rejections', () => {
       verdict: 'PASS',
     })
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAP_VERIFIED',
@@ -556,7 +776,7 @@ describe('V3 transition rejections', () => {
     ])
     const receipt = makeReceipt('MAPPING', {})
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPING',
@@ -577,7 +797,7 @@ describe('V3 transition rejections', () => {
     ])
     const receipt = makeReceipt('MAPPING', {})
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPING',
@@ -599,7 +819,7 @@ describe('V3 transition rejections', () => {
     ])
     const receipt = makeReceipt('MAPPING', {})
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPING',
@@ -640,7 +860,7 @@ describe('V3 transition rejections', () => {
       verdict: 'PASS',
     })
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'LIVE_VERIFIED',
@@ -660,7 +880,7 @@ describe('V3 transition rejections', () => {
     const store = storageFor(baseTask(null), [run({ runId: 'r1', role: 'implementer' })])
     const receipt = makeReceipt('MAPPING', {}, { programmatic: false })
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPING',
@@ -680,7 +900,7 @@ describe('V3 transition rejections', () => {
     const receipt = makeReceipt('MAPPING', {})
     receipt.receiptHash = '0'.repeat(64)
     await expect(
-      advanceTaskV3(store, {
+      advanceWithEvidence(store, {
         boardId: BOARD,
         taskId: TASK,
         toStage: 'MAPPING',
@@ -693,6 +913,181 @@ describe('V3 transition rejections', () => {
         receipt,
       }),
     ).rejects.toMatchObject({ code: 'STALE_HASH' })
+  })
+
+  it('rejects advance without registered stage evidence (no self-created promotion)', async () => {
+    const store = storageFor(baseTask(null), [run({ runId: 'r1', role: 'implementer' })])
+    const receipt = makeReceipt('MAPPING', {})
+    await expect(
+      advanceWithEvidence(
+        store,
+        {
+          boardId: BOARD,
+          taskId: TASK,
+          toStage: 'MAPPING',
+          byRunId: 'r1',
+          entityExpectedRev: 0,
+          expectedBoardRev: 1,
+          expectedLifecycleRev: 1,
+          expectedTaskHash: TASK_HASH,
+          expectedCanonicalHash: CANON,
+          receipt,
+        },
+        { skipRegister: true },
+      ),
+    ).rejects.toMatchObject({ code: 'MISSING_EVIDENCE' })
+  })
+
+  it('rejects advance with wrong hash vs registered evidence', async () => {
+    const store = storageFor(baseTask(null), [run({ runId: 'r1', role: 'implementer' })])
+    const good = makeReceipt('MAPPING', {})
+    await store.putStageEvidence({
+      boardId: BOARD,
+      taskId: TASK,
+      toStage: 'MAPPING',
+      receipt: good,
+      emittingRunId: 'r1',
+      registeredAt: good.issuedAt,
+    })
+    await expect(
+      advanceTaskV3(store, {
+        boardId: BOARD,
+        taskId: TASK,
+        toStage: 'MAPPING',
+        byRunId: 'r1',
+        entityExpectedRev: 0,
+        expectedBoardRev: 1,
+        expectedLifecycleRev: 1,
+        expectedTaskHash: TASK_HASH,
+        expectedCanonicalHash: CANON,
+        receipt: { ...good, receiptHash: 'f'.repeat(64) },
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_HASH' })
+  })
+
+  it('submitStageEvidence is program-emit only and immutable; advance uses registry', async () => {
+    const store = storageFor(baseTask(null), [run({ runId: 'r1', role: 'implementer' })])
+    const registered = await submitStageEvidence(store, {
+      boardId: BOARD,
+      taskId: TASK,
+      toStage: 'MAPPING',
+      byRunId: 'r1',
+      fields: {},
+      taskHash: TASK_HASH,
+      canonicalHash: CANON,
+      boardRev: 1,
+      lifecycleRev: 1,
+      entityExpectedRev: 0,
+      receiptId: 'rcpt-submit-1',
+      now: '2026-07-13T12:00:00.000Z',
+    })
+    expect(registered.receipt.programmatic).toBe(true)
+    expect(registered.receipt.receiptHash).toHaveLength(64)
+    expect(registered.created).toBe(true)
+    // Exact replay → created:false
+    const replay = await submitStageEvidence(store, {
+      boardId: BOARD,
+      taskId: TASK,
+      toStage: 'MAPPING',
+      byRunId: 'r1',
+      fields: {},
+      taskHash: TASK_HASH,
+      canonicalHash: CANON,
+      boardRev: 1,
+      lifecycleRev: 1,
+      entityExpectedRev: 0,
+      receiptId: 'rcpt-submit-1',
+      now: '2026-07-13T12:00:00.000Z',
+    })
+    expect(replay.created).toBe(false)
+    expect(replay.receipt.receiptHash).toBe(registered.receipt.receiptHash)
+    // Stale entity rev rejected before insert
+    await expect(
+      submitStageEvidence(store, {
+        boardId: BOARD,
+        taskId: TASK,
+        toStage: 'MAPPING',
+        byRunId: 'r1',
+        fields: {},
+        taskHash: TASK_HASH,
+        canonicalHash: CANON,
+        boardRev: 1,
+        lifecycleRev: 1,
+        entityExpectedRev: 99,
+        receiptId: 'rcpt-stale-ent-dom',
+        now: '2026-07-13T12:00:00.000Z',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+    // Immutable conflict
+    await expect(
+      store.putStageEvidence({
+        ...registered,
+        receipt: { ...registered.receipt, receiptHash: 'a'.repeat(64) },
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_HASH' })
+    const result = await advanceTaskV3(store, {
+      boardId: BOARD,
+      taskId: TASK,
+      toStage: 'MAPPING',
+      byRunId: 'r1',
+      entityExpectedRev: 0,
+      expectedBoardRev: 1,
+      expectedLifecycleRev: 1,
+      expectedTaskHash: TASK_HASH,
+      expectedCanonicalHash: CANON,
+      receipt: {
+        receiptId: registered.receipt.receiptId,
+        receiptHash: registered.receipt.receiptHash,
+        programmatic: true,
+        taskHash: '',
+        canonicalHash: '',
+        boardRev: 0,
+        lifecycleRev: 0,
+        fields: {},
+        issuedAt: '',
+      },
+    })
+    expect(result.ok).toBe(true)
+    expect(result.receipt.receiptId).toBe('rcpt-submit-1')
+  })
+
+  it('memory + mysql-adapter stage evidence stores share immutable contract', async () => {
+    const mem = createMemoryStageEvidenceStore()
+    const sql = createMemoryControlDataSql()
+    const mysql = createMysqlStageEvidenceStore(sql)
+    const receipt = makeReceipt('MAPPING', {}, { receiptId: 'rcpt-mem-mysql' })
+    const entry = {
+      boardId: BOARD,
+      taskId: TASK,
+      toStage: 'MAPPING' as const,
+      receipt,
+      emittingRunId: 'r1',
+      registeredAt: receipt.issuedAt,
+    }
+    await mem.putStageEvidence(entry)
+    await mysql.putStageEvidence(entry)
+    expect((await mem.getStageEvidence(BOARD, 'rcpt-mem-mysql'))?.receipt.receiptHash).toBe(
+      receipt.receiptHash,
+    )
+    expect((await mysql.getStageEvidence(BOARD, 'rcpt-mem-mysql'))?.receipt.receiptHash).toBe(
+      receipt.receiptHash,
+    )
+    // Same content replay OK
+    await mem.putStageEvidence(entry)
+    await mysql.putStageEvidence(entry)
+    // Different hash conflict
+    await expect(
+      mem.putStageEvidence({
+        ...entry,
+        receipt: { ...receipt, receiptHash: 'b'.repeat(64) },
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_HASH' })
+    await expect(
+      mysql.putStageEvidence({
+        ...entry,
+        receipt: { ...receipt, receiptHash: 'b'.repeat(64) },
+      }),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
   })
 })
 

@@ -11,6 +11,7 @@ import {
   createMemoryDispatchPlanStore,
   DISPATCH_CALLER_ROOT,
   getSharedDispatchPlanStore,
+  hashPublishDispatchPlanBody,
   IngestError,
   projectDispatchNextFields,
   publishDispatchPlan,
@@ -22,6 +23,7 @@ import {
   type DispatchPlanRecord,
   type DispatchPlanStore,
   type IngestDeps,
+  type PublishDispatchPlanRequest,
 } from '#/server/control-plane-ingest'
 import { createMemoryIdempotencyStorage } from '#/server/idempotency'
 
@@ -56,37 +58,84 @@ async function publish(
   d: IngestDeps,
   over: {
     planId?: string
+    planVersion?: number
     items?: Array<DispatchPlanItem>
     callerRole?: string
+    entityExpectedRev?: number
     expectedBoardRev?: number
+    currentPinHash?: string | null
+    issuedAt?: string
     expiresAt?: string
+    stage?: string | null
     idempotencyKey?: string
     planHash?: string
+    canonicalSnapshotId?: string
+    canonicalHash?: string
+    actorId?: string
   } = {},
 ) {
   const items = over.items ?? [item({ rank: 1, taskId: 'T-1' }), item({ rank: 2, taskId: 'T-2' })]
   const planId = over.planId ?? 'plan-1'
+  const canonicalSnapshotId = over.canonicalSnapshotId ?? 'snap-1'
+  const canonicalHash = over.canonicalHash ?? 'canon-aaa'
   const base = {
     boardId: BOARD,
     planId,
-    planVersion: 1,
-    canonicalSnapshotId: 'snap-1',
-    canonicalHash: 'canon-aaa',
+    planVersion: over.planVersion ?? 1,
+    canonicalSnapshotId,
+    canonicalHash,
     items,
   }
   const planHash = over.planHash ?? computePlanHash(base)
   return publishDispatchPlan(d, {
     ...base,
     planHash,
+    entityExpectedRev: over.entityExpectedRev ?? 0,
     expectedBoardRev: over.expectedBoardRev ?? 0,
-    issuedAt: '2026-07-13T10:00:00.000Z',
+    currentPinHash: over.currentPinHash !== undefined ? over.currentPinHash : canonicalHash,
+    issuedAt: over.issuedAt ?? '2026-07-13T10:00:00.000Z',
     expiresAt: over.expiresAt ?? '2026-07-13T14:00:00.000Z',
-    stage: 'MAP_VERIFIED',
+    stage: over.stage !== undefined ? over.stage : 'MAP_VERIFIED',
     items,
     idempotencyKey: over.idempotencyKey ?? `idem-${planId}`,
     callerRole: over.callerRole ?? DISPATCH_CALLER_ROOT,
-    actorId: 'root-1',
+    actorId: over.actorId ?? 'root-1',
   })
+}
+
+function buildPublishReq(
+  over: Partial<PublishDispatchPlanRequest> & {
+    planId?: string
+    items?: Array<DispatchPlanItem>
+  } = {},
+): PublishDispatchPlanRequest {
+  const items = over.items ?? [item({ rank: 1, taskId: 'T-1' })]
+  const planId = over.planId ?? 'plan-matrix'
+  const boardId = over.boardId ?? BOARD
+  const planVersion = over.planVersion ?? 1
+  const canonicalSnapshotId = over.canonicalSnapshotId ?? 'snap-1'
+  const canonicalHash = over.canonicalHash ?? 'canon-aaa'
+  const planHash =
+    over.planHash ??
+    computePlanHash({ boardId, planId, planVersion, canonicalSnapshotId, canonicalHash, items })
+  return {
+    boardId,
+    planId,
+    planVersion,
+    planHash,
+    canonicalSnapshotId,
+    canonicalHash,
+    entityExpectedRev: over.entityExpectedRev ?? 0,
+    expectedBoardRev: over.expectedBoardRev ?? 0,
+    currentPinHash: over.currentPinHash !== undefined ? over.currentPinHash : canonicalHash,
+    issuedAt: over.issuedAt ?? '2026-07-13T10:00:00.000Z',
+    expiresAt: over.expiresAt ?? '2026-07-13T14:00:00.000Z',
+    stage: over.stage !== undefined ? over.stage : 'MAP_VERIFIED',
+    items,
+    idempotencyKey: over.idempotencyKey ?? 'matrix-key',
+    callerRole: over.callerRole ?? DISPATCH_CALLER_ROOT,
+    actorId: over.actorId ?? 'root-1',
+  }
 }
 
 describe('AC-INGEST publish_dispatch_plan sole NEXT source', () => {
@@ -275,6 +324,229 @@ describe('AC-INGEST publish_dispatch_plan sole NEXT source', () => {
         items: [item({ rank: 1, taskId: 'T-OTHER' })],
       }),
     ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+  })
+
+  it('full envelope: pin mismatch STALE; create bumps board once; exact replay no second bump', async () => {
+    const d = deps()
+    await expect(
+      publish(d, {
+        planId: 'plan-pin',
+        currentPinHash: 'wrong-pin',
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    await expect(
+      publish(d, {
+        planId: 'plan-ent',
+        entityExpectedRev: 5,
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+
+    const board0 = (await d.atomic.getBoardState(BOARD)).boardRev
+    const a = await publish(d, {
+      planId: 'plan-env',
+      idempotencyKey: 'plan-env-k',
+      entityExpectedRev: 0,
+      expectedBoardRev: board0,
+      currentPinHash: 'canon-aaa',
+    })
+    expect(a.replayed).toBe(false)
+    expect(a.boardRev).toBe(board0 + 1)
+    expect((await d.atomic.getBoardState(BOARD)).boardRev).toBe(board0 + 1)
+
+    const replay = await publish(d, {
+      planId: 'plan-env',
+      idempotencyKey: 'plan-env-k',
+      entityExpectedRev: 0,
+      expectedBoardRev: board0,
+      currentPinHash: 'canon-aaa',
+    })
+    expect(replay.replayed).toBe(true)
+    expect(replay.boardRev).toBe(a.boardRev)
+    // Exact key replay must not double-bump board rev
+    expect((await d.atomic.getBoardState(BOARD)).boardRev).toBe(board0 + 1)
+  })
+
+  it('idempotency hash matrix: each previously-omitted material field alone → IDEMPOTENCY_CONFLICT', async () => {
+    const KEY = 'publish-matrix-key'
+    const d = deps()
+    const board0 = (await d.atomic.getBoardState(BOARD)).boardRev
+    const first = await publish(d, {
+      planId: 'plan-matrix-base',
+      idempotencyKey: KEY,
+      entityExpectedRev: 0,
+      expectedBoardRev: board0,
+      issuedAt: '2026-07-13T10:00:00.000Z',
+      expiresAt: '2026-07-13T14:00:00.000Z',
+      stage: 'MAP_VERIFIED',
+      canonicalSnapshotId: 'snap-1',
+      canonicalHash: 'canon-aaa',
+    })
+    expect(first.replayed).toBe(false)
+    const boardAfter = (await d.atomic.getBoardState(BOARD)).boardRev
+    expect(boardAfter).toBe(board0 + 1)
+
+    // Exact same → replay, no board bump
+    const exact = await publish(d, {
+      planId: 'plan-matrix-base',
+      idempotencyKey: KEY,
+      entityExpectedRev: 0,
+      expectedBoardRev: board0,
+      issuedAt: '2026-07-13T10:00:00.000Z',
+      expiresAt: '2026-07-13T14:00:00.000Z',
+      stage: 'MAP_VERIFIED',
+      canonicalSnapshotId: 'snap-1',
+      canonicalHash: 'canon-aaa',
+    })
+    expect(exact.replayed).toBe(true)
+    expect((await d.atomic.getBoardState(BOARD)).boardRev).toBe(boardAfter)
+
+    const baseHash = hashPublishDispatchPlanBody(
+      buildPublishReq({
+        planId: 'plan-matrix-base',
+        idempotencyKey: KEY,
+        entityExpectedRev: 0,
+        expectedBoardRev: board0,
+        issuedAt: '2026-07-13T10:00:00.000Z',
+        expiresAt: '2026-07-13T14:00:00.000Z',
+        stage: 'MAP_VERIFIED',
+        canonicalSnapshotId: 'snap-1',
+        canonicalHash: 'canon-aaa',
+      }),
+    )
+
+    // Each field that the independent verifier found omitted from the old hash.
+    const fieldCases: Array<{
+      field: string
+      over: Parameters<typeof publish>[1]
+      expectHashDiff?: boolean
+    }> = [
+      {
+        field: 'issuedAt',
+        over: {
+          planId: 'plan-matrix-base',
+          idempotencyKey: KEY,
+          entityExpectedRev: 0,
+          expectedBoardRev: board0,
+          issuedAt: '2026-07-13T10:30:00.000Z',
+          expiresAt: '2026-07-13T14:00:00.000Z',
+          stage: 'MAP_VERIFIED',
+          canonicalSnapshotId: 'snap-1',
+          canonicalHash: 'canon-aaa',
+        },
+      },
+      {
+        field: 'expiresAt',
+        over: {
+          planId: 'plan-matrix-base',
+          idempotencyKey: KEY,
+          entityExpectedRev: 0,
+          expectedBoardRev: board0,
+          issuedAt: '2026-07-13T10:00:00.000Z',
+          expiresAt: '2026-07-13T15:00:00.000Z',
+          stage: 'MAP_VERIFIED',
+          canonicalSnapshotId: 'snap-1',
+          canonicalHash: 'canon-aaa',
+        },
+      },
+      {
+        field: 'stage',
+        over: {
+          planId: 'plan-matrix-base',
+          idempotencyKey: KEY,
+          entityExpectedRev: 0,
+          expectedBoardRev: board0,
+          issuedAt: '2026-07-13T10:00:00.000Z',
+          expiresAt: '2026-07-13T14:00:00.000Z',
+          stage: 'OTHER_STAGE',
+          canonicalSnapshotId: 'snap-1',
+          canonicalHash: 'canon-aaa',
+        },
+      },
+      {
+        field: 'entityExpectedRev',
+        over: {
+          planId: 'plan-matrix-base',
+          idempotencyKey: KEY,
+          entityExpectedRev: 1,
+          expectedBoardRev: board0,
+          issuedAt: '2026-07-13T10:00:00.000Z',
+          expiresAt: '2026-07-13T14:00:00.000Z',
+          stage: 'MAP_VERIFIED',
+          canonicalSnapshotId: 'snap-1',
+          canonicalHash: 'canon-aaa',
+        },
+      },
+      {
+        field: 'expectedBoardRev',
+        over: {
+          planId: 'plan-matrix-base',
+          idempotencyKey: KEY,
+          entityExpectedRev: 0,
+          expectedBoardRev: board0 + 99,
+          issuedAt: '2026-07-13T10:00:00.000Z',
+          expiresAt: '2026-07-13T14:00:00.000Z',
+          stage: 'MAP_VERIFIED',
+          canonicalSnapshotId: 'snap-1',
+          canonicalHash: 'canon-aaa',
+        },
+      },
+      {
+        field: 'canonicalSnapshotId',
+        over: {
+          planId: 'plan-matrix-base',
+          idempotencyKey: KEY,
+          entityExpectedRev: 0,
+          expectedBoardRev: board0,
+          issuedAt: '2026-07-13T10:00:00.000Z',
+          expiresAt: '2026-07-13T14:00:00.000Z',
+          stage: 'MAP_VERIFIED',
+          canonicalSnapshotId: 'snap-OTHER',
+          canonicalHash: 'canon-aaa',
+        },
+      },
+      {
+        field: 'canonicalHash',
+        over: {
+          planId: 'plan-matrix-base',
+          idempotencyKey: KEY,
+          entityExpectedRev: 0,
+          expectedBoardRev: board0,
+          issuedAt: '2026-07-13T10:00:00.000Z',
+          expiresAt: '2026-07-13T14:00:00.000Z',
+          stage: 'MAP_VERIFIED',
+          canonicalSnapshotId: 'snap-1',
+          canonicalHash: 'canon-OTHER',
+          currentPinHash: 'canon-OTHER',
+        },
+      },
+    ]
+
+    for (const c of fieldCases) {
+      const mutatedHash = hashPublishDispatchPlanBody(
+        buildPublishReq({
+          planId: 'plan-matrix-base',
+          idempotencyKey: KEY,
+          entityExpectedRev: 0,
+          expectedBoardRev: board0,
+          issuedAt: '2026-07-13T10:00:00.000Z',
+          expiresAt: '2026-07-13T14:00:00.000Z',
+          stage: 'MAP_VERIFIED',
+          canonicalSnapshotId: 'snap-1',
+          canonicalHash: 'canon-aaa',
+          ...c.over,
+        }),
+      )
+      expect(mutatedHash, `hash must differ for field ${c.field}`).not.toBe(baseHash)
+
+      await expect(publish(d, c.over), `field ${c.field}`).rejects.toMatchObject({
+        code: 'IDEMPOTENCY_CONFLICT',
+      })
+      // Conflict must not bump board further
+      expect((await d.atomic.getBoardState(BOARD)).boardRev, `no bump after ${c.field}`).toBe(
+        boardAfter,
+      )
+    }
   })
 })
 

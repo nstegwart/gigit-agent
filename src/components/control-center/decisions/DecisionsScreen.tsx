@@ -23,6 +23,11 @@ export function DecisionsScreen({
   onRetry,
   onRefresh,
   className,
+  canAct = true,
+  pendingDecisionId = null,
+  pendingAction = null,
+  actionErrors,
+  actions,
 }: DecisionsScreenProps) {
   const hideList =
     surfaceState === 'loading' ||
@@ -51,6 +56,7 @@ export function DecisionsScreen({
       data-needs-human={needsHuman ? 'true' : 'false'}
       data-open-count={openCount}
       data-blocking-count={blockingCount}
+      data-can-act={canAct ? 'true' : 'false'}
       aria-labelledby="decisions-page-title"
       {...pinAttrs}
     >
@@ -72,7 +78,8 @@ export function DecisionsScreen({
           </h1>
           <p className={styles.pageSub}>
             Owner inbox in server order (blocking → severity → due → created → id). Blocking
-            decisions cannot be snoozed away.
+            decisions cannot be snoozed away. Declining an option resolves (RESOLVED); reject
+            means the request itself is rejected.
           </p>
         </div>
         <div className={styles.summaryStrip}>
@@ -106,7 +113,29 @@ export function DecisionsScreen({
         </p>
       ) : null}
 
-      {error ? (
+      {surfaceState === 'forbidden' ? (
+        <div
+          className={`${styles.banner} ${styles.bannerCompact} ${styles.banner_error}`}
+          role="alert"
+          data-testid="decisions-forbidden"
+        >
+          <p className={styles.bannerTitle}>Forbidden</p>
+          <p className={styles.bannerBody}>
+            You are not authorized to view or act on decisions for this board.
+          </p>
+          {error ? (
+            <details className={styles.diagDetails}>
+              <summary>Technical detail</summary>
+              <p className={styles.bannerBody}>
+                <strong>{error.code}</strong>
+                {error.message ? `: ${error.message}` : null}
+              </p>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+
+      {error && surfaceState !== 'forbidden' ? (
         <div
           className={`${styles.banner} ${styles.bannerCompact} ${styles.banner_error}`}
           role="alert"
@@ -135,7 +164,8 @@ export function DecisionsScreen({
         (projectionGaps && projectionGaps.length > 0) ||
         surfaceState === 'needs-human' ||
         (blockingCount > 0 && !hideList)) &&
-      !error ? (
+      !error &&
+      surfaceState !== 'forbidden' ? (
         <div
           className={`${styles.banner} ${styles.bannerCompact} ${
             blockingCount > 0 || surfaceState === 'needs-human'
@@ -208,7 +238,18 @@ export function DecisionsScreen({
         <ul className={styles.list} data-testid="decisions-list">
           {items.map((item) => (
             <li key={item.decisionId}>
-              <DecisionCard item={item} boardId={boardId} />
+              <DecisionCard
+                item={item}
+                boardId={boardId}
+                pin={pin}
+                canAct={canAct}
+                pending={pendingDecisionId === item.decisionId}
+                pendingAction={
+                  pendingDecisionId === item.decisionId ? pendingAction : null
+                }
+                actionError={actionErrors?.[item.decisionId] ?? null}
+                actions={actions}
+              />
             </li>
           ))}
         </ul>

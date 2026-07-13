@@ -19,6 +19,7 @@ import {
   projectOverviewLifecycle,
   projectOverviewMaterialEvents,
 } from '#/lib/control-center-route-adapters'
+import type { WorkItemRow } from '#/components/control-center/work'
 import {
   createPinnedEnvelope,
   type ControlCenterPin,
@@ -744,5 +745,284 @@ describe('control-center-route-adapters', () => {
   it('existing-board compatibility: non mfs boards are not control-center', () => {
     expect(isControlCenterBoard('ibils')).toBe(false)
     expect(isControlCenterBoard('demo')).toBe(false)
+  })
+
+  it('overview topDecision projects humanDisplay fail-closed; never invents ownerAction', () => {
+    const reviewedHd = {
+      contentReviewRequired: false,
+      effectiveReviewStatus: 'REVIEWED',
+      ownerPrimaryTitle: 'Setujui kenaikan kapasitas',
+      statusSentence: 'Keputusan blocking menunggu owner.',
+      ownerAction: 'Pilih opsi A atau B.',
+      whyItMatters: 'Kapasitas membatasi throughput.',
+      next: 'Putuskan sekarang.',
+      blocker: 'Menunggu owner.',
+      citations: [{ field: 'title', path: 'humanDisplay.title' }],
+      acceptanceLinks: [],
+      missionQuestionLinks: [],
+      pin: {
+        snapshotId: PIN.canonicalSnapshotId,
+        boardRev: PIN.boardRev,
+        lifecycleRev: PIN.lifecycleRev,
+        canonicalHash: PIN.canonicalHash,
+        sourceHash: PIN.canonicalHash,
+      },
+      primary: { title: 'Setujui kenaikan kapasitas' },
+      blockedShell: { title: 'shell' },
+    }
+
+    const baseOverview = (): OverviewData => ({
+      surfaceVersion: 'CC_UI_V1',
+      buckets: emptyBuckets as OverviewData['buckets'],
+      overlays: emptyOverlays as OverviewData['overlays'],
+      trackedWorkDenominator: 0,
+      productDenominator: 0,
+      stageProdReady: 0,
+      prodReadyWithEvidence: 0,
+      unclassifiedCount: 0,
+      g5Pass: false,
+      complete: false,
+      rawTaskReadinessPercent: null,
+      boardReadinessPercent: null,
+      cappedBy: 'DATA_INTEGRITY_OR_P0',
+      priority: {
+        portfolioId: 'SALES_WEB_RELATED_BACKEND',
+        membershipDenominator: 0,
+        membershipTaskIds: [],
+        priorityClosureCapacity: 0,
+        allClosureCapacity: 0,
+        priorityCapacityShare: null,
+        majorityAllocationPass: null,
+        frontierState: 'PRIORITY_FRONTIER_EMPTY',
+        reason: 'no membership',
+      },
+      g5: { g5Pass: false, domainResults: [], missingDomains: [] },
+      dispatchNext: {
+        selectedForNextDispatch: [],
+        planId: null,
+        blockedReason: null,
+        soleSource: 'active_dispatch_plan',
+      },
+      ongoing: [],
+      decisionCount: 1,
+      topDecision: {
+        decisionId: 'd-hd-1',
+        severity: 'HIGH',
+        blocking: true,
+        title: '[DEC-TECH] technical title',
+        status: 'OPEN',
+        question: 'Naikkan floor?',
+        ownerHumanDisplay: reviewedHd as never,
+      } as OverviewData['topDecision'],
+      needsHuman: true,
+      projects: [],
+      sectionErrors: [],
+    })
+
+    const reviewedProps = overviewEnvelopeToProps(
+      createPinnedEnvelope(PIN, baseOverview(), { surface: 'overview' }),
+    )
+    const top = reviewedProps.decision?.topItem as {
+      title: string
+      ownerPrimaryTitle?: string | null
+      ownerAction?: string
+      contentReviewRequired?: boolean
+      effectiveReviewStatus?: string | null
+      whyItMatters?: string | null
+      next?: string | null
+      blocker?: string | null
+      statusSentence?: string | null
+    }
+    expect(top.title).toBe('[DEC-TECH] technical title')
+    expect(top.ownerPrimaryTitle).toBe('Setujui kenaikan kapasitas')
+    expect(top.ownerAction).toBe('Pilih opsi A atau B.')
+    expect(top.contentReviewRequired).toBe(false)
+    expect(top.effectiveReviewStatus).toBe('REVIEWED')
+    expect(top.whyItMatters).toMatch(/Kapasitas/)
+    expect(top.next).toMatch(/Putuskan/)
+    expect(top.blocker).toMatch(/Menunggu/)
+    expect(top.statusSentence).toMatch(/blocking/)
+    // Must never invent English technical actions from blocking flag.
+    expect(top.ownerAction).not.toBe('Resolve blocking decision')
+    expect(top.ownerAction).not.toBe('Review decision')
+
+    // Missing HD → fail-closed fields; empty ownerAction (not invented).
+    const missingData = baseOverview()
+    missingData.topDecision = {
+      decisionId: 'd-hd-missing',
+      severity: 'CRITICAL',
+      blocking: true,
+      title: '[DEC-99] technical only',
+      status: 'OPEN',
+      question: 'Ship?',
+    }
+    const missingProps = overviewEnvelopeToProps(
+      createPinnedEnvelope(PIN, missingData, { surface: 'overview' }),
+    )
+    const missingTop = missingProps.decision?.topItem as {
+      title: string
+      ownerPrimaryTitle?: string | null
+      ownerAction?: string
+      contentReviewRequired?: boolean
+      effectiveReviewStatus?: string | null
+    }
+    expect(missingTop.title).toBe('[DEC-99] technical only')
+    expect(missingTop.ownerPrimaryTitle).toBeNull()
+    expect(missingTop.ownerAction).toBe('')
+    expect(missingTop.contentReviewRequired).toBe(true)
+    expect(missingTop.effectiveReviewStatus).toBe('CONTENT_REVIEW_REQUIRED')
+    expect(missingTop.ownerAction).not.toMatch(/Resolve blocking/)
+    expect(missingTop.ownerAction).not.toMatch(/Review decision/)
+  })
+
+  it('work + overview project ownerHumanDisplay fail-closed wire (never technical title primary)', () => {
+    const blockedShell = {
+      contentReviewRequired: true,
+      effectiveReviewStatus: 'CONTENT_REVIEW_REQUIRED',
+      ownerPrimaryTitle: 'Konten pemilik memerlukan peninjauan',
+      statusSentence: 'Status peninjauan: CONTENT_REVIEW_REQUIRED.',
+      ownerAction: 'Tinjau atau tugaskan peninjauan salinan manusia untuk item ini.',
+      whyItMatters: 'Salinan teknis mentah tidak boleh menjadi teks utama bagi pemilik.',
+      next: 'Lengkapi humanDisplay dan minta peninjauan independen.',
+      blocker: 'CONTENT_REVIEW_REQUIRED — salinan hilang, basi, konflik, atau belum ditinjau.',
+      citations: [{ field: 'reviewStatus', path: 'humanDisplay.evaluateHumanDisplay' }],
+      acceptanceLinks: [{ path: 'humanDisplay.evaluateHumanDisplay', summary: 'shell' }],
+      missionQuestionLinks: [{ questionId: 'Q-CONTENT-REVIEW', field: 'reviewStatus' }],
+      pin: {
+        snapshotId: PIN.canonicalSnapshotId,
+        boardRev: PIN.boardRev,
+        lifecycleRev: PIN.lifecycleRev,
+        canonicalHash: PIN.canonicalHash,
+        sourceHash: PIN.canonicalHash,
+      },
+      primary: null,
+      blockedShell: {
+        title: 'Konten pemilik memerlukan peninjauan',
+        reviewStatus: 'CONTENT_REVIEW_REQUIRED',
+      },
+    }
+
+    const workData: WorkData = {
+      surfaceVersion: 'CC_UI_V1',
+      buckets: emptyBuckets as WorkData['buckets'],
+      overlays: emptyOverlays as WorkData['overlays'],
+      trackedWorkDenominator: 1,
+      filter: { bucket: null, overlay: null, staleFamily: null },
+      items: [
+        {
+          taskId: 'T-HD-W',
+          title: '[FC-77] technical only',
+          projectId: null,
+          featureId: null,
+          bucket: 'BLOCKED',
+          overlays: [],
+          blockReason: 'DATA_INTEGRITY',
+          outsideTracked: false,
+          lifecycleStage: 'MAPPED',
+          targetGate: null,
+          claimState: null,
+          createdAt: PIN.generatedAt,
+          id: 'T-HD-W',
+          ownerHumanDisplay: blockedShell as never,
+        },
+      ],
+      pageSize: 50,
+      dispatchNext: {
+        selectedForNextDispatch: [],
+        planId: null,
+        blockedReason: null,
+        soleSource: 'active_dispatch_plan',
+      },
+    }
+    const workProps = workEnvelopeToProps(createPinnedEnvelope(PIN, workData, { surface: 'work' }), {
+      boardId: 'mfs-rebuild',
+      activeBucket: 'BLOCKED',
+      staleOverlayActive: false,
+    })
+    const item = workProps.items[0] as WorkItemRow & {
+      ownerPrimaryTitle?: string | null
+      contentReviewRequired?: boolean
+      statusSentence?: string | null
+      whyItMatters?: string | null
+    }
+    expect(item.title).toBe('[FC-77] technical only')
+    expect(item.ownerPrimaryTitle).toBe('Konten pemilik memerlukan peninjauan')
+    expect(item.ownerPrimaryTitle).not.toContain('[FC-77]')
+    expect(item.contentReviewRequired).toBe(true)
+    expect(item.statusSentence).toMatch(/CONTENT_REVIEW_REQUIRED/)
+    expect(item.whyItMatters).toMatch(/teknis/)
+
+    const overviewData: OverviewData = {
+      surfaceVersion: 'CC_UI_V1',
+      buckets: emptyBuckets as OverviewData['buckets'],
+      overlays: emptyOverlays as OverviewData['overlays'],
+      trackedWorkDenominator: 0,
+      productDenominator: 0,
+      stageProdReady: 0,
+      prodReadyWithEvidence: 0,
+      unclassifiedCount: 0,
+      g5Pass: false,
+      complete: false,
+      rawTaskReadinessPercent: null,
+      boardReadinessPercent: null,
+      cappedBy: 'DATA_INTEGRITY_OR_P0',
+      priority: {
+        portfolioId: 'SALES_WEB_RELATED_BACKEND',
+        membershipDenominator: 0,
+        membershipTaskIds: [],
+        priorityClosureCapacity: 0,
+        allClosureCapacity: 0,
+        priorityCapacityShare: null,
+        majorityAllocationPass: null,
+        frontierState: 'PRIORITY_FRONTIER_EMPTY',
+        reason: 'no membership',
+      },
+      g5: { g5Pass: false, domainResults: [], missingDomains: [] },
+      dispatchNext: {
+        selectedForNextDispatch: [],
+        planId: null,
+        blockedReason: null,
+        soleSource: 'active_dispatch_plan',
+      },
+      ongoing: [
+        {
+          taskId: 'T-ON-1',
+          title: 'tech-run-title',
+          targetGate: 'GATE',
+          agentId: 'a1',
+          role: 'implementer',
+          model: null,
+          effort: null,
+          maskedAccount: null,
+          startedAt: null,
+          startedAgeSeconds: 10,
+          heartbeatAt: null,
+          heartbeatAgeSeconds: 5,
+          materialProgressAt: null,
+          materialProgressAgeSeconds: null,
+          productiveSubstate: 'PRODUCTIVE',
+          evidenceLink: null,
+          bucket: 'ONGOING',
+          overlays: [],
+          ownerHumanDisplay: blockedShell as never,
+        },
+      ],
+      decisionCount: 0,
+      topDecision: null,
+      needsHuman: false,
+      projects: [],
+      sectionErrors: [],
+    }
+    const ovProps = overviewEnvelopeToProps(
+      createPinnedEnvelope(PIN, overviewData, { surface: 'overview' }),
+    )
+    const ongoing = ovProps.ongoing[0] as {
+      title: string
+      ownerPrimaryTitle?: string | null
+      contentReviewRequired?: boolean
+    }
+    expect(ongoing.title).toBe('tech-run-title')
+    expect(ongoing.ownerPrimaryTitle).toBe('Konten pemilik memerlukan peninjauan')
+    expect(ongoing.contentReviewRequired).toBe(true)
   })
 })

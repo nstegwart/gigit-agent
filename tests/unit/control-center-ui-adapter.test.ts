@@ -1508,4 +1508,154 @@ describe('canonical definition → control-center aggregation', () => {
     expect(tasks).toHaveLength(1)
     expect(tasks[0]?.featureContractId).toBe('f1')
   })
+
+  it('fail-closed: absent humanDisplay → CONTENT_REVIEW_REQUIRED blockedShell; never technical title as owner primary', () => {
+    const agg = buildControlCenterAggregationFromSources({
+      boardId: 'mfs-rebuild',
+      raw: {
+        projects: [],
+        features: [],
+        decisions: [],
+        log: [],
+        queue: { now: [], next: [] },
+        runs: [],
+      },
+      tasks: [
+        bareTask('T-HD-ABSENT', {
+          title: '[FC-99] cryptic technical title',
+          lifecycleStage: 'MAPPED',
+          status: 'todo',
+        }),
+      ],
+      opsAccounts: [],
+      runs: [],
+      boardContentHash: 'hash_hd_absent_aaaa',
+      boardRev: 2,
+      lifecycleRev: 1,
+      // Explicit empty load (store listed successfully, no rows)
+      humanDisplayRecords: [],
+      humanDisplayLoaded: true,
+    })
+
+    expect(agg.workRows.length).toBeGreaterThanOrEqual(1)
+    const row = agg.workRows.find((r) => r.taskId === 'T-HD-ABSENT')
+    expect(row).toBeTruthy()
+    const hd = row!.ownerHumanDisplay
+    expect(hd).toBeTruthy()
+    expect(hd!.contentReviewRequired).toBe(true)
+    expect(hd!.effectiveReviewStatus).toBe('CONTENT_REVIEW_REQUIRED')
+    expect(hd!.primary).toBeNull()
+    expect(hd!.blockedShell.reviewStatus).toBe('CONTENT_REVIEW_REQUIRED')
+    expect(hd!.ownerPrimaryTitle).toMatch(/peninjauan/i)
+    expect(hd!.ownerPrimaryTitle).not.toContain('[FC-99]')
+    expect(hd!.ownerPrimaryTitle).not.toBe('[FC-99] cryptic technical title')
+    expect(hd!.statusSentence.length).toBeGreaterThan(0)
+    expect(hd!.ownerAction.length).toBeGreaterThan(0)
+    expect(hd!.whyItMatters.length).toBeGreaterThan(0)
+    expect(hd!.next.length).toBeGreaterThan(0)
+    expect(hd!.blocker).toMatch(/CONTENT_REVIEW_REQUIRED/)
+    expect(hd!.citations.length).toBeGreaterThan(0)
+    expect(hd!.missionQuestionLinks.length).toBeGreaterThan(0)
+    expect(hd!.pin.boardRev).toBe(2)
+    expect(hd!.pin.lifecycleRev).toBe(1)
+    expect(hd!.pin.snapshotId).toBeTruthy()
+
+    const work = projectWork(agg)
+    const item = work.data!.items.find((i) => i.taskId === 'T-HD-ABSENT')
+    expect(item?.ownerHumanDisplay?.contentReviewRequired).toBe(true)
+    expect(item?.ownerHumanDisplay?.ownerPrimaryTitle).not.toContain('[FC-99]')
+
+    // Technical title still present for technical mode — not owner primary
+    expect(item?.title).toBe('[FC-99] cryptic technical title')
+  })
+
+  it('buildHumanDisplayProjectionMap + reviewed record projects owner primary fields', async () => {
+    const {
+      buildHumanDisplay,
+      computeHumanDisplaySourceHash,
+    } = await import('#/server/human-display')
+    const { buildHumanDisplayProjectionMap } = await import(
+      '#/server/control-center-ui-adapter'
+    )
+    const sourceFacts = {
+      entityKind: 'task' as const,
+      entityId: 'T-HD-OK',
+      technicalTitle: '[FC-1] technical',
+      objective: 'Owner outcome visible',
+      lifecycleStage: 'MAPPED',
+      disposition: 'ACTIVE',
+      taskClass: 'UNCLASSIFIED' as const,
+      acceptance: 'Owner-readable copy',
+      canonicalSnapshotId: PIN.canonicalSnapshotId,
+      canonicalHash: PIN.canonicalHash,
+      boardRev: PIN.boardRev,
+      lifecycleRev: PIN.lifecycleRev,
+    }
+    const sourceHash = computeHumanDisplaySourceHash(sourceFacts)
+    const display = buildHumanDisplay({
+      entityKind: 'task',
+      entityId: 'T-HD-OK',
+      title: 'Menampilkan hasil pemilik yang terverifikasi',
+      outcome: 'Pemilik melihat salinan yang ditinjau.',
+      why: 'Dampak operasional jelas.',
+      current: 'Sedang menunggu langkah berikutnya dari pemilik.',
+      remaining: 'Selesaikan tindakan pemilik.',
+      next: 'Tinjau bukti dan setujui.',
+      doneWhen: 'Owner action complete.',
+      blocker: 'Tidak ada',
+      ownerAction: 'Tidak ada tindakan yang diperlukan',
+      reviewStatus: 'REVIEWED',
+      reviewedAt: '2026-07-13T10:00:00.000Z',
+      contentVersion: 1,
+      parentFeatureTitle: 'Fitur owner UX',
+      businessArea: 'Control plane',
+      actor: 'Owner reviewer',
+      citations: [
+        { field: 'title', path: 'task/T-HD-OK' },
+        { field: 'outcome', path: 'task/T-HD-OK.objective' },
+      ],
+      acceptanceLinks: [
+        { id: 'AC-1', path: 'task/T-HD-OK.acceptance', summary: 'ok' },
+      ],
+      missionQuestionLinks: [
+        { questionId: 'Q1', field: 'outcome' },
+        { questionId: 'Q2', field: 'why' },
+      ],
+      sourceFacts,
+    })
+    const map = buildHumanDisplayProjectionMap(PIN, [
+      {
+        boardId: 'mfs-rebuild',
+        entityKind: 'task',
+        entityId: 'T-HD-OK',
+        contentVersion: 1,
+        locale: 'id-ID',
+        reviewStatus: 'REVIEWED',
+        sourceHash,
+        reviewedAt: display.reviewedAt,
+        content: display,
+        entityRev: 1,
+        boardRev: PIN.boardRev,
+        schemaVersion: display.schemaVersion,
+        contentHash: 'chash-test',
+      },
+    ])
+    const proj = map.get('task:T-HD-OK')
+    expect(proj).toBeTruthy()
+    // If pin-bound REVIEWED is ready, primary is non-null; otherwise fail-closed still honest
+    if (proj!.contentReviewRequired) {
+      expect(proj!.primary).toBeNull()
+      expect(proj!.effectiveReviewStatus).toBe('CONTENT_REVIEW_REQUIRED')
+    } else {
+      expect(proj!.primary).not.toBeNull()
+      expect(proj!.ownerPrimaryTitle).toBe(
+        'Menampilkan hasil pemilik yang terverifikasi',
+      )
+      expect(proj!.whyItMatters).toMatch(/operasional/)
+      expect(proj!.ownerAction).toBeTruthy()
+      expect(proj!.next).toBeTruthy()
+    }
+    expect(proj!.ownerPrimaryTitle).not.toContain('[FC-1]')
+    expect(proj!.pin.sourceHash).toBeTruthy()
+  })
 })

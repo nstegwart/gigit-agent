@@ -4,6 +4,8 @@ import styles from './overview.module.css'
 import type { DecisionSeverity, OverviewDecisionSection } from './types'
 import { EmptySlot } from './SurfaceBanner'
 import { SemanticIcon } from './SemanticIcon'
+import { resolveOwnerDisplay } from './ownerDisplay'
+import { OwnerHumanFields } from './OwnerHumanFields'
 
 function severityClass(sev: DecisionSeverity): string {
   if (sev === 'CRITICAL' || sev === 'HIGH') return styles.sevCritical
@@ -104,6 +106,20 @@ export function NeedsYourDecision({
   }
 
   const item = decision.topItem
+  const display = resolveOwnerDisplay({
+    technicalTitle: item.title,
+    ownerPrimaryTitle: item.ownerPrimaryTitle,
+    statusSentence: item.statusSentence,
+    ownerAction: item.ownerAction,
+    whyItMatters: item.whyItMatters,
+    next: item.next,
+    blocker: item.blocker,
+    contentReviewRequired: item.contentReviewRequired,
+    effectiveReviewStatus: item.effectiveReviewStatus,
+    citations: item.citations,
+    ownerHumanDisplay: item.ownerHumanDisplay,
+  })
+
   const showPill = enableStickyPill && collapsed
   const topSev = decision.topSeverity ?? item.severity
   // Avoid triple-repeat of raw id as title + question + id chip.
@@ -117,10 +133,10 @@ export function NeedsYourDecision({
   const questionDisplay = questionIsDuplicate
     ? 'Question not projected — open Decisions for the full inbox item.'
     : questionRaw
-  const titleDisplay =
-    titleRaw && titleRaw !== item.decisionId
-      ? titleRaw
-      : titleRaw || 'Decision needs your action'
+
+  // Owner primary = reviewed humanDisplay title (or CONTENT_REVIEW_REQUIRED shell).
+  // Never raw technical title as owner primary.
+  const titleDisplay = display.primaryTitle
 
   const pillNode = showPill ? (
     <div
@@ -191,6 +207,9 @@ export function NeedsYourDecision({
           className={`${styles.decisionCard}${elevated || item.blocking ? ` ${styles.cardElevated}` : ''}${showPill ? ` ${styles.decisionCardSpacer}` : ''}`}
           data-testid="overview-decision-card"
           data-blocking={item.blocking ? 'true' : 'false'}
+          data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
+          data-effective-review-status={display.effectiveReviewStatus}
+          data-owner-primary-title={display.primaryTitle}
           aria-labelledby={`${panelId}-title`}
           // Keep full card name/description/actions in the accessibility tree when the
           // sticky pill is showing (visual one-line pill remains; never strip a11y content).
@@ -216,7 +235,26 @@ export function NeedsYourDecision({
               <span className={styles.chip}>{decision.count} open</span>
             ) : null}
           </div>
-          <h3 className={styles.decisionTitle}>{titleDisplay}</h3>
+          <h3
+            className={styles.decisionTitle}
+            data-testid="overview-decision-owner-title"
+            data-field="ownerPrimaryTitle"
+          >
+            {titleDisplay}
+          </h3>
+          {/* Technical title secondary only — never owner primary. */}
+          {display.technicalTitle &&
+          display.technicalTitle !== display.primaryTitle &&
+          display.technicalTitle !== item.decisionId ? (
+            <div
+              className={styles.technicalSecondary}
+              data-testid="overview-decision-technical-title"
+              data-field="technicalTitle"
+              title={display.technicalTitle}
+            >
+              {display.technicalTitle}
+            </div>
+          ) : null}
           <p
             className={`${styles.decisionQuestion}${
               questionIsDuplicate ? ` ${styles.decisionQuestionPartial}` : ''
@@ -225,10 +263,9 @@ export function NeedsYourDecision({
           >
             {questionDisplay}
           </p>
-          <div className={styles.ownerAction}>
-            <span className={styles.ownerActionLabel}>Exact owner action</span>
-            {item.ownerAction}
-          </div>
+
+          <OwnerHumanFields display={display} testIdPrefix="overview-decision" />
+
           {item.options?.length ? (
             <ul className={styles.panelList} style={{ marginTop: '0.75rem' }}>
               {item.options.map((o) => (

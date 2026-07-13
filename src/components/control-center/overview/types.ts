@@ -67,14 +67,25 @@ export interface OverviewPinMeta {
   lifecycleRev: number | null
 }
 
-export interface OverviewDecisionItem {
+/**
+ * Overview top decision item.
+ * Owner primary copy comes only from projected humanDisplay fields
+ * (ownerPrimaryTitle / ownerAction / why / next / blocker / citations).
+ * Missing/unreviewed → CONTENT_REVIEW_REQUIRED shell; never invent ownerAction
+ * from blocking status, and never use raw technical title as owner primary.
+ */
+export interface OverviewDecisionItem extends OverviewOwnerHumanFields {
   decisionId: string
+  /** Technical/system title — secondary only; never owner primary. */
   title: string
   /** Real question when present; null when absent (never copy title). */
   question: string | null
   severity: DecisionSeverity
   blocking: boolean
-  /** Exact owner action copy from server (not invented). */
+  /**
+   * Owner action from projected humanDisplay only (may be empty string when
+   * absent). Presentation must not invent "Resolve blocking decision" etc.
+   */
   ownerAction: string
   status?: string
   dueAtLabel?: string | null
@@ -131,8 +142,47 @@ export interface OverviewBucketStrip {
   onToggleStale?: () => void
 }
 
-export interface OverviewOngoingItem {
+/** Owner humanDisplay citation (presentation wire only). */
+export interface OverviewOwnerCitation {
+  field: string
+  path: string
+  note?: string
+}
+
+/**
+ * Owner humanDisplay fields projected by route adapters.
+ * Primary owner copy never invents; missing/unreviewed → CONTENT_REVIEW_REQUIRED shell.
+ */
+export interface OverviewOwnerHumanFields {
+  ownerPrimaryTitle?: string | null
+  statusSentence?: string | null
+  ownerAction?: string | null
+  whyItMatters?: string | null
+  next?: string | null
+  blocker?: string | null
+  contentReviewRequired?: boolean
+  effectiveReviewStatus?: string | null
+  citations?: ReadonlyArray<OverviewOwnerCitation> | null
+  /** Nested projection wire when adapter attaches full ownerHumanDisplay object. */
+  ownerHumanDisplay?: {
+    ownerPrimaryTitle?: string | null
+    statusSentence?: string | null
+    ownerAction?: string | null
+    whyItMatters?: string | null
+    next?: string | null
+    blocker?: string | null
+    contentReviewRequired?: boolean
+    effectiveReviewStatus?: string | null
+    citations?: ReadonlyArray<OverviewOwnerCitation> | null
+  } | null
+}
+
+export interface OverviewOngoingItem extends OverviewOwnerHumanFields {
   taskId: string
+  /**
+   * Technical/system title — secondary only.
+   * Owner primary is ownerPrimaryTitle (or CONTENT_REVIEW_REQUIRED shell).
+   */
   title: string
   targetGate: string
   agentId: string

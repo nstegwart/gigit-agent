@@ -64,7 +64,17 @@ export interface PublishDispatchPlanRequest {
   planHash: string
   canonicalSnapshotId: string
   canonicalHash: string
+  /**
+   * Create (new planId) requires 0. Same planId re-publish with content change
+   * must CAS the current plan entityRev. Never silently defaulted.
+   */
+  entityExpectedRev: number
   expectedBoardRev: number
+  /**
+   * Current board pin canonical hash. When set (MCP always sets), must equal
+   * req.canonicalHash — fail closed STALE_REVISION on mismatch.
+   */
+  currentPinHash?: string | null
   issuedAt: string
   expiresAt: string
   stage?: string | null
@@ -177,6 +187,40 @@ function stableStringify(value: unknown): string {
   const obj = value as Record<string, unknown>
   const keys = Object.keys(obj).sort()
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`
+}
+
+/**
+ * Canonical idempotency request body for publish_dispatch_plan.
+ * Covers every material request/envelope field except idempotencyKey itself.
+ * Same key + any material difference → IDEMPOTENCY_CONFLICT; exact same → replay.
+ */
+export function canonicalPublishDispatchPlanRequestBody(
+  req: PublishDispatchPlanRequest,
+): Record<string, unknown> {
+  return {
+    boardId: req.boardId,
+    planId: req.planId,
+    planVersion: req.planVersion,
+    planHash: req.planHash,
+    canonicalSnapshotId: req.canonicalSnapshotId,
+    canonicalHash: req.canonicalHash,
+    currentPinHash: req.currentPinHash ?? null,
+    entityExpectedRev: req.entityExpectedRev,
+    expectedBoardRev: req.expectedBoardRev,
+    issuedAt: req.issuedAt,
+    expiresAt: req.expiresAt,
+    stage: req.stage ?? null,
+    items: req.items,
+    callerRole: req.callerRole,
+    actorId: req.actorId ?? null,
+  }
+}
+
+/** SHA-256 of {@link canonicalPublishDispatchPlanRequestBody} (tests / independent verify). */
+export function hashPublishDispatchPlanBody(req: PublishDispatchPlanRequest): string {
+  return createHash('sha256')
+    .update(stableStringify(canonicalPublishDispatchPlanRequestBody(req)))
+    .digest('hex')
 }
 
 function validateItems(items: Array<DispatchPlanItem>): void {
@@ -308,6 +352,19 @@ export async function publishDispatchPlan(
   if (!req.idempotencyKey) {
     throw new IngestError('INVALID_INPUT', 'idempotencyKey required')
   }
+  if (typeof req.entityExpectedRev !== 'number' || !Number.isInteger(req.entityExpectedRev) || req.entityExpectedRev < 0) {
+    throw new IngestError(
+      'INVALID_INPUT',
+      'entityExpectedRev is required (create=0, update=current) — no silent default',
+    )
+  }
+  // Current pin hash must match the plan-bound canonicalHash when pin is supplied.
+  if (req.currentPinHash != null && req.currentPinHash !== '' && req.currentPinHash !== req.canonicalHash) {
+    throw new IngestError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
+      expectedCanonicalHash: req.canonicalHash,
+      currentPinHash: req.currentPinHash,
+    })
+  }
 
   validateItems(req.items)
 
@@ -339,21 +396,27 @@ export async function publishDispatchPlan(
   }
 
   // Idempotency before revision checks so exact replays do not require re-CAS.
-  const begin = await beginIdempotent(deps.idempotency, {
-    scope: {
-      actorId: req.actorId ?? DISPATCH_CALLER_ROOT,
-      boardId: req.boardId,
-      endpoint: 'publish_dispatch_plan',
-      key: req.idempotencyKey,
-    },
-    requestBody: {
-      planId: req.planId,
-      planVersion: req.planVersion,
-      planHash: req.planHash,
-      items: req.items,
-    },
-    nowMs: deps.clock.nowMs(),
-  })
+  let begin
+  try {
+    begin = await beginIdempotent(deps.idempotency, {
+      scope: {
+        actorId: req.actorId ?? DISPATCH_CALLER_ROOT,
+        boardId: req.boardId,
+        endpoint: 'publish_dispatch_plan',
+        key: req.idempotencyKey,
+      },
+      // Full material envelope — omit only idempotencyKey (scope key).
+      // Must include issuedAt/expiresAt/stage/revisions/canonical tuple so
+      // same key + any material change is IDEMPOTENCY_CONFLICT (not silent replay).
+      requestBody: canonicalPublishDispatchPlanRequestBody(req),
+      nowMs: deps.clock.nowMs(),
+    })
+  } catch (e) {
+    if (e instanceof IdempotencyError) {
+      throw new IngestError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
 
   if (begin.kind === 'REPLAY' && begin.record) {
     const body = begin.record.responseBody as PublishDispatchPlanResult
@@ -389,7 +452,13 @@ export async function publishDispatchPlan(
       const now = deps.clock.nowMs()
       const existingSame = await deps.plans.get(req.boardId, req.planId)
       if (existingSame && existingSame.planHash === req.planHash && existingSame.status === 'ACTIVE') {
-        // Exact same plan republish
+        // Exact same plan republish — entity CAS still required; no board-rev bump.
+        if (req.entityExpectedRev !== existingSame.entityRev) {
+          throw new IngestError('STALE_REVISION', 'entity rev mismatch on plan republish', {
+            entityExpectedRev: req.entityExpectedRev,
+            currentEntityRev: existingSame.entityRev,
+          })
+        }
         const selected = toSelected(existingSame)
         return {
           planId: existingSame.planId,
@@ -402,6 +471,23 @@ export async function publishDispatchPlan(
           selectedForNextDispatch: selected,
           replayed: true,
         } satisfies PublishDispatchPlanResult
+      }
+
+      // Create (new planId or content change): require entityExpectedRev === 0 when no prior row,
+      // else CAS current entity rev for same planId rewrite path.
+      if (!existingSame) {
+        if (req.entityExpectedRev !== 0) {
+          throw new IngestError(
+            'STALE_REVISION',
+            'create publish_dispatch_plan requires entityExpectedRev 0',
+            { entityExpectedRev: req.entityExpectedRev, currentEntityRev: 0 },
+          )
+        }
+      } else if (req.entityExpectedRev !== existingSame.entityRev) {
+        throw new IngestError('STALE_REVISION', 'entity rev mismatch on plan publish', {
+          entityExpectedRev: req.entityExpectedRev,
+          currentEntityRev: existingSame.entityRev,
+        })
       }
 
       // Supersede previous ACTIVE plan
@@ -426,7 +512,9 @@ export async function publishDispatchPlan(
         })
       }
 
+      // Single board-rev authority: exactly one bump per successful publish (not replay).
       const boardRev = await deps.atomic.bumpBoardRev(req.boardId)
+      const nextEntityRev = existingSame ? existingSame.entityRev + 1 : 1
       const rec: DispatchPlanRecord = {
         boardId: req.boardId,
         planId: req.planId,
@@ -451,7 +539,7 @@ export async function publishDispatchPlan(
         generatedAt: deps.clock.nowISO(),
         generatedAtMs: now,
         supersededByPlanId: null,
-        entityRev: 1,
+        entityRev: nextEntityRev,
       }
       await deps.plans.put(rec)
       await deps.atomic.appendAudit({

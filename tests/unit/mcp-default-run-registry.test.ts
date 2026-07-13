@@ -15,6 +15,7 @@ import {
 } from '#/server/board-mcp'
 import {
   createMemoryRunRegistryStore,
+  hashRegisterBody,
   heartbeatRun,
   registerRun,
   RunRegistryError,
@@ -69,6 +70,7 @@ describe('MCP default run registry (no injection)', () => {
       targetGate: 'G1',
       agentId: 'agent-default',
       model: 'grok-4',
+      canonicalHash: 'canon-default',
       expectedEntityRev: 0,
       expectedBoardRev: 0,
       idempotencyKey: 'idem-shared-1',
@@ -87,6 +89,8 @@ describe('MCP default run registry (no injection)', () => {
       heartbeatSequence: 1,
       expectedEntityRev: reg.entityRev,
       expectedBoardRev: reg.boardRev,
+      idempotencyKey: 'hb-shared-1',
+      canonicalHash: 'canon-default',
     })
     expect(hb.runId).toBe('run-shared-1')
     expect(hb.replayed).toBe(false)
@@ -102,6 +106,7 @@ describe('MCP default run registry (no injection)', () => {
       targetGate: 'G1',
       agentId: 'agent-default',
       model: 'grok-4',
+      canonicalHash: 'canon-default',
       expectedEntityRev: 0,
       expectedBoardRev: 0,
       idempotencyKey: 'idem-pre-reset',
@@ -129,6 +134,8 @@ describe('MCP default run registry (no injection)', () => {
         heartbeatSequence: 1,
         expectedEntityRev: reg.entityRev,
         expectedBoardRev: reg.boardRev,
+        idempotencyKey: 'hb-pre-reset',
+        canonicalHash: 'canon-default',
       }),
     ).rejects.toMatchObject({ code: 'RUN_NOT_REGISTERED' } satisfies Partial<RunRegistryError>)
   })
@@ -147,6 +154,7 @@ describe('MCP default run registry (no injection)', () => {
       targetGate: 'G1',
       agentId: 'agent-a',
       model: 'grok-4',
+      canonicalHash: 'canon-default',
       expectedEntityRev: 0,
       expectedBoardRev: 0,
       idempotencyKey: 'idem-iso-a',
@@ -167,6 +175,7 @@ describe('MCP default run registry (no injection)', () => {
       targetGate: 'G1',
       agentId: 'agent-b',
       model: 'grok-4',
+      canonicalHash: 'canon-default',
       expectedEntityRev: 0,
       expectedBoardRev: 0,
       idempotencyKey: 'idem-iso-b',
@@ -205,5 +214,133 @@ describe('MCP default run registry (no injection)', () => {
     expect(resolved).toBe(injected)
     expect(resolved).not.toBe(defaultDeps)
     expect(resolved.runs).toBe(injectedRuns)
+  })
+})
+
+describe('register_run idempotency hash matrix (material fields)', () => {
+  function baseRegister(over: Partial<RegisterRunRequest> = {}): RegisterRunRequest {
+    return {
+      boardId: BOARD_A,
+      runId: 'run-matrix-1',
+      planId: 'plan-matrix',
+      planItemRank: 1,
+      taskId: 'task-matrix',
+      targetGate: 'G1',
+      role: 'PRODUCT',
+      agentId: 'agent-matrix',
+      model: 'grok-4',
+      effort: 'medium',
+      maskedAccountRef: 'mask-1',
+      canonicalHash: 'canon-matrix',
+      currentPinHash: 'canon-matrix',
+      collisionScopeLockIds: ['repo:ex:t/**'],
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-matrix-key',
+      initialState: 'STARTING',
+      actorRole: 'AGENT',
+      capacity: openCapacity(),
+      ...over,
+    }
+  }
+
+  function isolatedDeps(): RunRegistryDeps {
+    const clock = createFakeClock(Date.parse('2026-07-13T12:00:00.000Z'))
+    return {
+      clock,
+      runs: createMemoryRunRegistryStore(),
+      locks: createMemoryLockStore(),
+      atomic: createMemoryControlPlaneAtomicStore([
+        {
+          boardId: BOARD_A,
+          boardRev: 0,
+          dispatchBlocked: false,
+          dispatchBlockedReason: null,
+        },
+      ]),
+      idempotency: createMemoryIdempotencyStorage(),
+      getCapacity: async () => openCapacity(),
+    }
+  }
+
+  it('exact same key+body → replay; no double registration bump of entity', async () => {
+    const deps = isolatedDeps()
+    const req = baseRegister()
+    const first = await registerRun(deps, req)
+    expect(first.replayed).toBe(false)
+    const entity1 = first.entityRev
+    const board1 = first.boardRev
+
+    const replay = await registerRun(deps, req)
+    expect(replay.replayed).toBe(true)
+    expect(replay.entityRev).toBe(entity1)
+    expect(replay.boardRev).toBe(board1)
+    expect(replay.runId).toBe(first.runId)
+    expect(replay.fencingToken).toBe(first.fencingToken)
+  })
+
+  it('each previously-omitted material field alone → IDEMPOTENCY_CONFLICT', async () => {
+    const deps = isolatedDeps()
+    const KEY = 'reg-matrix-key'
+    const base = baseRegister({ idempotencyKey: KEY })
+    const first = await registerRun(deps, base)
+    expect(first.replayed).toBe(false)
+    const boardAfter = (await deps.atomic.getBoardState(BOARD_A)).boardRev
+    const baseHash = hashRegisterBody(base)
+
+    // Independent verifier found these omitted from the old register hash.
+    const fieldCases: Array<{ field: string; patch: Partial<RegisterRunRequest> }> = [
+      { field: 'initialState', patch: { initialState: 'QUEUED' } },
+      { field: 'role', patch: { role: 'INTEGRATOR' } },
+      // revisions (expectedBoardRev) — expectedEntityRev is create-locked to 0 before idempotency
+      { field: 'expectedBoardRev', patch: { expectedBoardRev: 99 } },
+      // also cover remaining material envelope fields for completeness
+      { field: 'canonicalHash', patch: { canonicalHash: 'canon-OTHER', currentPinHash: 'canon-OTHER' } },
+      { field: 'taskId', patch: { taskId: 'task-OTHER' } },
+      { field: 'targetGate', patch: { targetGate: 'G2' } },
+      { field: 'model', patch: { model: 'grok-other' } },
+      { field: 'effort', patch: { effort: 'high' } },
+      { field: 'planId', patch: { planId: 'plan-OTHER' } },
+      { field: 'planItemRank', patch: { planItemRank: 2 } },
+      { field: 'actorRole', patch: { actorRole: 'ROOT_ORCHESTRATOR' } },
+      {
+        field: 'capacity.usableCapacity',
+        patch: {
+          capacity: {
+            ...openCapacity(),
+            usableCapacity: 1,
+          },
+        },
+      },
+    ]
+
+    for (const c of fieldCases) {
+      const mutated = baseRegister({ idempotencyKey: KEY, ...c.patch })
+      // Different runId would hit unique-run binding; keep same runId so body hash is the axis.
+      expect(mutated.runId).toBe(base.runId)
+      const mutatedHash = hashRegisterBody(mutated)
+      expect(mutatedHash, `hash must differ for field ${c.field}`).not.toBe(baseHash)
+
+      await expect(registerRun(deps, mutated), `field ${c.field}`).rejects.toMatchObject({
+        code: 'IDEMPOTENCY_CONFLICT',
+      })
+      expect(
+        (await deps.atomic.getBoardState(BOARD_A)).boardRev,
+        `no board bump after ${c.field} conflict`,
+      ).toBe(boardAfter)
+    }
+  })
+
+  it('hashRegisterBody covers full material body (not only runId/taskId/planId)', () => {
+    const a = hashRegisterBody(baseRegister({ initialState: 'STARTING', role: 'PRODUCT' }))
+    const b = hashRegisterBody(baseRegister({ initialState: 'QUEUED', role: 'PRODUCT' }))
+    const c = hashRegisterBody(baseRegister({ initialState: 'STARTING', role: 'OTHER' }))
+    const d = hashRegisterBody(baseRegister({ expectedBoardRev: 1 }))
+    expect(a).not.toBe(b)
+    expect(a).not.toBe(c)
+    expect(a).not.toBe(d)
+    // idempotencyKey alone must not be part of request hash
+    const e = hashRegisterBody(baseRegister({ idempotencyKey: 'other-key-only' }))
+    expect(e).toBe(a)
   })
 })

@@ -18,6 +18,7 @@ import {
   registerBoardTools,
   resetControlPlaneRuntimeContextForTests,
   resetMcpControlPlaneDeps,
+  resolveMcpRuntimeContext,
   setMcpPlanStore,
   setTestControlPlaneRuntimeContext,
   type McpAuthContext,
@@ -602,6 +603,7 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
     expect(names).not.toContain('publish_dispatch_plan')
     expect(names).not.toContain('sync_accounts')
     expect(names).not.toContain('register_run')
+    expect(names).not.toContain('submit_stage_evidence')
 
     // Invocation recheck: OWNER_EVIDENCE_IMPERSONATION via authorize path if registered
     // register_run not listed → call should not succeed
@@ -637,6 +639,8 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
     expect(names).toContain('sync_accounts')
     expect(names).not.toContain('resolve_decision_v3')
     expect(names).not.toContain('set_prod')
+    // ROOT must not list/impersonate agent stage evidence (accept via advance_task only)
+    expect(names).not.toContain('submit_stage_evidence')
 
     // Call recheck: resolve_decision_v3 should not succeed
     const res = await mcpRpc(
@@ -663,6 +667,7 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
     const names = toolNamesFromList(list.json)
     expect(names).toContain('register_run')
     expect(names).toContain('heartbeat_run')
+    expect(names).toContain('submit_stage_evidence')
     expect(names).not.toContain('list_accounts')
     expect(names).not.toContain('list_audit')
     expect(names).not.toContain('publish_dispatch_plan')
@@ -1407,4 +1412,163 @@ describe('list filtering + invocation recheck', () => {
       }
     }
   }, 60_000)
+})
+
+// ---------------------------------------------------------------------------
+// submit_stage_evidence RBAC + add_comment spoof + WAVE_CLOSE trigger enum
+// ---------------------------------------------------------------------------
+describe('submit_stage_evidence + add_comment spoof + WAVE_CLOSE (auth surface)', () => {
+  beforeEach(() => {
+    installBearerMatrix()
+  })
+
+  it('AGENT lists submit_stage_evidence; OWNER/ROOT denied evidence impersonation', async () => {
+    const agentList = await mcpRpc(rpc('tools/list'), bearerHeaders(TOKENS.AGENT))
+    expect(toolNamesFromList(agentList.json)).toContain('submit_stage_evidence')
+
+    const ownerCall = await mcpRpc(
+      toolCall('submit_stage_evidence', {
+        boardId: BOARD,
+        taskId: 't1',
+        toStage: 'MAPPING',
+        byRunId: 'r1',
+        taskHash: 'th',
+        expectedLifecycleRev: 0,
+        entityExpectedRev: 0,
+        expectedBoardRev: 0,
+        canonicalHash: 'c'.repeat(64),
+        idempotencyKey: 'idem-owner-ev',
+        agentId: 'any',
+      }),
+      bearerHeaders(TOKENS.OWNER),
+    )
+    const ownerPayload = parseToolPayload(ownerCall.json)
+    if (ownerPayload?.code) {
+      expect(ownerPayload.code).toMatch(
+        /OWNER_EVIDENCE_IMPERSONATION_DENIED|AUTHORIZATION_REQUIRED|FORBIDDEN/,
+      )
+    } else {
+      expect(
+        ownerCall.json?.error || ownerCall.json?.result?.isError || ownerCall.status >= 400,
+      ).toBeTruthy()
+    }
+
+    const rootCall = await mcpRpc(
+      toolCall('submit_stage_evidence', {
+        boardId: BOARD,
+        taskId: 't1',
+        toStage: 'MAPPING',
+        byRunId: 'r1',
+        taskHash: 'th',
+        expectedLifecycleRev: 0,
+        entityExpectedRev: 0,
+        expectedBoardRev: 0,
+        canonicalHash: 'c'.repeat(64),
+        idempotencyKey: 'idem-root-ev',
+      }),
+      bearerHeaders(TOKENS.ROOT),
+    )
+    const rootPayload = parseToolPayload(rootCall.json)
+    if (rootPayload?.code) {
+      expect(rootPayload.code).toMatch(
+        /OWNER_EVIDENCE_IMPERSONATION_DENIED|FORBIDDEN_ROLE|AUTHORIZATION_REQUIRED|FORBIDDEN/,
+      )
+    } else {
+      expect(
+        rootCall.json?.error || rootCall.json?.result?.isError || rootCall.status >= 400,
+      ).toBeTruthy()
+    }
+  })
+
+  it('add_comment REAL MCP: spoof authorType=human/author=owner → AGENT principal + persisted readback', async () => {
+    const { createBoard, upsertFeature, boardExists, deleteBoard, boardHash } =
+      await import('#/server/board-store')
+    const { seedBoardRevision } = await import('#/server/control-data-persistence')
+
+    installBearerMatrix()
+
+    // AGENT bearer is board-bound to BOARD (mfs-rebuild) — must use that board id.
+    const commentBoard = BOARD
+    const featureId = `feat-auth-spoof-${Date.now().toString(36)}`
+    const createdBoard = !(await boardExists(commentBoard))
+    try {
+      if (createdBoard) {
+        await createBoard(commentBoard, 'MCP auth comment spoof')
+      }
+      await upsertFeature(commentBoard, {
+        id: featureId,
+        nama: 'Auth spoof feature',
+        fase: 'build',
+      } as never)
+
+      const ctx = resolveMcpRuntimeContext()
+      const hash = await boardHash(commentBoard)
+      const boardState = await ctx.atomic.getBoardState(commentBoard)
+      const sql = (ctx.controlData as { sql?: Parameters<typeof seedBoardRevision>[0] }).sql
+      if (sql) {
+        await seedBoardRevision(sql, {
+          boardId: commentBoard,
+          boardRev: boardState.boardRev,
+          lifecycleRev: 0,
+          subjectHash: hash,
+          canonicalSnapshotId: `snap-${commentBoard}`,
+          canonicalHash: hash,
+        })
+      }
+
+      const marker = `auth-spoof-${Date.now()}`
+      const call = await mcpRpc(
+        toolCall('add_comment', {
+          boardId: commentBoard,
+          featureId,
+          text: marker,
+          author: 'owner',
+          authorType: 'human',
+          entityExpectedRev: 0,
+          expectedBoardRev: boardState.boardRev,
+          canonicalHash: hash,
+          idempotencyKey: `idem-auth-comment-${Date.now()}`,
+        }),
+        bearerHeaders(TOKENS.AGENT),
+      )
+      const payload = parseToolPayload(call.json)
+      expect(payload?.ok).toBe(true)
+      expect(payload?.author).toBe('agent-mcp-auth')
+      expect(payload?.authorType).toBe('agent')
+      expect(payload?.author).not.toBe('owner')
+      expect(payload?.authorType).not.toBe('human')
+
+      const act = await mcpRpc(
+        toolCall('list_activity', { boardId: commentBoard, pageSize: 50 }),
+        bearerHeaders(TOKENS.AGENT),
+      )
+      const actPayload = parseToolPayload(act.json)
+      const items = (actPayload?.activity as Array<Record<string, unknown>>) ?? []
+      const hit = items.find((a) => String(a.text ?? '') === marker)
+      expect(hit).toBeTruthy()
+      expect(hit!.actor).toBe('agent-mcp-auth')
+      expect(hit!.actorType).toBe('agent')
+    } finally {
+      // Only delete if we created this shared board id in this test.
+      if (createdBoard) {
+        try {
+          if (await boardExists(commentBoard)) await deleteBoard(commentBoard)
+        } catch {
+          /* cleanup */
+        }
+      }
+      installBearerMatrix()
+    }
+  }, 30_000)
+
+  it('sync_accounts trigger schema includes WAVE_CLOSE (ROOT path interface)', async () => {
+    const { ACCOUNT_SYNC_TRIGGER_Z, ACCOUNT_SYNC_EXTERNAL_ADAPTER_TRIGGERS, ACCOUNT_SYNC_TRIGGER_VALUES } =
+      await import('#/server/board-mcp')
+    expect(ACCOUNT_SYNC_TRIGGER_VALUES).toContain('WAVE_CLOSE')
+    expect(ACCOUNT_SYNC_TRIGGER_Z.safeParse('WAVE_CLOSE').success).toBe(true)
+    expect(ACCOUNT_SYNC_EXTERNAL_ADAPTER_TRIGGERS).toEqual([])
+    // ROOT lists sync_accounts (callable path for WAVE_CLOSE)
+    const list = await mcpRpc(rpc('tools/list'), bearerHeaders(TOKENS.ROOT))
+    expect(toolNamesFromList(list.json)).toContain('sync_accounts')
+  })
 })

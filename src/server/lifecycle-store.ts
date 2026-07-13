@@ -291,6 +291,20 @@ export interface StageReceipt {
   issuedAt: string
 }
 
+/**
+ * Immutable program-emitted stage-evidence registration (authority for advance).
+ * Never constructed from advance_task request body — only via submitStageEvidence.
+ */
+export interface RegisteredStageEvidence {
+  boardId: string
+  taskId: string
+  toStage: LifecycleStageKey
+  receipt: StageReceipt
+  /** Run that program-emitted this receipt (must be registered unfenced at submit). */
+  emittingRunId: string
+  registeredAt: string
+}
+
 export interface TaskLifecycleV3State {
   taskId: string
   stage: LifecycleStageKey | null
@@ -391,6 +405,18 @@ export interface LifecycleV3Storage {
     nextBoard: { boardRev: number; lifecycleRev: number },
   ): Promise<void>
   appendAudit?(entry: Record<string, unknown>): Promise<void>
+  /**
+   * Immutable stage-evidence registry (program emit only).
+   * advanceTaskV3 requires a registered receiptId+hash — never self-created on advance.
+   */
+  getStageEvidence(boardId: string, receiptId: string): Promise<RegisteredStageEvidence | null>
+  putStageEvidence(entry: RegisteredStageEvidence): Promise<void>
+}
+
+/** Standalone stage-evidence store (MySQL / memory control-data). */
+export interface StageEvidenceStore {
+  getStageEvidence(boardId: string, receiptId: string): Promise<RegisteredStageEvidence | null>
+  putStageEvidence(entry: RegisteredStageEvidence): Promise<void>
 }
 
 const VERIFIER_STAGES = new Set<LifecycleStageKey>([
@@ -473,6 +499,8 @@ function validateStageEvidence(
   if (!receipt.receiptId || !receipt.receiptHash) {
     throw new LifecycleV3Error('MISSING_EVIDENCE', 'receiptId/receiptHash required', { toStage })
   }
+  // Integrity of registered receipt body (hash recomputed from stored fields only —
+  // never from caller-supplied advance body).
   const expectedHash = receiptHashOf({ ...receipt, receiptHash: undefined })
   if (receipt.receiptHash !== expectedHash) {
     throw new LifecycleV3Error('STALE_HASH', 'receipt hash mismatch / tampered receipt', {
@@ -516,6 +544,251 @@ function validateStageEvidence(
         'LIVE_VERIFIED requires owner productionApprovalId',
       )
     }
+  }
+}
+
+export interface SubmitStageEvidenceInput {
+  boardId: string
+  taskId: string
+  toStage: LifecycleStageKey
+  /** Registered unexpired unfenced run that program-emits this receipt. */
+  byRunId: string
+  fields: Record<string, unknown>
+  taskHash: string
+  canonicalHash: string
+  boardRev: number
+  lifecycleRev: number
+  /**
+   * Client-expected task entity revision (CAS). Required for MCP envelope path.
+   * When omitted (legacy product helpers), task entity rev is not CAS-checked.
+   */
+  entityExpectedRev?: number
+  receiptId?: string
+  authorRunId?: string | null
+  verifierRunId?: string | null
+  verdict?: string | null
+  now?: string
+}
+
+/**
+ * Authenticated program-emit path for stage evidence.
+ * Server sets programmatic=true and computes receiptHash — callers never self-promote.
+ * Immutable put: same receiptId+hash replays; different payload → STALE_HASH / conflict.
+ *
+ * NEVER inserts before checks: run current/unexpired/unfenced, pin board/lifecycle/canonical,
+ * task entity rev + task hash — then receipt immutability, then put.
+ */
+export async function submitStageEvidence(
+  storage: LifecycleV3Storage,
+  inp: SubmitStageEvidenceInput,
+): Promise<RegisteredStageEvidence & { created: boolean }> {
+  const now = inp.now ?? new Date().toISOString()
+  if (!inp.byRunId) {
+    throw new LifecycleV3Error('AUTHORIZATION_REQUIRED', 'byRunId required for stage evidence submit')
+  }
+  if (!isLifecycleStageKey(inp.toStage)) {
+    throw new LifecycleV3Error('UNKNOWN_STAGE', `unknown stage: ${inp.toStage}`)
+  }
+  // 1) Emitting run must be registered, unexpired, unfenced — before any insert.
+  const run = await storage.getRun(inp.boardId, inp.byRunId)
+  assertRunValid(run, inp.byRunId, now)
+
+  // 2) Current pin + task entity / hash — before any insert.
+  const pin = await storage.getBoardPin(inp.boardId)
+  if (!pin) {
+    throw new LifecycleV3Error('TASK_NOT_FOUND', `board not found: ${inp.boardId}`, {
+      boardId: inp.boardId,
+    })
+  }
+  if (pin.boardRev !== inp.boardRev) {
+    throw new LifecycleV3Error(
+      'STALE_REVISION',
+      `board rev mismatch: expected ${inp.boardRev}, current ${pin.boardRev}`,
+      { expectedBoardRev: inp.boardRev, currentBoardRev: pin.boardRev },
+    )
+  }
+  if (pin.lifecycleRev !== inp.lifecycleRev) {
+    throw new LifecycleV3Error(
+      'STALE_REVISION',
+      `lifecycle rev mismatch: expected ${inp.lifecycleRev}, current ${pin.lifecycleRev}`,
+      { expectedLifecycleRev: inp.lifecycleRev, currentLifecycleRev: pin.lifecycleRev },
+    )
+  }
+  if (pin.canonicalHash !== inp.canonicalHash) {
+    throw new LifecycleV3Error(
+      'STALE_HASH',
+      `canonical hash mismatch: expected ${inp.canonicalHash}, current ${pin.canonicalHash}`,
+      {
+        expectedCanonicalHash: inp.canonicalHash,
+        currentCanonicalHash: pin.canonicalHash,
+      },
+    )
+  }
+
+  const task = await storage.getTask(inp.boardId, inp.taskId)
+  if (!task) {
+    throw new LifecycleV3Error('TASK_NOT_FOUND', `task not found: ${inp.taskId}`, {
+      boardId: inp.boardId,
+      taskId: inp.taskId,
+    })
+  }
+  if (typeof inp.entityExpectedRev === 'number') {
+    if (task.entityRev !== inp.entityExpectedRev) {
+      throw new LifecycleV3Error(
+        'STALE_REVISION',
+        `entity rev mismatch: expected ${inp.entityExpectedRev}, current ${task.entityRev}`,
+        {
+          entityExpectedRev: inp.entityExpectedRev,
+          current: task.entityRev,
+        },
+      )
+    }
+  }
+  if (task.taskHash !== inp.taskHash) {
+    throw new LifecycleV3Error('STALE_HASH', 'task hash mismatch', {
+      expected: inp.taskHash,
+      current: task.taskHash,
+    })
+  }
+
+  const receiptId =
+    typeof inp.receiptId === 'string' && inp.receiptId.trim()
+      ? inp.receiptId.trim()
+      : `rcpt-${inp.toStage}-${inp.taskId}-${Date.now()}`
+
+  const partial: Omit<StageReceipt, 'receiptHash'> = {
+    receiptId,
+    programmatic: true,
+    taskHash: inp.taskHash,
+    canonicalHash: inp.canonicalHash,
+    boardRev: inp.boardRev,
+    lifecycleRev: inp.lifecycleRev,
+    fields: { ...inp.fields },
+    authorRunId: inp.authorRunId ?? null,
+    verifierRunId: inp.verifierRunId ?? null,
+    verdict: inp.verdict ?? null,
+    issuedAt: now,
+  }
+  const receipt: StageReceipt = {
+    ...partial,
+    receiptHash: receiptHashOf(partial),
+  }
+
+  // Validate stage field completeness at submit so advance only does binding checks.
+  validateStageEvidence(inp.toStage, receipt, {
+    boardId: inp.boardId,
+    taskId: inp.taskId,
+    toStage: inp.toStage,
+    byRunId: inp.byRunId,
+    entityExpectedRev: typeof inp.entityExpectedRev === 'number' ? inp.entityExpectedRev : task.entityRev,
+    expectedBoardRev: inp.boardRev,
+    expectedLifecycleRev: inp.lifecycleRev,
+    expectedTaskHash: inp.taskHash,
+    expectedCanonicalHash: inp.canonicalHash,
+    receipt,
+    productionApprovalId:
+      typeof receipt.fields.productionApprovalId === 'string'
+        ? String(receipt.fields.productionApprovalId)
+        : null,
+  })
+
+  const entry: RegisteredStageEvidence = {
+    boardId: inp.boardId,
+    taskId: inp.taskId,
+    toStage: inp.toStage,
+    receipt,
+    emittingRunId: inp.byRunId,
+    registeredAt: now,
+  }
+
+  // 3) Immutable entity create/update: exact same receiptId+hash → replay; different body → conflict.
+  const existing = await storage.getStageEvidence(inp.boardId, receiptId)
+  if (existing) {
+    if (existing.receipt.receiptHash !== receipt.receiptHash) {
+      throw new LifecycleV3Error(
+        'STALE_HASH',
+        'stage evidence receiptId already registered with different hash (immutable)',
+        {
+          receiptId,
+          existing: existing.receipt.receiptHash,
+          next: receipt.receiptHash,
+        },
+      )
+    }
+    // Exact replay OK — no second insert
+    return { ...existing, created: false }
+  }
+
+  // 4) Insert only after all checks passed
+  await storage.putStageEvidence(entry)
+  await storage.appendAudit?.({
+    ts: now,
+    actor: inp.byRunId,
+    action: 'submit_stage_evidence',
+    taskId: inp.taskId,
+    toStage: inp.toStage,
+    receiptId: receipt.receiptId,
+    receiptHash: receipt.receiptHash,
+  })
+  return { ...entry, created: true }
+}
+
+/**
+ * Resolve advance receipt authority: only receiptId+hash that exists in the
+ * immutable registry, program-emitted, bound to task/stage/hashes/revs.
+ * Never accepts a self-created receipt body from the advance request.
+ */
+export async function resolveRegisteredStageReceipt(
+  storage: LifecycleV3Storage,
+  opts: {
+    boardId: string
+    taskId: string
+    toStage: LifecycleStageKey
+    receiptId: string
+    receiptHash: string
+  },
+): Promise<StageReceipt> {
+  if (!opts.receiptId || !opts.receiptHash) {
+    throw new LifecycleV3Error('MISSING_EVIDENCE', 'advance requires registered receiptId+receiptHash', {
+      receiptId: opts.receiptId,
+      receiptHash: opts.receiptHash,
+    })
+  }
+  const registered = await storage.getStageEvidence(opts.boardId, opts.receiptId)
+  if (!registered) {
+    throw new LifecycleV3Error(
+      'MISSING_EVIDENCE',
+      'stage evidence receipt not registered (no self-created receipt promotion)',
+      { receiptId: opts.receiptId },
+    )
+  }
+  if (registered.receipt.receiptHash !== opts.receiptHash) {
+    throw new LifecycleV3Error('STALE_HASH', 'receipt hash mismatch vs registered stage evidence', {
+      expected: registered.receipt.receiptHash,
+      got: opts.receiptHash,
+    })
+  }
+  if (registered.taskId !== opts.taskId) {
+    throw new LifecycleV3Error('MISSING_EVIDENCE', 'registered receipt bound to different task', {
+      registeredTaskId: registered.taskId,
+      taskId: opts.taskId,
+    })
+  }
+  if (registered.toStage !== opts.toStage) {
+    throw new LifecycleV3Error('MISSING_EVIDENCE', 'registered receipt bound to different stage', {
+      registeredStage: registered.toStage,
+      toStage: opts.toStage,
+    })
+  }
+  if (!registered.receipt.programmatic) {
+    throw new LifecycleV3Error('MISSING_EVIDENCE', 'registered receipt is not programmatic', {
+      receiptId: opts.receiptId,
+    })
+  }
+  // Return a clone of the registered receipt (authority), never the caller's body.
+  return {
+    ...registered.receipt,
+    fields: { ...registered.receipt.fields },
   }
 }
 
@@ -564,30 +837,20 @@ export async function advanceTaskV3(
     })
   }
 
-  // Current hashes
-  if (task.taskHash !== inp.expectedTaskHash || task.taskHash !== inp.receipt.taskHash) {
+  // Current expected hashes (client CAS) — registry receipt binding checked after resolve.
+  if (task.taskHash !== inp.expectedTaskHash) {
     throw new LifecycleV3Error('STALE_HASH', 'task hash mismatch', {
       expected: inp.expectedTaskHash,
       task: task.taskHash,
-      receipt: inp.receipt.taskHash,
     })
   }
   if (
     pin.canonicalHash !== inp.expectedCanonicalHash ||
-    task.canonicalHash !== inp.expectedCanonicalHash ||
-    inp.receipt.canonicalHash !== pin.canonicalHash
+    task.canonicalHash !== inp.expectedCanonicalHash
   ) {
     throw new LifecycleV3Error('STALE_HASH', 'canonical hash mismatch', {
       expected: inp.expectedCanonicalHash,
       pin: pin.canonicalHash,
-      receipt: inp.receipt.canonicalHash,
-    })
-  }
-  if (inp.receipt.boardRev !== pin.boardRev || inp.receipt.lifecycleRev !== pin.lifecycleRev) {
-    throw new LifecycleV3Error('STALE_REVISION', 'receipt bound to stale board/lifecycle rev', {
-      receiptBoardRev: inp.receipt.boardRev,
-      receiptLifecycleRev: inp.receipt.lifecycleRev,
-      pin,
     })
   }
 
@@ -607,19 +870,63 @@ export async function advanceTaskV3(
     )
   }
 
-  validateStageEvidence(inp.toStage, inp.receipt, inp)
+  // Receipt authority: only registry-bound program-emitted receipts.
+  // Callers may pass receiptId+hash only; body fields are taken from registry.
+  const receipt = await resolveRegisteredStageReceipt(storage, {
+    boardId: inp.boardId,
+    taskId: inp.taskId,
+    toStage: inp.toStage,
+    receiptId: inp.receipt.receiptId,
+    receiptHash: inp.receipt.receiptHash,
+  })
+
+  // Hash/rev binding uses registry receipt (not caller body).
+  if (task.taskHash !== receipt.taskHash) {
+    throw new LifecycleV3Error('STALE_HASH', 'task hash mismatch vs registered receipt', {
+      task: task.taskHash,
+      receipt: receipt.taskHash,
+    })
+  }
+  if (receipt.canonicalHash !== pin.canonicalHash) {
+    throw new LifecycleV3Error('STALE_HASH', 'canonical hash mismatch vs registered receipt', {
+      pin: pin.canonicalHash,
+      receipt: receipt.canonicalHash,
+    })
+  }
+  if (receipt.boardRev !== pin.boardRev || receipt.lifecycleRev !== pin.lifecycleRev) {
+    throw new LifecycleV3Error('STALE_REVISION', 'registered receipt bound to stale board/lifecycle rev', {
+      receiptBoardRev: receipt.boardRev,
+      receiptLifecycleRev: receipt.lifecycleRev,
+      pin,
+    })
+  }
+
+  validateStageEvidence(inp.toStage, receipt, { ...inp, receipt })
 
   const actorRun = await storage.getRun(inp.boardId, inp.byRunId)
   assertRunValid(actorRun, inp.byRunId, now)
 
+  // Emitting run on registry must still be a valid historical program emit.
+  const registered = await storage.getStageEvidence(inp.boardId, receipt.receiptId)
+  if (registered) {
+    const emitter = await storage.getRun(inp.boardId, registered.emittingRunId)
+    if (!emitter || !emitter.registered) {
+      throw new LifecycleV3Error(
+        'RUN_NOT_REGISTERED',
+        `stage evidence emitting run no longer registered: ${registered.emittingRunId}`,
+        { emittingRunId: registered.emittingRunId },
+      )
+    }
+  }
+
   const needsVerifier = VERIFIER_STAGES.has(inp.toStage)
   if (needsVerifier) {
-    const verifierRunId = inp.receipt.verifierRunId ?? inp.byRunId
+    const verifierRunId = receipt.verifierRunId ?? inp.byRunId
     const verifierRun = await storage.getRun(inp.boardId, verifierRunId)
     assertRunValid(verifierRun, verifierRunId, now)
 
     // Self-verification: same run as implementer/author
-    const authorRunId = inp.receipt.authorRunId ?? task.implementerRunId
+    const authorRunId = receipt.authorRunId ?? task.implementerRunId
     if (authorRunId && verifierRunId === authorRunId) {
       throw new LifecycleV3Error('SELF_VERIFICATION', 'verifier run cannot equal author run', {
         authorRunId,
@@ -661,9 +968,9 @@ export async function advanceTaskV3(
       }
     }
 
-    if (inp.receipt.verdict !== 'PASS' && inp.receipt.fields.verifierVerdict !== 'PASS') {
+    if (receipt.verdict !== 'PASS' && receipt.fields.verifierVerdict !== 'PASS') {
       throw new LifecycleV3Error('MISSING_EVIDENCE', 'verifier verdict PASS required', {
-        verdict: inp.receipt.verdict,
+        verdict: receipt.verdict,
       })
     }
   } else {
@@ -680,8 +987,8 @@ export async function advanceTaskV3(
     byRunId: inp.byRunId,
     role: actorRun.role,
     ts: now,
-    receiptId: inp.receipt.receiptId,
-    receiptHash: inp.receipt.receiptHash,
+    receiptId: receipt.receiptId,
+    receiptHash: receipt.receiptHash,
     boardRev: pin.boardRev + 1,
     lifecycleRev: pin.lifecycleRev + 1,
     entityRev: task.entityRev + 1,
@@ -710,7 +1017,7 @@ export async function advanceTaskV3(
     implementerModel: nextImplementerModel,
     implementerThreadId: nextImplementerThread,
     history: [...task.history, entry],
-    stageReceipts: { ...task.stageReceipts, [inp.toStage]: { ...inp.receipt } },
+    stageReceipts: { ...task.stageReceipts, [inp.toStage]: { ...receipt } },
     blockedReason: null,
   }
 
@@ -725,7 +1032,7 @@ export async function advanceTaskV3(
     taskId: inp.taskId,
     fromStage: task.stage,
     toStage: inp.toStage,
-    receiptId: inp.receipt.receiptId,
+    receiptId: receipt.receiptId,
     boardRev: next.boardRev,
     lifecycleRev: next.lifecycleRev,
     entityRev: next.entityRev,
@@ -750,7 +1057,7 @@ export async function advanceTaskV3(
     taskHash: next.taskHash,
     canonicalSnapshotId: pin.canonicalSnapshotId,
     canonicalHash: pin.canonicalHash,
-    receipt: inp.receipt,
+    receipt,
     pin: pinTuple,
     readback: buildLifecycleReadback(next, pin.canonicalSnapshotId, pin.canonicalHash),
   }
@@ -1088,20 +1395,35 @@ export function createMemoryLifecycleV3Storage(seed: {
   pin: LifecycleBoardPin
   tasks: Array<TaskLifecycleV3State>
   runs: Array<RegisteredRun>
+  /** Optional pre-seeded program-emitted stage evidence. */
+  stageEvidence?: Array<RegisteredStageEvidence>
 }): LifecycleV3Storage & {
   pin: () => LifecycleBoardPin
   tasks: () => Array<TaskLifecycleV3State>
   audits: () => Array<Record<string, unknown>>
+  stageEvidence: () => Array<RegisteredStageEvidence>
 } {
   let pin = { ...seed.pin }
   const tasks = new Map(seed.tasks.map((t) => [t.taskId, { ...t, history: [...t.history], stageReceipts: { ...t.stageReceipts } }]))
   const runs = new Map(seed.runs.map((r) => [r.runId, { ...r }]))
   const audits: Array<Record<string, unknown>> = []
+  const evidence = new Map<string, RegisteredStageEvidence>()
+  for (const e of seed.stageEvidence ?? []) {
+    evidence.set(e.receipt.receiptId, {
+      ...e,
+      receipt: { ...e.receipt, fields: { ...e.receipt.fields } },
+    })
+  }
 
   return {
     pin: () => ({ ...pin }),
     tasks: () => [...tasks.values()].map((t) => ({ ...t, history: [...t.history] })),
     audits: () => audits.map((a) => ({ ...a })),
+    stageEvidence: () =>
+      [...evidence.values()].map((e) => ({
+        ...e,
+        receipt: { ...e.receipt, fields: { ...e.receipt.fields } },
+      })),
     async getBoardPin(boardId) {
       return pin.boardId === boardId ? { ...pin } : null
     },
@@ -1141,6 +1463,78 @@ export function createMemoryLifecycleV3Storage(seed: {
     },
     async appendAudit(entry) {
       audits.push({ ...entry })
+    },
+    async getStageEvidence(boardId, receiptId) {
+      if (pin.boardId !== boardId) return null
+      const e = evidence.get(receiptId)
+      return e
+        ? { ...e, receipt: { ...e.receipt, fields: { ...e.receipt.fields } } }
+        : null
+    },
+    async putStageEvidence(entry) {
+      if (pin.boardId !== entry.boardId) {
+        throw new LifecycleV3Error('TASK_NOT_FOUND', 'board mismatch on stage evidence')
+      }
+      const existing = evidence.get(entry.receipt.receiptId)
+      if (existing && existing.receipt.receiptHash !== entry.receipt.receiptHash) {
+        throw new LifecycleV3Error(
+          'STALE_HASH',
+          'stage evidence receiptId already registered with different hash (immutable)',
+          {
+            receiptId: entry.receipt.receiptId,
+            existing: existing.receipt.receiptHash,
+            next: entry.receipt.receiptHash,
+          },
+        )
+      }
+      if (!existing) {
+        evidence.set(entry.receipt.receiptId, {
+          ...entry,
+          receipt: { ...entry.receipt, fields: { ...entry.receipt.fields } },
+        })
+      }
+    },
+  }
+}
+
+/** Pure in-memory StageEvidenceStore (control-data parity / integration). */
+export function createMemoryStageEvidenceStore(): StageEvidenceStore & {
+  list(): Array<RegisteredStageEvidence>
+} {
+  const evidence = new Map<string, RegisteredStageEvidence>()
+  const keyOf = (boardId: string, receiptId: string) => `${boardId}::${receiptId}`
+  return {
+    list: () =>
+      [...evidence.values()].map((e) => ({
+        ...e,
+        receipt: { ...e.receipt, fields: { ...e.receipt.fields } },
+      })),
+    async getStageEvidence(boardId, receiptId) {
+      const e = evidence.get(keyOf(boardId, receiptId))
+      return e
+        ? { ...e, receipt: { ...e.receipt, fields: { ...e.receipt.fields } } }
+        : null
+    },
+    async putStageEvidence(entry) {
+      const k = keyOf(entry.boardId, entry.receipt.receiptId)
+      const existing = evidence.get(k)
+      if (existing && existing.receipt.receiptHash !== entry.receipt.receiptHash) {
+        throw new LifecycleV3Error(
+          'STALE_HASH',
+          'stage evidence receiptId already registered with different hash (immutable)',
+          {
+            receiptId: entry.receipt.receiptId,
+            existing: existing.receipt.receiptHash,
+            next: entry.receipt.receiptHash,
+          },
+        )
+      }
+      if (!existing) {
+        evidence.set(k, {
+          ...entry,
+          receipt: { ...entry.receipt, fields: { ...entry.receipt.fields } },
+        })
+      }
     },
   }
 }

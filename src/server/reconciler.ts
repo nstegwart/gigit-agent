@@ -8,6 +8,12 @@ import { createHash, randomUUID } from 'node:crypto'
 
 import type { ControlPlaneAtomicStore, ControlPlaneClock } from './board-store'
 import {
+  beginIdempotent,
+  completeIdempotent,
+  type IdempotencyStorage,
+  IdempotencyError,
+} from './idempotency'
+import {
   RUN_LEASE_MS,
   RUN_RECONCILIATION_GRACE_MS,
   TERMINAL_RUN_STATES,
@@ -74,6 +80,7 @@ export type ReconcilerErrorCode =
   | 'DRY_RUN_HASH_MISMATCH'
   | 'BUDGET_EXCEEDED'
   | 'INVALID_INPUT'
+  | 'IDEMPOTENCY_CONFLICT'
 
 export class ReconcilerError extends Error {
   readonly code: ReconcilerErrorCode
@@ -112,6 +119,7 @@ export interface ReconcilerDeps {
   locks: LockStore
   reconciler: ReconcilerStore
   atomic: ControlPlaneAtomicStore
+  idempotency: IdempotencyStorage
 }
 
 function stableStringify(value: unknown): string {
@@ -301,6 +309,48 @@ async function assertLeader(
   }
 }
 
+/** Material request fields for reconcile_dry_run 24h idempotency (scope owns board/key). */
+export type ReconcileDryRunIdempotencyOpts = {
+  leaderId: string
+  fencingToken: string
+  maxActions?: number
+  timeBudgetMs?: number
+  cursor?: string | null
+  entityExpectedRev: number
+  expectedBoardRev: number
+  canonicalHash: string
+}
+
+/**
+ * Canonical material body for reconcile_dry_run idempotency.
+ * Includes timeBudgetMs + every other material field/revision/hash.
+ * Not hashed: boardId/actorId/endpoint/key (scope), idempotencyKey, currentPinHash (pin probe).
+ */
+export function reconcileDryRunIdempotencyRequestBody(
+  opts: ReconcileDryRunIdempotencyOpts,
+): Readonly<{
+  leaderId: string
+  fencingToken: string
+  maxActions: number | null
+  timeBudgetMs: number | null
+  cursor: string | null
+  entityExpectedRev: number
+  expectedBoardRev: number
+  canonicalHash: string
+}> {
+  return {
+    leaderId: opts.leaderId,
+    fencingToken: opts.fencingToken,
+    maxActions: opts.maxActions ?? null,
+    // Material: same key with a different time budget must IDEMPOTENCY_CONFLICT.
+    timeBudgetMs: opts.timeBudgetMs ?? null,
+    cursor: opts.cursor ?? null,
+    entityExpectedRev: opts.entityExpectedRev,
+    expectedBoardRev: opts.expectedBoardRev,
+    canonicalHash: opts.canonicalHash,
+  }
+}
+
 export async function dryRunReconcile(
   deps: ReconcilerDeps,
   opts: {
@@ -310,87 +360,162 @@ export async function dryRunReconcile(
     maxActions?: number
     timeBudgetMs?: number
     cursor?: string | null
-    expectedBoardRev?: number
+    /** Create dry-run entity: require 0 (no prior dry-run entity CAS on store). */
+    entityExpectedRev: number
+    expectedBoardRev: number
+    canonicalHash: string
+    currentPinHash?: string | null
+    idempotencyKey: string
   },
 ): Promise<ReconcileDryRunResult> {
-  await assertLeader(deps, opts.boardId, opts.leaderId, opts.fencingToken)
-
-  const board = await deps.atomic.getBoardState(opts.boardId)
-  if (opts.expectedBoardRev != null && opts.expectedBoardRev !== board.boardRev) {
-    throw new ReconcilerError('STALE_REVISION', 'board rev mismatch on dry-run', {
-      expectedBoardRev: opts.expectedBoardRev,
-      currentBoardRev: board.boardRev,
+  if (typeof opts.entityExpectedRev !== 'number' || !Number.isInteger(opts.entityExpectedRev)) {
+    throw new ReconcilerError(
+      'INVALID_INPUT',
+      'entityExpectedRev is required (create=0) — no silent default',
+    )
+  }
+  if (typeof opts.expectedBoardRev !== 'number' || !Number.isInteger(opts.expectedBoardRev)) {
+    throw new ReconcilerError('INVALID_INPUT', 'expectedBoardRev is required — no silent default')
+  }
+  if (!opts.canonicalHash || !String(opts.canonicalHash).trim()) {
+    throw new ReconcilerError('INVALID_INPUT', 'canonicalHash is required (current pin hash)')
+  }
+  if (!opts.idempotencyKey || !String(opts.idempotencyKey).trim()) {
+    throw new ReconcilerError('INVALID_INPUT', 'idempotencyKey is required')
+  }
+  if (
+    opts.currentPinHash != null &&
+    opts.currentPinHash !== '' &&
+    opts.currentPinHash !== opts.canonicalHash
+  ) {
+    throw new ReconcilerError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
+      expectedCanonicalHash: opts.canonicalHash,
+      currentPinHash: opts.currentPinHash,
     })
   }
-
-  const maxActions = opts.maxActions ?? DEFAULT_MAX_ACTIONS_PER_RUN
-  if (maxActions > DEFAULT_MAX_ACTIONS_PER_RUN) {
-    throw new ReconcilerError('BUDGET_EXCEEDED', `maxActions ${maxActions} > ${DEFAULT_MAX_ACTIONS_PER_RUN}`)
-  }
-  const timeBudgetMs = opts.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS
-  const started = deps.clock.nowMs()
-  const now = started
-
-  const allRuns = (await deps.runs.list(opts.boardId)).sort((a, b) =>
-    a.runId.localeCompare(b.runId),
-  )
-  let startIdx = 0
-  if (opts.cursor) {
-    const idx = allRuns.findIndex((r) => r.runId === opts.cursor)
-    startIdx = idx >= 0 ? idx + 1 : 0
+  // Dry-run is a create-side-effect (stores dry-run row); entityExpectedRev must be 0.
+  if (opts.entityExpectedRev !== 0) {
+    throw new ReconcilerError(
+      'STALE_REVISION',
+      'reconcile_dry_run create requires entityExpectedRev 0',
+      { entityExpectedRev: opts.entityExpectedRev, currentEntityRev: 0 },
+    )
   }
 
-  const items: Array<ReconcileItemDiff> = []
-  let i = startIdx
-  while (i < allRuns.length && items.length < maxActions) {
-    if (deps.clock.nowMs() - started > timeBudgetMs) break
-    const rec = allRuns[i]!
-    const completed = await deps.reconciler.isTaskCompleted(opts.boardId, rec.taskId)
-    items.push(classifyRunForReconcile(rec, now, completed))
-    i++
+  await assertLeader(deps, opts.boardId, opts.leaderId, opts.fencingToken)
+
+  let begin
+  try {
+    begin = await beginIdempotent(deps.idempotency, {
+      scope: {
+        actorId: opts.leaderId,
+        boardId: opts.boardId,
+        endpoint: 'reconcile_dry_run',
+        key: opts.idempotencyKey.trim(),
+      },
+      requestBody: reconcileDryRunIdempotencyRequestBody(opts),
+      nowMs: deps.clock.nowMs(),
+    })
+  } catch (e) {
+    if (e instanceof IdempotencyError) {
+      throw new ReconcilerError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
+  if (begin.kind === 'REPLAY' && begin.record) {
+    return begin.record.responseBody as ReconcileDryRunResult
   }
 
-  const nextCursor = i < allRuns.length ? allRuns[i - 1]?.runId ?? null : null
-  const counts: Record<ReconcileClass, number> = {
-    LIVE: 0,
-    TERMINAL: 0,
-    STALE: 0,
-    ORPHAN: 0,
-    REQUEUE: 0,
-    MANUAL: 0,
-  }
-  for (const it of items) counts[it.classification]++
+  try {
+    const board = await deps.atomic.getBoardState(opts.boardId)
+    if (opts.expectedBoardRev !== board.boardRev) {
+      throw new ReconcilerError('STALE_REVISION', 'board rev mismatch on dry-run', {
+        expectedBoardRev: opts.expectedBoardRev,
+        currentBoardRev: board.boardRev,
+      })
+    }
 
-  const dryRunHash = hashDryRunItems(items, board.boardRev)
-  const result: ReconcileDryRunResult = {
-    dryRunId: `dry-${randomUUID()}`,
-    dryRunHash,
-    boardId: opts.boardId,
-    boardRev: board.boardRev,
-    leaderToken: opts.fencingToken,
-    cursor: opts.cursor ?? null,
-    nextCursor,
-    maxActions,
-    timeBudgetMs,
-    items,
-    counts,
-    generatedAtMs: deps.clock.nowMs(),
-    generatedAt: deps.clock.nowISO(),
-  }
+    const maxActions = opts.maxActions ?? DEFAULT_MAX_ACTIONS_PER_RUN
+    if (maxActions > DEFAULT_MAX_ACTIONS_PER_RUN) {
+      throw new ReconcilerError('BUDGET_EXCEEDED', `maxActions ${maxActions} > ${DEFAULT_MAX_ACTIONS_PER_RUN}`)
+    }
+    const timeBudgetMs = opts.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS
+    const started = deps.clock.nowMs()
+    const now = started
 
-  await deps.reconciler.putDryRun(result)
-  await deps.atomic.appendAudit({
-    boardId: opts.boardId,
-    kind: 'RECONCILER_DRY_RUN',
-    atMs: result.generatedAtMs,
-    atISO: result.generatedAt,
-    actorId: opts.leaderId,
-    subjectType: 'reconcile',
-    subjectId: result.dryRunId,
-    detail: { dryRunHash, counts, itemCount: items.length },
-    material: true,
-  })
-  return result
+    const allRuns = (await deps.runs.list(opts.boardId)).sort((a, b) =>
+      a.runId.localeCompare(b.runId),
+    )
+    let startIdx = 0
+    if (opts.cursor) {
+      const idx = allRuns.findIndex((r) => r.runId === opts.cursor)
+      startIdx = idx >= 0 ? idx + 1 : 0
+    }
+
+    const items: Array<ReconcileItemDiff> = []
+    let i = startIdx
+    while (i < allRuns.length && items.length < maxActions) {
+      if (deps.clock.nowMs() - started > timeBudgetMs) break
+      const rec = allRuns[i]!
+      const completed = await deps.reconciler.isTaskCompleted(opts.boardId, rec.taskId)
+      items.push(classifyRunForReconcile(rec, now, completed))
+      i++
+    }
+
+    const nextCursor = i < allRuns.length ? allRuns[i - 1]?.runId ?? null : null
+    const counts: Record<ReconcileClass, number> = {
+      LIVE: 0,
+      TERMINAL: 0,
+      STALE: 0,
+      ORPHAN: 0,
+      REQUEUE: 0,
+      MANUAL: 0,
+    }
+    for (const it of items) counts[it.classification]++
+
+    const dryRunHash = hashDryRunItems(items, board.boardRev)
+    const result: ReconcileDryRunResult = {
+      dryRunId: `dry-${randomUUID()}`,
+      dryRunHash,
+      boardId: opts.boardId,
+      boardRev: board.boardRev,
+      leaderToken: opts.fencingToken,
+      cursor: opts.cursor ?? null,
+      nextCursor,
+      maxActions,
+      timeBudgetMs,
+      items,
+      counts,
+      generatedAtMs: deps.clock.nowMs(),
+      generatedAt: deps.clock.nowISO(),
+    }
+
+    await deps.reconciler.putDryRun(result)
+    // Dry-run does NOT bump board rev (read-ish side effect only).
+    await deps.atomic.appendAudit({
+      boardId: opts.boardId,
+      kind: 'RECONCILER_DRY_RUN',
+      atMs: result.generatedAtMs,
+      atISO: result.generatedAt,
+      actorId: opts.leaderId,
+      subjectType: 'reconcile',
+      subjectId: result.dryRunId,
+      detail: { dryRunHash, counts, itemCount: items.length },
+      material: true,
+    })
+    await completeIdempotent(deps.idempotency, begin.scopeHash, 200, result, begin.requestHash)
+    return result
+  } catch (e) {
+    try {
+      await deps.idempotency.delete(begin.scopeHash)
+    } catch {
+      /* ignore */
+    }
+    if (e instanceof IdempotencyError) {
+      throw new ReconcilerError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
 }
 
 export async function applyReconcile(
@@ -400,15 +525,97 @@ export async function applyReconcile(
     leaderId: string
     fencingToken: string
     dryRunHash: string
+    /**
+     * Strict entity CAS on every apply path (including already-applied dryRunHash + new key).
+     * Apply entity is create-semantic: currentEntityRev is always 0 (domain already-applied
+     * does not bump entity rev). Mismatch → STALE_REVISION. Exact same key+body still replays
+     * via idempotency before this check.
+     */
+    entityExpectedRev: number
     expectedBoardRev: number
+    canonicalHash: string
+    currentPinHash?: string | null
+    idempotencyKey: string
   },
 ): Promise<ReconcileApplyResult> {
+  if (typeof opts.entityExpectedRev !== 'number' || !Number.isInteger(opts.entityExpectedRev)) {
+    throw new ReconcilerError(
+      'INVALID_INPUT',
+      'entityExpectedRev is required — no silent default',
+    )
+  }
+  if (typeof opts.expectedBoardRev !== 'number' || !Number.isInteger(opts.expectedBoardRev)) {
+    throw new ReconcilerError('INVALID_INPUT', 'expectedBoardRev is required — no silent default')
+  }
+  if (!opts.canonicalHash || !String(opts.canonicalHash).trim()) {
+    throw new ReconcilerError('INVALID_INPUT', 'canonicalHash is required (current pin hash)')
+  }
+  if (!opts.idempotencyKey || !String(opts.idempotencyKey).trim()) {
+    throw new ReconcilerError('INVALID_INPUT', 'idempotencyKey is required')
+  }
+  if (
+    opts.currentPinHash != null &&
+    opts.currentPinHash !== '' &&
+    opts.currentPinHash !== opts.canonicalHash
+  ) {
+    throw new ReconcilerError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
+      expectedCanonicalHash: opts.canonicalHash,
+      currentPinHash: opts.currentPinHash,
+    })
+  }
+
   await assertLeader(deps, opts.boardId, opts.leaderId, opts.fencingToken)
 
-  return deps.reconciler.withBoardLock(opts.boardId, async () => {
+  let begin
+  try {
+    begin = await beginIdempotent(deps.idempotency, {
+      scope: {
+        actorId: opts.leaderId,
+        boardId: opts.boardId,
+        endpoint: 'reconcile_apply',
+        key: opts.idempotencyKey.trim(),
+      },
+      requestBody: {
+        dryRunHash: opts.dryRunHash,
+        entityExpectedRev: opts.entityExpectedRev,
+        expectedBoardRev: opts.expectedBoardRev,
+        canonicalHash: opts.canonicalHash,
+      },
+      nowMs: deps.clock.nowMs(),
+    })
+  } catch (e) {
+    if (e instanceof IdempotencyError) {
+      throw new ReconcilerError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
+  if (begin.kind === 'REPLAY' && begin.record) {
+    return begin.record.responseBody as ReconcileApplyResult
+  }
+
+  try {
+  const result = await deps.reconciler.withBoardLock(opts.boardId, async () => {
     const last = await deps.reconciler.getLastApplyHash(opts.boardId)
     if (last === opts.dryRunHash) {
+      // Domain-level already-applied: no mutation, no board/entity bump.
+      // Entity CAS is still mandatory — create-semantic apply entity never bumps on
+      // domain replay, so currentEntityRev remains 0. Arbitrary/stale rev → STALE_REVISION.
+      // (Bug fix: prior empty branch accepted any entityExpectedRev and bypassed CAS.)
+      const currentEntityRev = 0
+      if (opts.entityExpectedRev !== currentEntityRev) {
+        throw new ReconcilerError(
+          'STALE_REVISION',
+          'reconcile_apply requires exact current entity revision',
+          { entityExpectedRev: opts.entityExpectedRev, currentEntityRev },
+        )
+      }
       const board = await deps.atomic.getBoardState(opts.boardId)
+      if (opts.expectedBoardRev !== board.boardRev) {
+        throw new ReconcilerError('STALE_REVISION', 'apply requires current board rev', {
+          expectedBoardRev: opts.expectedBoardRev,
+          currentBoardRev: board.boardRev,
+        })
+      }
       return {
         applied: true,
         dryRunHash: opts.dryRunHash,
@@ -418,6 +625,16 @@ export async function applyReconcile(
         idempotentReplay: true,
         boardRev: board.boardRev,
       }
+    }
+
+    // First apply for this hash: create semantics require entityExpectedRev 0.
+    const currentEntityRev = 0
+    if (opts.entityExpectedRev !== currentEntityRev) {
+      throw new ReconcilerError(
+        'STALE_REVISION',
+        'reconcile_apply requires exact current entity revision',
+        { entityExpectedRev: opts.entityExpectedRev, currentEntityRev },
+      )
     }
 
     const dry = await deps.reconciler.getDryRun(opts.boardId, opts.dryRunHash)
@@ -552,6 +769,19 @@ export async function applyReconcile(
       boardRev,
     }
   })
+    await completeIdempotent(deps.idempotency, begin.scopeHash, 200, result, begin.requestHash)
+    return result
+  } catch (e) {
+    try {
+      await deps.idempotency.delete(begin.scopeHash)
+    } catch {
+      /* ignore */
+    }
+    if (e instanceof IdempotencyError) {
+      throw new ReconcilerError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
 }
 
 /** Tasks that map to RECONCILIATION_PENDING primary bucket (incomplete stale/orphan). */

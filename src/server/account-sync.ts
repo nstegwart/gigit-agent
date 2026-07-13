@@ -83,7 +83,16 @@ export interface SyncAccountsRequest {
   boardId: string
   sourceRevision: number
   generatedAt: string
+  /**
+   * Create (no prior snapshot) requires 0. Update CAS current snapshot.entityRev.
+   * Never silently defaulted.
+   */
+  entityExpectedRev: number
   expectedBoardRev: number
+  /** Current subject/canonical hash (pin). Required non-empty. */
+  canonicalHash: string
+  /** When set (MCP pin), must equal canonicalHash. */
+  currentPinHash?: string | null
   accounts: Array<{
     maskedAccountId: string
     status: MaskedAccountStatus
@@ -595,6 +604,65 @@ function normalizeAccount(
 }
 
 /**
+ * Normalize one masked account for sync_accounts idempotency hashing.
+ * Includes every capacity-affecting field (status/provider/inUse/cap) plus
+ * identity/display fields that define the published snapshot.
+ */
+export function normalizeMaskedAccountForHash(
+  a: SyncAccountsRequest['accounts'][number] | MaskedAccountRecord,
+): Record<string, unknown> {
+  const status = a.status
+  return {
+    maskedAccountId: a.maskedAccountId,
+    status,
+    providerKind: a.providerKind ?? 'OTHER',
+    effectiveInUse: Math.max(0, a.effectiveInUse),
+    effectiveCap: Math.max(0, a.effectiveCap),
+    physicalSlotsDisplay: a.physicalSlotsDisplay ?? null,
+    adaptiveQuotaState: a.adaptiveQuotaState ?? null,
+    reason: a.reason ?? null,
+    statusChangedAt: a.statusChangedAt ?? null,
+    tombstone: isTombstone(status),
+  }
+}
+
+/**
+ * Canonical material request body for sync_accounts idempotency.
+ * Every field that affects capacity/result must be present:
+ * health (cpu/ram/load), genuineReadyPacketCount, accounts (+ per-account caps),
+ * trigger, revs, pin hash, callerRole. idempotencyKey is scope-only;
+ * currentPinHash is CAS-only (not body-hashed).
+ */
+export function syncAccountsIdempotencyBody(
+  req: SyncAccountsRequest,
+): Record<string, unknown> {
+  const health =
+    req.health == null
+      ? null
+      : {
+          cpuPercent: req.health.cpuPercent,
+          ramHealthy: req.health.ramHealthy !== false,
+          loadHealthy: req.health.loadHealthy !== false,
+        }
+  return {
+    boardId: req.boardId,
+    sourceRevision: req.sourceRevision,
+    generatedAt: req.generatedAt,
+    entityExpectedRev: req.entityExpectedRev,
+    expectedBoardRev: req.expectedBoardRev,
+    canonicalHash: String(req.canonicalHash ?? '').trim(),
+    accounts: (req.accounts ?? []).map(normalizeMaskedAccountForHash),
+    trigger: req.trigger,
+    callerRole: req.callerRole,
+    actorId: req.actorId ?? null,
+    health,
+    genuineReadyPacketCount:
+      req.genuineReadyPacketCount == null ? null : req.genuineReadyPacketCount,
+    accountsAllFlag: !!req.accountsAllFlag,
+  }
+}
+
+/**
  * Record multi-surface readback parity. All four surfaces must match
  * sourceRevision+generatedAt or stale fail-closed remains.
  */
@@ -652,7 +720,8 @@ export async function recordAccountReadback(
   })
 }
 
-function surfacesHaveParity(
+/** Exact multi-surface parity: all four must match sourceRevision+generatedAt. */
+export function surfacesHaveParity(
   surfaces: AccountSyncSnapshot['readbackSurfaces'],
   sourceRevision: number,
   generatedAt: string,
@@ -664,6 +733,23 @@ function surfacesHaveParity(
     if (s.sourceRevision !== sourceRevision || s.generatedAt !== generatedAt) return false
   }
   return true
+}
+
+/** Canonical readback surface order for MCP/API/UI/Ops publication. */
+export const ACCOUNT_SYNC_READBACK_SURFACES = ['mcp', 'api', 'ui', 'ops'] as const
+export type AccountSyncReadbackSurface = (typeof ACCOUNT_SYNC_READBACK_SURFACES)[number]
+
+/**
+ * Triggers that may be coalesced by the publication scheduler.
+ * Only HEARTBEAT may coalesce; newest must still publish within ACCOUNT_PUBLISH_SLA_MS.
+ */
+export function isCoalescableAccountSyncTrigger(trigger: AccountSyncTrigger): boolean {
+  return trigger === 'HEARTBEAT'
+}
+
+/** Immediate (non-coalesced) mandatory publication triggers. */
+export function isImmediateAccountSyncTrigger(trigger: AccountSyncTrigger): boolean {
+  return !isCoalescableAccountSyncTrigger(trigger)
 }
 
 async function applyDispatchBlock(
@@ -714,25 +800,54 @@ export async function syncAccounts(
   if (!Number.isInteger(req.sourceRevision) || req.sourceRevision < 0) {
     throw new AccountSyncError('INVALID_INPUT', 'sourceRevision must be non-negative integer')
   }
+  if (typeof req.entityExpectedRev !== 'number' || !Number.isInteger(req.entityExpectedRev) || req.entityExpectedRev < 0) {
+    throw new AccountSyncError(
+      'INVALID_INPUT',
+      'entityExpectedRev is required (create=0, update=current) — no silent default',
+    )
+  }
+  if (typeof req.expectedBoardRev !== 'number' || !Number.isInteger(req.expectedBoardRev)) {
+    throw new AccountSyncError('INVALID_INPUT', 'expectedBoardRev is required — no silent default')
+  }
+  if (!req.canonicalHash || !String(req.canonicalHash).trim()) {
+    throw new AccountSyncError('INVALID_INPUT', 'canonicalHash is required (current pin hash)')
+  }
+  if (!req.idempotencyKey || !String(req.idempotencyKey).trim()) {
+    throw new AccountSyncError('INVALID_INPUT', 'idempotencyKey is required')
+  }
+  if (
+    req.currentPinHash != null &&
+    req.currentPinHash !== '' &&
+    req.currentPinHash !== req.canonicalHash
+  ) {
+    throw new AccountSyncError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
+      expectedCanonicalHash: req.canonicalHash,
+      currentPinHash: req.currentPinHash,
+    })
+  }
 
   const accounts = req.accounts.map(normalizeAccount)
 
   // Idempotency first so exact replays succeed without re-CAS on boardRev.
-  const begin = await beginIdempotent(deps.idempotency, {
-    scope: {
-      actorId: req.actorId ?? req.callerRole,
-      boardId: req.boardId,
-      endpoint: 'sync_accounts',
-      key: req.idempotencyKey,
-    },
-    requestBody: {
-      sourceRevision: req.sourceRevision,
-      generatedAt: req.generatedAt,
-      accounts,
-      trigger: req.trigger,
-    },
-    nowMs: deps.clock.nowMs(),
-  })
+  // Hash covers health + genuineReadyPacketCount + every capacity/result field.
+  let begin
+  try {
+    begin = await beginIdempotent(deps.idempotency, {
+      scope: {
+        actorId: req.actorId ?? req.callerRole,
+        boardId: req.boardId,
+        endpoint: 'sync_accounts',
+        key: req.idempotencyKey,
+      },
+      requestBody: syncAccountsIdempotencyBody(req),
+      nowMs: deps.clock.nowMs(),
+    })
+  } catch (e) {
+    if (e instanceof IdempotencyError) {
+      throw new AccountSyncError('IDEMPOTENCY_CONFLICT', e.message)
+    }
+    throw e
+  }
 
   if (begin.kind === 'REPLAY' && begin.record) {
     return { ...(begin.record.responseBody as SyncAccountsResult), replayed: true }
@@ -754,6 +869,24 @@ export async function syncAccounts(
   try {
     const result = await deps.accounts.withBoardLock(req.boardId, async () => {
       const now = deps.clock.nowMs()
+      const prev = await deps.accounts.get(req.boardId)
+      // Create semantics: no prior snapshot → entityExpectedRev must be 0.
+      // Update semantics: CAS current entityRev.
+      if (!prev) {
+        if (req.entityExpectedRev !== 0) {
+          throw new AccountSyncError(
+            'STALE_REVISION',
+            'sync_accounts create requires entityExpectedRev 0',
+            { entityExpectedRev: req.entityExpectedRev, currentEntityRev: 0 },
+          )
+        }
+      } else if (req.entityExpectedRev !== prev.entityRev) {
+        throw new AccountSyncError('STALE_REVISION', 'entity rev mismatch on sync_accounts', {
+          entityExpectedRev: req.entityExpectedRev,
+          currentEntityRev: prev.entityRev,
+        })
+      }
+
       // Fresh publish: readbacks reset; parity not yet proven → temporarily not stale
       // until SLA window closes without parity. Immediately after publish we set
       // stale=false but dispatchAllowed uses capacity; evaluateSLA later may flip.
@@ -781,16 +914,16 @@ export async function syncAccounts(
         staleReason: null,
         usableCapacity: capacity.usableCapacity,
         capacity,
-        entityRev: 1,
+        entityRev: prev ? prev.entityRev + 1 : 1,
       }
 
       // Preserve lastPeriodic if not this trigger
-      const prev = await deps.accounts.get(req.boardId)
       if (prev && req.trigger !== 'PERIODIC_HEALTH') {
         snap.lastPeriodicHealthAtMs = prev.lastPeriodicHealthAtMs
       }
 
       await deps.accounts.put(snap)
+      // Single board-rev bump per successful non-replay write.
       const boardRev = await deps.atomic.bumpBoardRev(req.boardId)
       await deps.atomic.setBoardState({
         boardId: req.boardId,

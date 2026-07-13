@@ -24,7 +24,7 @@ import {
   toggleTask,
   upsertRun,
 } from './board-store'
-import { advanceTask, computeRollup, readLifecycle, writeLifecycle } from './lifecycle-store'
+import { computeRollup, readLifecycle, writeLifecycle } from './lifecycle-store'
 import { taskLifecycle } from './tasks-store'
 import { currentUser, requireAdminWrite, requireView } from './auth'
 import {
@@ -209,15 +209,145 @@ export const setLifecycleFn = createServerFn({ method: 'POST' })
     return writeLifecycle(data.boardId, data.stages)
   })
 
+/**
+ * HTTP advance input — product path is always Lifecycle V3 (same as MCP advanceTaskProduct).
+ * Envelope fields (entity/board revs, canonical hash, idempotencyKey) are required at the
+ * product layer via parseMutationEnvelope (no silent rev defaults).
+ */
+export const advanceTaskHttpInputSchema = z.object({
+  boardId: board,
+  taskId: z.string().min(1),
+  toStage: z.string().min(1),
+  byRunId: z.string().optional(),
+  role: z.string().optional(),
+  evidence: z.record(z.string(), z.any()).optional(),
+  verdict: z.string().optional(),
+  commitSha: z.string().optional(),
+  deployReceipt: z.string().optional(),
+  blocker: z.string().optional(),
+  /** Legacy alias for entityExpectedRev (parseMutationEnvelope). */
+  expectedRev: z.number().int().optional(),
+  entityExpectedRev: z.number().int().optional(),
+  expectedEntityRev: z.number().int().optional(),
+  expectedBoardRev: z.number().int().optional(),
+  expectedLifecycleRev: z.number().int().optional(),
+  expectedTaskHash: z.string().optional(),
+  canonicalHash: z.string().optional(),
+  subjectHash: z.string().optional(),
+  idempotencyKey: z.string().optional(),
+  receipt: z.record(z.string(), z.any()).optional(),
+  productionApprovalId: z.string().optional(),
+  authorRunId: z.string().optional(),
+  verifierRunId: z.string().optional(),
+  requireOppositeModel: z.boolean().optional(),
+})
+
+export type AdvanceTaskHttpInput = z.infer<typeof advanceTaskHttpInputSchema>
+
+/**
+ * Product HTTP advance: ordered nine-stage V3 rail via advanceTaskProduct.
+ * Maps taskId → MCP `id`. Does not call legacy advanceTask.
+ * Auth/CSRF stay on the createServerFn boundary (requireAdminWrite + csrfServerCall).
+ * Dynamic import of board-mcp keeps MCP product graph off the client board-query chunk.
+ */
+export async function advanceTaskHttp(data: AdvanceTaskHttpInput) {
+  const { advanceTaskProduct, parseMutationEnvelope } = await import('./board-mcp')
+  const args: Record<string, unknown> = {
+    id: data.taskId,
+    toStage: data.toStage,
+    byRunId: data.byRunId,
+    role: data.role,
+    evidence: data.evidence,
+    verdict: data.verdict,
+    commitSha: data.commitSha,
+    deployReceipt: data.deployReceipt,
+    blocker: data.blocker,
+    expectedRev: data.expectedRev,
+    entityExpectedRev: data.entityExpectedRev,
+    expectedEntityRev: data.expectedEntityRev,
+    expectedBoardRev: data.expectedBoardRev,
+    expectedLifecycleRev: data.expectedLifecycleRev,
+    expectedTaskHash: data.expectedTaskHash,
+    canonicalHash: data.canonicalHash,
+    subjectHash: data.subjectHash,
+    idempotencyKey: data.idempotencyKey,
+    receipt: data.receipt,
+    productionApprovalId: data.productionApprovalId,
+    authorRunId: data.authorRunId,
+    verifierRunId: data.verifierRunId,
+    requireOppositeModel: data.requireOppositeModel,
+  }
+  for (const key of Object.keys(args)) {
+    if (args[key] === undefined) delete args[key]
+  }
+  const envelope = parseMutationEnvelope(args)
+  return advanceTaskProduct(data.boardId, args, envelope)
+}
+
+/**
+ * Server-fn serializable advance result (receipt.fields must not be `unknown`
+ * for TanStack Start ValidateSerializableMapped).
+ */
+export type AdvanceTaskHttpSerializableResult = {
+  ok: true
+  taskId: string
+  fromStage: string | null
+  stage: string
+  rev: number
+  implementer: string | null
+  boardRev: number
+  lifecycleRev: number
+  entityRev: number
+  taskHash: string
+  canonicalHash: string
+  canonicalSnapshotId: string
+  receipt: {
+    receiptId: string
+    programmatic: boolean
+    taskHash: string
+    canonicalHash: string
+    boardRev: number
+    lifecycleRev: number
+    fields: Record<string, string | number | boolean | null>
+    authorRunId: string | null
+    verifierRunId: string | null
+    verdict: string | null
+    issuedAt: string
+    receiptHash: string
+  }
+  pin: {
+    canonicalSnapshotId: string
+    canonicalHash: string
+    taskHash: string
+    boardRev: number
+    lifecycleRev: number
+  }
+  readback: {
+    taskId: string
+    stage: string
+    canonicalSnapshotId: string
+    canonicalHash: string
+    taskHash: string
+    boardRev: number
+    lifecycleRev: number
+    entityRev: number
+    stageReceiptIds: Array<string>
+  }
+  engine: 'advanceTaskV3'
+}
+
+function toSerializableAdvanceResult(
+  result: Awaited<ReturnType<typeof advanceTaskHttp>>,
+): AdvanceTaskHttpSerializableResult {
+  // Round-trip strips non-JSON values and satisfies server-fn serializability.
+  return JSON.parse(JSON.stringify(result)) as AdvanceTaskHttpSerializableResult
+}
+
 export const advanceTaskFn = createServerFn({ method: 'POST' })
-  .validator(z.object({
-    boardId: board, taskId: z.string(), toStage: z.string(), byRunId: z.string().optional(), role: z.string().optional(),
-    evidence: z.record(z.string(), z.any()).optional(), verdict: z.string().optional(), commitSha: z.string().optional(),
-    deployReceipt: z.string().optional(), blocker: z.string().optional(), expectedRev: z.number().int().optional(),
-  }))
-  .handler(async ({ data }) => {
+  .validator(advanceTaskHttpInputSchema)
+  .handler(async ({ data }): Promise<AdvanceTaskHttpSerializableResult> => {
     await requireAdminWrite()
-    return advanceTask(data.boardId, data.taskId, data)
+    return toSerializableAdvanceResult(await advanceTaskHttp(data))
   })
 
 export const getOpsFn = createServerFn({ method: 'GET' })
