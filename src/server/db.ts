@@ -26,9 +26,22 @@ export function db(): mysql.Pool {
       user: env('CAIRN_DB_USER'),
       password: env('CAIRN_DB_PASSWORD'),
       database: env('CAIRN_DB_NAME', 'cairn_taskmanager'),
-      connectionLimit: 8,
+      connectionLimit: 16,
       waitForConnections: true,
+      // Bounded queue: when the DB wedges, requests fail fast instead of piling up
+      // until nginx 504s the whole app (outage 2026-07-13 — DB disk full, every
+      // commit blocked, all 8 pooled connections held by writes stuck ~30 min).
+      queueLimit: 64,
+      connectTimeout: 10_000,
+      maxIdle: 8,
+      idleTimeout: 60_000,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10_000,
       charset: 'utf8mb4',
+    })
+    pool.on('connection', (conn) => {
+      // Server-side ceilings so one pathological statement can't hold a connection forever.
+      conn.query('SET SESSION max_execution_time=15000, innodb_lock_wait_timeout=10')
     })
   }
   return pool
