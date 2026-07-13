@@ -17,11 +17,28 @@ const env = (key: string, fallback?: string) => process.env[key] ?? fromEnvFile(
 /** Read a config value from process.env with a .env fallback (server-only). */
 export const envVar = (key: string): string | undefined => env(key)
 
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', ''])
+
+/**
+ * A remote DB host is only ever correct on a deployed box. On a laptop it means
+ * `pnpm dev` reads and WRITES the live board, so require an explicit opt-in
+ * (CAIRN_ALLOW_REMOTE_DB=1, set in the deploy box's .env) rather than trusting .env.
+ */
+function assertHostAllowed(host: string): void {
+  if (LOCAL_HOSTS.has(host) || env('CAIRN_ALLOW_REMOTE_DB') === '1') return
+  throw new Error(
+    `Refusing to connect: CAIRN_DB_HOST=${host} is remote. Point .env at a local MySQL, ` +
+      `or set CAIRN_ALLOW_REMOTE_DB=1 if this really is the deployed server.`,
+  )
+}
+
 let pool: mysql.Pool | null = null
 export function db(): mysql.Pool {
   if (!pool) {
+    const host = env('CAIRN_DB_HOST', '127.0.0.1')!
+    assertHostAllowed(host)
     pool = mysql.createPool({
-      host: env('CAIRN_DB_HOST'),
+      host,
       port: Number(env('CAIRN_DB_PORT', '3306')),
       user: env('CAIRN_DB_USER'),
       password: env('CAIRN_DB_PASSWORD'),
