@@ -69,6 +69,7 @@ import {
   heartbeatRun,
   createMemoryRunRegistryStore,
   type RunRegistryDeps,
+  type RunRegistryStore,
 } from '#/server/run-registry'
 import {
   createMemoryControlPlaneAtomicStore,
@@ -140,6 +141,8 @@ function featureSummary(f: Feature) {
  * Durable external stores may replace these; absent capacity/config → Decision/blocker, not success stubs.
  */
 let mcpRunDeps: RunRegistryDeps | null = null
+/** Process-wide run registry store for default (non-injected) MCP run deps. */
+let mcpRunStore: RunRegistryStore | null = null
 let mcpDecisionStore: DecisionV3Store | null = null
 let mcpReconcilerStore: ReconcilerStore | null = null
 let mcpAtomic: ControlPlaneAtomicStore | null = null
@@ -172,6 +175,7 @@ export function setMcpAtomic(store: ControlPlaneAtomicStore | null): void {
 }
 export function resetMcpControlPlaneDeps(): void {
   mcpRunDeps = null
+  mcpRunStore = null
   setSharedDispatchPlanStore(null)
   setSharedAccountSyncStore(null)
   mcpDecisionStore = null
@@ -205,6 +209,16 @@ function sharedIdempotency(): IdempotencyStorage {
   if (mcpIdempotency) return mcpIdempotency
   mcpIdempotency = createMemoryIdempotencyStorage()
   return mcpIdempotency
+}
+
+/**
+ * Process-wide run registry store so register_run then heartbeat_run on the
+ * default (non-injected) path see the same in-memory record.
+ */
+function sharedRunStore(): RunRegistryStore {
+  if (mcpRunStore) return mcpRunStore
+  mcpRunStore = createMemoryRunRegistryStore()
+  return mcpRunStore
 }
 
 /** Sole plan store: shared with board.ts getNextFn / resolveSharedDispatchNext. */
@@ -253,18 +267,25 @@ async function loadCapacityForBoard(boardId: string) {
   }
 }
 
-function defaultRunDeps(boardId?: string, boardRev = 0): RunRegistryDeps {
+/**
+ * Default MCP run-registry deps. Cached process-wide so successive tool calls
+ * (register_run → heartbeat_run) share the same store/deps. Injected deps via
+ * setMcpRunRegistryDeps always take precedence when set.
+ * Exported for unit tests of the non-injected path.
+ */
+export function defaultRunDeps(boardId?: string, boardRev = 0): RunRegistryDeps {
   if (mcpRunDeps) return mcpRunDeps
   const clock = systemClock()
   const atomic = sharedAtomic(boardId, boardRev)
-  return {
+  mcpRunDeps = {
     clock,
-    runs: createMemoryRunRegistryStore(),
+    runs: sharedRunStore(),
     locks: sharedLocks(),
     atomic,
     idempotency: sharedIdempotency(),
     getCapacity: (id) => loadCapacityForBoard(id),
   }
+  return mcpRunDeps
 }
 
 function accountSyncDeps(): AccountSyncDeps {

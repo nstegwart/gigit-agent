@@ -335,6 +335,76 @@ function toolJsonOk(result) {
   return isMcpToolProgrammaticOk(result)
 }
 
+/**
+ * True when MCP toolJson is a STALE_REVISION domain failure.
+ * Safe for both { code, message } and typedError { code, error } envelopes.
+ */
+export function isStaleRevisionToolJson(toolJson) {
+  if (!toolJson || typeof toolJson !== 'object') return false
+  if (toolJson.code === 'STALE_REVISION') return true
+  const blob = `${toolJson.error ?? ''} ${toolJson.message ?? ''}`
+  return /\bSTALE_REVISION\b/i.test(blob)
+}
+
+/**
+ * Extract safe currentBoardRev from STALE_REVISION toolJson (details or top-level).
+ * Returns a finite non-negative number or null when metadata is absent/unusable.
+ */
+export function extractStaleCurrentBoardRev(toolJson) {
+  if (!toolJson || typeof toolJson !== 'object') return null
+  const details = toolJson.details && typeof toolJson.details === 'object' ? toolJson.details : null
+  const candidates = [
+    details?.currentBoardRev,
+    toolJson.currentBoardRev,
+    details?.boardRev,
+  ]
+  for (const c of candidates) {
+    const n = Number(c)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  return null
+}
+
+/**
+ * After a successful mutation, prefer toolJson.boardRev as the next CAS pin.
+ * Falls back to previous expected when response omits/invalidates boardRev.
+ */
+export function nextExpectedBoardRevFromResponse(toolJson, fallback) {
+  const n = Number(toolJson?.boardRev)
+  if (Number.isFinite(n) && n >= 0) return n
+  const fb = Number(fallback)
+  return Number.isFinite(fb) && fb >= 0 ? fb : fallback
+}
+
+/**
+ * Rebind top-level + item expectedBoardRev and recompute planHash (board-bound fields).
+ * Mutates and returns the same dispatch object.
+ */
+export function rebindDispatchExpectedBoardRev(dispatch, newRev) {
+  const rev = Number(newRev)
+  if (!Number.isFinite(rev) || rev < 0) {
+    throw new StagingAgentSmokeError('rebindDispatchExpectedBoardRev requires finite board rev', {
+      code: 'INVALID_BOARD_REV',
+      newRev,
+    })
+  }
+  dispatch.expectedBoardRev = rev
+  if (Array.isArray(dispatch.items)) {
+    for (const it of dispatch.items) {
+      if (it && typeof it === 'object') it.expectedBoardRev = rev
+    }
+  }
+  dispatch.planHash = computePlanHash({
+    boardId: dispatch.boardId,
+    planId: dispatch.planId,
+    planVersion: dispatch.planVersion,
+    canonicalSnapshotId: dispatch.canonicalSnapshotId,
+    canonicalHash: dispatch.canonicalHash,
+    items: dispatch.items,
+  })
+  return dispatch
+}
+
 function isAuthDenied(result) {
   if (!result) return false
   if (result.httpStatus === 401 || result.httpStatus === 403) return true
@@ -856,41 +926,68 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
   const dispatch = opts.dispatch ?? buildDispatchPlanArgs({ pin, ids, now, boardId })
   // If runtime boardRev observed and allowLiveRev, bind expectedBoardRev to live
   if (opts.bindLiveBoardRev && Number.isFinite(Number(runtimePin?.boardRev))) {
-    dispatch.expectedBoardRev = Number(runtimePin.boardRev)
-    for (const it of dispatch.items) {
-      it.expectedBoardRev = Number(runtimePin.boardRev)
-    }
-    // recompute planHash if board-bound fields in items changed expectedBoardRev
-    dispatch.planHash = computePlanHash({
-      boardId: dispatch.boardId,
-      planId: dispatch.planId,
-      planVersion: dispatch.planVersion,
-      canonicalSnapshotId: dispatch.canonicalSnapshotId,
-      canonicalHash: dispatch.canonicalHash,
-      items: dispatch.items,
-    })
+    rebindDispatchExpectedBoardRev(dispatch, Number(runtimePin.boardRev))
   }
 
   // 4) publish_dispatch_plan — ROOT only
-  const publishRaw = await mcpToolsCall(baseUrl, 'publish_dispatch_plan', dispatch, {
+  // Bounded one-time STALE_REVISION recovery: rebind from safe currentBoardRev + recompute planHash, retry once only.
+  let publishRaw = await mcpToolsCall(baseUrl, 'publish_dispatch_plan', dispatch, {
     ...rootMcpOpts,
     id: 91001,
   })
   receipt.steps.publishDispatch = sanitizeMcpCallResult(publishRaw, secrets)
+  receipt.steps.publishStaleRecovery = {
+    attempted: false,
+    retried: false,
+    previousExpectedBoardRev: dispatch.expectedBoardRev ?? null,
+    currentBoardRev: null,
+    reason: null,
+  }
+  if (!toolJsonOk(publishRaw) && isStaleRevisionToolJson(publishRaw.toolJson)) {
+    const prevExpected = Number(dispatch.expectedBoardRev)
+    const liveRev = extractStaleCurrentBoardRev(publishRaw.toolJson)
+    receipt.steps.publishStaleRecovery.currentBoardRev = liveRev
+    if (liveRev != null && liveRev !== prevExpected) {
+      rebindDispatchExpectedBoardRev(dispatch, liveRev)
+      receipt.steps.publishStaleRecovery.attempted = true
+      receipt.steps.publishStaleRecovery.retried = true
+      receipt.steps.publishStaleRecovery.reason = 'rebind_currentBoardRev_once'
+      receipt.steps.publishStaleRecovery.reboundExpectedBoardRev = liveRev
+      publishRaw = await mcpToolsCall(baseUrl, 'publish_dispatch_plan', dispatch, {
+        ...rootMcpOpts,
+        id: 91011,
+      })
+      receipt.steps.publishDispatch = sanitizeMcpCallResult(publishRaw, secrets)
+      receipt.steps.publishStaleRecovery.retryOk = toolJsonOk(publishRaw)
+      // Never a second recovery attempt — even if retry is still STALE_REVISION.
+    } else {
+      receipt.steps.publishStaleRecovery.attempted = false
+      receipt.steps.publishStaleRecovery.reason =
+        liveRev == null ? 'missing_currentBoardRev' : 'current_equals_expected_no_retry'
+    }
+  }
   if (!toolJsonOk(publishRaw)) {
     const detail =
       publishRaw.toolJson?.message ||
+      publishRaw.toolJson?.error ||
       publishRaw.toolJson?.code ||
       publishRaw.parsed?.error?.message ||
       `http ${publishRaw.httpStatus}`
     return fail('publish_dispatch_plan', 'PUBLISH_FAIL', detail)
   }
 
-  const publishedBoardRev = Number(publishRaw.toolJson?.boardRev)
-  const postPublishRev =
-    Number.isFinite(publishedBoardRev) && publishedBoardRev >= 0
-      ? publishedBoardRev
-      : dispatch.expectedBoardRev
+  // Chain board rev: every successful mutation advances expectedBoardRev from response boardRev.
+  let expectedBoardRev = nextExpectedBoardRevFromResponse(
+    publishRaw.toolJson,
+    dispatch.expectedBoardRev,
+  )
+  const postPublishRev = expectedBoardRev
+  receipt.steps.boardRevChain = {
+    afterPublish: postPublishRev,
+    afterSync: null,
+    afterRegister: null,
+    afterHeartbeat: null,
+  }
 
   // 5) get_next — ROOT (board:read; least-privilege would allow agent, prefer root for dispatch path)
   const getNextRaw = await mcpToolsCall(
@@ -926,12 +1023,12 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     )
   }
 
-  // 6) sync_accounts — ROOT only
+  // 6) sync_accounts — ROOT only (CAS against post-publish rev; response may bump again)
   const syncArgs = buildAccountSyncArgs({
     pin,
     ids,
     now,
-    expectedBoardRev: postPublishRev,
+    expectedBoardRev,
     sourceRevision: pin.boardRev,
   })
   const syncRaw = await mcpToolsCall(baseUrl, 'sync_accounts', syncArgs, {
@@ -942,18 +1039,22 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
   if (!toolJsonOk(syncRaw)) {
     const detail =
       syncRaw.toolJson?.message ||
+      syncRaw.toolJson?.error ||
       syncRaw.toolJson?.code ||
       syncRaw.parsed?.error?.message ||
       `http ${syncRaw.httpStatus}`
     return fail('sync_accounts', 'SYNC_FAIL', detail)
   }
+  expectedBoardRev = nextExpectedBoardRevFromResponse(syncRaw.toolJson, expectedBoardRev)
+  receipt.steps.boardRevChain.afterSync = expectedBoardRev
 
   // 7) register_run — AGENT principal (ownRun matches ids.agentId / STAGING_AGENT_ID)
+  // Must use post-sync rev so sync's boardRev bump cannot make register stale.
   const regArgs = buildRegisterRunArgs({
     pin,
     ids,
     dispatch,
-    expectedBoardRev: postPublishRev,
+    expectedBoardRev,
   })
   const regRaw = await mcpToolsCall(baseUrl, 'register_run', regArgs, {
     ...agentOpsOpts,
@@ -974,18 +1075,22 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
       principal: dualPrincipal ? 'AGENT' : 'SINGLE',
       hasFence: Boolean(fencingToken),
       entityRev: regEntityRev,
-      boardRev: regRaw.toolJson?.boardRev ?? postPublishRev,
+      boardRev: regRaw.toolJson?.boardRev ?? expectedBoardRev,
+      expectedBoardRevSent: regArgs.expectedBoardRev,
     },
     secrets,
   )
   if (!toolJsonOk(regRaw)) {
     const detail =
       regRaw.toolJson?.message ||
+      regRaw.toolJson?.error ||
       regRaw.toolJson?.code ||
       regRaw.parsed?.error?.message ||
       `http ${regRaw.httpStatus}`
     return fail('register_run', 'REGISTER_FAIL', detail)
   }
+  expectedBoardRev = nextExpectedBoardRevFromResponse(regRaw.toolJson, expectedBoardRev)
+  receipt.steps.boardRevChain.afterRegister = expectedBoardRev
 
   // 8) heartbeat_run — AGENT principal
   if (!fencingToken && opts.requireFencing !== false) {
@@ -999,7 +1104,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     fencingToken: fencingToken || 'fence-contract-placeholder',
     heartbeatSequence: 1,
     expectedEntityRev: Number(regEntityRev) || 1,
-    expectedBoardRev: postPublishRev,
+    expectedBoardRev,
     materialProgressAt: now,
   }
   const hbRaw = await mcpToolsCall(baseUrl, 'heartbeat_run', hbArgs, {
@@ -1011,11 +1116,14 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     receipt.cleanup.reconcile = 'HEARTBEAT_DENIED_AFTER_REGISTER'
     const detail =
       hbRaw.toolJson?.message ||
+      hbRaw.toolJson?.error ||
       hbRaw.toolJson?.code ||
       hbRaw.parsed?.error?.message ||
       `http ${hbRaw.httpStatus}`
     return fail('heartbeat_run', 'HEARTBEAT_FAIL', detail)
   }
+  expectedBoardRev = nextExpectedBoardRevFromResponse(hbRaw.toolJson, expectedBoardRev)
+  receipt.steps.boardRevChain.afterHeartbeat = expectedBoardRev
 
   // 9) readback — least-privilege: agent for task/board reads; ROOT for list_audit (audit:read)
   const readback = {}
@@ -1110,7 +1218,15 @@ export function createStagingSmokeMockFetch(opts = {}) {
   const dualRootBearer = opts.rootBearer ?? null
   const dualAgentBearer = opts.agentBearer ?? null
   const dualMock = Boolean(dualRootBearer && dualAgentBearer)
-  let boardRev = pin.boardRev
+  // MCP memory CAS authority (may diverge from healthz/fixture pin — matches real staging split).
+  let boardRev = Number.isFinite(Number(opts.initialMemoryBoardRev))
+    ? Number(opts.initialMemoryBoardRev)
+    : pin.boardRev
+  // Optional: force STALE_REVISION for the first N publish attempts (regardless of expected match).
+  // Used by self-tests for "stale twice → fail" without thrashing.
+  let forcePublishStaleRemaining = Number.isFinite(Number(opts.forcePublishStaleCount))
+    ? Math.max(0, Number(opts.forcePublishStaleCount))
+    : 0
   // Derive NEXT task id from canonical dispatch-plan fixture (not a stale hardcode).
   const nextTaskId =
     opts.nextTaskId ??
@@ -1128,6 +1244,18 @@ export function createStagingSmokeMockFetch(opts = {}) {
       jsonrpc: '2.0',
       id,
       result: { content: [{ type: 'text', text: JSON.stringify(obj) }] },
+    })
+
+  const staleRevision = (id, expectedBoardRev) =>
+    toolText(id, {
+      ok: false,
+      code: 'STALE_REVISION',
+      error: 'board rev mismatch',
+      message: 'board rev mismatch',
+      details: {
+        expectedBoardRev: Number(expectedBoardRev),
+        currentBoardRev: boardRev,
+      },
     })
 
   const extractBearer = (authHeader) => {
@@ -1182,11 +1310,15 @@ export function createStagingSmokeMockFetch(opts = {}) {
     }
 
     const body = init.body ? JSON.parse(init.body) : {}
+    const callArgs = body.params?.arguments ?? null
     calls.push({
       method: body.method,
       name: body.params?.name ?? null,
       hasAuth,
       mockRole,
+      args: callArgs,
+      expectedBoardRev:
+        callArgs && callArgs.expectedBoardRev != null ? Number(callArgs.expectedBoardRev) : null,
     })
 
     if (body.method === 'initialize') {
@@ -1282,12 +1414,16 @@ export function createStagingSmokeMockFetch(opts = {}) {
       }
 
       if (name === 'publish_dispatch_plan') {
-        if (Number(args.expectedBoardRev) !== Number(pin.boardRev)) {
-          return toolText(body.id, {
-            ok: false,
-            code: 'STALE_REVISION',
-            message: 'board rev mismatch',
-          })
+        if (forcePublishStaleRemaining > 0) {
+          forcePublishStaleRemaining -= 1
+          // Advance memory so a rebind to prior current still fails on the second force.
+          if (opts.advanceMemoryOnForcedPublishStale) {
+            boardRev = boardRev + 1
+          }
+          return staleRevision(body.id, args.expectedBoardRev)
+        }
+        if (Number(args.expectedBoardRev) !== Number(boardRev)) {
+          return staleRevision(body.id, args.expectedBoardRev)
         }
         if (args.planHash && args.canonicalHash !== pin.canonicalHash) {
           return toolText(body.id, {
@@ -1296,7 +1432,7 @@ export function createStagingSmokeMockFetch(opts = {}) {
             message: 'canonicalHash mismatch',
           })
         }
-        boardRev = pin.boardRev + 1
+        boardRev = boardRev + 1
         return toolText(body.id, {
           ok: true,
           planId: args.planId,
@@ -1319,12 +1455,10 @@ export function createStagingSmokeMockFetch(opts = {}) {
       }
       if (name === 'sync_accounts') {
         if (Number(args.expectedBoardRev) !== boardRev) {
-          return toolText(body.id, {
-            ok: false,
-            code: 'STALE_REVISION',
-            message: 'board rev mismatch',
-          })
+          return staleRevision(body.id, args.expectedBoardRev)
         }
+        // Real account-sync bumps boardRev (see src/server/account-sync.ts).
+        boardRev = boardRev + 1
         return toolText(body.id, {
           ok: true,
           sourceRevision: args.sourceRevision,
@@ -1333,9 +1467,16 @@ export function createStagingSmokeMockFetch(opts = {}) {
           usableCapacity: 3,
           dispatchMode: 'NORMAL',
           stale: false,
+          boardRev,
         })
       }
       if (name === 'register_run') {
+        if (
+          args.expectedBoardRev != null &&
+          Number(args.expectedBoardRev) !== Number(boardRev)
+        ) {
+          return staleRevision(body.id, args.expectedBoardRev)
+        }
         return toolText(body.id, {
           ok: true,
           runId: args.runId,
@@ -1354,11 +1495,18 @@ export function createStagingSmokeMockFetch(opts = {}) {
             message: 'fencing token mismatch',
           })
         }
+        if (
+          args.expectedBoardRev != null &&
+          Number(args.expectedBoardRev) !== Number(boardRev)
+        ) {
+          return staleRevision(body.id, args.expectedBoardRev)
+        }
         return toolText(body.id, {
           ok: true,
           runId: args.runId,
           heartbeatSequence: args.heartbeatSequence,
           entityRev: 2,
+          boardRev,
         })
       }
       if (name === 'list_tasks') {
@@ -1769,6 +1917,244 @@ export async function runStagingAgentSmokeSelfTests() {
     }
     agent.bearer = ''
     dualSecrets.length = 0
+  }
+
+  // --- Revision chaining / STALE_REVISION recovery (mock MCP only) ---
+  {
+    // Helper pure functions
+    ok(
+      'rev-extract-currentBoardRev-from-details',
+      extractStaleCurrentBoardRev({
+        code: 'STALE_REVISION',
+        details: { expectedBoardRev: 7, currentBoardRev: 12 },
+      }) === 12,
+    )
+    ok(
+      'rev-extract-missing-returns-null',
+      extractStaleCurrentBoardRev({ code: 'STALE_REVISION', message: 'board rev mismatch' }) ===
+        null,
+    )
+    ok(
+      'rev-is-stale-code',
+      isStaleRevisionToolJson({ code: 'STALE_REVISION', error: 'board rev mismatch' }) === true &&
+        isStaleRevisionToolJson({ code: 'HASH_MISMATCH' }) === false,
+    )
+    ok(
+      'rev-next-from-response-prefers-boardRev',
+      nextExpectedBoardRevFromResponse({ boardRev: 9 }, 8) === 9 &&
+        nextExpectedBoardRevFromResponse({}, 8) === 8,
+    )
+    const rebindPlan = buildDispatchPlanArgs({
+      pin,
+      ids: buildSyntheticSmokeIds({ smokeRunId: 'rebind01', boardId: 'mfs-rebuild' }),
+      now: '2026-07-13T00:00:00.000Z',
+    })
+    const beforeHash = rebindPlan.planHash
+    const beforeRev = rebindPlan.expectedBoardRev
+    rebindDispatchExpectedBoardRev(rebindPlan, beforeRev + 3)
+    ok(
+      'rev-rebind-top-and-items-and-planHash',
+      rebindPlan.expectedBoardRev === beforeRev + 3 &&
+        rebindPlan.items.every((it) => it.expectedBoardRev === beforeRev + 3) &&
+        rebindPlan.planHash !== beforeHash &&
+        typeof rebindPlan.planHash === 'string' &&
+        rebindPlan.planHash.length === 64,
+    )
+  }
+
+  // publish stale → refresh from currentBoardRev → success (exactly 2 publish calls)
+  {
+    const liveMemory = pin.boardRev + 5
+    const idsStaleOk = buildSyntheticSmokeIds({
+      smokeRunId: 'staleok01',
+      boardId: 'mfs-rebuild',
+    })
+    const {
+      fetchImpl: fStaleOk,
+      calls: cStaleOk,
+      getBoardRev: getRevStaleOk,
+    } = createStagingSmokeMockFetch({
+      pin,
+      ids: idsStaleOk,
+      expectedSha,
+      initialMemoryBoardRev: liveMemory,
+    })
+    let staleOkReceipt = null
+    let staleOkErr = null
+    try {
+      staleOkReceipt = await runStagingAgentLifecycleSmoke({
+        baseUrl: 'http://127.0.0.1:9',
+        mode: 'self-test',
+        boardId: 'mfs-rebuild',
+        pin,
+        ids: idsStaleOk,
+        bearer: root.bearer,
+        tokenRef: 'SYNTH_ROOT_SELF_TEST',
+        expectedSha,
+        expectedSchema: '003',
+        fetchImpl: fStaleOk,
+        runtimePin: {
+          ok: true,
+          httpStatus: 200,
+          canonicalSnapshotId: pin.canonicalSnapshotId,
+          canonicalHash: pin.canonicalHash,
+          boardRev: pin.boardRev,
+          lifecycleRev: pin.lifecycleRev,
+          taskHash: pin.taskHash,
+        },
+        skipPinCheck: false,
+        bindLiveBoardRev: false,
+        now: '2026-07-13T00:00:00.000Z',
+        failClosed: true,
+        initialize: false,
+      })
+    } catch (e) {
+      staleOkErr = e
+    }
+    const publishCalls = cStaleOk.filter((c) => c.name === 'publish_dispatch_plan' && c.hasAuth)
+    const registerCall = cStaleOk.find((c) => c.name === 'register_run' && c.hasAuth)
+    ok(
+      'publish-stale-refresh-success',
+      staleOkErr == null &&
+        staleOkReceipt?.ok === true &&
+        publishCalls.length === 2 &&
+        Number(publishCalls[0].expectedBoardRev) === Number(pin.boardRev) &&
+        Number(publishCalls[1].expectedBoardRev) === liveMemory &&
+        staleOkReceipt?.steps?.publishStaleRecovery?.retried === true &&
+        staleOkReceipt?.steps?.publishStaleRecovery?.retryOk === true,
+      staleOkErr ? String(staleOkErr?.message || staleOkErr) : `pubs=${publishCalls.length}`,
+    )
+    // After publish(liveMemory→liveMemory+1) + sync bump → register must use newest
+    const afterSyncExpected = liveMemory + 2
+    ok(
+      'sync-bump-register-uses-newest-rev',
+      staleOkErr == null &&
+        registerCall != null &&
+        Number(registerCall.expectedBoardRev) === afterSyncExpected &&
+        Number(staleOkReceipt?.steps?.boardRevChain?.afterSync) === afterSyncExpected &&
+        Number(staleOkReceipt?.steps?.registerRunMeta?.expectedBoardRevSent) ===
+          afterSyncExpected &&
+        getRevStaleOk() === afterSyncExpected,
+      `regExp=${registerCall?.expectedBoardRev} afterSync=${staleOkReceipt?.steps?.boardRevChain?.afterSync}`,
+    )
+  }
+
+  // publish STALE twice → fail after one recovery; no third publish
+  {
+    const idsStale2 = buildSyntheticSmokeIds({
+      smokeRunId: 'stale2x01',
+      boardId: 'mfs-rebuild',
+    })
+    const { fetchImpl: fStale2, calls: cStale2 } = createStagingSmokeMockFetch({
+      pin,
+      ids: idsStale2,
+      expectedSha,
+      initialMemoryBoardRev: pin.boardRev,
+      forcePublishStaleCount: 2,
+      advanceMemoryOnForcedPublishStale: true,
+    })
+    let stale2Threw = false
+    let stale2Code = null
+    try {
+      await runStagingAgentLifecycleSmoke({
+        baseUrl: 'http://127.0.0.1:9',
+        mode: 'self-test',
+        boardId: 'mfs-rebuild',
+        pin,
+        ids: idsStale2,
+        bearer: root.bearer,
+        expectedSha,
+        fetchImpl: fStale2,
+        runtimePin: {
+          ok: true,
+          httpStatus: 200,
+          canonicalSnapshotId: pin.canonicalSnapshotId,
+          canonicalHash: pin.canonicalHash,
+          boardRev: pin.boardRev,
+          lifecycleRev: pin.lifecycleRev,
+          taskHash: pin.taskHash,
+        },
+        skipPinCheck: false,
+        bindLiveBoardRev: false,
+        now: '2026-07-13T00:00:00.000Z',
+        failClosed: true,
+        initialize: false,
+      })
+    } catch (e) {
+      stale2Threw = e instanceof StagingAgentSmokeError
+      stale2Code = e?.code ?? null
+    }
+    const publishCalls2 = cStale2.filter((c) => c.name === 'publish_dispatch_plan' && c.hasAuth)
+    ok(
+      'publish-stale-twice-fail-no-third',
+      stale2Threw &&
+        stale2Code === 'PUBLISH_FAIL' &&
+        publishCalls2.length === 2,
+      `threw=${stale2Threw} code=${stale2Code} pubs=${publishCalls2.length}`,
+    )
+  }
+
+  // Happy path also proves register/heartbeat use post-sync rev (sync bumps +1)
+  {
+    const idsChain = buildSyntheticSmokeIds({
+      smokeRunId: 'revchain01',
+      boardId: 'mfs-rebuild',
+    })
+    const { fetchImpl: fChain, calls: cChain } = createStagingSmokeMockFetch({
+      pin,
+      ids: idsChain,
+      expectedSha,
+    })
+    let chainReceipt = null
+    try {
+      chainReceipt = await runStagingAgentLifecycleSmoke({
+        baseUrl: 'http://127.0.0.1:9',
+        mode: 'self-test',
+        boardId: 'mfs-rebuild',
+        pin,
+        ids: idsChain,
+        bearer: root.bearer,
+        expectedSha,
+        expectedSchema: '003',
+        fetchImpl: fChain,
+        runtimePin: {
+          ok: true,
+          httpStatus: 200,
+          canonicalSnapshotId: pin.canonicalSnapshotId,
+          canonicalHash: pin.canonicalHash,
+          boardRev: pin.boardRev,
+          lifecycleRev: pin.lifecycleRev,
+          taskHash: pin.taskHash,
+        },
+        skipPinCheck: false,
+        now: '2026-07-13T00:00:00.000Z',
+        failClosed: true,
+        initialize: false,
+      })
+    } catch (e) {
+      ok('happy-rev-chain-ok', false, String(e?.message || e))
+      chainReceipt = null
+    }
+    if (chainReceipt) {
+      const pub = cChain.find((c) => c.name === 'publish_dispatch_plan' && c.hasAuth)
+      const sync = cChain.find((c) => c.name === 'sync_accounts' && c.hasAuth)
+      const reg = cChain.find((c) => c.name === 'register_run' && c.hasAuth)
+      const hb = cChain.find((c) => c.name === 'heartbeat_run' && c.hasAuth)
+      const postPublish = Number(pin.boardRev) + 1
+      const postSync = postPublish + 1
+      ok(
+        'happy-rev-chain-sync-register-heartbeat',
+        chainReceipt.ok === true &&
+          Number(pub?.expectedBoardRev) === Number(pin.boardRev) &&
+          Number(sync?.expectedBoardRev) === postPublish &&
+          Number(reg?.expectedBoardRev) === postSync &&
+          Number(hb?.expectedBoardRev) === postSync &&
+          Number(chainReceipt.steps?.boardRevChain?.afterPublish) === postPublish &&
+          Number(chainReceipt.steps?.boardRevChain?.afterSync) === postSync &&
+          chainReceipt.steps?.publishStaleRecovery?.retried !== true,
+        `pub=${pub?.expectedBoardRev} sync=${sync?.expectedBoardRev} reg=${reg?.expectedBoardRev} hb=${hb?.expectedBoardRev}`,
+      )
+    }
   }
 
   // Redaction of secrets in sanitize path

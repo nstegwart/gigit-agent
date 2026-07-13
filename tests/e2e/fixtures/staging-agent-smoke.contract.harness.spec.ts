@@ -186,12 +186,57 @@ test.describe('staging-agent-smoke contract (no server)', () => {
     expect(s.ROOT_REQUIRED_MCP_TOOLS).not.toContain('heartbeat_run')
   })
 
+  test('revision chain helpers: stale currentBoardRev + rebind planHash', async () => {
+    const s = await loadSmokeLib()
+    const c = await loadContract()
+    expect(
+      s.extractStaleCurrentBoardRev({
+        code: 'STALE_REVISION',
+        details: { expectedBoardRev: 7, currentBoardRev: 19 },
+      }),
+    ).toBe(19)
+    expect(s.extractStaleCurrentBoardRev({ code: 'STALE_REVISION' })).toBeNull()
+    expect(s.isStaleRevisionToolJson({ code: 'STALE_REVISION' })).toBe(true)
+    expect(s.nextExpectedBoardRevFromResponse({ boardRev: 11 }, 10)).toBe(11)
+    expect(s.nextExpectedBoardRevFromResponse({}, 10)).toBe(10)
+
+    const pin = c.loadStagingPin()
+    const ids = c.buildSyntheticSmokeIds({ smokeRunId: 'harness-rev', boardId: 'mfs-rebuild' })
+    const plan = c.buildDispatchPlanArgs({
+      pin,
+      ids,
+      now: '2026-07-13T00:00:00.000Z',
+    })
+    const prevHash = plan.planHash
+    s.rebindDispatchExpectedBoardRev(plan, Number(pin.boardRev) + 4)
+    expect(plan.expectedBoardRev).toBe(Number(pin.boardRev) + 4)
+    expect(plan.items.every((it: { expectedBoardRev: number }) => it.expectedBoardRev === Number(pin.boardRev) + 4)).toBe(
+      true,
+    )
+    expect(plan.planHash).not.toBe(prevHash)
+    expect(plan.planHash).toMatch(/^[0-9a-f]{64}$/i)
+  })
+
   test('full self-test suite passes (mock MCP lifecycle)', async () => {
     const s = await loadSmokeLib()
     const result = await s.runStagingAgentSmokeSelfTests()
     const failed = result.results.filter((r: { pass: boolean; name: string }) => !r.pass)
     expect(result.ok, failed.map((f: { name: string }) => f.name).join(', ')).toBe(true)
     expect(result.failCount).toBe(0)
+    // Named revision-chain self-tests must be present and green
+    const names = new Set(result.results.map((r: { name: string }) => r.name))
+    for (const n of [
+      'publish-stale-refresh-success',
+      'publish-stale-twice-fail-no-third',
+      'sync-bump-register-uses-newest-rev',
+      'happy-rev-chain-sync-register-heartbeat',
+    ]) {
+      expect(names.has(n), `missing self-test ${n}`).toBe(true)
+      const row = result.results.find((r: { name: string }) => r.name === n) as
+        | { pass: boolean; name: string }
+        | undefined
+      expect(row?.pass, n).toBe(true)
+    }
   })
 
   test('fixture contract self-tests pass', async () => {
