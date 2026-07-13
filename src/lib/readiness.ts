@@ -1,7 +1,21 @@
 // Shared readiness math — one formula for server (get_rollup / list_tasks) and UI
 // (LifecycleRail / TasksTable). Readiness% of a stage = its configured `readiness`,
 // else evenly spread across the rail (last = 100).
+//
+// V3 canonical policy (MFS_DELIVERY_READINESS_V1 / board G5 cap) lives in
+// readiness-policy.ts and is used by rollup-v3. Existing board consumers keep
+// the config-driven helpers below for compatibility.
 import type { LifecycleConfig, LifecycleStage, TaskCheckpoint } from './types'
+export {
+  MFS_DELIVERY_READINESS_V1_WEIGHTS,
+  MFS_DELIVERY_READINESS_V1_WEIGHT_LIST,
+  TASK_READINESS_POLICY_VERSION,
+  BOARD_READINESS_POLICY_VERSION,
+  taskStageWeight,
+  meanReadinessOneDecimal,
+  applyBoardReadinessCap,
+  isBoardComplete,
+} from './readiness-policy'
 
 export function resolvedReadiness(cfg: LifecycleConfig): Record<string, number> {
   const n = cfg.stages.length

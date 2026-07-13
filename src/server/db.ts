@@ -1,5 +1,6 @@
 // MySQL connection pool for Cairn. Server-only. Credentials from env (CAIRN_DB_*),
 // with a tiny .env fallback so local `pnpm dev` works without exporting vars.
+// V3: host authority helpers for migration fail-closed guards (no runtime CREATE/ALTER here).
 import fs from 'node:fs'
 import path from 'node:path'
 import mysql from 'mysql2/promise'
@@ -19,17 +20,66 @@ export const envVar = (key: string): string | undefined => env(key)
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', ''])
 
+/** Host environment class for fail-closed migration / connection policy. */
+export type DbHostClass = 'LOCAL' | 'STAGING' | 'PRODUCTION' | 'UNKNOWN_REMOTE'
+
+/**
+ * Classify a DB host. Production and unknown remotes are fail-closed for
+ * migrations and for laptop connections without CAIRN_ALLOW_REMOTE_DB=1.
+ * Staging hosts must be explicitly listed (env CAIRN_STAGING_DB_HOSTS csv) or
+ * match the known staging loopback tunnel pattern used by RESOLVED_TARGET.
+ */
+export function classifyDbHost(host: string, opts?: { stagingHosts?: ReadonlyArray<string> }): DbHostClass {
+  const h = (host ?? '').trim().toLowerCase()
+  if (LOCAL_HOSTS.has(h)) return 'LOCAL'
+
+  const staging = new Set(
+    (opts?.stagingHosts ?? env('CAIRN_STAGING_DB_HOSTS', '')!.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)).concat([
+      // Known staging tunnel targets (ENVIRONMENT_AUTHORITY_TABLE) — host names only.
+      'cairn_tm_v3_staging',
+      'tm-v3-staging',
+    ]),
+  )
+  if (staging.has(h)) return 'STAGING'
+
+  // Explicit production markers
+  if (
+    h.includes('prod') ||
+    h.includes('production') ||
+    h === 'task-manager.mfsdev.net' ||
+    h.endsWith('.mfsdev.net')
+  ) {
+    return 'PRODUCTION'
+  }
+
+  // Any other non-local host is unknown remote — fail closed unless operator labels it.
+  return 'UNKNOWN_REMOTE'
+}
+
+/**
+ * Whether migration apply is authorized for this host class.
+ * LOCAL + STAGING only. PRODUCTION / UNKNOWN_REMOTE always false.
+ */
+export function migrationApplyAllowed(hostClass: DbHostClass): boolean {
+  return hostClass === 'LOCAL' || hostClass === 'STAGING'
+}
+
 /**
  * A remote DB host is only ever correct on a deployed box. On a laptop it means
  * `pnpm dev` reads and WRITES the live board, so require an explicit opt-in
  * (CAIRN_ALLOW_REMOTE_DB=1, set in the deploy box's .env) rather than trusting .env.
  */
-function assertHostAllowed(host: string): void {
+export function assertHostAllowed(host: string): void {
   if (LOCAL_HOSTS.has(host) || env('CAIRN_ALLOW_REMOTE_DB') === '1') return
   throw new Error(
     `Refusing to connect: CAIRN_DB_HOST=${host} is remote. Point .env at a local MySQL, ` +
       `or set CAIRN_ALLOW_REMOTE_DB=1 if this really is the deployed server.`,
   )
+}
+
+/** Current configured DB host (env + .env fallback); does not open a connection. */
+export function configuredDbHost(): string {
+  return env('CAIRN_DB_HOST', '127.0.0.1')!
 }
 
 let pool: mysql.Pool | null = null
@@ -101,4 +151,9 @@ export async function readGlobal<T>(key: string, fallback: T): Promise<T> {
   const [rows] = await db().query('SELECT data FROM globals WHERE k=?', [key])
   const r = (rows as Array<{ data: unknown }>)[0]
   return r ? (r.data as T) : fallback
+}
+
+/** Test-only: reset the singleton pool so host changes can be re-evaluated. */
+export function __resetDbPoolForTests(): void {
+  pool = null
 }

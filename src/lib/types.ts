@@ -1,5 +1,48 @@
 // Domain types for the Cairn board. Raw* = shape as stored in data/plan.json + runs.json.
 // Derived (Feature/Project/Model) = computed by buildModel() in model.ts.
+// V3 control-plane enums/records live in control-plane-types.ts and are re-exported below
+// so existing ibils/board consumers keep typechecking while C1 domain modules share one surface.
+
+export type {
+  TaskClass,
+  TaskDisposition,
+  PinnedRevisionTuple,
+  ClassificationReceipt,
+  TaskClassificationRecord,
+  ClassificationEvaluation,
+  ClassificationInvalidReason,
+  LifecycleStageKey,
+  StageEvidenceBinding,
+  G5DomainStatus,
+  G5DomainId,
+  G5DomainRecord,
+  G5Evaluation,
+  PrimaryBucket,
+  StaleOverlayKind,
+  BlockReasonCode,
+  BucketAssignment,
+  TaskReadinessPolicyVersion,
+  BoardReadinessPolicyVersion,
+  BoardCappedBy,
+  DomainErrorCode,
+  RollupV3BucketCounts,
+  RollupV3Result,
+  PriorityFrontierState,
+  PriorityAllocationResult,
+  FeatureContractJoin,
+  NodeJoin,
+  DependencyJoin,
+  PrimaryOwnership,
+} from './control-plane-types'
+
+export {
+  TASK_CLASSES,
+  TASK_DISPOSITIONS,
+  LIFECYCLE_STAGE_ORDER,
+  G5_REQUIRED_DOMAINS,
+  G5_DOMAIN_LABELS,
+  DomainError,
+} from './control-plane-types'
 
 // JSON-serializable value — server functions must return serializable data.
 export type Json =

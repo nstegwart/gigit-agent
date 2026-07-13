@@ -3,8 +3,20 @@
 // `summary` JSON for list views, and the heavy 20-point mapping in `data` JSON — read
 // only on the detail page. This keeps list/detail reads tiny instead of pulling the
 // whole ~17MB collection every time. Server-only.
+// V3 classification/revision/hash metadata is migration-backed (001 expand) and
+// exposed via pure helpers + in-memory store for unit tests — no ad-hoc DDL here.
+import { createHash } from 'node:crypto'
 import { db, readDoc } from './db'
 import type { Json, WorkTask } from '#/lib/types'
+import type {
+  ClassificationReceipt,
+  PinnedRevisionTuple,
+  TaskClass,
+  TaskDisposition,
+} from '#/lib/control-plane-types'
+import { TASK_CLASSES, TASK_DISPOSITIONS } from '#/lib/control-plane-types'
+import { evaluateClassification } from '#/server/classification'
+import { subjectHashOf } from '#/server/revisions'
 
 let schemaReady: Promise<void> | null = null
 /** Run an idempotent ALTER (MySQL lacks ADD COLUMN/KEY IF NOT EXISTS). */
@@ -270,4 +282,458 @@ export async function readAudit(boardId: string, opts: { taskId?: string; limit?
   const sql = `SELECT ts, actor, action, task_id, from_stage, to_stage, detail FROM audit_log WHERE board_id=?${opts.taskId ? ' AND task_id=?' : ''} ORDER BY id DESC LIMIT ${limit}`
   const [rows] = await db().query(sql, opts.taskId ? [boardId, opts.taskId] : [boardId])
   return rows as Array<Record<string, unknown>>
+}
+
+// =============================================================================
+// V3 task metadata (migration-backed columns; pure + injectable store)
+// Never guess PRODUCT from legacy fase/progress/pct. Late/fenced/stale actors rejected.
+// =============================================================================
+
+export type TaskV3ErrorCode =
+  | 'STALE_REVISION'
+  | 'STALE_HASH'
+  | 'FENCED'
+  | 'LEASE_EXPIRED'
+  | 'RUN_NOT_REGISTERED'
+  | 'INVALID_CLASSIFICATION'
+  | 'TASK_NOT_FOUND'
+  | 'AUTHORIZATION_REQUIRED'
+
+export class TaskV3Error extends Error {
+  readonly code: TaskV3ErrorCode
+  readonly details: Readonly<Record<string, unknown>>
+  constructor(code: TaskV3ErrorCode, message: string, details: Record<string, unknown> = {}) {
+    super(message)
+    this.name = 'TaskV3Error'
+    this.code = code
+    this.details = details
+  }
+}
+
+/** V3 columns from migrations/001 (not applied here — pure model). */
+export interface TaskV3Record {
+  boardId: string
+  taskId: string
+  title: string
+  projectId: string | null
+  featureContractId: string | null
+  /** Legacy fields — non-authoritative for classification/readiness. */
+  phase: string | null
+  scope: string | null
+  mappingPct: number | null
+  status: string | null
+  /** Migration-backed classification — default UNCLASSIFIED. */
+  taskClass: TaskClass
+  disposition: TaskDisposition
+  classificationReceiptId: string | null
+  classificationReceiptHash: string | null
+  classificationReceipt: ClassificationReceipt | null
+  boardRev: number
+  lifecycleRev: number
+  entityRev: number
+  subjectHash: string
+  taskHash: string
+  canonicalSnapshotId: string | null
+  canonicalHash: string | null
+  evidenceMeta: Record<string, unknown> | null
+  lifecycleStage: string | null
+  createdAt: string
+  updatedAt: string
+  /** Actor fence / lease gates for mutations. */
+  fenced: boolean
+}
+
+export interface TaskV3Actor {
+  runId: string
+  registered: boolean
+  fenced: boolean
+  expiresAt: string
+}
+
+export interface TaskV3UpsertInput {
+  boardId: string
+  task: {
+    id: string
+    title?: string | null
+    projectId?: string | null
+    featureContractId?: string | null
+    phase?: string | null
+    scope?: string | null
+    mappingPct?: number | null
+    status?: string | null
+    objective?: string | null
+    next?: string | null
+    checkpoints?: WorkTask['checkpoints']
+    dependencies?: WorkTask['dependencies']
+    impacts?: WorkTask['impacts']
+  }
+  entityExpectedRev?: number
+  expectedBoardRev: number
+  expectedLifecycleRev: number
+  expectedSubjectHash?: string
+  /** Optional classification — never inferred from phase/scope/mappingPct. */
+  classification?: {
+    taskClass: TaskClass
+    disposition: TaskDisposition
+    receipt: ClassificationReceipt | null
+  }
+  canonicalSnapshotId?: string | null
+  canonicalHash?: string | null
+  actor: TaskV3Actor
+  now?: string
+}
+
+export interface TaskV3UpsertResult {
+  created: boolean
+  record: TaskV3Record
+  pin: PinnedRevisionTuple
+}
+
+export interface TaskV3BoardState {
+  boardId: string
+  boardRev: number
+  lifecycleRev: number
+  canonicalSnapshotId: string | null
+  canonicalHash: string | null
+}
+
+/** Content hash for task definition (excludes lifecycle evidence). */
+export function computeTaskHash(task: {
+  id: string
+  title?: string | null
+  projectId?: string | null
+  featureContractId?: string | null
+  objective?: string | null
+  checkpoints?: unknown
+  dependencies?: unknown
+}): string {
+  return subjectHashOf({
+    id: task.id,
+    title: task.title ?? '',
+    projectId: task.projectId ?? null,
+    featureContractId: task.featureContractId ?? null,
+    objective: task.objective ?? null,
+    checkpoints: task.checkpoints ?? [],
+    dependencies: task.dependencies ?? [],
+  })
+}
+
+/**
+ * Map legacy WorkTask → V3 record defaults.
+ * NEVER promotes PRODUCT from fase/progress/pct/scope.
+ */
+export function legacyTaskToV3Defaults(
+  boardId: string,
+  task: WorkTask,
+  board: TaskV3BoardState,
+): TaskV3Record {
+  const taskHash = computeTaskHash(task)
+  const now = new Date(0).toISOString()
+  return {
+    boardId,
+    taskId: task.id,
+    title: task.title ?? '',
+    projectId: task.projectId ?? null,
+    featureContractId: task.featureContractId ?? null,
+    phase: task.phase ?? null,
+    scope: task.scope ?? null,
+    mappingPct: task.mappingPct ?? null,
+    status: task.status ?? null,
+    taskClass: 'UNCLASSIFIED',
+    disposition: 'UNCLASSIFIED',
+    classificationReceiptId: null,
+    classificationReceiptHash: null,
+    classificationReceipt: null,
+    boardRev: board.boardRev,
+    lifecycleRev: board.lifecycleRev,
+    entityRev: 0,
+    subjectHash: taskHash,
+    taskHash,
+    canonicalSnapshotId: board.canonicalSnapshotId,
+    canonicalHash: board.canonicalHash,
+    evidenceMeta: null,
+    lifecycleStage: task.lifecycleStage ?? null,
+    createdAt: now,
+    updatedAt: now,
+    fenced: false,
+  }
+}
+
+function assertActorMayMutate(actor: TaskV3Actor, now: string): void {
+  if (!actor.runId) {
+    throw new TaskV3Error('AUTHORIZATION_REQUIRED', 'actor runId required')
+  }
+  if (!actor.registered) {
+    throw new TaskV3Error('RUN_NOT_REGISTERED', `run not registered: ${actor.runId}`, {
+      runId: actor.runId,
+    })
+  }
+  if (actor.fenced) {
+    throw new TaskV3Error('FENCED', `run is fenced: ${actor.runId}`, { runId: actor.runId })
+  }
+  if (actor.expiresAt <= now) {
+    throw new TaskV3Error('LEASE_EXPIRED', `run lease expired: ${actor.runId}`, {
+      runId: actor.runId,
+      expiresAt: actor.expiresAt,
+    })
+  }
+}
+
+function assertValidClassification(
+  c: NonNullable<TaskV3UpsertInput['classification']>,
+  pin: PinnedRevisionTuple,
+  taskId: string,
+  now: string,
+): void {
+  if (!(TASK_CLASSES as ReadonlyArray<string>).includes(c.taskClass)) {
+    throw new TaskV3Error('INVALID_CLASSIFICATION', `invalid taskClass ${String(c.taskClass)}`)
+  }
+  if (!(TASK_DISPOSITIONS as ReadonlyArray<string>).includes(c.disposition)) {
+    throw new TaskV3Error('INVALID_CLASSIFICATION', `invalid disposition ${String(c.disposition)}`)
+  }
+  // evaluate against pin when receipt present; still allow UNCLASSIFIED without receipt
+  if (c.taskClass !== 'UNCLASSIFIED' || c.disposition !== 'UNCLASSIFIED') {
+    const evaled = evaluateClassification(
+      {
+        taskId,
+        taskClass: c.taskClass,
+        disposition: c.disposition,
+        receipt: c.receipt,
+      },
+      pin,
+      { now },
+    )
+    if (!evaled.valid && c.taskClass !== 'UNCLASSIFIED') {
+      // Allow storing UNCLASSIFIED repair rows; reject claiming PRODUCT/CONTROL_PLANE without valid receipt.
+      if (c.taskClass === 'PRODUCT' || c.taskClass === 'CONTROL_PLANE') {
+        throw new TaskV3Error(
+          'INVALID_CLASSIFICATION',
+          `classification invalid: ${evaled.reasons.join(',')}`,
+          { reasons: evaled.reasons },
+        )
+      }
+    }
+  }
+}
+
+export interface TaskV3Store {
+  getBoard(boardId: string): Promise<TaskV3BoardState | null>
+  getTask(boardId: string, taskId: string): Promise<TaskV3Record | null>
+  listTasks(boardId: string): Promise<Array<TaskV3Record>>
+  saveTask(record: TaskV3Record, nextBoardRev: number): Promise<TaskV3Record>
+}
+
+/**
+ * Upsert task with V3 optimistic concurrency + classification.
+ * Does not apply migrations / DDL. Injected store for unit tests.
+ */
+export async function upsertTaskV3(
+  store: TaskV3Store,
+  inp: TaskV3UpsertInput,
+): Promise<TaskV3UpsertResult> {
+  const now = inp.now ?? new Date().toISOString()
+  assertActorMayMutate(inp.actor, now)
+
+  const board = await store.getBoard(inp.boardId)
+  if (!board) {
+    throw new TaskV3Error('TASK_NOT_FOUND', `board not found: ${inp.boardId}`)
+  }
+  if (board.boardRev !== inp.expectedBoardRev) {
+    throw new TaskV3Error('STALE_REVISION', `board rev mismatch: expected ${inp.expectedBoardRev}, current ${board.boardRev}`, {
+      expectedBoardRev: inp.expectedBoardRev,
+      current: board.boardRev,
+    })
+  }
+  if (board.lifecycleRev !== inp.expectedLifecycleRev) {
+    throw new TaskV3Error('STALE_REVISION', `lifecycle rev mismatch: expected ${inp.expectedLifecycleRev}, current ${board.lifecycleRev}`, {
+      expectedLifecycleRev: inp.expectedLifecycleRev,
+      current: board.lifecycleRev,
+    })
+  }
+
+  const existing = await store.getTask(inp.boardId, inp.task.id)
+  const created = !existing
+
+  if (!created) {
+    if (existing.fenced) {
+      throw new TaskV3Error('FENCED', `task is fenced: ${inp.task.id}`)
+    }
+    if (inp.entityExpectedRev !== undefined && existing.entityRev !== inp.entityExpectedRev) {
+      throw new TaskV3Error(
+        'STALE_REVISION',
+        `entity rev mismatch on ${inp.task.id}: expected ${inp.entityExpectedRev}, current ${existing.entityRev}`,
+        { entityExpectedRev: inp.entityExpectedRev, current: existing.entityRev },
+      )
+    }
+    if (
+      inp.expectedSubjectHash !== undefined &&
+      existing.subjectHash !== inp.expectedSubjectHash
+    ) {
+      throw new TaskV3Error('STALE_HASH', 'subject hash mismatch', {
+        expected: inp.expectedSubjectHash,
+        current: existing.subjectHash,
+      })
+    }
+  }
+
+  const taskHash = computeTaskHash(inp.task)
+  const pin: PinnedRevisionTuple = {
+    canonicalSnapshotId:
+      inp.canonicalSnapshotId ?? board.canonicalSnapshotId ?? existing?.canonicalSnapshotId ?? '',
+    canonicalHash: inp.canonicalHash ?? board.canonicalHash ?? existing?.canonicalHash ?? '',
+    taskHash,
+    boardRev: board.boardRev + 1,
+    lifecycleRev: board.lifecycleRev,
+  }
+
+  let taskClass: TaskClass = existing?.taskClass ?? 'UNCLASSIFIED'
+  let disposition: TaskDisposition = existing?.disposition ?? 'UNCLASSIFIED'
+  let classificationReceipt: ClassificationReceipt | null =
+    existing?.classificationReceipt ?? null
+  let classificationReceiptId: string | null = existing?.classificationReceiptId ?? null
+  let classificationReceiptHash: string | null = existing?.classificationReceiptHash ?? null
+
+  if (inp.classification) {
+    assertValidClassification(inp.classification, {
+      ...pin,
+      // validate against current board pin before bump for receipt currency
+      boardRev: board.boardRev,
+      lifecycleRev: board.lifecycleRev,
+      taskHash: inp.classification.receipt?.taskHash ?? taskHash,
+      canonicalHash: inp.classification.receipt?.canonicalHash ?? pin.canonicalHash,
+      canonicalSnapshotId:
+        inp.classification.receipt?.canonicalSnapshotId ?? pin.canonicalSnapshotId,
+    }, inp.task.id, now)
+    taskClass = inp.classification.taskClass
+    disposition = inp.classification.disposition
+    classificationReceipt = inp.classification.receipt
+    classificationReceiptId = inp.classification.receipt?.receiptId ?? null
+    classificationReceiptHash = inp.classification.receipt?.receiptHash ?? null
+  }
+
+  // Never trust legacy phase/scope/mappingPct for class
+  void existing?.phase
+  void existing?.mappingPct
+
+  const subjectHash = subjectHashOf({
+    taskId: inp.task.id,
+    title: inp.task.title,
+    taskHash,
+    taskClass,
+    disposition,
+    classificationReceiptHash,
+  })
+
+  const record: TaskV3Record = {
+    boardId: inp.boardId,
+    taskId: inp.task.id,
+    title: inp.task.title ?? '',
+    projectId: inp.task.projectId ?? null,
+    featureContractId: inp.task.featureContractId ?? null,
+    phase: inp.task.phase ?? null,
+    scope: inp.task.scope ?? null,
+    mappingPct: inp.task.mappingPct ?? null,
+    status: inp.task.status ?? null,
+    taskClass,
+    disposition,
+    classificationReceiptId,
+    classificationReceiptHash,
+    classificationReceipt,
+    boardRev: board.boardRev + 1,
+    lifecycleRev: board.lifecycleRev,
+    entityRev: created ? 1 : (existing?.entityRev ?? 0) + 1,
+    subjectHash,
+    taskHash,
+    canonicalSnapshotId: pin.canonicalSnapshotId || null,
+    canonicalHash: pin.canonicalHash || null,
+    evidenceMeta: existing?.evidenceMeta ?? null,
+    lifecycleStage: existing?.lifecycleStage ?? null,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    fenced: false,
+  }
+
+  const saved = await store.saveTask(record, board.boardRev + 1)
+  return {
+    created,
+    record: saved,
+    pin: {
+      canonicalSnapshotId: saved.canonicalSnapshotId ?? '',
+      canonicalHash: saved.canonicalHash ?? '',
+      taskHash: saved.taskHash,
+      boardRev: saved.boardRev,
+      lifecycleRev: saved.lifecycleRev,
+    },
+  }
+}
+
+/** Convert V3 record → list-compatible WorkTask (legacy callers). */
+export function taskV3ToWorkTask(r: TaskV3Record): WorkTask {
+  return {
+    id: r.taskId,
+    title: r.title,
+    projectId: r.projectId,
+    featureContractId: r.featureContractId,
+    phase: r.phase,
+    scope: r.scope ?? undefined,
+    mappingPct: r.mappingPct,
+    status: r.status,
+    lifecycleStage: r.lifecycleStage,
+    updated: r.updatedAt,
+    checkpoints: [],
+    dependencies: [],
+    impacts: [],
+  }
+}
+
+/** In-memory TaskV3 store for unit tests — no real DB. */
+export function createMemoryTaskV3Store(seed: {
+  board: TaskV3BoardState
+  tasks?: Array<TaskV3Record>
+}): TaskV3Store & {
+  board: () => TaskV3BoardState
+  all: () => Array<TaskV3Record>
+} {
+  let board = { ...seed.board }
+  const tasks = new Map((seed.tasks ?? []).map((t) => [t.taskId, { ...t }]))
+
+  return {
+    board: () => ({ ...board }),
+    all: () => [...tasks.values()].map((t) => ({ ...t })),
+    async getBoard(boardId) {
+      return board.boardId === boardId ? { ...board } : null
+    },
+    async getTask(boardId, taskId) {
+      if (board.boardId !== boardId) return null
+      const t = tasks.get(taskId)
+      return t ? { ...t } : null
+    },
+    async listTasks(boardId) {
+      if (board.boardId !== boardId) return []
+      return [...tasks.values()].map((t) => ({ ...t })).sort((a, b) =>
+        a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0,
+      )
+    },
+    async saveTask(record, nextBoardRev) {
+      board = { ...board, boardRev: nextBoardRev }
+      const saved = { ...record, boardRev: nextBoardRev }
+      tasks.set(saved.taskId, saved)
+      // Sync boardRev on siblings for pin consistency
+      for (const [id, t] of tasks) {
+        if (id === saved.taskId) continue
+        tasks.set(id, { ...t, boardRev: nextBoardRev })
+      }
+      return { ...saved }
+    },
+  }
+}
+
+/** Stable content fingerprint helper (debug/tests). */
+export function taskContentFingerprint(t: WorkTask): string {
+  return createHash('sha256').update(JSON.stringify({
+    id: t.id,
+    title: t.title,
+    projectId: t.projectId ?? null,
+    featureContractId: t.featureContractId ?? null,
+  })).digest('hex')
 }
