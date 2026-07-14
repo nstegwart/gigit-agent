@@ -298,7 +298,14 @@ describe('control-center-public-snapshot mapper', () => {
       rawTaskReadinessPercent: agg.rollup.rawTaskReadinessPercent,
       boardReadinessPercent: agg.rollup.boardReadinessPercent,
       cappedBy: agg.rollup.cappedBy,
+      lifecycleStageCounts: expect.any(Object),
     })
+    // Stage histogram derived from workRows (owner progress), not PRODUCT-only readiness.
+    expect(input.boardRollup.lifecycleStageCounts).toEqual(
+      expect.objectContaining({
+        READY: expect.any(Number),
+      }),
+    )
     expect(input.completion.complete).toBe(agg.rollup.complete)
     expect(input.completion.g5Pass).toBe(agg.g5.g5Pass)
   })
