@@ -141,7 +141,9 @@ node qa/e2e/flows/staging-agent-smoke.mjs --real
 | ------------------------- | ------------------------------------------------ | -------------------- | -------------------------------------------------------------------- |
 | **Deterministic harness** | `flows/deterministic-control-center-harness.mjs` | bootstrap synth      | Full isolated lifecycle (C3-R2D)                                     |
 | **Staging agent MCP smoke** | `flows/staging-agent-smoke.mjs`                | bearer env ref       | Real staging MCP lifecycle + `--self-test` contract                  |
+| **Staging gate fixtures** | `flows/staging-gates.mjs`                        | n/a (self-test)      | Pure gate pack contract: classification 3×4, distinct, lifecycle±, G5, capacity/priority, reconciler; dual-gate refuse; cleanup plan-only |
 | Staging fixtures          | `qa/fixtures/staging/**`                         | n/a                  | Synthetic MANIFEST/pin/seeds/cleanup (no prod data)                  |
+| Staging gate packets      | `qa/fixtures/staging/gates/**`                   | n/a                  | Reversible gate packets + `expected/*` deterministic outputs         |
 | Isolated seed             | `fixtures/seed/seed-isolated.mjs`                | n/a                  | Unique MySQL + pins                                                  |
 | Fixture contract (pure)   | `fixtures/seed/control-center-fixture.mjs`       | n/a                  | Overlays/receipts/taskHash/scenarios                                 |
 | Control-plane bootstrap   | `lib/control-plane-bootstrap.mjs`                | MCP + synthetic ROOT | Authorized dispatch + account-sync; pin fail-close; bearer redaction |
@@ -155,8 +157,9 @@ node qa/e2e/flows/staging-agent-smoke.mjs --real
 | Keyboard nav              | `flows/keyboard-nav.mjs`                         | optional `--auth`    | Focus ring after Tab                                                 |
 | Screenshot manifest       | `flows/screenshot-manifest-capture.mjs`          | dry-run default      | §13 schema + collector                                               |
 | Public snapshot           | `flows/public-snapshot.mjs`                      | none                 | `/api/public-snapshot` HTTP probe                                    |
+| **Public consumer conformance** | `flows/public-consumer-conformance.mjs`    | none (fixture default; LIVE optional) | MFS_PUBLIC_CONSUMER_SYNC_CONTRACT_V1 offline fixtures + optional LIVE ETag/304/429 probes. **EXCLUDED:** real consumer publish/mutation (`writeAuthority`, `/opt/mfs/workspace/CONTRACT`, `/var/www/contract`, nginx, deploy) |
 | **Security probes**       | `flows/security-probes.mjs`                      | none (optional bearer) | Unauth healthz/MCP/public + rate-limit + redaction (AC-AUTH/PUBLIC) |
-| **Perf budgets**          | `flows/perf-budgets.mjs`                         | none                 | Scale-1000 fixture + p95; opt-in `--load-10m` 20rps×10m (AC-PERF-01) |
+| **Perf budgets**          | `flows/perf-budgets.mjs`                         | none                 | Scale-1000 + p95; identical public/filter path budget-aligned; rate-limit-aware sampling; TUNNEL/HARNESS/APP class; opt-in `--load-10m` (AC-PERF-01). Docs: `docs/control-center/PERFORMANCE.md` |
 | Scale-1000 fixture        | `qa/fixtures/staging/scale-1000/generate.mjs`    | n/a                  | Deterministic 1000 tasks / 200 runs / 20 accounts / 100 decisions    |
 
 ### Example commands (piecewise)
@@ -180,14 +183,36 @@ node qa/e2e/flows/a11y-axe.mjs --route /login --unauth
 # Manifest dry-run
 node qa/e2e/flows/screenshot-manifest-capture.mjs --dry-run
 
+# Public consumer sync conformance (fixture default; no network)
+# Boundary: contract + fixtures only — never mutates consumer paths.
+# Prerequisites: qa/fixtures/public-consumer-sync/** + docs/control-center/public-consumer-sync/**
+# EXCLUDED: real consumer publish (`writeAuthority` EXCLUDED; no /opt/mfs/workspace/CONTRACT,
+# /var/www/contract, nginx, or deploy from this flow).
+node qa/e2e/flows/public-consumer-conformance.mjs
+# Optional LIVE read-only probes (still EXCLUDED consumer publish):
+# WEB_BASE=http://127.0.0.1:33211 BOARD_ID=mfs-rebuild node qa/e2e/flows/public-consumer-conformance.mjs --live
+# CONFORMANCE_MODE=both LIVE_RATE_LIMIT=1 …   # opt-in 429 burst on shared staging
+
 # Security + perf (staging/local target)
 WEB_BASE=http://127.0.0.1:33211 BOARD_ID=mfs-rebuild node qa/e2e/flows/security-probes.mjs
+# Perf: default filterProbe is identical public-snapshot path → budget aligns to
+# public p95≤500 (not UI filter ≤200). Loopback WEB_BASE defaults proofBoundary=tunnel.
+# True UI filter feedback ≤200 only with PERF_UI_FILTER_URL. On-host APP proof:
+# PERF_PROOF_BOUNDARY=on-host. See docs/control-center/PERFORMANCE.md.
 WEB_BASE=http://127.0.0.1:33211 BOARD_ID=mfs-rebuild node qa/e2e/flows/perf-budgets.mjs
 # Long load opt-in (exact):
 # WEB_BASE=… PERF_LOAD_RPS=20 PERF_LOAD_DURATION_SEC=600 node qa/e2e/flows/perf-budgets.mjs --load-10m
 node qa/fixtures/staging/scale-1000/generate.mjs
 node qa/e2e/flows/security-probes.mjs --self-test
 node qa/e2e/flows/perf-budgets.mjs --self-test
+# Unit: tests/unit/perf-budgets.test.ts
+
+# Staging gate fixture pack (pure self-test; no staging mutation)
+node qa/e2e/flows/staging-gates.mjs --self-test
+node qa/e2e/flows/staging-gates.mjs --cleanup   # plan-only JSON
+node deploy/staging/scripts/seed-gates.mjs --self-test
+# Live apply refuses without dual gates; even with gates, this pack does not mutate
+# (GATES_APPLY_DELEGATED → seed-synthetic / canonical-import)
 ```
 
 ## Layout
