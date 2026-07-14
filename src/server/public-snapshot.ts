@@ -96,6 +96,11 @@ export interface PublicTaskSummary {
   title?: string | null
   bucket?: string | null
   readinessPercent?: number | null
+  /**
+   * Lifecycle stage string when proven (e.g. MAPPED, MAP_VERIFIED).
+   * Null when unknown — never invents stage. Owner progress surface.
+   */
+  lifecycleStage?: string | null
 }
 
 /** Sanitized run summary — no tokens, no raw account identity. */
@@ -187,6 +192,11 @@ export interface PublicAggregationInput {
     rawTaskReadinessPercent: number | null
     boardReadinessPercent: number | null
     cappedBy: string | null
+    /**
+     * Distinct task lifecycle stage histogram (MAPPED / MAP_VERIFIED / …).
+     * Empty object when no proven stages — never invents MAP_VERIFIED.
+     */
+    lifecycleStageCounts?: Readonly<Record<string, number>>
   }
   completion: {
     complete: boolean
@@ -587,6 +597,10 @@ export function materializePublicSnapshot(input: PublicAggregationInput): Materi
         title: t.title ?? null,
         bucket: t.bucket ?? null,
         readinessPercent: t.readinessPercent ?? null,
+        lifecycleStage:
+          typeof t.lifecycleStage === 'string' && t.lifecycleStage.length > 0
+            ? t.lifecycleStage
+            : null,
       })),
     )
     const runs = sortByRunId(

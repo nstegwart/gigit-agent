@@ -227,13 +227,34 @@ function mapFeatures(agg: ControlCenterAggregation): Array<PublicFeatureSummary>
 
 function mapTasks(agg: ControlCenterAggregation): Array<PublicTaskSummary> {
   // workRows are already DISTINCT tracked task IDs from rollup — map only public fields.
+  // Include lifecycleStage so public consumers can see MAP_VERIFIED progress (not PRODUCT-only %).
   return agg.workRows.map((t) => ({
     id: t.taskId,
     projectId: t.projectId ?? null,
     title: t.title ?? null,
     bucket: t.bucket ?? null,
     readinessPercent: null,
+    lifecycleStage:
+      typeof t.lifecycleStage === 'string' && t.lifecycleStage.length > 0
+        ? t.lifecycleStage
+        : null,
   }))
+}
+
+/** Distinct work-row stage histogram for boardRollup (owner progress). */
+export function mapLifecycleStageCounts(
+  agg: ControlCenterAggregation,
+): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const t of agg.workRows) {
+    const stage =
+      typeof t.lifecycleStage === 'string' && t.lifecycleStage.length > 0
+        ? t.lifecycleStage
+        : null
+    if (!stage) continue
+    counts[stage] = (counts[stage] ?? 0) + 1
+  }
+  return counts
 }
 
 function mapRuns(agg: ControlCenterAggregation): Array<PublicRunSummary> {
@@ -474,6 +495,7 @@ export function mapControlCenterAggregationToPublicInput(
         rawTaskReadinessPercent: agg.rollup.rawTaskReadinessPercent,
         boardReadinessPercent: agg.rollup.boardReadinessPercent,
         cappedBy: agg.rollup.cappedBy,
+        lifecycleStageCounts: mapLifecycleStageCounts(agg),
       },
       completion: {
         complete: agg.rollup.complete,
