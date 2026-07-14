@@ -9,16 +9,24 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WorkRouteImport } from './routes/work'
+import { Route as SearchRouteImport } from './routes/search'
 import { Route as McpRouteImport } from './routes/mcp'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as DecisionsRouteImport } from './routes/decisions'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as WorkTaskIdRouteImport } from './routes/work.$taskId'
+import { Route as DecisionsDecisionIdRouteImport } from './routes/decisions.$decisionId'
 import { Route as BBoardIdRouteImport } from './routes/b.$boardId'
 import { Route as ApiPublicSnapshotRouteImport } from './routes/api.public-snapshot'
 import { Route as ApiHealthzRouteImport } from './routes/api.healthz'
 import { Route as ApiAccountsRouteImport } from './routes/api.accounts'
 import { Route as AdminUsersRouteImport } from './routes/admin.users'
 import { Route as BBoardIdIndexRouteImport } from './routes/b.$boardId.index'
+import { Route as KnowledgeDomainsDomainRouteImport } from './routes/knowledge.domains.$domain'
+import { Route as DocumentationDomainsDomainRouteImport } from './routes/documentation.domains.$domain'
 import { Route as BBoardIdWorkRouteImport } from './routes/b.$boardId.work'
+import { Route as BBoardIdSearchRouteImport } from './routes/b.$boardId.search'
 import { Route as BBoardIdPriorityRouteImport } from './routes/b.$boardId.priority'
 import { Route as BBoardIdOpsRouteImport } from './routes/b.$boardId.ops'
 import { Route as BBoardIdMapRouteImport } from './routes/b.$boardId.map'
@@ -27,13 +35,29 @@ import { Route as BBoardIdEvidenceRouteImport } from './routes/b.$boardId.eviden
 import { Route as BBoardIdDesignRouteImport } from './routes/b.$boardId.design'
 import { Route as BBoardIdDecisionsRouteImport } from './routes/b.$boardId.decisions'
 import { Route as BBoardIdAgentsRouteImport } from './routes/b.$boardId.agents'
+import { Route as BBoardIdWorkIndexRouteImport } from './routes/b.$boardId.work.index'
 import { Route as BBoardIdTasksIndexRouteImport } from './routes/b.$boardId.tasks.index'
 import { Route as BBoardIdProjectsIndexRouteImport } from './routes/b.$boardId.projects.index'
 import { Route as BBoardIdFeaturesIndexRouteImport } from './routes/b.$boardId.features.index'
+import { Route as BBoardIdDecisionsIndexRouteImport } from './routes/b.$boardId.decisions.index'
+import { Route as BBoardIdWorkTaskIdRouteImport } from './routes/b.$boardId.work.$taskId'
 import { Route as BBoardIdTasksTaskIdRouteImport } from './routes/b.$boardId.tasks.$taskId'
 import { Route as BBoardIdProjectsProjectIdRouteImport } from './routes/b.$boardId.projects.$projectId'
 import { Route as BBoardIdFeaturesFeatureIdRouteImport } from './routes/b.$boardId.features.$featureId'
+import { Route as BBoardIdDecisionsDecisionIdRouteImport } from './routes/b.$boardId.decisions.$decisionId'
+import { Route as BBoardIdKnowledgeDomainsDomainRouteImport } from './routes/b.$boardId.knowledge.domains.$domain'
+import { Route as BBoardIdDocumentationDomainsDomainRouteImport } from './routes/b.$boardId.documentation.domains.$domain'
 
+const WorkRoute = WorkRouteImport.update({
+  id: '/work',
+  path: '/work',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SearchRoute = SearchRouteImport.update({
+  id: '/search',
+  path: '/search',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const McpRoute = McpRouteImport.update({
   id: '/mcp',
   path: '/mcp',
@@ -44,10 +68,25 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DecisionsRoute = DecisionsRouteImport.update({
+  id: '/decisions',
+  path: '/decisions',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const WorkTaskIdRoute = WorkTaskIdRouteImport.update({
+  id: '/$taskId',
+  path: '/$taskId',
+  getParentRoute: () => WorkRoute,
+} as any)
+const DecisionsDecisionIdRoute = DecisionsDecisionIdRouteImport.update({
+  id: '/$decisionId',
+  path: '/$decisionId',
+  getParentRoute: () => DecisionsRoute,
 } as any)
 const BBoardIdRoute = BBoardIdRouteImport.update({
   id: '/b/$boardId',
@@ -79,9 +118,25 @@ const BBoardIdIndexRoute = BBoardIdIndexRouteImport.update({
   path: '/',
   getParentRoute: () => BBoardIdRoute,
 } as any)
+const KnowledgeDomainsDomainRoute = KnowledgeDomainsDomainRouteImport.update({
+  id: '/knowledge/domains/$domain',
+  path: '/knowledge/domains/$domain',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DocumentationDomainsDomainRoute =
+  DocumentationDomainsDomainRouteImport.update({
+    id: '/documentation/domains/$domain',
+    path: '/documentation/domains/$domain',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const BBoardIdWorkRoute = BBoardIdWorkRouteImport.update({
   id: '/work',
   path: '/work',
+  getParentRoute: () => BBoardIdRoute,
+} as any)
+const BBoardIdSearchRoute = BBoardIdSearchRouteImport.update({
+  id: '/search',
+  path: '/search',
   getParentRoute: () => BBoardIdRoute,
 } as any)
 const BBoardIdPriorityRoute = BBoardIdPriorityRouteImport.update({
@@ -124,6 +179,11 @@ const BBoardIdAgentsRoute = BBoardIdAgentsRouteImport.update({
   path: '/agents',
   getParentRoute: () => BBoardIdRoute,
 } as any)
+const BBoardIdWorkIndexRoute = BBoardIdWorkIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => BBoardIdWorkRoute,
+} as any)
 const BBoardIdTasksIndexRoute = BBoardIdTasksIndexRouteImport.update({
   id: '/tasks/',
   path: '/tasks/',
@@ -138,6 +198,16 @@ const BBoardIdFeaturesIndexRoute = BBoardIdFeaturesIndexRouteImport.update({
   id: '/features/',
   path: '/features/',
   getParentRoute: () => BBoardIdRoute,
+} as any)
+const BBoardIdDecisionsIndexRoute = BBoardIdDecisionsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => BBoardIdDecisionsRoute,
+} as any)
+const BBoardIdWorkTaskIdRoute = BBoardIdWorkTaskIdRouteImport.update({
+  id: '/$taskId',
+  path: '/$taskId',
+  getParentRoute: () => BBoardIdWorkRoute,
 } as any)
 const BBoardIdTasksTaskIdRoute = BBoardIdTasksTaskIdRouteImport.update({
   id: '/tasks/$taskId',
@@ -156,96 +226,159 @@ const BBoardIdFeaturesFeatureIdRoute =
     path: '/features/$featureId',
     getParentRoute: () => BBoardIdRoute,
   } as any)
+const BBoardIdDecisionsDecisionIdRoute =
+  BBoardIdDecisionsDecisionIdRouteImport.update({
+    id: '/$decisionId',
+    path: '/$decisionId',
+    getParentRoute: () => BBoardIdDecisionsRoute,
+  } as any)
+const BBoardIdKnowledgeDomainsDomainRoute =
+  BBoardIdKnowledgeDomainsDomainRouteImport.update({
+    id: '/knowledge/domains/$domain',
+    path: '/knowledge/domains/$domain',
+    getParentRoute: () => BBoardIdRoute,
+  } as any)
+const BBoardIdDocumentationDomainsDomainRoute =
+  BBoardIdDocumentationDomainsDomainRouteImport.update({
+    id: '/documentation/domains/$domain',
+    path: '/documentation/domains/$domain',
+    getParentRoute: () => BBoardIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/decisions': typeof DecisionsRouteWithChildren
   '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
+  '/search': typeof SearchRoute
+  '/work': typeof WorkRouteWithChildren
   '/admin/users': typeof AdminUsersRoute
   '/api/accounts': typeof ApiAccountsRoute
   '/api/healthz': typeof ApiHealthzRoute
   '/api/public-snapshot': typeof ApiPublicSnapshotRoute
   '/b/$boardId': typeof BBoardIdRouteWithChildren
+  '/decisions/$decisionId': typeof DecisionsDecisionIdRoute
+  '/work/$taskId': typeof WorkTaskIdRoute
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
-  '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
+  '/b/$boardId/decisions': typeof BBoardIdDecisionsRouteWithChildren
   '/b/$boardId/design': typeof BBoardIdDesignRoute
   '/b/$boardId/evidence': typeof BBoardIdEvidenceRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
   '/b/$boardId/map': typeof BBoardIdMapRoute
   '/b/$boardId/ops': typeof BBoardIdOpsRoute
   '/b/$boardId/priority': typeof BBoardIdPriorityRoute
-  '/b/$boardId/work': typeof BBoardIdWorkRoute
+  '/b/$boardId/search': typeof BBoardIdSearchRoute
+  '/b/$boardId/work': typeof BBoardIdWorkRouteWithChildren
+  '/documentation/domains/$domain': typeof DocumentationDomainsDomainRoute
+  '/knowledge/domains/$domain': typeof KnowledgeDomainsDomainRoute
   '/b/$boardId/': typeof BBoardIdIndexRoute
+  '/b/$boardId/decisions/$decisionId': typeof BBoardIdDecisionsDecisionIdRoute
   '/b/$boardId/features/$featureId': typeof BBoardIdFeaturesFeatureIdRoute
   '/b/$boardId/projects/$projectId': typeof BBoardIdProjectsProjectIdRoute
   '/b/$boardId/tasks/$taskId': typeof BBoardIdTasksTaskIdRoute
+  '/b/$boardId/work/$taskId': typeof BBoardIdWorkTaskIdRoute
+  '/b/$boardId/decisions/': typeof BBoardIdDecisionsIndexRoute
   '/b/$boardId/features/': typeof BBoardIdFeaturesIndexRoute
   '/b/$boardId/projects/': typeof BBoardIdProjectsIndexRoute
   '/b/$boardId/tasks/': typeof BBoardIdTasksIndexRoute
+  '/b/$boardId/work/': typeof BBoardIdWorkIndexRoute
+  '/b/$boardId/documentation/domains/$domain': typeof BBoardIdDocumentationDomainsDomainRoute
+  '/b/$boardId/knowledge/domains/$domain': typeof BBoardIdKnowledgeDomainsDomainRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/decisions': typeof DecisionsRouteWithChildren
   '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
+  '/search': typeof SearchRoute
+  '/work': typeof WorkRouteWithChildren
   '/admin/users': typeof AdminUsersRoute
   '/api/accounts': typeof ApiAccountsRoute
   '/api/healthz': typeof ApiHealthzRoute
   '/api/public-snapshot': typeof ApiPublicSnapshotRoute
+  '/decisions/$decisionId': typeof DecisionsDecisionIdRoute
+  '/work/$taskId': typeof WorkTaskIdRoute
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
-  '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
   '/b/$boardId/design': typeof BBoardIdDesignRoute
   '/b/$boardId/evidence': typeof BBoardIdEvidenceRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
   '/b/$boardId/map': typeof BBoardIdMapRoute
   '/b/$boardId/ops': typeof BBoardIdOpsRoute
   '/b/$boardId/priority': typeof BBoardIdPriorityRoute
-  '/b/$boardId/work': typeof BBoardIdWorkRoute
+  '/b/$boardId/search': typeof BBoardIdSearchRoute
+  '/documentation/domains/$domain': typeof DocumentationDomainsDomainRoute
+  '/knowledge/domains/$domain': typeof KnowledgeDomainsDomainRoute
   '/b/$boardId': typeof BBoardIdIndexRoute
+  '/b/$boardId/decisions/$decisionId': typeof BBoardIdDecisionsDecisionIdRoute
   '/b/$boardId/features/$featureId': typeof BBoardIdFeaturesFeatureIdRoute
   '/b/$boardId/projects/$projectId': typeof BBoardIdProjectsProjectIdRoute
   '/b/$boardId/tasks/$taskId': typeof BBoardIdTasksTaskIdRoute
+  '/b/$boardId/work/$taskId': typeof BBoardIdWorkTaskIdRoute
+  '/b/$boardId/decisions': typeof BBoardIdDecisionsIndexRoute
   '/b/$boardId/features': typeof BBoardIdFeaturesIndexRoute
   '/b/$boardId/projects': typeof BBoardIdProjectsIndexRoute
   '/b/$boardId/tasks': typeof BBoardIdTasksIndexRoute
+  '/b/$boardId/work': typeof BBoardIdWorkIndexRoute
+  '/b/$boardId/documentation/domains/$domain': typeof BBoardIdDocumentationDomainsDomainRoute
+  '/b/$boardId/knowledge/domains/$domain': typeof BBoardIdKnowledgeDomainsDomainRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/decisions': typeof DecisionsRouteWithChildren
   '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
+  '/search': typeof SearchRoute
+  '/work': typeof WorkRouteWithChildren
   '/admin/users': typeof AdminUsersRoute
   '/api/accounts': typeof ApiAccountsRoute
   '/api/healthz': typeof ApiHealthzRoute
   '/api/public-snapshot': typeof ApiPublicSnapshotRoute
   '/b/$boardId': typeof BBoardIdRouteWithChildren
+  '/decisions/$decisionId': typeof DecisionsDecisionIdRoute
+  '/work/$taskId': typeof WorkTaskIdRoute
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
-  '/b/$boardId/decisions': typeof BBoardIdDecisionsRoute
+  '/b/$boardId/decisions': typeof BBoardIdDecisionsRouteWithChildren
   '/b/$boardId/design': typeof BBoardIdDesignRoute
   '/b/$boardId/evidence': typeof BBoardIdEvidenceRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
   '/b/$boardId/map': typeof BBoardIdMapRoute
   '/b/$boardId/ops': typeof BBoardIdOpsRoute
   '/b/$boardId/priority': typeof BBoardIdPriorityRoute
-  '/b/$boardId/work': typeof BBoardIdWorkRoute
+  '/b/$boardId/search': typeof BBoardIdSearchRoute
+  '/b/$boardId/work': typeof BBoardIdWorkRouteWithChildren
+  '/documentation/domains/$domain': typeof DocumentationDomainsDomainRoute
+  '/knowledge/domains/$domain': typeof KnowledgeDomainsDomainRoute
   '/b/$boardId/': typeof BBoardIdIndexRoute
+  '/b/$boardId/decisions/$decisionId': typeof BBoardIdDecisionsDecisionIdRoute
   '/b/$boardId/features/$featureId': typeof BBoardIdFeaturesFeatureIdRoute
   '/b/$boardId/projects/$projectId': typeof BBoardIdProjectsProjectIdRoute
   '/b/$boardId/tasks/$taskId': typeof BBoardIdTasksTaskIdRoute
+  '/b/$boardId/work/$taskId': typeof BBoardIdWorkTaskIdRoute
+  '/b/$boardId/decisions/': typeof BBoardIdDecisionsIndexRoute
   '/b/$boardId/features/': typeof BBoardIdFeaturesIndexRoute
   '/b/$boardId/projects/': typeof BBoardIdProjectsIndexRoute
   '/b/$boardId/tasks/': typeof BBoardIdTasksIndexRoute
+  '/b/$boardId/work/': typeof BBoardIdWorkIndexRoute
+  '/b/$boardId/documentation/domains/$domain': typeof BBoardIdDocumentationDomainsDomainRoute
+  '/b/$boardId/knowledge/domains/$domain': typeof BBoardIdKnowledgeDomainsDomainRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/decisions'
     | '/login'
     | '/mcp'
+    | '/search'
+    | '/work'
     | '/admin/users'
     | '/api/accounts'
     | '/api/healthz'
     | '/api/public-snapshot'
     | '/b/$boardId'
+    | '/decisions/$decisionId'
+    | '/work/$taskId'
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
@@ -254,49 +387,75 @@ export interface FileRouteTypes {
     | '/b/$boardId/map'
     | '/b/$boardId/ops'
     | '/b/$boardId/priority'
+    | '/b/$boardId/search'
     | '/b/$boardId/work'
+    | '/documentation/domains/$domain'
+    | '/knowledge/domains/$domain'
     | '/b/$boardId/'
+    | '/b/$boardId/decisions/$decisionId'
     | '/b/$boardId/features/$featureId'
     | '/b/$boardId/projects/$projectId'
     | '/b/$boardId/tasks/$taskId'
+    | '/b/$boardId/work/$taskId'
+    | '/b/$boardId/decisions/'
     | '/b/$boardId/features/'
     | '/b/$boardId/projects/'
     | '/b/$boardId/tasks/'
+    | '/b/$boardId/work/'
+    | '/b/$boardId/documentation/domains/$domain'
+    | '/b/$boardId/knowledge/domains/$domain'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/decisions'
     | '/login'
     | '/mcp'
+    | '/search'
+    | '/work'
     | '/admin/users'
     | '/api/accounts'
     | '/api/healthz'
     | '/api/public-snapshot'
+    | '/decisions/$decisionId'
+    | '/work/$taskId'
     | '/b/$boardId/agents'
-    | '/b/$boardId/decisions'
     | '/b/$boardId/design'
     | '/b/$boardId/evidence'
     | '/b/$boardId/log'
     | '/b/$boardId/map'
     | '/b/$boardId/ops'
     | '/b/$boardId/priority'
-    | '/b/$boardId/work'
+    | '/b/$boardId/search'
+    | '/documentation/domains/$domain'
+    | '/knowledge/domains/$domain'
     | '/b/$boardId'
+    | '/b/$boardId/decisions/$decisionId'
     | '/b/$boardId/features/$featureId'
     | '/b/$boardId/projects/$projectId'
     | '/b/$boardId/tasks/$taskId'
+    | '/b/$boardId/work/$taskId'
+    | '/b/$boardId/decisions'
     | '/b/$boardId/features'
     | '/b/$boardId/projects'
     | '/b/$boardId/tasks'
+    | '/b/$boardId/work'
+    | '/b/$boardId/documentation/domains/$domain'
+    | '/b/$boardId/knowledge/domains/$domain'
   id:
     | '__root__'
     | '/'
+    | '/decisions'
     | '/login'
     | '/mcp'
+    | '/search'
+    | '/work'
     | '/admin/users'
     | '/api/accounts'
     | '/api/healthz'
     | '/api/public-snapshot'
     | '/b/$boardId'
+    | '/decisions/$decisionId'
+    | '/work/$taskId'
     | '/b/$boardId/agents'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
@@ -305,29 +464,57 @@ export interface FileRouteTypes {
     | '/b/$boardId/map'
     | '/b/$boardId/ops'
     | '/b/$boardId/priority'
+    | '/b/$boardId/search'
     | '/b/$boardId/work'
+    | '/documentation/domains/$domain'
+    | '/knowledge/domains/$domain'
     | '/b/$boardId/'
+    | '/b/$boardId/decisions/$decisionId'
     | '/b/$boardId/features/$featureId'
     | '/b/$boardId/projects/$projectId'
     | '/b/$boardId/tasks/$taskId'
+    | '/b/$boardId/work/$taskId'
+    | '/b/$boardId/decisions/'
     | '/b/$boardId/features/'
     | '/b/$boardId/projects/'
     | '/b/$boardId/tasks/'
+    | '/b/$boardId/work/'
+    | '/b/$boardId/documentation/domains/$domain'
+    | '/b/$boardId/knowledge/domains/$domain'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  DecisionsRoute: typeof DecisionsRouteWithChildren
   LoginRoute: typeof LoginRoute
   McpRoute: typeof McpRoute
+  SearchRoute: typeof SearchRoute
+  WorkRoute: typeof WorkRouteWithChildren
   AdminUsersRoute: typeof AdminUsersRoute
   ApiAccountsRoute: typeof ApiAccountsRoute
   ApiHealthzRoute: typeof ApiHealthzRoute
   ApiPublicSnapshotRoute: typeof ApiPublicSnapshotRoute
   BBoardIdRoute: typeof BBoardIdRouteWithChildren
+  DocumentationDomainsDomainRoute: typeof DocumentationDomainsDomainRoute
+  KnowledgeDomainsDomainRoute: typeof KnowledgeDomainsDomainRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/work': {
+      id: '/work'
+      path: '/work'
+      fullPath: '/work'
+      preLoaderRoute: typeof WorkRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/search': {
+      id: '/search'
+      path: '/search'
+      fullPath: '/search'
+      preLoaderRoute: typeof SearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/mcp': {
       id: '/mcp'
       path: '/mcp'
@@ -342,12 +529,33 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/decisions': {
+      id: '/decisions'
+      path: '/decisions'
+      fullPath: '/decisions'
+      preLoaderRoute: typeof DecisionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/work/$taskId': {
+      id: '/work/$taskId'
+      path: '/$taskId'
+      fullPath: '/work/$taskId'
+      preLoaderRoute: typeof WorkTaskIdRouteImport
+      parentRoute: typeof WorkRoute
+    }
+    '/decisions/$decisionId': {
+      id: '/decisions/$decisionId'
+      path: '/$decisionId'
+      fullPath: '/decisions/$decisionId'
+      preLoaderRoute: typeof DecisionsDecisionIdRouteImport
+      parentRoute: typeof DecisionsRoute
     }
     '/b/$boardId': {
       id: '/b/$boardId'
@@ -391,11 +599,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BBoardIdIndexRouteImport
       parentRoute: typeof BBoardIdRoute
     }
+    '/knowledge/domains/$domain': {
+      id: '/knowledge/domains/$domain'
+      path: '/knowledge/domains/$domain'
+      fullPath: '/knowledge/domains/$domain'
+      preLoaderRoute: typeof KnowledgeDomainsDomainRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/documentation/domains/$domain': {
+      id: '/documentation/domains/$domain'
+      path: '/documentation/domains/$domain'
+      fullPath: '/documentation/domains/$domain'
+      preLoaderRoute: typeof DocumentationDomainsDomainRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/b/$boardId/work': {
       id: '/b/$boardId/work'
       path: '/work'
       fullPath: '/b/$boardId/work'
       preLoaderRoute: typeof BBoardIdWorkRouteImport
+      parentRoute: typeof BBoardIdRoute
+    }
+    '/b/$boardId/search': {
+      id: '/b/$boardId/search'
+      path: '/search'
+      fullPath: '/b/$boardId/search'
+      preLoaderRoute: typeof BBoardIdSearchRouteImport
       parentRoute: typeof BBoardIdRoute
     }
     '/b/$boardId/priority': {
@@ -454,6 +683,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BBoardIdAgentsRouteImport
       parentRoute: typeof BBoardIdRoute
     }
+    '/b/$boardId/work/': {
+      id: '/b/$boardId/work/'
+      path: '/'
+      fullPath: '/b/$boardId/work/'
+      preLoaderRoute: typeof BBoardIdWorkIndexRouteImport
+      parentRoute: typeof BBoardIdWorkRoute
+    }
     '/b/$boardId/tasks/': {
       id: '/b/$boardId/tasks/'
       path: '/tasks'
@@ -474,6 +710,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/b/$boardId/features/'
       preLoaderRoute: typeof BBoardIdFeaturesIndexRouteImport
       parentRoute: typeof BBoardIdRoute
+    }
+    '/b/$boardId/decisions/': {
+      id: '/b/$boardId/decisions/'
+      path: '/'
+      fullPath: '/b/$boardId/decisions/'
+      preLoaderRoute: typeof BBoardIdDecisionsIndexRouteImport
+      parentRoute: typeof BBoardIdDecisionsRoute
+    }
+    '/b/$boardId/work/$taskId': {
+      id: '/b/$boardId/work/$taskId'
+      path: '/$taskId'
+      fullPath: '/b/$boardId/work/$taskId'
+      preLoaderRoute: typeof BBoardIdWorkTaskIdRouteImport
+      parentRoute: typeof BBoardIdWorkRoute
     }
     '/b/$boardId/tasks/$taskId': {
       id: '/b/$boardId/tasks/$taskId'
@@ -496,19 +746,90 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BBoardIdFeaturesFeatureIdRouteImport
       parentRoute: typeof BBoardIdRoute
     }
+    '/b/$boardId/decisions/$decisionId': {
+      id: '/b/$boardId/decisions/$decisionId'
+      path: '/$decisionId'
+      fullPath: '/b/$boardId/decisions/$decisionId'
+      preLoaderRoute: typeof BBoardIdDecisionsDecisionIdRouteImport
+      parentRoute: typeof BBoardIdDecisionsRoute
+    }
+    '/b/$boardId/knowledge/domains/$domain': {
+      id: '/b/$boardId/knowledge/domains/$domain'
+      path: '/knowledge/domains/$domain'
+      fullPath: '/b/$boardId/knowledge/domains/$domain'
+      preLoaderRoute: typeof BBoardIdKnowledgeDomainsDomainRouteImport
+      parentRoute: typeof BBoardIdRoute
+    }
+    '/b/$boardId/documentation/domains/$domain': {
+      id: '/b/$boardId/documentation/domains/$domain'
+      path: '/documentation/domains/$domain'
+      fullPath: '/b/$boardId/documentation/domains/$domain'
+      preLoaderRoute: typeof BBoardIdDocumentationDomainsDomainRouteImport
+      parentRoute: typeof BBoardIdRoute
+    }
   }
 }
 
+interface DecisionsRouteChildren {
+  DecisionsDecisionIdRoute: typeof DecisionsDecisionIdRoute
+}
+
+const DecisionsRouteChildren: DecisionsRouteChildren = {
+  DecisionsDecisionIdRoute: DecisionsDecisionIdRoute,
+}
+
+const DecisionsRouteWithChildren = DecisionsRoute._addFileChildren(
+  DecisionsRouteChildren,
+)
+
+interface WorkRouteChildren {
+  WorkTaskIdRoute: typeof WorkTaskIdRoute
+}
+
+const WorkRouteChildren: WorkRouteChildren = {
+  WorkTaskIdRoute: WorkTaskIdRoute,
+}
+
+const WorkRouteWithChildren = WorkRoute._addFileChildren(WorkRouteChildren)
+
+interface BBoardIdDecisionsRouteChildren {
+  BBoardIdDecisionsDecisionIdRoute: typeof BBoardIdDecisionsDecisionIdRoute
+  BBoardIdDecisionsIndexRoute: typeof BBoardIdDecisionsIndexRoute
+}
+
+const BBoardIdDecisionsRouteChildren: BBoardIdDecisionsRouteChildren = {
+  BBoardIdDecisionsDecisionIdRoute: BBoardIdDecisionsDecisionIdRoute,
+  BBoardIdDecisionsIndexRoute: BBoardIdDecisionsIndexRoute,
+}
+
+const BBoardIdDecisionsRouteWithChildren =
+  BBoardIdDecisionsRoute._addFileChildren(BBoardIdDecisionsRouteChildren)
+
+interface BBoardIdWorkRouteChildren {
+  BBoardIdWorkTaskIdRoute: typeof BBoardIdWorkTaskIdRoute
+  BBoardIdWorkIndexRoute: typeof BBoardIdWorkIndexRoute
+}
+
+const BBoardIdWorkRouteChildren: BBoardIdWorkRouteChildren = {
+  BBoardIdWorkTaskIdRoute: BBoardIdWorkTaskIdRoute,
+  BBoardIdWorkIndexRoute: BBoardIdWorkIndexRoute,
+}
+
+const BBoardIdWorkRouteWithChildren = BBoardIdWorkRoute._addFileChildren(
+  BBoardIdWorkRouteChildren,
+)
+
 interface BBoardIdRouteChildren {
   BBoardIdAgentsRoute: typeof BBoardIdAgentsRoute
-  BBoardIdDecisionsRoute: typeof BBoardIdDecisionsRoute
+  BBoardIdDecisionsRoute: typeof BBoardIdDecisionsRouteWithChildren
   BBoardIdDesignRoute: typeof BBoardIdDesignRoute
   BBoardIdEvidenceRoute: typeof BBoardIdEvidenceRoute
   BBoardIdLogRoute: typeof BBoardIdLogRoute
   BBoardIdMapRoute: typeof BBoardIdMapRoute
   BBoardIdOpsRoute: typeof BBoardIdOpsRoute
   BBoardIdPriorityRoute: typeof BBoardIdPriorityRoute
-  BBoardIdWorkRoute: typeof BBoardIdWorkRoute
+  BBoardIdSearchRoute: typeof BBoardIdSearchRoute
+  BBoardIdWorkRoute: typeof BBoardIdWorkRouteWithChildren
   BBoardIdIndexRoute: typeof BBoardIdIndexRoute
   BBoardIdFeaturesFeatureIdRoute: typeof BBoardIdFeaturesFeatureIdRoute
   BBoardIdProjectsProjectIdRoute: typeof BBoardIdProjectsProjectIdRoute
@@ -516,18 +837,21 @@ interface BBoardIdRouteChildren {
   BBoardIdFeaturesIndexRoute: typeof BBoardIdFeaturesIndexRoute
   BBoardIdProjectsIndexRoute: typeof BBoardIdProjectsIndexRoute
   BBoardIdTasksIndexRoute: typeof BBoardIdTasksIndexRoute
+  BBoardIdDocumentationDomainsDomainRoute: typeof BBoardIdDocumentationDomainsDomainRoute
+  BBoardIdKnowledgeDomainsDomainRoute: typeof BBoardIdKnowledgeDomainsDomainRoute
 }
 
 const BBoardIdRouteChildren: BBoardIdRouteChildren = {
   BBoardIdAgentsRoute: BBoardIdAgentsRoute,
-  BBoardIdDecisionsRoute: BBoardIdDecisionsRoute,
+  BBoardIdDecisionsRoute: BBoardIdDecisionsRouteWithChildren,
   BBoardIdDesignRoute: BBoardIdDesignRoute,
   BBoardIdEvidenceRoute: BBoardIdEvidenceRoute,
   BBoardIdLogRoute: BBoardIdLogRoute,
   BBoardIdMapRoute: BBoardIdMapRoute,
   BBoardIdOpsRoute: BBoardIdOpsRoute,
   BBoardIdPriorityRoute: BBoardIdPriorityRoute,
-  BBoardIdWorkRoute: BBoardIdWorkRoute,
+  BBoardIdSearchRoute: BBoardIdSearchRoute,
+  BBoardIdWorkRoute: BBoardIdWorkRouteWithChildren,
   BBoardIdIndexRoute: BBoardIdIndexRoute,
   BBoardIdFeaturesFeatureIdRoute: BBoardIdFeaturesFeatureIdRoute,
   BBoardIdProjectsProjectIdRoute: BBoardIdProjectsProjectIdRoute,
@@ -535,6 +859,9 @@ const BBoardIdRouteChildren: BBoardIdRouteChildren = {
   BBoardIdFeaturesIndexRoute: BBoardIdFeaturesIndexRoute,
   BBoardIdProjectsIndexRoute: BBoardIdProjectsIndexRoute,
   BBoardIdTasksIndexRoute: BBoardIdTasksIndexRoute,
+  BBoardIdDocumentationDomainsDomainRoute:
+    BBoardIdDocumentationDomainsDomainRoute,
+  BBoardIdKnowledgeDomainsDomainRoute: BBoardIdKnowledgeDomainsDomainRoute,
 }
 
 const BBoardIdRouteWithChildren = BBoardIdRoute._addFileChildren(
@@ -543,13 +870,18 @@ const BBoardIdRouteWithChildren = BBoardIdRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  DecisionsRoute: DecisionsRouteWithChildren,
   LoginRoute: LoginRoute,
   McpRoute: McpRoute,
+  SearchRoute: SearchRoute,
+  WorkRoute: WorkRouteWithChildren,
   AdminUsersRoute: AdminUsersRoute,
   ApiAccountsRoute: ApiAccountsRoute,
   ApiHealthzRoute: ApiHealthzRoute,
   ApiPublicSnapshotRoute: ApiPublicSnapshotRoute,
   BBoardIdRoute: BBoardIdRouteWithChildren,
+  DocumentationDomainsDomainRoute: DocumentationDomainsDomainRoute,
+  KnowledgeDomainsDomainRoute: KnowledgeDomainsDomainRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

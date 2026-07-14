@@ -1,5 +1,7 @@
 export { DecisionsScreen } from './DecisionsScreen'
 export { DecisionCard } from './DecisionCard'
+export { DecisionDetailScreen } from './DecisionDetailScreen'
+export type { DecisionDetailScreenProps } from './DecisionDetailScreen'
 export {
   decisionActionAvailability,
   decisionMutationRevs,

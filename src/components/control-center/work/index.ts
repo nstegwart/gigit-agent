@@ -36,6 +36,7 @@ export {
   encodeWorkDeepLink,
   workDeepLinkPath,
   isPrimaryBucket,
+  normalizeWorkBucketToken,
 } from './deepLink'
 export type { WorkSearchParamsLike } from './deepLink'
 

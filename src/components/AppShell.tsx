@@ -53,7 +53,8 @@ const NAV: Array<NavItem | { sep: true; label: string }> = [
 
 /**
  * Nine primary IA destinations for control-center boards (UI_CONTRACT §2).
- * Exact label order for mfs-rebuild (and any control-center board).
+ * Exact English label order for mfs-rebuild (and any control-center board).
+ * id-ID human aliases are aria/title only — nine IA remains reachable.
  * Task/map/design/log remain reachable as drill-downs / compatibility paths.
  */
 export const CONTROL_CENTER_NAV_LABELS = [
@@ -67,6 +68,22 @@ export const CONTROL_CENTER_NAV_LABELS = [
   'Decisions',
   'Evidence / Audit',
 ] as const
+
+/** id-ID human chrome aliases (ART); never replaces CONTROL_CENTER_NAV_LABELS order. */
+export const CONTROL_CENTER_NAV_LABELS_ID: Record<
+  (typeof CONTROL_CENTER_NAV_LABELS)[number],
+  string
+> = {
+  Overview: 'Ringkasan',
+  Work: 'Pekerjaan',
+  Priority: 'Prioritas',
+  Projects: 'Proyek',
+  'Features / Flows': 'Fitur / Alur',
+  'Agents / Runs': 'Agen / Run',
+  'Ops / Accounts': 'Operasi / Akun',
+  Decisions: 'Keputusan',
+  'Evidence / Audit': 'Bukti / Audit',
+}
 
 const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
   {
@@ -157,6 +174,25 @@ const SECTION_TITLE: Record<string, string> = {
   ops: 'Ops / Accounts',
   prod: 'Path to production',
   guide: 'Guide',
+  knowledge: 'Pengetahuan',
+  search: 'Pencarian',
+  documentation: 'Dokumentasi',
+}
+
+const SECTION_TITLE_ID: Record<string, string> = {
+  overview: 'Ringkasan',
+  work: 'Pekerjaan',
+  priority: 'Prioritas',
+  projects: 'Proyek',
+  features: 'Fitur / Alur',
+  agents: 'Agen / Run',
+  ops: 'Operasi / Akun',
+  decisions: 'Keputusan',
+  evidence: 'Bukti / Audit',
+  knowledge: 'Pengetahuan',
+  search: 'Pencarian',
+  documentation: 'Dokumentasi',
+  tasks: 'Tugas',
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -188,6 +224,17 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   // board-relative path (strip the /b/<id> scope) for nav matching + breadcrumbs
   const sub = pathname.replace(/^\/b\/[^/]+/, '') || '/'
+
+  // ART top-level aliases may appear without /b/ prefix when tests hit paths directly
+  const subForMatch = (() => {
+    if (pathname.startsWith('/b/')) return sub
+    if (pathname.startsWith('/work')) return pathname
+    if (pathname.startsWith('/decisions')) return pathname
+    if (pathname.startsWith('/knowledge')) return pathname
+    if (pathname.startsWith('/search')) return pathname
+    if (pathname.startsWith('/documentation')) return pathname
+    return sub
+  })()
 
   // mfs-rebuild (CC boards): IA badges read pinned envelope counts via shared query
   // cache (same keys as Overview/Features surfaces). No client recompute of readiness
@@ -248,16 +295,27 @@ export function AppShell({ children }: { children: ReactNode }) {
   ])
 
   const activeItem =
-    (navSource.find((n) => !('sep' in n) && (n as NavItem).match(sub)) as NavItem | undefined) ??
+    (navSource.find(
+      (n) => !('sep' in n) && (n as NavItem).match(subForMatch),
+    ) as NavItem | undefined) ??
     (navSource.find((n) => !('sep' in n)) as NavItem)
-  const section = activeItem?.id ?? (controlCenter ? 'overview' : 'board')
+  let section = activeItem?.id ?? (controlCenter ? 'overview' : 'board')
+  // Knowledge / search / documentation are ART drill-downs (not 10th nav items).
+  if (subForMatch.startsWith('/knowledge')) section = 'knowledge'
+  else if (subForMatch.startsWith('/search')) section = 'search'
+  else if (subForMatch.startsWith('/documentation')) section = 'documentation'
+  else if (subForMatch.startsWith('/work/') && subForMatch !== '/work') section = 'work'
 
   let crumb = ''
   const projMatch = sub.match(/^\/projects\/(.+)$/)
   const featMatch = sub.match(/^\/features\/(.+)$/)
   if (projMatch) crumb = m.projById[decodeURIComponent(projMatch[1])]?.nama ?? 'Project'
   else if (featMatch) crumb = m.featById[decodeURIComponent(featMatch[1])]?.nama ?? 'Feature'
-  const baseTitle = SECTION_TITLE[section] ?? (controlCenter ? 'Overview' : 'Board')
+  const baseTitleEn = SECTION_TITLE[section] ?? (controlCenter ? 'Overview' : 'Board')
+  const baseTitleId = SECTION_TITLE_ID[section]
+  const baseTitle = baseTitleId
+    ? `${baseTitleEn} · ${baseTitleId}`
+    : baseTitleEn
 
   return (
     <div
@@ -292,9 +350,22 @@ export function AppShell({ children }: { children: ReactNode }) {
               <BoardLink
                 key={n.id}
                 to={n.to}
-                className={`nav-item ${n.match(sub) ? 'active' : ''}`}
+                className={`nav-item ${n.match(subForMatch) ? 'active' : ''}`}
                 aria-label={n.label}
+                title={
+                  controlCenter && n.label in CONTROL_CENTER_NAV_LABELS_ID
+                    ? `${n.label} · ${CONTROL_CENTER_NAV_LABELS_ID[n.label as keyof typeof CONTROL_CENTER_NAV_LABELS_ID]}`
+                    : n.label
+                }
                 data-nav-id={n.id}
+                data-nav-label-en={n.label}
+                data-nav-label-id={
+                  controlCenter && n.label in CONTROL_CENTER_NAV_LABELS_ID
+                    ? CONTROL_CENTER_NAV_LABELS_ID[
+                        n.label as keyof typeof CONTROL_CENTER_NAV_LABELS_ID
+                      ]
+                    : undefined
+                }
               >
                 <Icon name={n.icon} size={17} className="nav-ico" />
                 <span className="lbl">{n.label}</span>
@@ -393,9 +464,9 @@ function BoardSwitcher({ boardId }: { boardId: string }) {
             </Link>
           ))}
           <div className="nav-sep" aria-hidden="true" />
-          <Link to="/" className="switcher-item" onClick={() => setOpen(false)}>
+          <a href="/?boards=1" className="switcher-item" onClick={() => setOpen(false)}>
             <Icon name="layers" size={14} /> All boards
-          </Link>
+          </a>
         </div>
       ) : null}
     </div>

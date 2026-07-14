@@ -8,7 +8,7 @@ import {
   coerceWorkSearchString,
   parseWorkRouteSearch,
   workSearchSchema,
-} from '#/routes/b.$boardId.work'
+} from '#/routes/b.$boardId.work.index'
 import { parseWorkDeepLink } from '#/components/control-center/work'
 
 describe('coerceWorkSearchString', () => {

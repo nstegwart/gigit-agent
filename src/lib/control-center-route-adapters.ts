@@ -13,6 +13,7 @@ import {
   type PriorityData,
   type EvidenceData,
   type DecisionsData,
+  type UiSurfaceState,
 } from '#/lib/control-center-query'
 import type {
   OverviewProps,
@@ -546,6 +547,34 @@ function resolveWorkTaskHash(
   return ''
 }
 
+/**
+ * S24 display-layer text match over already-projected work rows.
+ * Never invents buckets; only narrows the served page for ?query=.
+ */
+export function matchWorkItemTextQuery(
+  item: Pick<
+    WorkItemRow,
+    'taskId' | 'title' | 'projectId' | 'featureContractId' | 'ownerPrimaryTitle' | 'statusSentence'
+  > & { ownerHumanDisplay?: { ownerPrimaryTitle?: string | null } | null },
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  const hay = [
+    item.taskId,
+    item.title,
+    item.projectId,
+    item.featureContractId,
+    item.ownerPrimaryTitle,
+    item.statusSentence,
+    item.ownerHumanDisplay?.ownerPrimaryTitle,
+  ]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .join('\n')
+    .toLowerCase()
+  return hay.includes(q)
+}
+
 /** WorkData envelope → WorkScreen props (controlled filter from route). */
 export function workEnvelopeToProps(
   envelope: PinnedEnvelope<WorkData | null> | null | undefined,
@@ -565,6 +594,11 @@ export function workEnvelopeToProps(
       boardRev?: number | null
       lifecycleRev?: number | null
     } | null
+    /**
+     * S24 free-text query (`?query=`). Filters projected rows only;
+     * empty match forces zero-results (never invents membership).
+     */
+    textQuery?: string | null
     onBucketChange?: (bucket: PrimaryBucket) => void
     onStaleOverlayChange?: (active: boolean) => void
     onNextPage?: () => void
@@ -582,7 +616,10 @@ export function workEnvelopeToProps(
 
   if (!envelope || !envelope.data) {
     return {
-      state,
+      state:
+        opts.textQuery && opts.textQuery.trim().length > 0 && state === 'empty'
+          ? 'zero-results'
+          : state,
       boardId: opts.boardId,
       activeBucket: opts.activeBucket,
       staleOverlayActive: opts.staleOverlayActive,
@@ -623,7 +660,7 @@ export function workEnvelopeToProps(
     ]),
   )
 
-  const items = d.items.map((row) => {
+  const mapped = d.items.map((row) => {
     const bucket = (row.bucket ?? opts.activeBucket) as PrimaryBucket
     const join = ongoingByTask.get(row.taskId)
     const nextWhy = nextReasonByTask.get(row.taskId)
@@ -655,7 +692,8 @@ export function workEnvelopeToProps(
             claimState,
           }
         : null,
-      detailHref: `/b/${encodeURIComponent(opts.boardId)}/tasks/${encodeURIComponent(row.taskId)}`,
+      // Board-scoped ART task detail (top-level /work/$taskId aliases here).
+      detailHref: `/b/${encodeURIComponent(opts.boardId)}/work/${encodeURIComponent(row.taskId)}`,
       ownerHumanDisplay: hd,
       ownerPrimaryTitle: hd?.ownerPrimaryTitle ?? null,
       statusSentence: hd?.statusSentence ?? null,
@@ -680,8 +718,25 @@ export function workEnvelopeToProps(
     }
   >
 
+  const textQuery =
+    typeof opts.textQuery === 'string' && opts.textQuery.trim().length > 0
+      ? opts.textQuery.trim()
+      : null
+  const items = textQuery
+    ? mapped.filter((row) => matchWorkItemTextQuery(row, textQuery))
+    : mapped
+
+  let resolvedState = state
+  if (
+    textQuery &&
+    items.length === 0 &&
+    (state === 'populated' || state === 'empty' || state === 'zero-results')
+  ) {
+    resolvedState = 'zero-results'
+  }
+
   return {
-    state,
+    state: resolvedState,
     boardId: opts.boardId,
     activeBucket: opts.activeBucket,
     bucketCounts,
@@ -1127,5 +1182,467 @@ export function pinIdentityFromEnvelope(
     boardRev: envelope.boardRev,
     lifecycleRev: envelope.lifecycleRev,
     generatedAt: envelope.generatedAt,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ART task detail / decision detail / knowledge / search / documentation
+// Presentation-only — never invent readiness or fake domain coverage.
+// ---------------------------------------------------------------------------
+
+export type TaskDetailMode = 'human' | 'technical'
+
+export type TaskDetailViewModel = {
+  surfaceState: UiSurfaceState | 'loading' | 'error' | 'forbidden' | 'zero-results'
+  boardId: string
+  taskId: string
+  mode: TaskDetailMode
+  /** Owner primary title (fail-closed CONTENT_REVIEW_REQUIRED). */
+  ownerPrimaryTitle: string
+  statusSentence: string
+  ownerAction: string
+  whyItMatters: string
+  next: string
+  blocker: string
+  contentReviewRequired: boolean
+  effectiveReviewStatus: string
+  /** Technical fields — demoted; shown only in mode=technical. */
+  technicalTitle: string
+  projectId: string | null
+  featureId: string | null
+  bucket: string | null
+  overlays: ReadonlyArray<string>
+  blockReason: string | null
+  lifecycleStage: string | null
+  targetGate: string | null
+  claimState: string | null
+  pin: {
+    canonicalSnapshotId: string
+    canonicalHash: string
+    boardRev: number
+    lifecycleRev: number
+    stale: boolean
+    staleReason: string | null
+  } | null
+  error: { code: string; message: string } | null
+  workHref: string
+  technicalHref: string
+  humanHref: string
+}
+
+export function taskDetailEnvelopeToViewModel(
+  envelope: PinnedEnvelope<unknown> | null | undefined,
+  opts: { boardId: string; taskId: string; mode?: TaskDetailMode | null },
+): TaskDetailViewModel {
+  const mode: TaskDetailMode = opts.mode === 'technical' ? 'technical' : 'human'
+  const humanHref = `/work/${encodeURIComponent(opts.taskId)}`
+  const technicalHref = `/work/${encodeURIComponent(opts.taskId)}?mode=technical`
+  const workHref = `/work`
+
+  if (!envelope || envelope.data == null) {
+    const surfaceState = resolveClientSurfaceState(
+      envelope as PinnedEnvelope<unknown> | null | undefined,
+    )
+    return {
+      surfaceState:
+        surfaceState === 'error' || surfaceState === 'forbidden'
+          ? surfaceState
+          : 'zero-results',
+      boardId: opts.boardId,
+      taskId: opts.taskId,
+      mode,
+      ownerPrimaryTitle: '',
+      statusSentence: '',
+      ownerAction: '',
+      whyItMatters: '',
+      next: '',
+      blocker: '',
+      contentReviewRequired: true,
+      effectiveReviewStatus: 'CONTENT_REVIEW_REQUIRED',
+      technicalTitle: opts.taskId,
+      projectId: null,
+      featureId: null,
+      bucket: null,
+      overlays: [],
+      blockReason: null,
+      lifecycleStage: null,
+      targetGate: null,
+      claimState: null,
+      pin: envelope
+        ? {
+            canonicalSnapshotId: envelope.canonicalSnapshotId,
+            canonicalHash: envelope.canonicalHash,
+            boardRev: envelope.boardRev,
+            lifecycleRev: envelope.lifecycleRev,
+            stale: envelope.stale,
+            staleReason: envelope.staleReason,
+          }
+        : null,
+      error: envelope?.error
+        ? { code: envelope.error.code, message: envelope.error.message }
+        : { code: 'NOT_FOUND', message: 'Task not found in pinned work set' },
+      workHref,
+      technicalHref,
+      humanHref,
+    }
+  }
+
+  const raw = envelope.data as Record<string, unknown>
+  const hd = mapOwnerHumanDisplayView(raw.ownerHumanDisplay)
+  const overlays = Array.isArray(raw.overlays)
+    ? raw.overlays.map((o) => String(o))
+    : []
+
+  return {
+    surfaceState: envelope.surfaceState,
+    boardId: opts.boardId,
+    taskId: String(raw.taskId ?? opts.taskId),
+    mode,
+    ownerPrimaryTitle: hd?.ownerPrimaryTitle ?? '',
+    statusSentence: hd?.statusSentence ?? '',
+    ownerAction: hd?.ownerAction ?? '',
+    whyItMatters: hd?.whyItMatters ?? '',
+    next: hd?.next ?? '',
+    blocker: hd?.blocker ?? '',
+    contentReviewRequired: hd?.contentReviewRequired ?? true,
+    effectiveReviewStatus: hd?.effectiveReviewStatus ?? 'CONTENT_REVIEW_REQUIRED',
+    technicalTitle: String(raw.technicalTitle ?? raw.taskId ?? opts.taskId),
+    projectId: typeof raw.projectId === 'string' ? raw.projectId : null,
+    featureId: typeof raw.featureId === 'string' ? raw.featureId : null,
+    bucket: typeof raw.bucket === 'string' ? raw.bucket : null,
+    overlays,
+    blockReason: typeof raw.blockReason === 'string' ? raw.blockReason : null,
+    lifecycleStage: typeof raw.lifecycleStage === 'string' ? raw.lifecycleStage : null,
+    targetGate: typeof raw.targetGate === 'string' ? raw.targetGate : null,
+    claimState: typeof raw.claimState === 'string' ? raw.claimState : null,
+    pin: {
+      canonicalSnapshotId: envelope.canonicalSnapshotId,
+      canonicalHash: envelope.canonicalHash,
+      boardRev: envelope.boardRev,
+      lifecycleRev: envelope.lifecycleRev,
+      stale: envelope.stale,
+      staleReason: envelope.staleReason,
+    },
+    error: envelope.error
+      ? { code: envelope.error.code, message: envelope.error.message }
+      : null,
+    workHref,
+    technicalHref,
+    humanHref,
+  }
+}
+
+export type DecisionDetailViewModel = {
+  surfaceState: UiSurfaceState | 'loading' | 'error' | 'forbidden' | 'zero-results'
+  boardId: string
+  decisionId: string
+  item: DecisionItemView | null
+  pin: {
+    canonicalSnapshotId: string
+    canonicalHash: string
+    boardRev: number
+    lifecycleRev: number
+    stale: boolean
+    staleReason: string | null
+  } | null
+  error: { code: string; message: string } | null
+  listHref: string
+}
+
+/** Pick one decision from a decisions envelope by id (no reordering). */
+export function decisionDetailFromEnvelope(
+  envelope: PinnedEnvelope<DecisionsData | null> | null | undefined,
+  opts: { boardId: string; decisionId: string },
+): DecisionDetailViewModel {
+  const listHref = '/decisions'
+  if (!envelope || !envelope.data) {
+    return {
+      surfaceState: resolveClientSurfaceState(
+        envelope as PinnedEnvelope<unknown> | null | undefined,
+      ) as DecisionDetailViewModel['surfaceState'],
+      boardId: opts.boardId,
+      decisionId: opts.decisionId,
+      item: null,
+      pin: null,
+      error: envelope?.error
+        ? { code: envelope.error.code, message: envelope.error.message }
+        : { code: 'NO_DATA', message: 'Decisions envelope unavailable' },
+      listHref,
+    }
+  }
+  const props = decisionsEnvelopeToProps(envelope, {})
+  const item =
+    props.items.find(
+      (d) => d.decisionId === opts.decisionId || (d as { id?: string }).id === opts.decisionId,
+    ) ?? null
+  return {
+    surfaceState: item ? props.surfaceState : 'zero-results',
+    boardId: opts.boardId,
+    decisionId: opts.decisionId,
+    item,
+    pin: props.pin
+      ? {
+          canonicalSnapshotId: props.pin.canonicalSnapshotId,
+          canonicalHash: props.pin.canonicalHash,
+          boardRev: props.pin.boardRev,
+          lifecycleRev: props.pin.lifecycleRev,
+          stale: props.pin.stale,
+          staleReason: props.pin.staleReason,
+        }
+      : null,
+    error: item
+      ? null
+      : { code: 'NOT_FOUND', message: 'Decision not found in pinned inbox' },
+    listHref,
+  }
+}
+
+export type KnowledgeDomainViewModel = {
+  surfaceState: UiSurfaceState | 'loading' | 'error' | 'forbidden' | 'partial' | 'zero-results'
+  boardId: string
+  domain: string
+  availability: 'available' | 'partial' | 'unavailable'
+  title: string
+  summary: string
+  projects: ReadonlyArray<{ id: string; name: string | null; taskCount: number }>
+  features: ReadonlyArray<{ id: string; name: string | null }>
+  tasks: ReadonlyArray<{
+    taskId: string
+    title: string
+    bucket: string | null
+    ownerPrimaryTitle: string | null
+  }>
+  decisions: ReadonlyArray<{ decisionId: string; title: string; status: string }>
+  evidence: ReadonlyArray<{ id: string; kind: string; summary: string }>
+  gaps: ReadonlyArray<string>
+  pin: {
+    canonicalSnapshotId: string
+    canonicalHash: string
+    boardRev: number
+    lifecycleRev: number
+    stale: boolean
+    staleReason: string | null
+  } | null
+  error: { code: string; message: string } | null
+}
+
+export function knowledgeDomainEnvelopeToViewModel(
+  envelope: PinnedEnvelope<unknown> | null | undefined,
+  opts: { boardId: string; domain: string },
+): KnowledgeDomainViewModel {
+  if (!envelope || envelope.data == null) {
+    return {
+      surfaceState: resolveClientSurfaceState(
+        envelope as PinnedEnvelope<unknown> | null | undefined,
+      ),
+      boardId: opts.boardId,
+      domain: opts.domain,
+      availability: 'unavailable',
+      title: opts.domain,
+      summary: 'Data domain knowledge tidak tersedia dari pin saat ini.',
+      projects: [],
+      features: [],
+      tasks: [],
+      decisions: [],
+      evidence: [],
+      gaps: ['NO_PINNED_DOMAIN_DATA'],
+      pin: null,
+      error: envelope?.error
+        ? { code: envelope.error.code, message: envelope.error.message }
+        : { code: 'UNAVAILABLE', message: 'Domain knowledge unavailable' },
+    }
+  }
+  const raw = envelope.data as Record<string, unknown>
+  const availabilityRaw = String(raw.availability ?? 'unavailable')
+  const availability =
+    availabilityRaw === 'available' || availabilityRaw === 'partial'
+      ? availabilityRaw
+      : 'unavailable'
+  return {
+    surfaceState: (raw.surfaceState as KnowledgeDomainViewModel['surfaceState']) ??
+      envelope.surfaceState,
+    boardId: opts.boardId,
+    domain: String(raw.domain ?? opts.domain),
+    availability,
+    title: String(raw.title ?? opts.domain),
+    summary: String(raw.summary ?? ''),
+    projects: Array.isArray(raw.projects)
+      ? (raw.projects as KnowledgeDomainViewModel['projects'])
+      : [],
+    features: Array.isArray(raw.features)
+      ? (raw.features as KnowledgeDomainViewModel['features'])
+      : [],
+    tasks: Array.isArray(raw.tasks) ? (raw.tasks as KnowledgeDomainViewModel['tasks']) : [],
+    decisions: Array.isArray(raw.decisions)
+      ? (raw.decisions as KnowledgeDomainViewModel['decisions'])
+      : [],
+    evidence: Array.isArray(raw.evidence)
+      ? (raw.evidence as KnowledgeDomainViewModel['evidence'])
+      : [],
+    gaps: Array.isArray(raw.gaps) ? raw.gaps.map((g) => String(g)) : [],
+    pin: {
+      canonicalSnapshotId: envelope.canonicalSnapshotId,
+      canonicalHash: envelope.canonicalHash,
+      boardRev: envelope.boardRev,
+      lifecycleRev: envelope.lifecycleRev,
+      stale: envelope.stale,
+      staleReason: envelope.staleReason,
+    },
+    error: envelope.error
+      ? { code: envelope.error.code, message: envelope.error.message }
+      : null,
+  }
+}
+
+export type SearchResultViewModel = {
+  surfaceState: UiSurfaceState | 'loading' | 'error' | 'forbidden' | 'zero-results'
+  boardId: string
+  query: string
+  results: ReadonlyArray<{
+    kind: 'task' | 'project' | 'feature' | 'decision' | 'evidence'
+    id: string
+    title: string
+    subtitle: string | null
+    href: string
+    technicalAlias: string | null
+  }>
+  pin: {
+    canonicalSnapshotId: string
+    canonicalHash: string
+    boardRev: number
+    lifecycleRev: number
+    stale: boolean
+    staleReason: string | null
+  } | null
+  error: { code: string; message: string } | null
+}
+
+export function searchEnvelopeToViewModel(
+  envelope: PinnedEnvelope<unknown> | null | undefined,
+  opts: { boardId: string; query: string },
+): SearchResultViewModel {
+  if (!envelope || envelope.data == null) {
+    return {
+      surfaceState: resolveClientSurfaceState(
+        envelope as PinnedEnvelope<unknown> | null | undefined,
+      ),
+      boardId: opts.boardId,
+      query: opts.query,
+      results: [],
+      pin: null,
+      error: envelope?.error
+        ? { code: envelope.error.code, message: envelope.error.message }
+        : null,
+    }
+  }
+  const raw = envelope.data as Record<string, unknown>
+  const results = Array.isArray(raw.results)
+    ? (raw.results as SearchResultViewModel['results'])
+    : []
+  const q = opts.query.trim()
+  let surfaceState = envelope.surfaceState as SearchResultViewModel['surfaceState']
+  if (q.length > 0 && results.length === 0 && surfaceState === 'populated') {
+    surfaceState = 'zero-results'
+  }
+  if (q.length === 0) {
+    surfaceState = 'empty'
+  }
+  return {
+    surfaceState,
+    boardId: opts.boardId,
+    query: String(raw.query ?? opts.query),
+    results,
+    pin: {
+      canonicalSnapshotId: envelope.canonicalSnapshotId,
+      canonicalHash: envelope.canonicalHash,
+      boardRev: envelope.boardRev,
+      lifecycleRev: envelope.lifecycleRev,
+      stale: envelope.stale,
+      staleReason: envelope.staleReason,
+    },
+    error: envelope.error
+      ? { code: envelope.error.code, message: envelope.error.message }
+      : null,
+  }
+}
+
+export type DocumentationDomainViewModel = {
+  surfaceState: UiSurfaceState | 'loading' | 'error' | 'forbidden' | 'partial' | 'zero-results'
+  boardId: string
+  domain: string
+  availability: 'available' | 'partial' | 'unavailable'
+  title: string
+  bodyMarkdown: string
+  citations: ReadonlyArray<{ field: string; path: string; note?: string }>
+  gaps: ReadonlyArray<string>
+  pin: {
+    canonicalSnapshotId: string
+    canonicalHash: string
+    boardRev: number
+    lifecycleRev: number
+    stale: boolean
+    staleReason: string | null
+  } | null
+  error: { code: string; message: string } | null
+}
+
+export function documentationDomainEnvelopeToViewModel(
+  envelope: PinnedEnvelope<unknown> | null | undefined,
+  opts: { boardId: string; domain: string },
+): DocumentationDomainViewModel {
+  if (!envelope || envelope.data == null) {
+    return {
+      surfaceState: resolveClientSurfaceState(
+        envelope as PinnedEnvelope<unknown> | null | undefined,
+      ),
+      boardId: opts.boardId,
+      domain: opts.domain,
+      availability: 'unavailable',
+      title: opts.domain,
+      bodyMarkdown: '',
+      citations: [],
+      gaps: ['NO_PINNED_DOCUMENTATION'],
+      pin: null,
+      error: envelope?.error
+        ? { code: envelope.error.code, message: envelope.error.message }
+        : { code: 'UNAVAILABLE', message: 'Documentation unavailable' },
+    }
+  }
+  const raw = envelope.data as Record<string, unknown>
+  const availabilityRaw = String(raw.availability ?? 'unavailable')
+  const availability =
+    availabilityRaw === 'available' || availabilityRaw === 'partial'
+      ? availabilityRaw
+      : 'unavailable'
+  const citations = Array.isArray(raw.citations)
+    ? raw.citations.map((c) => {
+        const row = (c ?? {}) as Record<string, unknown>
+        return {
+          field: String(row.field ?? ''),
+          path: String(row.path ?? ''),
+          note: typeof row.note === 'string' ? row.note : undefined,
+        }
+      })
+    : []
+  return {
+    surfaceState: envelope.surfaceState,
+    boardId: opts.boardId,
+    domain: String(raw.domain ?? opts.domain),
+    availability,
+    title: String(raw.title ?? opts.domain),
+    bodyMarkdown: String(raw.bodyMarkdown ?? ''),
+    citations,
+    gaps: Array.isArray(raw.gaps) ? raw.gaps.map((g) => String(g)) : [],
+    pin: {
+      canonicalSnapshotId: envelope.canonicalSnapshotId,
+      canonicalHash: envelope.canonicalHash,
+      boardRev: envelope.boardRev,
+      lifecycleRev: envelope.lifecycleRev,
+      stale: envelope.stale,
+      staleReason: envelope.staleReason,
+    },
+    error: envelope.error
+      ? { code: envelope.error.code, message: envelope.error.message }
+      : null,
   }
 }

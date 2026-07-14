@@ -165,7 +165,7 @@ export interface WorkPageState {
   hasPrev?: boolean
 }
 
-/** Deep-link filter state (UI_CONTRACT §6) — boardId, bucket, overlay, cursor, pin. */
+/** Deep-link filter state (UI_CONTRACT §6) — boardId, bucket, overlay, cursor, pin, query. */
 export interface WorkDeepLinkFilters {
   boardId: string
   bucket: PrimaryBucket
@@ -176,6 +176,11 @@ export interface WorkDeepLinkFilters {
   cursor: string | null
   /** Pinned revision as served (display + pin transport). */
   pinned: PinnedRevisionTuple | null
+  /**
+   * S24 free-text query (`?query=`). Display-layer filter only;
+   * never invents bucket membership. Empty match → zero-results.
+   */
+  query?: string | null
 }
 
 /** Bucket tab counts from the pinned common envelope (server rollup). */

@@ -18,10 +18,25 @@ export interface WorkSearchParamsLike {
   canonicalSnapshotId?: string | null
   canonicalHash?: string | null
   taskHash?: string | null
+  /** S24 free-text work query (client display filter; server re-validates membership). */
+  query?: string | null
+}
+
+/**
+ * S08: ART token RECONCILIATION maps to product primary bucket RECONCILIATION_PENDING.
+ * Mirrors human-display normalizeStatusBucket — never invents a 7th primary tab.
+ */
+export function normalizeWorkBucketToken(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0) return null
+  const upper = value.toUpperCase()
+  if (upper === 'RECONCILIATION') return 'RECONCILIATION_PENDING'
+  return value
 }
 
 export function isPrimaryBucket(value: unknown): value is PrimaryBucket {
-  return typeof value === 'string' && BUCKET_SET.has(value)
+  if (typeof value !== 'string') return false
+  const normalized = normalizeWorkBucketToken(value)
+  return normalized != null && BUCKET_SET.has(normalized)
 }
 
 export function parseWorkDeepLink(
@@ -29,7 +44,11 @@ export function parseWorkDeepLink(
   params: WorkSearchParamsLike,
   defaults: { bucket?: PrimaryBucket } = {},
 ): WorkDeepLinkFilters {
-  const bucket = isPrimaryBucket(params.bucket) ? params.bucket : (defaults.bucket ?? 'ONGOING')
+  const normalizedBucket = normalizeWorkBucketToken(params.bucket)
+  const bucket =
+    normalizedBucket && isPrimaryBucket(normalizedBucket)
+      ? normalizedBucket
+      : (defaults.bucket ?? 'ONGOING')
   const staleRaw = params.stale
   const staleOverlay =
     staleRaw === '1' ||
@@ -61,6 +80,11 @@ export function parseWorkDeepLink(
     }
   }
 
+  const query =
+    typeof params.query === 'string' && params.query.trim().length > 0
+      ? params.query.trim()
+      : null
+
   return {
     boardId,
     bucket,
@@ -68,6 +92,7 @@ export function parseWorkDeepLink(
     overlayKind,
     cursor: params.cursor && params.cursor.length > 0 ? params.cursor : null,
     pinned,
+    query,
   }
 }
 
@@ -79,6 +104,7 @@ export function encodeWorkDeepLink(filters: WorkDeepLinkFilters): Record<string,
   if (filters.staleOverlay) out.stale = '1'
   if (filters.overlayKind) out.overlay = filters.overlayKind
   if (filters.cursor) out.cursor = filters.cursor
+  if (filters.query) out.query = filters.query
   if (filters.pinned) {
     out.boardRev = String(filters.pinned.boardRev)
     out.lifecycleRev = String(filters.pinned.lifecycleRev)
