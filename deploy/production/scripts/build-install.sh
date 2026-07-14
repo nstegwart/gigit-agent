@@ -46,11 +46,32 @@ else
   die "no pnpm-lock.yaml/package-lock.json or pnpm missing"
 fi
 
-echo "==> build (dist/client + dist/server)"
+echo "==> build (dist/client + dist/server + asset coherence assert)"
+# package.json "build" chains scripts/assert-build-assets.mjs --write-manifest.
+# Fail closed on SSR public /assets/* missing from dist/client (styles hash split class).
+# Do not "fix" by copying stale hashed files or disabling content hashes.
 if command -v pnpm >/dev/null 2>&1 && [[ -f pnpm-lock.yaml ]]; then
   run_or_dry "pnpm-build" pnpm build
 else
   run_or_dry "npm-build" npm run build
+fi
+
+if [[ "${PRODUCTION_DRY_RUN}" != "1" ]]; then
+  if [[ -f scripts/assert-build-assets.mjs ]]; then
+    echo "==> re-assert build assets (explicit gate before PM2 start)"
+    node scripts/assert-build-assets.mjs --write-manifest
+    if [[ -f dist/asset-coherence-manifest.json ]]; then
+      node -e '
+        const m=JSON.parse(require("fs").readFileSync("dist/asset-coherence-manifest.json","utf8"));
+        console.log("ASSET_COHERENCE_MANIFEST ok="+m.ok+" clientManifestHash="+String(m.clientManifestHash||"").slice(0,16)+"… assets="+m.clientAssetCount);
+        if (!m.ok) process.exit(1);
+      '
+    fi
+  else
+    die "scripts/assert-build-assets.mjs missing after build — cannot prove SSR↔client asset coherence"
+  fi
+else
+  echo "DRY_RUN_CMD: node scripts/assert-build-assets.mjs --write-manifest"
 fi
 
 echo "BUILD_INSTALL_OK sha=${APPROVED_FULL_SHA} root=${APP_ROOT}"

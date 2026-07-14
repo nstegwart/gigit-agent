@@ -140,10 +140,51 @@ Gate:
 Full compose lifecycle lives in `deploy/staging/README.md`:
 
 - `./deploy/staging/scripts/deploy.sh`
+- `./deploy/staging/scripts/deploy.sh --no-cache` (clean rebuild for **same** `RELEASE_SHA`)
 - `./deploy/staging/scripts/stop.sh`
 - `./deploy/staging/scripts/rollback.sh`
 
 This file is the **ops alert + probe** runbook; README is the **compose deploy** runbook.
+
+---
+
+## 7b. Build asset coherence (SSR ↔ client)
+
+**Root class (login CSS 404):** SSR `dist/server` can embed absolute browser URLs
+`/assets/styles-<hash>.css` (and other preloads) that must exist under
+`dist/client/assets`. A client/server hash split serves HTML that 404s CSS while
+client JS still loads. Do **not** mask by copying a stale hashed file or
+disabling content hashes.
+
+| Gate | Where |
+|---|---|
+| `pnpm build` | chains `node scripts/assert-build-assets.mjs --write-manifest` |
+| Staging image | `deploy/staging/Dockerfile` build stage runs the same `pnpm build` (assert fails the image build) |
+| Deploy | `./deploy/staging/scripts/deploy.sh --no-cache` forces clean image rebuild for the pinned SHA |
+
+Local / host check after a clean build:
+
+```bash
+rm -rf dist
+pnpm build
+# → ASSET_COHERENCE OK + dist/asset-coherence-manifest.json (clientManifestHash)
+pnpm run assert-build-assets
+node -e 'const m=require("./dist/asset-coherence-manifest.json"); console.log(m.clientManifestHash, m.clientAssetCount, m.ok)'
+```
+
+Same-SHA clean rebuild (staging image):
+
+```bash
+# RELEASE_SHA already set in deploy/staging/.env to the intended full SHA
+./deploy/staging/scripts/deploy.sh --no-cache
+# equivalent: NO_CACHE=1 ./deploy/staging/scripts/deploy.sh
+```
+
+Unit self-tests (no deploy):
+
+```bash
+pnpm exec vitest run tests/unit/build-asset-coherence.test.ts
+```
 
 ---
 

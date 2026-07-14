@@ -130,7 +130,7 @@ Equivalent staged steps:
 
 ```bash
 ./deploy/production/scripts/preflight.sh
-./deploy/production/scripts/build-install.sh      # fetch + checkout SHA + pnpm install + build
+./deploy/production/scripts/build-install.sh      # fetch + checkout SHA + pnpm install + build + asset assert
 ./deploy/production/scripts/migrate-plan.sh       # always plan first (validates entrypoint)
 # ./deploy/production/scripts/migrate-apply.sh    # only with MIGRATE_APPLY_APPROVED=1 + fresh dump
 ./deploy/production/scripts/pm2-atomic.sh --enable-systemd
@@ -263,9 +263,35 @@ As of the 2026-07-14 production forensic:
 ./deploy/production/selftest/selftest.sh
 node deploy/production/selftest/selftest.mjs
 pnpm exec vitest run tests/unit/production-deploy-package.test.ts
+pnpm exec vitest run tests/unit/build-asset-coherence.test.ts
 ```
 
 These validate fail-closed gates and script presence. They are **not** production deploy proof.
+
+---
+
+## 10b. Build asset coherence (SSR ↔ client)
+
+**Root class:** SSR output may reference absolute `/assets/<file>` URLs that the
+browser loads from the client static tree. If `dist/server` embeds
+`/assets/styles-A.css` while only `styles-B.css` exists under `dist/client/assets`,
+login/HTML CSS 404s (see investigate-final-login-assets-r2).
+
+| Gate | Where |
+|---|---|
+| `pnpm build` | `vite build && node scripts/assert-build-assets.mjs --write-manifest` |
+| `build-install.sh` | runs package build, then re-asserts + records `clientManifestHash` before PM2 |
+| Manifest | `dist/asset-coherence-manifest.json` (names+sizes hash; not a hash-disable bypass) |
+
+```bash
+# On approved production checkout after build-install:
+node scripts/assert-build-assets.mjs --write-manifest
+# Expect: ASSET_COHERENCE OK
+# Fail closed: MISSING_PUBLIC_ASSET /assets/styles-….css → rebuild clean; never copy stale hashes
+```
+
+Forbidden “fixes”: copying an old `styles-*.css` into `dist/client/assets`,
+disabling Vite content hashes, or promoting a release when assert failed.
 
 ---
 

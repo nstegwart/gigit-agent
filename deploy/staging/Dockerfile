@@ -27,12 +27,18 @@ COPY tsconfig.json vite.config.ts ./
 COPY public ./public
 COPY src ./src
 COPY migrations ./migrations
+# Post-build SSR↔client asset coherence verifier (fail closed before image runtime).
+COPY scripts/assert-build-assets.mjs ./scripts/assert-build-assets.mjs
 # Committed seed index only (demo board is not staging SSOT; staging uses synthetic MySQL fixtures).
 COPY data/boards.json data/conventions.json ./data/
 COPY data/boards/demo ./data/boards/demo
 ARG CAIRN_DEPLOYED_SHA=unknown
 ENV CAIRN_DEPLOYED_SHA=${CAIRN_DEPLOYED_SHA}
 ENV NODE_ENV=production
+# Single coherent vite build + assert: every quoted absolute /assets/* in dist/server
+# must exist under dist/client/assets (SSR styles hash split = fail). Writes
+# dist/asset-coherence-manifest.json (client inventory hash). Do not copy stale
+# hashed assets or disable content hashes to "fix" a fail.
 RUN pnpm build
 
 FROM base AS runtime

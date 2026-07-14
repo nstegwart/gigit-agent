@@ -136,14 +136,26 @@ chmod +x deploy/staging/scripts/*.sh
 ./deploy/staging/scripts/deploy.sh
 ```
 
+Clean rebuild for the **same** `RELEASE_SHA` (SSR↔client asset coherence / stale layer):
+
+```bash
+./deploy/staging/scripts/deploy.sh --no-cache
+# or: NO_CACHE=1 ./deploy/staging/scripts/deploy.sh
+```
+
+Image build runs `pnpm build` → `scripts/assert-build-assets.mjs` (fail closed if
+any quoted absolute `/assets/*` in `dist/server` is missing from `dist/client/assets`).
+Records `dist/asset-coherence-manifest.json` (`clientManifestHash`). Do not mask
+failures by copying stale hashed files or disabling content hashes.
+
 Equivalent manual form:
 
 ```bash
 cd /opt/mfs/staging/cairn-taskmanager-v3/source
 export COMPOSE="sudo docker compose -f deploy/staging/docker-compose.yml --env-file deploy/staging/.env"
 $COMPOSE config --quiet          # validate; does not print secret values with --quiet
-$COMPOSE build --pull
-$COMPOSE up -d --remove-orphans
+$COMPOSE build --pull            # add --no-cache for clean same-SHA rebuild
+$COMPOSE up -d --remove-orphans --force-recreate
 $COMPOSE ps
 ```
 
