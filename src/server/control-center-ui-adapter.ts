@@ -1576,8 +1576,42 @@ export function buildControlCenterAggregationFromSources(
     }
   })
 
-  // Prefer durable run registry for Agents/Runs surface; legacy board.runs only as fixture fallback.
-  const runs: RunUiSummary[] = useDurableOwnership
+  // Durable registry is claim/ownership authority. Agents/Runs visibility also merges
+  // legacy board.runs written by upsert_run (still the fleet write path) so owner
+  // surfaces are not empty when control_plane_runs is unpopulated.
+  const mapLegacyRunToUi = (r: Run): RunUiSummary => {
+    const ext = r as RunSourceExt
+    const heartbeatAt = ext.heartbeatAt ?? r.updated ?? null
+    // Never mirror heartbeat into materialProgressAt merely for shape.
+    const materialProgressAt = ext.materialProgressAt ?? null
+    let productiveSubstate: ProductiveSubstate | null = null
+    if (r.status === 'running') productiveSubstate = 'PRODUCTIVE'
+    else if (r.status === 'blocked') productiveSubstate = 'STALLED'
+    return {
+      runId: r.id,
+      taskId: r.taskId ?? r.task ?? null,
+      agentId: r.agent ?? null,
+      role: r.role ?? null,
+      model: r.model ?? null,
+      effort: r.effort ?? null,
+      maskedAccount: maskAccountForUi(r.account ?? null),
+      status: r.status ?? null,
+      startedAt: r.started ?? null,
+      heartbeatAt,
+      materialProgressAt,
+      productiveSubstate,
+      createdAt: r.started ?? r.updated ?? generatedAt,
+      id: r.id,
+      evidenceLink: r.evidencePath ?? null,
+      claimState: ext.claimState ?? null,
+      lockIds: ext.collisionScopeLockIds ?? null,
+      controllerRunId: ext.controllerRunId ?? null,
+      parentRunId: ext.parentRunId ?? null,
+    }
+  }
+
+  const durableRunIds = new Set((src.durableRuns ?? []).map((rec) => rec.runId))
+  const durableMapped: RunUiSummary[] = useDurableOwnership
     ? (src.durableRuns ?? []).map((rec) => {
         const own = ownership?.byTaskId.get(rec.taskId)
         const startedAt =
@@ -1622,36 +1656,15 @@ export function buildControlCenterAggregationFromSources(
           parentRunId: rec.parentRunId,
         }
       })
-    : src.runs.map((r) => {
-        const ext = r as RunSourceExt
-        const heartbeatAt = ext.heartbeatAt ?? r.updated ?? null
-        // Never mirror heartbeat into materialProgressAt merely for shape.
-        const materialProgressAt = ext.materialProgressAt ?? null
-        let productiveSubstate: ProductiveSubstate | null = null
-        if (r.status === 'running') productiveSubstate = 'PRODUCTIVE'
-        else if (r.status === 'blocked') productiveSubstate = 'STALLED'
-        return {
-          runId: r.id,
-          taskId: r.taskId ?? r.task ?? null,
-          agentId: r.agent ?? null,
-          role: r.role ?? null,
-          model: r.model ?? null,
-          effort: r.effort ?? null,
-          maskedAccount: maskAccountForUi(r.account ?? null),
-          status: r.status ?? null,
-          startedAt: r.started ?? null,
-          heartbeatAt,
-          materialProgressAt,
-          productiveSubstate,
-          createdAt: r.started ?? r.updated ?? generatedAt,
-          id: r.id,
-          evidenceLink: r.evidencePath ?? null,
-          claimState: ext.claimState ?? null,
-          lockIds: ext.collisionScopeLockIds ?? null,
-          controllerRunId: ext.controllerRunId ?? null,
-          parentRunId: ext.parentRunId ?? null,
-        }
-      })
+    : []
+
+  const legacyOnlyMapped: RunUiSummary[] = (src.runs ?? [])
+    .filter((r) => Boolean(r?.id) && !durableRunIds.has(r.id))
+    .map(mapLegacyRunToUi)
+
+  const runs: RunUiSummary[] = useDurableOwnership
+    ? [...durableMapped, ...legacyOnlyMapped]
+    : (src.runs ?? []).map(mapLegacyRunToUi)
 
   // Prefer C2 account-sync snapshot; never treat legacy ops as capacity authority.
   const accountRead = resolveAccountSyncReadModel(src)
@@ -2644,8 +2657,9 @@ export async function loadControlCenterAggregation(
     raw,
     tasks,
     opsAccounts,
-    // Never use legacy embedded runs for ownership; keep only when durable failed entirely.
-    runs: durableRunsS.ok ? [] : legacyRuns,
+    // Always surface legacy board.runs for Agents visibility (upsert_run write path).
+    // Ownership/claims still come solely from durableRuns when durableOwnershipLoaded.
+    runs: legacyRuns,
     boardContentHash: hash,
     boardRev,
     lifecycleRev,

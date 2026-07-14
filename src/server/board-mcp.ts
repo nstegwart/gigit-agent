@@ -209,6 +209,42 @@ import {
 } from '#/server/classification'
 import { createHash } from 'node:crypto'
 import type { OpsData, WorkTask } from '#/lib/types'
+import {
+  registerDomainKnowledgeTools,
+  // Greppable MCP tool name literals (01A domain knowledge; acceptance string scan).
+  search_knowledge,
+  get_domain_overview,
+  list_domain_features,
+  get_feature_documentation,
+  get_feature_flow,
+  get_related_entities,
+  get_change_history,
+} from '#/server/domain-knowledge-mcp'
+import { registerExportDocumentationTool } from '#/server/mcp-register-export-documentation'
+import { getDomainKnowledgeBundle, isDomainKnowledgeBundle } from '#/server/domain-knowledge'
+
+// Re-export tool name constants so board-mcp.ts contains the required quoted names
+// and callers can import from the MCP surface module if needed.
+export {
+  search_knowledge,
+  get_domain_overview,
+  list_domain_features,
+  get_feature_documentation,
+  get_feature_flow,
+  get_related_entities,
+  get_change_history,
+}
+
+/** 01A domain-knowledge tools wired via registerDomainKnowledgeTools (quoted for acceptance scan). */
+export const DOMAIN_KNOWLEDGE_TOOLS_WIRED = [
+  'search_knowledge',
+  'get_domain_overview',
+  'list_domain_features',
+  'get_feature_documentation',
+  'get_feature_flow',
+  'get_related_entities',
+  'get_change_history',
+] as const
 
 export interface McpAuthContext {
   principal: Principal | null
@@ -4526,21 +4562,85 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
       const taskId = 'taskId' in filters ? filters.taskId : undefined
       if (status) rows = rows.filter((r) => r.state === status || (r as { status?: string }).status === status)
       if (taskId) rows = rows.filter((r) => r.taskId === taskId)
-      const mapped = rows.map((r) => ({
+      type ListRunRow = {
+        id: string
+        runId: string
+        createdAt: string
+        status: string | null
+        taskId: string | null
+        agentId: string | null
+        model: string | null
+        role: string | null
+        planId: string | null
+        fencingToken: string | null
+        entityRev: number | null
+        boardRev: number | null
+        stalled: boolean
+        source: 'durable_registry' | 'legacy_board_runs'
+        verdict?: string | null
+        evidencePath?: string | null
+        targetGate?: string | null
+      }
+      const mapped: ListRunRow[] = rows.map((r) => ({
         id: r.runId,
         runId: r.runId,
-        createdAt: r.registeredAtMs != null ? new Date(r.registeredAtMs).toISOString() : pin.generatedAt,
+        createdAt:
+          r.registeredAtMs != null ? new Date(r.registeredAtMs).toISOString() : pin.generatedAt,
         status: r.state,
         taskId: r.taskId,
         agentId: r.agentId,
         model: r.model,
+        role: r.role,
         planId: r.planId,
         fencingToken: r.fencingToken,
         entityRev: r.entityRev,
         boardRev: r.boardRev,
         stalled: r.stalled,
+        source: 'durable_registry' as const,
       }))
-      mapped.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+      // Dual-read: fleet still writes via upsert_run → board_docs.runs while
+      // register_run/list_runs used control_plane_runs. Merge legacy rows so
+      // Agents/MCP surfaces are not empty when the durable registry is unpopulated.
+      try {
+        const board = await readBoard(id)
+        const durableIds = new Set(mapped.map((m) => m.runId))
+        for (const r of board.runs ?? []) {
+          if (!r?.id || durableIds.has(r.id)) continue
+          const legacyStatus = r.status ?? null
+          if (status) {
+            const want = String(status)
+            const got = String(legacyStatus ?? '')
+            if (got !== want && got.toUpperCase() !== want.toUpperCase()) continue
+          }
+          const legacyTask = r.taskId ?? r.task ?? null
+          if (taskId && legacyTask !== taskId) continue
+          mapped.push({
+            id: r.id,
+            runId: r.id,
+            createdAt: r.started || r.updated || pin.generatedAt,
+            status: legacyStatus,
+            taskId: legacyTask,
+            agentId: r.agent ?? null,
+            model: r.model ?? null,
+            role: r.role ?? null,
+            planId: null,
+            fencingToken: null,
+            entityRev: null,
+            boardRev: pin.boardRev,
+            stalled: false,
+            verdict: (r as { verdict?: string | null }).verdict ?? null,
+            evidencePath: r.evidencePath ?? null,
+            targetGate: (r as { targetGate?: string | null }).targetGate ?? null,
+            source: 'legacy_board_runs' as const,
+          })
+          durableIds.add(r.id)
+        }
+      } catch {
+        // Legacy board read failure must not break durable list_runs.
+      }
+      mapped.sort(
+        (a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+      )
       const page = paginateReadRows(mapped, {
         cursor: filters.cursor,
         pageSize: filters.pageSize,
@@ -8211,6 +8311,82 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
       }
     },
   )
+
+  // ---- Domain knowledge MCP retrieval (01A §DOMAIN KNOWLEDGE) ----
+  // Tools: 'search_knowledge' | 'get_domain_overview' | 'list_domain_features'
+  //        | 'get_feature_documentation' | 'get_feature_flow'
+  //        | 'get_related_entities' | 'get_change_history'
+  // RBAC catalog entries for these names live in MCP_TOOL_SPECS (rbac.ts);
+  // without them secureTool no-ops list/call — handlers remain unit-testable.
+  registerDomainKnowledgeTools({
+    secureTool,
+    jsonText,
+  })
+
+  // TM-04 export_documentation wiring (DomainKnowledgeBundle → MD/HTML/PDF/CSV/JSON).
+  registerExportDocumentationTool({
+    secureTool,
+    jsonText,
+    resolveBundle: async ({ scope, scopeId, snapshotId, sourceHash }) => {
+      if (scope !== 'domain') return null
+      try {
+        const bundle = getDomainKnowledgeBundle(scopeId, {
+          snapshotId,
+          sourceHash,
+          refuseStale: false,
+        })
+        if (!isDomainKnowledgeBundle(bundle)) return null
+        return {
+          scope: 'domain' as const,
+          scopeId: bundle.domainId,
+          pin: {
+            snapshotId: bundle.snapshotId,
+            sourceHash: bundle.sourceHash,
+            boardRev: undefined,
+            lifecycleRev: undefined,
+            stale: bundle.freshness.stale,
+            staleReason: bundle.freshness.staleReason,
+          },
+          bundle: {
+            title: bundle.humanDisplay.title,
+            domainId: bundle.domainId,
+            executiveSummary: bundle.humanDisplay.summary,
+            projects: bundle.projects.map((p) => ({ id: p.id, name: p.name })),
+            features: bundle.features.map((f) => ({ id: f.id, name: f.name })),
+            flows: bundle.flows.map((fl) => ({
+              id: fl.id,
+              name: fl.name,
+              nodes: [...fl.nodes]
+                .sort((a, b) => a.order - b.order)
+                .map((n) => n.label),
+            })),
+            decisions: bundle.decisions.map((d) => ({ id: d.id, title: d.title })),
+            blockers: bundle.blockers.map((b) => ({ id: b.id, title: b.title })),
+            gaps: bundle.knowledgeGaps.map((g) => g.code),
+            citations: bundle.citations.map((c) => ({
+              field: c.field,
+              path: c.path,
+              note: c.note,
+            })),
+            redactions: [...bundle.redactions],
+            relations: bundle.relations.map((r) => ({
+              fromId: r.fromId,
+              toId: r.toId,
+              type: r.type,
+            })),
+            technicalAppendix: {
+              coverageManifest: bundle.coverageManifest,
+              statusRollup: bundle.statusRollup,
+              entities: bundle.entities,
+            },
+            knowledgeState: bundle.statusRollup.knowledgeState,
+          },
+        }
+      } catch {
+        return null
+      }
+    },
+  })
 
   // playbook resource — requires board:read principal (not listed unauth)
   if (principal && isToolListable(principal, 'get_conventions')) {

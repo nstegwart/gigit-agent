@@ -1120,6 +1120,10 @@ describe('control-center-ui-adapter durable ownership', () => {
     expect(agg.workRows.find((r) => r.taskId === 'T-own')?.claimState).toBe('VALID_CURRENT')
     expect(agg.runs[0]?.agentId).toBe('agent-durable')
     expect(agg.runs[0]?.runId).toBe('r-durable')
+    // Legacy upsert_run row still visible on Agents surface (not ownership authority)
+    expect(agg.runs.some((r) => r.runId === 'legacy-r' && r.agentId === 'legacy-agent')).toBe(
+      true,
+    )
     // Real priority packets from plan + membership
     expect(agg.priority.membershipDenominator).toBe(1)
     expect(agg.priority.allClosureCapacity).toBeGreaterThan(0)
@@ -1216,6 +1220,70 @@ describe('control-center-ui-adapter durable ownership', () => {
     })
     expect(agg.assignmentsByTaskId.get('T-miss')?.blockReason).toBe('DATA_INTEGRITY')
     expect(agg.rollup.unclassifiedCount).toBe(1)
+  })
+
+
+  it('Agents runs merge legacy board.runs when durable registry empty (upsert_run dual-store)', () => {
+    const boardContentHash = 'hash_legacy_merge_01'
+    const legacyRuns: Run[] = [
+      {
+        id: 'upsert-run-1',
+        agent: 'mapping-verifier-a',
+        agentType: 'grok',
+        model: 'grok-4.5',
+        effort: 'high',
+        task: 'T-LEG',
+        taskId: 'T-LEG',
+        status: 'running',
+        role: 'mapping-verifier',
+        started: '2026-07-14T10:00:00.000Z',
+        updated: '2026-07-14T10:05:00.000Z',
+        verdict: 'pending',
+      } as Run,
+      {
+        id: 'upsert-run-2',
+        agent: 'mapping-verifier-b',
+        agentType: 'grok',
+        model: 'grok-4.5',
+        effort: 'high',
+        task: 'T-LEG-2',
+        taskId: 'T-LEG-2',
+        status: 'done',
+        role: 'mapping-verifier',
+        started: '2026-07-14T09:00:00.000Z',
+        updated: '2026-07-14T09:30:00.000Z',
+        verdict: 'PASS',
+      } as Run,
+    ]
+    const raw = {
+      id: 'mfs-rebuild',
+      name: 'MFS',
+      projects: [],
+      features: [],
+      runs: legacyRuns,
+      decisions: [],
+      log: [],
+      collab: { comments: {}, activity: [] },
+    } as never
+    const agg = buildControlCenterAggregationFromSources({
+      boardId: 'mfs-rebuild',
+      raw,
+      tasks: [],
+      opsAccounts: [],
+      runs: legacyRuns,
+      boardContentHash,
+      boardRev: 10,
+      lifecycleRev: 0,
+      now: PIN.generatedAt,
+      durableRuns: [],
+      durableOwnershipLoaded: true,
+    })
+    expect(agg.runs.length).toBe(2)
+    expect(agg.runs.map((r) => r.runId).sort()).toEqual(['upsert-run-1', 'upsert-run-2'])
+    expect(agg.runs.find((r) => r.runId === 'upsert-run-1')?.role).toBe('mapping-verifier')
+    expect(agg.runs.find((r) => r.runId === 'upsert-run-1')?.status).toBe('running')
+    // Ownership stays empty — durable registry has no claim authority
+    expect(agg.assignmentsByTaskId.size).toBe(0)
   })
 
   it('buildPriorityPacketsFromDurable creates plan + run packets deterministically', () => {
