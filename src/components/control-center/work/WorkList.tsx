@@ -44,10 +44,10 @@ export function WorkList({
         <table className={styles.table} data-testid="work-table">
           <thead>
             <tr>
-              <th scope="col">Task</th>
-              <th scope="col">Bucket / overlays</th>
-              <th scope="col">Stage / project</th>
-              <th scope="col">Readiness</th>
+              <th scope="col">Judul pekerjaan</th>
+              <th scope="col">Bucket / overlay</th>
+              <th scope="col">Tahap / proyek</th>
+              <th scope="col">Kesiapan</th>
             </tr>
           </thead>
           <tbody>

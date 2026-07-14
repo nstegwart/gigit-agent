@@ -238,11 +238,16 @@ function TitleBlock({
 
   return (
     <div
+      className={styles.titleBlock}
+      data-testid="work-row-title-block"
       data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
       data-owner-primary-title={display.primaryTitle}
     >
+      {/* Human title is primary visual; technical id is quiet secondary metadata. */}
       {titleNode}
-      <div className={styles.taskId}>{item.taskId}</div>
+      <div className={styles.taskId} data-testid="work-row-task-id" data-field="taskId" title={item.taskId}>
+        {item.taskId}
+      </div>
       {display.technicalTitle && display.technicalTitle !== display.primaryTitle ? (
         <div
           className={styles.technicalSecondary}

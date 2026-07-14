@@ -1,16 +1,24 @@
 /**
  * C3 Overview composition — prop-driven only.
- * Mobile DOM order matches UI_CONTRACT §4.
+ * ART editorial order (01B): (1) program position/readiness (2) priority + evidence
+ * progress (3) ongoing (4) next (5) top blocker/decision (6) work-bucket summary.
  * No fetch, no bucket/readiness/priority recomputation.
  *
  * Sticky decision shelf (C3-C10): app summary + collapsed pill live in a
  * non-scrolling chrome band; mission body scrolls in a sibling region so
  * section boxes never geometrically intersect the pill (real flow reservation).
  */
-import { useLayoutEffect, useRef } from 'react'
+import { useLayoutEffect, useRef, type RefObject } from 'react'
+import { formatOperationalLabel } from '#/lib/display-label'
 import { pinnedSurfaceDataAttrs } from '#/components/control-center/PinnedSurface'
 import styles from './overview.module.css'
-import type { OverviewProps } from './types'
+import type {
+  OverviewAppSummary,
+  OverviewBucketStrip,
+  OverviewGlobalCard,
+  OverviewPriorityCard,
+  OverviewProps,
+} from './types'
 import { AppSummaryBar } from './AppSummaryBar'
 import { NeedsYourDecision } from './NeedsYourDecision'
 import { PriorityCard } from './PriorityCard'
@@ -19,6 +27,209 @@ import { BucketStrip } from './BucketStrip'
 import { OngoingZeroClick } from './OngoingZeroClick'
 import { LowerPanels } from './LowerPanels'
 import { EmptySlot, OverviewSkeleton, SurfaceBanner } from './SurfaceBanner'
+
+/**
+ * Plain id-ID position sentence from already-projected server fields only.
+ * Never invents readiness percentages as program truth.
+ */
+function programPositionStatement(
+  appSummary: OverviewAppSummary | null,
+  priority: OverviewPriorityCard | null,
+  global: OverviewGlobalCard | null,
+): string {
+  const board = appSummary?.boardLabel?.trim() || appSummary?.boardId || 'Program'
+  const stageRaw = appSummary?.liveStage?.trim() || ''
+  const stage = stageRaw ? formatOperationalLabel(stageRaw) : 'tahap tidak diketahui'
+
+  if (global?.complete === true && global.g5Pass === true) {
+    return `${board} pada tahap ${stage}: cakupan terlacak selesai dengan G5 lulus berdasarkan bukti saat ini. Kesiapan program berasal dari bukti, bukan persentase statis.`
+  }
+  if (global?.complete === true) {
+    return `${board} pada tahap ${stage}: pekerjaan terlacak ditandai selesai, tetapi kesiapan program/G5 masih menunggu bukti. Bucket pekerjaan bukan kesiapan mapping/produk/program.`
+  }
+  if (priority?.complete === true && global?.complete === false) {
+    return `${board} pada tahap ${stage}: portofolio prioritas selesai, tetapi kesiapan global program belum lengkap. 100% prioritas tidak berarti 100% program.`
+  }
+  if (global?.g5Pass === false) {
+    const capped = global.cappedBy
+      ? ` Dibatasi oleh ${formatOperationalLabel(global.cappedBy)}.`
+      : ''
+    return `${board} pada tahap ${stage}: program belum siap (G5 belum lulus).${capped} Progres dihitung dari bukti evidence, bukan angka statis.`
+  }
+  if (priority?.g5Pass === false) {
+    return `${board} pada tahap ${stage}: portofolio prioritas masih berjalan; G5 prioritas belum lulus. Posisi mengikuti evidence terbaru.`
+  }
+  if (global || priority) {
+    return `${board} pada tahap ${stage}: program sedang berjalan. Posisi kesiapan mengikuti evidence saat ini; bucket pekerjaan dipisahkan dari kesiapan mapping/produk/program.`
+  }
+  return `${board} pada tahap ${stage}. Data posisi/kesiapan belum tersedia penuh untuk ringkasan ini.`
+}
+
+function NextCue({ buckets }: { buckets: OverviewBucketStrip | null }) {
+  if (!buckets) {
+    return (
+      <section data-testid="overview-next" aria-labelledby="ov-next-title">
+        <h2 id="ov-next-title" className={styles.sectionLabel}>
+          Berikutnya
+        </h2>
+        <EmptySlot>Ringkasan pekerjaan berikutnya belum tersedia.</EmptySlot>
+      </section>
+    )
+  }
+  const nextCount = buckets.counts.NEXT
+  const queuedCount = buckets.counts.QUEUED
+  return (
+    <section data-testid="overview-next" aria-labelledby="ov-next-title">
+      <h2 id="ov-next-title" className={styles.sectionLabel}>
+        Berikutnya
+      </h2>
+      <div className={styles.nextCueCard}>
+        <p className={styles.nextCueLead} data-testid="overview-next-lead">
+          {nextCount === 0
+            ? 'Tidak ada item Berikutnya yang siap dijadwalkan saat ini.'
+            : `${nextCount} pekerjaan Berikutnya siap dilanjutkan setelah prasyarat terpenuhi.`}
+        </p>
+        <p className={styles.nextCueMeta} data-testid="overview-next-meta">
+          Antrian valid: {queuedCount} menunggu giliran (belum dijadwalkan). Pilih bucket
+          Berikutnya untuk membuka daftar lengkap.
+        </p>
+      </div>
+    </section>
+  )
+}
+
+function ProgramPosition({
+  appSummary,
+  priority,
+  global,
+}: {
+  appSummary: OverviewAppSummary | null
+  priority: OverviewPriorityCard | null
+  global: OverviewGlobalCard | null
+}) {
+  const statement = programPositionStatement(appSummary, priority, global)
+  const stage = appSummary?.liveStage
+    ? formatOperationalLabel(appSummary.liveStage)
+    : null
+  const readinessBits: string[] = []
+  if (global) {
+    readinessBits.push(
+      global.complete ? 'Cakupan terlacak: selesai' : 'Cakupan terlacak: belum selesai',
+    )
+    readinessBits.push(global.g5Pass ? 'G5 program: lulus' : 'G5 program: belum lulus')
+    if (global.boardReadinessPercent != null) {
+      readinessBits.push(
+        `Rasio board (evidence): ${global.boardReadinessPercent}% — bukan jaminan kesiapan program`,
+      )
+    }
+  }
+  if (priority) {
+    readinessBits.push(
+      priority.complete
+        ? 'Portofolio prioritas: selesai'
+        : `Portofolio prioritas: ${priority.prodReadyWithEvidence}/${priority.productDenominator} PROD_READY ber-evidence`,
+    )
+  }
+
+  return (
+    <section
+      className={styles.programPosition}
+      data-testid="overview-program-position"
+      aria-labelledby="ov-position-title"
+    >
+      <p className={styles.programEyebrow}>Ringkasan Program</p>
+      <h2 id="ov-position-title" className={styles.programHeadline}>
+        Di mana posisi program sekarang?
+      </h2>
+      <p className={styles.programStatement} data-testid="overview-position-statement">
+        {statement}
+      </p>
+      {stage || readinessBits.length ? (
+        <ul className={styles.programMeta} data-testid="overview-position-meta">
+          {stage ? <li>Tahap: {stage}</li> : null}
+          {readinessBits.map((bit) => (
+            <li key={bit}>{bit}</li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  )
+}
+
+function MissionBody({
+  surfaceState,
+  appSummary,
+  decision,
+  priority,
+  global,
+  buckets,
+  ongoing,
+  lower,
+  pillCollapsed,
+  onPillExpand,
+  onPillCollapse,
+  enableStickyPill,
+  needsHuman,
+  stickyShelfHostRef,
+}: {
+  surfaceState: OverviewProps['surfaceState']
+  appSummary: OverviewProps['appSummary']
+  decision: OverviewProps['decision']
+  priority: OverviewProps['priority']
+  global: OverviewProps['global']
+  buckets: OverviewProps['buckets']
+  ongoing: OverviewProps['ongoing']
+  lower: OverviewProps['lower']
+  pillCollapsed?: boolean
+  onPillExpand?: () => void
+  onPillCollapse?: () => void
+  enableStickyPill?: boolean
+  needsHuman: boolean
+  stickyShelfHostRef?: RefObject<HTMLElement | null>
+}) {
+  return (
+    <>
+      {/* ART order: (1) position (2) priority+progress (3) ongoing (4) next (5) decision (6) buckets */}
+      <ProgramPosition appSummary={appSummary} priority={priority} global={global} />
+
+      {surfaceState === 'empty' && !decision?.count && !ongoing.length && !priority ? (
+        <EmptySlot>
+          Ringkasan kosong — belum ada data misi terlacak untuk board ini.
+        </EmptySlot>
+      ) : null}
+
+      <div className={styles.priorityGlobal}>
+        <PriorityCard data={priority} />
+        <GlobalCard data={global} />
+      </div>
+
+      <OngoingZeroClick
+        items={ongoing}
+        emptyLabel={
+          surfaceState === 'zero-results'
+            ? 'Tidak ada item Sedang dikerjakan yang cocok dengan filter saat ini.'
+            : 'Tidak ada pekerjaan Sedang dikerjakan.'
+        }
+      />
+
+      <NextCue buckets={buckets} />
+
+      <NeedsYourDecision
+        decision={decision}
+        pillCollapsed={pillCollapsed}
+        onPillExpand={onPillExpand}
+        onPillCollapse={onPillCollapse}
+        enableStickyPill={enableStickyPill}
+        elevated={needsHuman}
+        stickyShelfHostRef={stickyShelfHostRef}
+      />
+
+      <BucketStrip data={buckets} />
+
+      <LowerPanels data={lower} />
+    </>
+  )
+}
 
 export function Overview({
   surfaceState,
@@ -103,6 +314,22 @@ export function Overview({
 
   const shelfActive = enableStickyPill && !hideMissionBody && Boolean(appSummary)
 
+  const missionProps = {
+    surfaceState,
+    appSummary,
+    decision,
+    priority,
+    global,
+    buckets,
+    ongoing,
+    lower,
+    pillCollapsed,
+    onPillExpand,
+    onPillCollapse,
+    enableStickyPill,
+    needsHuman,
+  }
+
   return (
     <div
       ref={rootRef}
@@ -153,37 +380,7 @@ export function Overview({
                 data-testid="overview-mission-scroll"
                 id="overview-mission-scroll"
               >
-                <NeedsYourDecision
-                  decision={decision}
-                  pillCollapsed={pillCollapsed}
-                  onPillExpand={onPillExpand}
-                  onPillCollapse={onPillCollapse}
-                  enableStickyPill={enableStickyPill}
-                  elevated={needsHuman}
-                  stickyShelfHostRef={stickyShelfRef}
-                />
-
-                {surfaceState === 'empty' && !decision?.count && !ongoing.length && !priority ? (
-                  <EmptySlot>Overview is empty — no tracked mission data for this board.</EmptySlot>
-                ) : null}
-
-                <div className={styles.priorityGlobal}>
-                  <PriorityCard data={priority} />
-                  <GlobalCard data={global} />
-                </div>
-
-                <BucketStrip data={buckets} />
-
-                <OngoingZeroClick
-                  items={ongoing}
-                  emptyLabel={
-                    surfaceState === 'zero-results'
-                      ? 'No ONGOING items match the current filters.'
-                      : 'No ONGOING work.'
-                  }
-                />
-
-                <LowerPanels data={lower} />
+                <MissionBody {...missionProps} stickyShelfHostRef={stickyShelfRef} />
               </div>
             </>
           ) : (
@@ -192,40 +389,7 @@ export function Overview({
                 <AppSummaryBar summary={appSummary} />
               ) : null}
 
-              {!hideMissionBody ? (
-                <>
-                  <NeedsYourDecision
-                    decision={decision}
-                    pillCollapsed={pillCollapsed}
-                    onPillExpand={onPillExpand}
-                    onPillCollapse={onPillCollapse}
-                    enableStickyPill={enableStickyPill}
-                    elevated={needsHuman}
-                  />
-
-                  {surfaceState === 'empty' && !decision?.count && !ongoing.length && !priority ? (
-                    <EmptySlot>Overview is empty — no tracked mission data for this board.</EmptySlot>
-                  ) : null}
-
-                  <div className={styles.priorityGlobal}>
-                    <PriorityCard data={priority} />
-                    <GlobalCard data={global} />
-                  </div>
-
-                  <BucketStrip data={buckets} />
-
-                  <OngoingZeroClick
-                    items={ongoing}
-                    emptyLabel={
-                      surfaceState === 'zero-results'
-                        ? 'No ONGOING items match the current filters.'
-                        : 'No ONGOING work.'
-                    }
-                  />
-
-                  <LowerPanels data={lower} />
-                </>
-              ) : null}
+              {!hideMissionBody ? <MissionBody {...missionProps} /> : null}
             </>
           )}
         </>

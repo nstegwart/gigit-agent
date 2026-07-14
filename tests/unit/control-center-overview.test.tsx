@@ -226,39 +226,49 @@ function populatedProps(overrides: Partial<OverviewProps> = {}): OverviewProps {
 }
 
 describe('control-center overview components', () => {
-  it('renders populated mission surfaces in mobile/desktop contract order', () => {
+  it('renders populated mission surfaces in ART narrative order', () => {
     const { container } = render(<Overview {...populatedProps()} />)
     const root = screen.getByTestId('control-center-overview')
     expect(attr(root, 'data-surface-state')).toBe('populated')
     expect(attr(root, 'data-needs-human')).toBe('true')
 
-    const order = [
-      'overview-app-summary',
-      'overview-decision-card',
-      'overview-priority',
-      'overview-global',
-      'overview-buckets',
-      'overview-ongoing',
-      'overview-lower',
-    ]
-    const positions = order.map((id) => {
-      const el = screen.getByTestId(id)
-      return Array.from(container.querySelectorAll('[data-testid]')).indexOf(el)
-    })
-    for (let i = 1; i < positions.length; i++) {
-      expect(positions[i]).toBeGreaterThan(positions[i - 1])
-    }
+    // ART 01B: (1) position (2) priority+progress (3) ongoing (4) next (5) decision (6) buckets
+    const idx = (id: string) =>
+      Array.from(container.querySelectorAll('[data-testid]')).indexOf(screen.getByTestId(id))
+    expect(screen.getByTestId('overview-program-position')).toBeTruthy()
+    expect(screen.getByTestId('overview-position-statement').textContent).toMatch(
+      /tahap|bukti|kesiapan/i,
+    )
+    expect(idx('overview-program-position')).toBeLessThan(idx('overview-priority'))
+    expect(idx('overview-priority')).toBeLessThan(idx('overview-global'))
+    expect(idx('overview-global')).toBeLessThan(idx('overview-ongoing'))
+    expect(idx('overview-ongoing')).toBeLessThan(idx('overview-next'))
+    expect(idx('overview-next')).toBeLessThan(idx('overview-decision-card'))
+    expect(idx('overview-decision-card')).toBeLessThan(idx('overview-buckets'))
+    expect(idx('overview-buckets')).toBeLessThan(idx('overview-lower'))
+    expect(screen.getByTestId('overview-app-summary')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /Di mana posisi program sekarang/i })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /Sedang dikerjakan sekarang/i })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /^Berikutnya$/i })).toBeTruthy()
   })
 
   it('exposes six exclusive primary buckets plus STALE overlay chip', () => {
     render(<Overview {...populatedProps()} />)
     const strip = screen.getByTestId('overview-buckets')
-    for (const b of PRIMARY_BUCKETS) {
-      expect(
-        within(strip).getByRole('tab', { name: new RegExp(b.replaceAll('_', ' '), 'i') }),
-      ).toBeTruthy()
+    // Owner labels id-ID; data-bucket keeps English enum
+    const idLabels: Record<string, string> = {
+      DONE: 'Selesai',
+      RECONCILIATION_PENDING: 'Sedang dicocokkan',
+      ONGOING: 'Sedang dikerjakan',
+      NEXT: 'Berikutnya',
+      QUEUED: 'Menunggu giliran',
+      BLOCKED: 'Terhambat',
     }
-    const stale = within(strip).getByRole('tab', { name: /STALE/i })
+    for (const b of PRIMARY_BUCKETS) {
+      const tab = within(strip).getByRole('tab', { name: new RegExp(idLabels[b], 'i') })
+      expect(attr(tab, 'data-bucket')).toBe(b)
+    }
+    const stale = within(strip).getByRole('tab', { name: /Basi/i })
     expect(attr(stale, 'data-overlay')).toBe('true')
     expect(attr(stale, 'data-bucket')).toBe('STALE')
     expect(within(strip).getAllByRole('tab')).toHaveLength(7)
@@ -280,12 +290,12 @@ describe('control-center overview components', () => {
     expect(stalled.querySelector('[data-field="started-age"]')?.textContent).toBe('12m')
     expect(stalled.querySelector('[data-field="heartbeat-age"]')?.textContent).toBe('8s')
     expect(stalled.querySelector('[data-field="material-age"]')?.textContent).toBe('2h')
-    expect(within(stalled).getByRole('status', { name: /STALLED/i })).toBeTruthy()
+    expect(within(stalled).getByRole('status', { name: /Macet|STALLED/i })).toBeTruthy()
     const link = within(stalled).getByRole('link', { name: /receipt/i })
     expect(attr(link, 'href')).toBe('/b/mfs/evidence/r1')
 
     const productive = cards.find((c) => c.getAttribute('data-task-id') === 't-prod')!
-    expect(within(productive).getByRole('status', { name: /PRODUCTIVE/i })).toBeTruthy()
+    expect(within(productive).getByRole('status', { name: /Produktif|PRODUCTIVE/i })).toBeTruthy()
   })
 
   it('does not re-sort ONGOING — preserves server order', () => {
@@ -428,13 +438,13 @@ describe('control-center overview components', () => {
     expect(attr(stack, 'data-pill-collapsed')).toBe('true')
     expect(attr(stack, 'data-blocking')).toBe('true')
     const pill = screen.getByTestId('overview-decision-pill')
-    expect(pill.textContent).toMatch(/2 decisions/i)
+    expect(pill.textContent).toMatch(/2 keputusan/i)
     expect(pill.textContent).toMatch(/CRITICAL/i)
     expect(screen.getByTestId('overview-decision-pill-count').textContent).toMatch(/2/)
     expect(screen.getByTestId('overview-decision-pill-severity').textContent).toMatch(/CRITICAL/)
     // Blocking card remains mounted while pill is collapsed (cannot be hidden).
     expect(screen.getByTestId('overview-decision-card')).toBeTruthy()
-    const expand = within(pill).getByRole('button', { name: /Expand/i })
+    const expand = within(pill).getByRole('button', { name: /^Buka$/i })
     expect(attr(expand, 'aria-expanded')).toBe('false')
     fireEvent.click(expand)
     expect(onExpand).toHaveBeenCalledTimes(1)
@@ -511,7 +521,7 @@ describe('control-center overview components', () => {
     // Full card remains mounted (a11y + spacer); never strips content.
     expect(screen.getByTestId('overview-decision-card')).toBeTruthy()
 
-    fireEvent.click(within(pill).getByRole('button', { name: /Expand/i }))
+    fireEvent.click(within(pill).getByRole('button', { name: /^Buka$/i }))
     expect(onExpand).toHaveBeenCalledTimes(1)
 
     // Parent expands → pill gone, card visible again.
@@ -826,20 +836,20 @@ describe('control-center overview components', () => {
     )
     const pri = screen.getByTestId('overview-priority')
     expect(within(pri).getAllByText('N-A').length).toBeGreaterThanOrEqual(2)
-    expect(pri.textContent).toMatch(/Capacity share[\s\S]*N-A/)
-    expect(pri.textContent).toMatch(/Majority allocation[\s\S]*N-A/)
-    expect(pri.textContent).not.toMatch(/Majority allocation[\s\S]*PASS/)
+    expect(pri.textContent).toMatch(/Porsi kapasitas[\s\S]*N-A/)
+    expect(pri.textContent).toMatch(/Alokasi mayoritas[\s\S]*N-A/)
+    expect(pri.textContent).not.toMatch(/Alokasi mayoritas[\s\S]*PASS/)
   })
 
   it('GLOBAL card shows denominators, PROD_READY evidence, G5, complete', () => {
     render(<Overview {...populatedProps()} />)
     const g = screen.getByTestId('overview-global')
-    expect(g.textContent).toMatch(/Tracked denom/)
+    expect(g.textContent).toMatch(/Denom terlacak/)
     expect(g.textContent).toMatch(/13/)
-    expect(g.textContent).toMatch(/PROD_READY evidence/)
+    expect(g.textContent).toMatch(/PROD_READY ber-evidence/)
     expect(g.textContent).toMatch(/G5/)
     expect(g.textContent).toMatch(/FAIL/)
-    expect(g.textContent).toMatch(/Complete/)
+    expect(g.textContent).toMatch(/Selesai/)
   })
 
   it('bucket selection callbacks fire without recomputing counts', () => {
@@ -848,9 +858,9 @@ describe('control-center overview components', () => {
     render(
       <BucketStrip data={baseBuckets({ onSelectBucket: onSelect, onToggleStale: onStale })} />,
     )
-    fireEvent.click(screen.getByRole('tab', { name: /BLOCKED/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /Terhambat/i }))
     expect(onSelect).toHaveBeenCalledWith('BLOCKED')
-    fireEvent.click(screen.getByRole('tab', { name: /STALE/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /Basi/i }))
     expect(onStale).toHaveBeenCalled()
   })
 
@@ -885,7 +895,7 @@ describe('control-center overview components', () => {
       />,
     )
     expect(screen.getByTestId('overview-decision-empty').textContent).toMatch(
-      /No decisions waiting/,
+      /Tidak ada keputusan yang menunggu/,
     )
     unmount()
 
@@ -899,7 +909,8 @@ describe('control-center overview components', () => {
     )
     const status = document.querySelector('[data-state="zero-results"]')
     expect(status).toBeTruthy()
-    expect(screen.getByText(/No ONGOING items match/i)).toBeTruthy()
+    const ongoing = screen.getByTestId('overview-ongoing')
+    expect(ongoing.textContent).toMatch(/Tidak ada item Sedang dikerjakan yang cocok/i)
   })
 
   it('supports partial, stale, disconnected, error, forbidden, retry', () => {
@@ -917,7 +928,8 @@ describe('control-center overview components', () => {
     )
     expect(attr(screen.getByRole('alert'), 'data-state')).toBe('partial')
     expect(screen.getByText(/G5_UNAVAILABLE/)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /Retry failed sections/i }))
+    // TM-11 id-ID banner actions
+    fireEvent.click(screen.getByRole('button', { name: /Coba lagi bagian yang gagal/i }))
     expect(onRetry).toHaveBeenCalled()
 
     rerender(
@@ -955,7 +967,7 @@ describe('control-center overview components', () => {
       />,
     )
     expect(attr(screen.getByRole('alert'), 'data-state')).toBe('disconnected')
-    fireEvent.click(screen.getByRole('button', { name: /Reconnect/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Sambungkan kembali/i }))
     expect(onReconnect).toHaveBeenCalled()
 
     rerender(
@@ -969,7 +981,7 @@ describe('control-center overview components', () => {
     )
     expect(attr(screen.getByRole('alert'), 'data-state')).toBe('error')
     expect(screen.getByText(/DATA_INTEGRITY/)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /^Retry$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Coba lagi$/i }))
     expect(onRetry).toHaveBeenCalledTimes(2)
 
     rerender(
@@ -991,10 +1003,10 @@ describe('control-center overview components', () => {
     expect(attr(live, 'aria-atomic')).toBe('true')
     expect(live.textContent).toBe('3 ONGOING updated')
 
-    expect(screen.getByRole('heading', { name: /Needs Your Decision/i })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: /PRIORITY/i })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: /^GLOBAL$/i })).toBeTruthy()
-    expect(screen.getByRole('tablist', { name: /Primary work buckets/i })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /Di mana posisi program sekarang/i })).toBeTruthy()
+    expect(screen.getAllByRole('heading', { name: /Prioritas/i }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('heading', { name: /Kesiapan program/i })).toBeTruthy()
+    expect(screen.getByRole('tablist', { name: /Bucket pekerjaan utama/i })).toBeTruthy()
   })
 
   it('lower panels render projects, lifecycle, G5, decisions, material events', () => {
@@ -1003,7 +1015,7 @@ describe('control-center overview components', () => {
     expect(lower.querySelector('[data-panel="projects"]')?.textContent).toMatch(/sales-rebuild/)
     expect(lower.querySelector('[data-panel="lifecycle"]')?.textContent).toMatch(/BUILT/)
     expect(lower.querySelector('[data-panel="g5"]')?.textContent).toMatch(/security/)
-    expect(lower.querySelector('[data-panel="decisions"]')?.textContent).toMatch(/2 open/)
+    expect(lower.querySelector('[data-panel="decisions"]')?.textContent).toMatch(/2 terbuka/)
     expect(lower.querySelector('[data-panel="material-events"]')?.textContent).toMatch(
       /HEARTBEAT/,
     )
@@ -1018,9 +1030,9 @@ describe('control-center overview components', () => {
         })}
       />,
     )
-    const expand = screen.getByRole('button', { name: /Expand/i })
+    const expand = screen.getByRole('button', { name: /^Buka$/i })
     expect(expand.tagName).toBe('BUTTON')
-    const tab = screen.getByRole('tab', { name: /ONGOING/i })
+    const tab = screen.getByRole('tab', { name: /Sedang dikerjakan/i })
     expect(tab.tagName).toBe('BUTTON')
   })
 })

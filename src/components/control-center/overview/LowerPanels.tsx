@@ -6,8 +6,8 @@ import { SemanticIcon } from './SemanticIcon'
 export function LowerPanels({ data }: { data: OverviewLowerPanels | null }) {
   if (!data) {
     return (
-      <section data-testid="overview-lower" aria-label="Projects lifecycle G5 decisions events">
-        <EmptySlot>Lower panels unavailable.</EmptySlot>
+      <section data-testid="overview-lower" aria-label="Proyek, lifecycle, G5, keputusan, peristiwa">
+        <EmptySlot>Panel sekunder tidak tersedia.</EmptySlot>
       </section>
     )
   }
@@ -16,12 +16,12 @@ export function LowerPanels({ data }: { data: OverviewLowerPanels | null }) {
     <section
       className={styles.lowerGrid}
       data-testid="overview-lower"
-      aria-label="Projects lifecycle G5 decisions events"
+      aria-label="Proyek, lifecycle, G5, keputusan, peristiwa"
     >
       <div className={styles.panel} data-panel="projects">
-        <h2 className={styles.panelTitle}>Projects</h2>
+        <h2 className={styles.panelTitle}>Proyek</h2>
         {data.projects.length === 0 ? (
-          <p className={styles.panelMuted}>No projects.</p>
+          <p className={styles.panelMuted}>Tidak ada proyek.</p>
         ) : (
           <ul className={styles.panelList}>
             {data.projects.map((p) => (
@@ -39,7 +39,7 @@ export function LowerPanels({ data }: { data: OverviewLowerPanels | null }) {
       <div className={styles.panel} data-panel="lifecycle">
         <h2 className={styles.panelTitle}>Lifecycle</h2>
         {data.lifecycle.length === 0 ? (
-          <p className={styles.panelMuted}>No lifecycle rollup.</p>
+          <p className={styles.panelMuted}>Tidak ada rollup lifecycle.</p>
         ) : (
           <ul className={styles.panelList}>
             {data.lifecycle.map((row) => (
@@ -62,9 +62,9 @@ export function LowerPanels({ data }: { data: OverviewLowerPanels | null }) {
           ) : null}
         </h2>
         {!data.g5 ? (
-          <p className={styles.panelMuted}>G5 unavailable.</p>
+          <p className={styles.panelMuted}>G5 tidak tersedia.</p>
         ) : data.g5.domains.length === 0 ? (
-          <p className={styles.panelMuted}>No G5 domains.</p>
+          <p className={styles.panelMuted}>Tidak ada domain G5.</p>
         ) : (
           <ul className={styles.panelList}>
             {data.g5.domains.map((d) => (
@@ -78,16 +78,16 @@ export function LowerPanels({ data }: { data: OverviewLowerPanels | null }) {
       </div>
 
       <div className={styles.panel} data-panel="decisions">
-        <h2 className={styles.panelTitle}>Decisions</h2>
+        <h2 className={styles.panelTitle}>Keputusan</h2>
         <p className={styles.metricValue}>
-          <SemanticIcon kind="alert" /> {data.decisionCount} open
+          <SemanticIcon kind="alert" /> {data.decisionCount} terbuka
         </p>
       </div>
 
       <div className={styles.panel} data-panel="material-events">
-        <h2 className={styles.panelTitle}>Material events</h2>
+        <h2 className={styles.panelTitle}>Peristiwa material</h2>
         {data.materialEvents.length === 0 ? (
-          <p className={styles.panelMuted}>No material events.</p>
+          <p className={styles.panelMuted}>Tidak ada peristiwa material.</p>
         ) : (
           <ul className={styles.panelList}>
             {data.materialEvents.map((ev) => (

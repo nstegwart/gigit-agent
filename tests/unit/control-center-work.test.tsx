@@ -350,7 +350,7 @@ describe('WorkRow display rules', () => {
     const block = screen.getByTestId('work-row-ongoing')
     expect(block.textContent).toContain('FUNCTIONAL')
     expect(block.textContent).toContain('ag-1')
-    expect(block.textContent).toContain('Stalled')
+    expect(block.textContent).toContain('Macet')
     expect(screen.getByTestId('work-row-evidence').getAttribute('href')).toBe('/e/2')
   })
 

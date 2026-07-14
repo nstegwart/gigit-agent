@@ -11,6 +11,7 @@ import { OpsScreen } from '#/components/control-center/ops'
 import {
   projectsEnvelopeToProps,
   featuresEnvelopeToProps,
+  featureDetailFromEnvelope,
   agentsEnvelopeToProps,
   opsEnvelopeToProps,
   projectDetailHref,
@@ -18,6 +19,7 @@ import {
   safeMaskedAccountDisplay,
   opsAccountAuditFlags,
 } from '#/lib/control-center-secondary-route-adapters'
+import { FeatureDetailScreen } from '#/components/control-center/features'
 import type { AgentsScreenProps } from '#/components/control-center/agents/types'
 import type { FeaturesScreenProps } from '#/components/control-center/features/types'
 import type { PinnedEnvelope, ProjectsData, FeaturesData, AgentsData, OpsData } from '#/lib/control-center-query'
@@ -261,6 +263,86 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
     expect(props.features[1].pageRoutes).toEqual([])
   })
 
+  it('drops items missing id (historical strip bug) so detailHref never ends in /undefined', () => {
+    const broken: FeaturesData = {
+      ...data,
+      items: [
+        {
+          // id intentionally omitted — mirrors old projectFeatures destructure
+          projectId: 'p-sales',
+          name: 'Broken row',
+          phase: 'spec',
+          flowBranch: null,
+          taskCount: 1,
+        } as FeaturesData['items'][number],
+        data.items[0]!,
+      ],
+    }
+    const props = featuresEnvelopeToProps(basePin(broken))
+    expect(props.features.map((f) => f.featureId)).toEqual(['f-1'])
+    expect(props.features.every((f) => !f.detailHref.includes('undefined'))).toBe(true)
+  })
+
+  it('featureDetailFromEnvelope resolves from full features list (not only page items)', () => {
+    const env = basePin({
+      ...data,
+      features: [
+        {
+          id: 'FC-AFF-MEMBER-REFERRAL',
+          projectId: 'backend',
+          name: 'Member referral link/payout',
+          phase: 'spec',
+          flowBranch: 'open' as const,
+          taskCount: 4,
+        },
+      ],
+      items: [data.items[0]!], // page does not include FC-AFF
+    })
+    const found = featureDetailFromEnvelope(env, 'FC-AFF-MEMBER-REFERRAL')
+    expect(found.feature?.featureId).toBe('FC-AFF-MEMBER-REFERRAL')
+    expect(found.feature?.name).toMatch(/Member referral/)
+    expect(found.feature?.detailHref).toBe(
+      '/b/mfs-rebuild/features/FC-AFF-MEMBER-REFERRAL',
+    )
+    expect(found.error).toBeNull()
+
+    const missing = featureDetailFromEnvelope(env, 'FC-DOES-NOT-EXIST')
+    expect(missing.feature).toBeNull()
+    expect(missing.error?.code).toBe('NOT_FOUND')
+  })
+
+  it('FeatureDetailScreen renders title for resolved feature and not-found banner', () => {
+    const env = basePin(data)
+    const found = featureDetailFromEnvelope(env, 'f-1')
+    const { rerender } = render(
+      <FeatureDetailScreen
+        surfaceState="populated"
+        boardId="mfs-rebuild"
+        feature={found.feature}
+        pin={found.pin}
+        error={found.error}
+        listHref={found.listHref}
+      />,
+    )
+    expect(screen.getByTestId('control-center-feature-detail').getAttribute('data-feature-id')).toBe(
+      'f-1',
+    )
+    expect(screen.getByTestId('feature-detail-title').textContent).toMatch(/Checkout flow/)
+    expect(screen.queryByTestId('feature-detail-not-found')).toBeNull()
+
+    rerender(
+      <FeatureDetailScreen
+        surfaceState="empty"
+        boardId="mfs-rebuild"
+        feature={null}
+        pin={null}
+        error={{ code: 'NOT_FOUND', message: 'Feature not found: missing' }}
+        listHref="/b/mfs-rebuild/features"
+      />,
+    )
+    expect(screen.getByTestId('feature-detail-not-found').textContent).toMatch(/Feature not found/)
+  })
+
   it('renders flow branch + context chips + responsive structure', () => {
     render(<FeaturesScreen {...featuresEnvelopeToProps(basePin(data))} />)
     const root = screen.getByTestId('control-center-features')
@@ -280,8 +362,14 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
       ),
     ).toBe(true)
     // Q5 is BLOCKED; Features is IA portfolio, not Mission Q5.
-    expect(root.textContent).toMatch(/IA · Features \/ Flows/)
+    expect(root.textContent).toMatch(/IA · Fitur \/ Alur/)
     expect(root.textContent).not.toMatch(/Mission Q5/)
+    // Name primary before technical id column
+    const firstRow = rows[0]!
+    const nameIdx = firstRow.textContent?.indexOf('Checkout flow') ?? -1
+    const idIdx = firstRow.textContent?.indexOf('f-1') ?? -1
+    expect(nameIdx).toBeGreaterThanOrEqual(0)
+    expect(idIdx).toBeGreaterThan(nameIdx)
   })
 
   it('surfaces projection gaps via details disclosure and count', () => {

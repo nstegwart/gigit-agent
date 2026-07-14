@@ -8,9 +8,9 @@ export function GlobalCard({ data }: { data: OverviewGlobalCard | null }) {
     return (
       <section className={styles.card} data-testid="overview-global" aria-labelledby="ov-global-title">
         <h2 id="ov-global-title" className={styles.cardTitle}>
-          GLOBAL
+          Kesiapan program (global)
         </h2>
-        <EmptySlot>Global readiness unavailable.</EmptySlot>
+        <EmptySlot>Kesiapan global tidak tersedia.</EmptySlot>
       </section>
     )
   }
@@ -19,22 +19,26 @@ export function GlobalCard({ data }: { data: OverviewGlobalCard | null }) {
     <section className={styles.card} data-testid="overview-global" aria-labelledby="ov-global-title">
       <h2 id="ov-global-title" className={styles.cardTitle}>
         <SemanticIcon kind="check" />
-        GLOBAL
+        Kesiapan program (global)
       </h2>
+      <p className={styles.readinessNote} data-testid="overview-global-readiness-note">
+        Bucket pekerjaan ≠ kesiapan mapping/produk/program. Angka di bawah dari evidence
+        terbaru, bukan persentase statis.
+      </p>
       <div className={styles.cardGrid}>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Tracked denom</span>
+          <span className={styles.metricLabel}>Denom terlacak</span>
           <span className={styles.metricValue}>{data.trackedWorkDenominator}</span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Product denom</span>
+          <span className={styles.metricLabel}>Denom produk</span>
           <span className={styles.metricValue}>{data.productDenominator}</span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>PROD_READY evidence</span>
+          <span className={styles.metricLabel}>PROD_READY ber-evidence</span>
           <span className={styles.metricValue}>
             {data.prodReadyWithEvidence}
-            <span className={styles.panelMuted}> / {data.stageProdReady} stage</span>
+            <span className={styles.panelMuted}> / {data.stageProdReady} tahap</span>
           </span>
         </div>
         <div className={styles.metric}>
@@ -44,13 +48,13 @@ export function GlobalCard({ data }: { data: OverviewGlobalCard | null }) {
           </span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Complete</span>
+          <span className={styles.metricLabel}>Selesai</span>
           <span className={`${styles.metricValue} ${data.complete ? styles.pass : styles.fail}`}>
-            {data.complete ? 'Yes' : 'No'}
+            {data.complete ? 'Ya' : 'Tidak'}
           </span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Board readiness %</span>
+          <span className={styles.metricLabel}>Rasio board (evidence)</span>
           <span className={styles.metricValue}>
             {data.boardReadinessPercent === null ? (
               <span className={styles.na}>N-A</span>
@@ -61,7 +65,7 @@ export function GlobalCard({ data }: { data: OverviewGlobalCard | null }) {
         </div>
         {data.cappedBy ? (
           <div className={styles.metric}>
-            <span className={styles.metricLabel}>Capped by</span>
+            <span className={styles.metricLabel}>Dibatasi oleh</span>
             <span className={`${styles.metricValue} ${styles.metricValueMono}`}>{data.cappedBy}</span>
           </div>
         ) : null}

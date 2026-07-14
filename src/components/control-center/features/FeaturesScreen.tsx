@@ -99,22 +99,25 @@ function FeatureCard({ row }: { row: FeatureRowView }) {
       data-feature-id={row.featureId}
       data-flow-branch={row.flowBranch ?? 'none'}
     >
-      <div className={styles.idCell}>{row.featureId}</div>
+      {/* Name primary; technical FC id secondary (01A human-first). */}
       <div className={styles.nameCell}>{row.name}</div>
+      <div className={styles.idCell} data-field="feature-id-secondary">
+        {row.featureId}
+      </div>
       <span className={branchClass(row.flowBranch)} data-field="flow-branch">
         {branchLabel(row.flowBranch)}
       </span>
       <dl className={styles.cardMeta}>
         <div>
-          <dt>Phase</dt>
+          <dt>Fase</dt>
           <dd>{row.phase ?? '—'}</dd>
         </div>
         <div>
-          <dt>Tasks</dt>
+          <dt>Tugas</dt>
           <dd className={styles.metric}>{row.taskCount}</dd>
         </div>
         <div>
-          <dt>Project</dt>
+          <dt>Proyek</dt>
           <dd className={styles.idCell}>
             {row.projectHref && row.projectId ? (
               <a href={row.projectHref}>{row.projectId}</a>
@@ -126,7 +129,7 @@ function FeatureCard({ row }: { row: FeatureRowView }) {
       </dl>
       <FeatureContextChips row={row} />
       <a className={styles.linkBtn} href={row.detailHref} data-testid="feature-detail-link">
-        Open feature
+        Buka fitur
       </a>
     </li>
   )
@@ -197,19 +200,19 @@ export function FeaturesScreen({
 
       <header className={styles.pageHead}>
         <div>
-          <p className={styles.eyebrow}>IA · Features / Flows</p>
+          <p className={styles.eyebrow}>IA · Fitur / Alur</p>
           <h1 id="features-page-title" className={styles.pageTitle}>
-            Features
+            Fitur
           </h1>
           <p className={styles.pageSub}>
-            Server feature summaries with flow branch and route/API/rule/data/geo/provider/readback
-            context when present. Detail routes remain available.
+            Ringkasan fitur dari pin server: cabang alur dan konteks rute/API/aturan/data saat ada.
+            Nama fitur utama; ID teknis (FC-*) di baris sekunder.
           </p>
         </div>
         <div className={styles.summaryStrip}>
           <span className={`${styles.chip} ${styles.chipAccent}`} data-testid="features-count">
             <span aria-hidden="true">◇</span>
-            {features.length} on page
+            {features.length} di halaman ini
           </span>
           <span className={styles.chip}>pageSize {pageSize}</span>
         </div>
@@ -281,15 +284,15 @@ export function FeaturesScreen({
             <table className={styles.table}>
               <thead>
                 <tr>
-                  <th scope="col">Feature</th>
-                  <th scope="col">Name</th>
-                  <th scope="col">Flow</th>
-                  <th scope="col">Phase</th>
-                  <th scope="col">Project</th>
-                  <th scope="col">Tasks</th>
-                  <th scope="col">Context</th>
+                  <th scope="col">Nama</th>
+                  <th scope="col">ID teknis</th>
+                  <th scope="col">Alur</th>
+                  <th scope="col">Fase</th>
+                  <th scope="col">Proyek</th>
+                  <th scope="col">Tugas</th>
+                  <th scope="col">Konteks</th>
                   <th scope="col">
-                    <span className="sr-only">Open</span>
+                    <span className="sr-only">Buka</span>
                   </th>
                 </tr>
               </thead>
@@ -301,8 +304,10 @@ export function FeaturesScreen({
                     data-feature-id={row.featureId}
                     data-flow-branch={row.flowBranch ?? 'none'}
                   >
-                    <td className={styles.idCell}>{row.featureId}</td>
                     <td className={styles.nameCell}>{row.name}</td>
+                    <td className={styles.idCell} data-field="feature-id-secondary">
+                      {row.featureId}
+                    </td>
                     <td>
                       <span className={branchClass(row.flowBranch)}>
                         {branchLabel(row.flowBranch)}
@@ -326,7 +331,7 @@ export function FeaturesScreen({
                         href={row.detailHref}
                         data-testid="feature-detail-link"
                       >
-                        Open
+                        Buka
                       </a>
                     </td>
                   </tr>

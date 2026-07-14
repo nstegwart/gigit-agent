@@ -1,9 +1,17 @@
-// Feature detail — ported from prototype `vFeature(m, id)` (docs/plan/assets/app.js).
-// Same markup/classes as a typed React page body; AppShell provides the chrome.
+// Feature detail — control-center boards resolve from pinned FeaturesData;
+// legacy boards keep plan/model featById (prototype vFeature).
 import { createFileRoute } from '@tanstack/react-router'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback } from 'react'
 import { BoardLink as Link } from '#/components/BoardLink'
 
-import { boardQueryOptions, useBoard } from '#/lib/board-query'
+import { boardQueryOptions, useBoard, useBoardId } from '#/lib/board-query'
+import {
+  featuresQueryOptions,
+  getDefaultControlCenterFetchers,
+  isControlCenterBoard,
+} from '#/lib/control-center-query'
+import { featureDetailFromEnvelope } from '#/lib/control-center-secondary-route-adapters'
 import { fmtDate } from '#/lib/format'
 import { Icon } from '#/lib/icons'
 import { EmptyState } from '#/components/primitives'
@@ -12,13 +20,77 @@ import { RunCard } from '#/components/RunCard'
 import { DecidePanel } from '#/components/DecidePanel'
 import { DesignLinks } from '#/components/DesignLinks'
 import { CommentThread } from '#/components/CommentThread'
+import { FeatureDetailScreen } from '#/components/control-center/features'
 
 export const Route = createFileRoute('/b/$boardId/features/$featureId')({
   loader: async ({ context, params }) => {
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
+    if (isControlCenterBoard(params.boardId)) {
+      await context.queryClient.ensureQueryData(
+        featuresQueryOptions(
+          params.boardId,
+          { cursor: null, pageSize: null },
+          getDefaultControlCenterFetchers().features,
+        ),
+      )
+    }
   },
   component: View,
 })
+
+function View() {
+  const boardId = useBoardId()
+  if (isControlCenterBoard(boardId)) {
+    return <ControlCenterFeatureDetail />
+  }
+  return <LegacyFeatureDetail />
+}
+
+function ControlCenterFeatureDetail() {
+  const boardId = useBoardId()
+  const { featureId } = Route.useParams()
+  const qc = useQueryClient()
+  const fetchers = getDefaultControlCenterFetchers()
+  const q = useQuery(
+    featuresQueryOptions(
+      boardId,
+      { cursor: null, pageSize: null },
+      fetchers.features,
+    ),
+  )
+
+  const onRetry = useCallback(() => {
+    void qc.invalidateQueries({ queryKey: ['control-center', 'features', boardId] })
+  }, [qc, boardId])
+
+  const resolved = featureDetailFromEnvelope(q.data, featureId)
+  const surfaceState =
+    q.isLoading && !q.data
+      ? ('loading' as const)
+      : q.isError
+        ? ('error' as const)
+        : resolved.feature
+          ? resolved.surfaceState
+          : ('empty' as const)
+
+  return (
+    <div className="wrap" data-testid="control-center-feature-detail-route">
+      <FeatureDetailScreen
+        surfaceState={surfaceState}
+        boardId={resolved.boardId || boardId}
+        feature={resolved.feature}
+        pin={resolved.pin}
+        error={
+          q.isError
+            ? { code: 'FETCH_ERROR', message: 'Failed to load features envelope' }
+            : resolved.error
+        }
+        listHref={resolved.listHref}
+        onRetry={onRetry}
+      />
+    </div>
+  )
+}
 
 function BackLink() {
   return (
@@ -31,7 +103,7 @@ function BackLink() {
 const linkIcon = (u: string) =>
   /^https?:/.test(u) ? 'ext' : /^file:/.test(u) ? 'folder' : 'link'
 
-function View() {
+function LegacyFeatureDetail() {
   const m = useBoard()
   const { featureId } = Route.useParams()
   const f = m.featById[featureId]

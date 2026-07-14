@@ -9,10 +9,10 @@ function connectionClass(conn: OverviewAppSummary['connection']): string {
 }
 
 function connectionLabel(conn: OverviewAppSummary['connection']): string {
-  if (conn === 'live') return 'Live'
-  if (conn === 'stale') return 'Stale'
-  if (conn === 'disconnected') return 'Disconnected'
-  return 'Unknown'
+  if (conn === 'live') return 'Langsung'
+  if (conn === 'stale') return 'Basi'
+  if (conn === 'disconnected') return 'Terputus'
+  return 'Tidak diketahui'
 }
 
 export function AppSummaryBar({ summary }: { summary: OverviewAppSummary }) {
@@ -20,22 +20,22 @@ export function AppSummaryBar({ summary }: { summary: OverviewAppSummary }) {
     <header
       className={styles.appBar}
       data-testid="overview-app-summary"
-      aria-label="Board summary"
+      aria-label="Ringkasan board"
     >
       <div className={styles.appBarItem}>
         <span className={styles.appBarLabel}>Board</span>
         <span className={styles.appBarValue}>{summary.boardLabel ?? summary.boardId}</span>
       </div>
       <div className={styles.appBarItem}>
-        <span className={styles.appBarLabel}>Stage</span>
+        <span className={styles.appBarLabel}>Tahap</span>
         <span className={styles.appBarValue}>{summary.liveStage}</span>
       </div>
       <div className={styles.appBarItem}>
-        <span className={styles.appBarLabel}>Freshness</span>
+        <span className={styles.appBarLabel}>Kesegaran</span>
         <span className={styles.appBarValue}>{summary.freshnessLabel}</span>
       </div>
       <div className={styles.appBarItem}>
-        <span className={styles.appBarLabel}>Connection</span>
+        <span className={styles.appBarLabel}>Koneksi</span>
         <span
           className={`${styles.appBarValue} ${connectionClass(summary.connection)}`}
           data-connection={summary.connection}
@@ -46,7 +46,7 @@ export function AppSummaryBar({ summary }: { summary: OverviewAppSummary }) {
       {summary.stale ? (
         <div className={styles.appBarItem} data-stale="true">
           <span className={`${styles.severity} ${styles.sevMedium}`} role="status">
-            STALE
+            BASI
             {summary.staleReason ? `: ${summary.staleReason}` : null}
           </span>
         </div>

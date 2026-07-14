@@ -17,9 +17,9 @@ export function PriorityCard({ data }: { data: OverviewPriorityCard | null }) {
     return (
       <section className={styles.card} data-testid="overview-priority" aria-labelledby="ov-priority-title">
         <h2 id="ov-priority-title" className={styles.cardTitle}>
-          PRIORITY
+          Prioritas + progres bukti
         </h2>
-        <EmptySlot>Priority portfolio unavailable.</EmptySlot>
+        <EmptySlot>Portofolio prioritas tidak tersedia.</EmptySlot>
       </section>
     )
   }
@@ -42,22 +42,22 @@ export function PriorityCard({ data }: { data: OverviewPriorityCard | null }) {
         data-portfolio-raw={data.portfolioId}
       >
         <SemanticIcon kind="forward" />
-        PRIORITY · {formatOperationalLabel(data.portfolioId)}
+        Prioritas + progres bukti · {formatOperationalLabel(data.portfolioId)}
       </h2>
       <div className={styles.cardGrid}>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Membership denom</span>
+          <span className={styles.metricLabel}>Denom keanggotaan</span>
           <span className={styles.metricValue}>{data.membershipDenominator}</span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Product denom</span>
+          <span className={styles.metricLabel}>Denom produk</span>
           <span className={styles.metricValue}>{data.productDenominator}</span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>PROD_READY evidence</span>
+          <span className={styles.metricLabel}>PROD_READY ber-evidence</span>
           <span className={styles.metricValue}>
             {data.prodReadyWithEvidence}
-            <span className={styles.panelMuted}> / {data.stageProdReady} stage</span>
+            <span className={styles.panelMuted}> / {data.stageProdReady} tahap</span>
           </span>
         </div>
         <div className={styles.metric}>
@@ -65,19 +65,19 @@ export function PriorityCard({ data }: { data: OverviewPriorityCard | null }) {
           <span className={`${styles.metricValue} ${g5.cls}`}>{data.g5Pass ? 'PASS' : 'FAIL'}</span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Complete</span>
+          <span className={styles.metricLabel}>Selesai</span>
           <span className={`${styles.metricValue} ${complete.cls}`}>
-            {data.complete ? 'Yes' : 'No'}
+            {data.complete ? 'Ya' : 'Tidak'}
           </span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Capacity share</span>
+          <span className={styles.metricLabel}>Porsi kapasitas</span>
           <span className={`${styles.metricValue} ${styles.metricValueMono}`}>
             {data.capacityShareDisplay}
           </span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Majority allocation</span>
+          <span className={styles.metricLabel}>Alokasi mayoritas</span>
           <span className={`${styles.metricValue} ${majority.cls}`}>{majority.text}</span>
         </div>
         <div className={styles.metric}>
@@ -99,7 +99,7 @@ export function PriorityCard({ data }: { data: OverviewPriorityCard | null }) {
           title={data.dispatchReason}
           data-reason-raw={data.dispatchReason}
         >
-          <strong>Dispatch reason:</strong> {formatOperationalLabel(data.dispatchReason)}
+          <strong>Alasan dispatch:</strong> {formatOperationalLabel(data.dispatchReason)}
         </p>
       ) : null}
       {data.nonPriorityReason ? (
@@ -109,12 +109,12 @@ export function PriorityCard({ data }: { data: OverviewPriorityCard | null }) {
           title={data.nonPriorityReason}
           data-reason-raw={data.nonPriorityReason}
         >
-          <strong>Non-priority reason:</strong> {formatOperationalLabel(data.nonPriorityReason)}
+          <strong>Alasan non-prioritas:</strong> {formatOperationalLabel(data.nonPriorityReason)}
         </p>
       ) : null}
       {data.blockers?.length ? (
         <>
-          <ul className={styles.blockers} aria-label="Priority blockers">
+          <ul className={styles.blockers} aria-label="Hambatan prioritas">
             {data.blockers.map((b, i) => (
               <li key={`${i}:${b}`} className={styles.blockerItem}>
                 <SemanticIcon kind="stop" />

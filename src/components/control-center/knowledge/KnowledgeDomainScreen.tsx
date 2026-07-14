@@ -1,11 +1,30 @@
 /**
  * ART S13–S14 / S21 domain knowledge — honest unavailable/partial from pin only.
+ * S21: distinct conflict/redaction surface (PROVEN|UNKNOWN|CONFLICT|STALE).
  */
 import type { KnowledgeDomainViewModel } from '#/lib/control-center-route-adapters'
+import {
+  resolveKnowledgeConflictView,
+  type KnowledgeConflictSourceView,
+  type KnowledgeFactState,
+  type KnowledgeRedactionView,
+} from '#/lib/control-center-secondary-route-adapters'
+import { KnowledgeConflictPanel } from './KnowledgeConflictPanel'
 
 export type KnowledgeDomainScreenProps = KnowledgeDomainViewModel & {
   onRetry?: () => void
   className?: string
+  /**
+   * Optional server-provided conflict sources (pass-through).
+   * Never invent a second source when empty.
+   */
+  conflictSources?: ReadonlyArray<KnowledgeConflictSourceView>
+  /** Optional server redaction disclosures (pass-through). */
+  redactions?: ReadonlyArray<KnowledgeRedactionView>
+  /** Optional server knowledgeState override when projected. */
+  knowledgeState?: KnowledgeFactState | string | null
+  /** Optional last-valid pin time when projected (pin VM may omit generatedAt). */
+  lastValidGeneratedAt?: string | null
 }
 
 export function KnowledgeDomainScreen({
@@ -25,7 +44,23 @@ export function KnowledgeDomainScreen({
   error,
   onRetry,
   className,
+  conflictSources,
+  redactions,
+  knowledgeState,
+  lastValidGeneratedAt,
 }: KnowledgeDomainScreenProps) {
+  const conflictModel = resolveKnowledgeConflictView({
+    domain,
+    availability,
+    surfaceState,
+    gaps,
+    pin,
+    sources: conflictSources ?? null,
+    redactions: redactions ?? null,
+    knowledgeState: knowledgeState ?? null,
+    lastValidGeneratedAt: lastValidGeneratedAt ?? null,
+  })
+
   return (
     <section
       className={className}
@@ -34,6 +69,7 @@ export function KnowledgeDomainScreen({
       data-board-id={boardId}
       data-domain={domain}
       data-availability={availability}
+      data-knowledge-state={conflictModel.knowledgeState}
     >
       <header style={{ marginBottom: 16 }}>
         <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: 0 }}>Pengetahuan domain</p>
@@ -43,6 +79,8 @@ export function KnowledgeDomainScreen({
         <p data-testid="knowledge-summary">{summary}</p>
         <p data-testid="knowledge-availability">
           Status: <strong>{availability}</strong>
+          {' · '}
+          pengetahuan: <strong data-testid="knowledge-fact-state">{conflictModel.knowledgeState}</strong>
         </p>
         {onRetry ? (
           <button type="button" onClick={onRetry} data-testid="knowledge-retry">
@@ -50,6 +88,9 @@ export function KnowledgeDomainScreen({
           </button>
         ) : null}
       </header>
+
+      {/* ART S21 conflict/redaction — also hosts data-testid="knowledge-conflict" via panel */}
+      <KnowledgeConflictPanel model={conflictModel} onRetry={onRetry} />
 
       {error ? (
         <div role="alert" data-testid="knowledge-error">

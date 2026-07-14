@@ -98,9 +98,9 @@ export function NeedsYourDecision({
     return (
       <section aria-labelledby={`${panelId}-title`} data-testid="overview-decision-empty">
         <h2 id={`${panelId}-title`} className={styles.sectionLabel}>
-          Needs Your Decision
+          Keputusan / hambatan utama
         </h2>
-        <EmptySlot>No decisions waiting on you.</EmptySlot>
+        <EmptySlot>Tidak ada keputusan yang menunggu Anda.</EmptySlot>
       </section>
     )
   }
@@ -131,7 +131,7 @@ export function NeedsYourDecision({
     questionRaw === item.decisionId ||
     (titleRaw === item.decisionId && questionRaw === item.decisionId)
   const questionDisplay = questionIsDuplicate
-    ? 'Question not projected — open Decisions for the full inbox item.'
+    ? 'Pertanyaan belum diproyeksikan — buka Keputusan untuk item lengkap.'
     : questionRaw
 
   // Owner primary = reviewed humanDisplay title (or CONTENT_REVIEW_REQUIRED shell).
@@ -144,19 +144,19 @@ export function NeedsYourDecision({
       data-testid="overview-decision-pill"
       data-shelf={shelfHost ? 'true' : 'false'}
       role="region"
-      aria-label={`Needs your decision: ${decision.count} open, ${topSev}${item.blocking ? ', blocking' : ''}`}
+      aria-label={`Keputusan Anda: ${decision.count} terbuka, ${topSev}${item.blocking ? ', menghambat' : ''}`}
     >
       <SemanticIcon kind="alert" />
       <div className={styles.pillMeta}>
         <span data-testid="overview-decision-pill-count">
-          {decision.count} decision{decision.count === 1 ? '' : 's'}
+          {decision.count} keputusan
         </span>
         <span aria-hidden="true"> · </span>
         <span data-testid="overview-decision-pill-severity">{topSev}</span>
         {item.blocking ? (
           <>
             <span aria-hidden="true"> · </span>
-            <span className={styles.pillBlockingLabel}>blocking</span>
+            <span className={styles.pillBlockingLabel}>menghambat</span>
           </>
         ) : null}
       </div>
@@ -180,7 +180,7 @@ export function NeedsYourDecision({
         aria-expanded="false"
         aria-controls={panelId}
       >
-        Expand
+        Buka
       </button>
     </div>
   ) : null
@@ -216,7 +216,7 @@ export function NeedsYourDecision({
         >
           <h2 id={`${panelId}-title`} className={styles.cardTitle}>
             <SemanticIcon kind="alert" />
-            Needs Your Decision
+            Keputusan / hambatan utama
           </h2>
           <div className={styles.decisionHead}>
             <span className={`${styles.severity} ${severityClass(item.severity)}`}>
@@ -225,14 +225,14 @@ export function NeedsYourDecision({
             </span>
             {item.blocking ? (
               <span className={styles.blockingBadge}>
-                <span aria-hidden="true">⛔</span> Blocking
+                <span aria-hidden="true">⛔</span> Menghambat
               </span>
             ) : null}
             <span className={styles.taskId} title={item.decisionId}>
               {item.decisionId}
             </span>
             {decision.count > 1 ? (
-              <span className={styles.chip}>{decision.count} open</span>
+              <span className={styles.chip}>{decision.count} terbuka</span>
             ) : null}
           </div>
           <h3

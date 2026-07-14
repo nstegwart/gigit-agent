@@ -24,8 +24,8 @@ export function SurfaceBanner({
     return (
       <div className={`${styles.banner} ${styles.bannerMuted}`} role="status" data-state="loading">
         <div className={styles.bannerBody}>
-          <div className={styles.bannerTitle}>Loading overview</div>
-          <p className={styles.bannerText}>Fetching pinned mission envelope…</p>
+          <div className={styles.bannerTitle}>Memuat ringkasan</div>
+          <p className={styles.bannerText}>Mengambil envelope misi ter-pin…</p>
         </div>
       </div>
     )
@@ -39,9 +39,9 @@ export function SurfaceBanner({
         data-state="zero-results"
       >
         <div className={styles.bannerBody}>
-          <div className={styles.bannerTitle}>No matching results</div>
+          <div className={styles.bannerTitle}>Tidak ada hasil yang cocok</div>
           <p className={styles.bannerText}>
-            Filters matched no work items. Clear filters to see the full board.
+            Filter tidak menemukan pekerjaan. Hapus filter untuk melihat board penuh.
           </p>
         </div>
       </div>
@@ -56,14 +56,13 @@ export function SurfaceBanner({
         data-state="partial"
       >
         <div className={styles.bannerBody}>
-          <div className={styles.bannerTitle}>Partial overview</div>
-          <p className={styles.bannerText}>Some sections failed — showing available data only.</p>
+          <div className={styles.bannerTitle}>Ringkasan sebagian</div>
+          <p className={styles.bannerText}>
+            Beberapa bagian gagal — hanya menampilkan data yang tersedia.
+          </p>
           {partialErrors?.length ? (
             <details className={styles.bannerDetails}>
-              <summary>
-                Technical detail ({partialErrors.length} code
-                {partialErrors.length === 1 ? '' : 's'})
-              </summary>
+              <summary>Detail teknis ({partialErrors.length} kode)</summary>
               <ul className={styles.blockers}>
                 {partialErrors.map((e) => (
                   <li key={`${e.code}:${e.message}`} className={styles.blockerItem}>
@@ -79,7 +78,7 @@ export function SurfaceBanner({
         {onRetry ? (
           <div className={styles.bannerActions}>
             <button type="button" className={styles.actionBtn} onClick={onRetry}>
-              Retry failed sections
+              Coba lagi bagian yang gagal
             </button>
           </div>
         ) : null}
@@ -91,15 +90,15 @@ export function SurfaceBanner({
     return (
       <div className={`${styles.banner} ${styles.bannerWarn}`} role="status" data-state="stale">
         <div className={styles.bannerBody}>
-          <div className={styles.bannerTitle}>Stale data</div>
+          <div className={styles.bannerTitle}>Data basi</div>
           <p className={styles.bannerText}>
-            {staleReason?.trim() || 'Envelope marked stale. Refresh for current pins.'}
+            {staleReason?.trim() || 'Envelope ditandai basi. Muat ulang untuk pin terkini.'}
           </p>
         </div>
         {onRetry ? (
           <div className={styles.bannerActions}>
             <button type="button" className={styles.actionBtn} onClick={onRetry}>
-              Refresh
+              Muat ulang
             </button>
           </div>
         ) : null}
@@ -115,13 +114,15 @@ export function SurfaceBanner({
         data-state="disconnected"
       >
         <div className={styles.bannerBody}>
-          <div className={styles.bannerTitle}>Disconnected</div>
-          <p className={styles.bannerText}>Transport is down. Reconnect to resume live updates.</p>
+          <div className={styles.bannerTitle}>Terputus</div>
+          <p className={styles.bannerText}>
+            Transport mati. Sambungkan kembali untuk melanjutkan pembaruan langsung.
+          </p>
         </div>
         {onReconnect ? (
           <div className={styles.bannerActions}>
             <button type="button" className={styles.actionBtn} onClick={onReconnect}>
-              Reconnect
+              Sambungkan kembali
             </button>
           </div>
         ) : null}
@@ -130,7 +131,7 @@ export function SurfaceBanner({
   }
 
   if (state === 'error') {
-    const shortMsg = error?.message?.trim() || 'Unknown error'
+    const shortMsg = error?.message?.trim() || 'Kesalahan tidak diketahui'
     return (
       <div
         className={`${styles.banner} ${styles.bannerCompact} ${styles.bannerError}`}
@@ -138,11 +139,11 @@ export function SurfaceBanner({
         data-state="error"
       >
         <div className={styles.bannerBody}>
-          <div className={styles.bannerTitle}>Overview failed</div>
-          <p className={styles.bannerText}>Could not load the mission envelope.</p>
+          <div className={styles.bannerTitle}>Ringkasan gagal</div>
+          <p className={styles.bannerText}>Tidak dapat memuat envelope misi.</p>
           {error?.code || shortMsg ? (
             <details className={styles.bannerDetails}>
-              <summary>Technical detail</summary>
+              <summary>Detail teknis</summary>
               <p className={styles.bannerText}>
                 {error?.code ? (
                   <>
@@ -159,7 +160,7 @@ export function SurfaceBanner({
         {onRetry ? (
           <div className={styles.bannerActions}>
             <button type="button" className={styles.actionBtn} onClick={onRetry}>
-              Retry
+              Coba lagi
             </button>
           </div>
         ) : null}
@@ -171,11 +172,11 @@ export function SurfaceBanner({
     return (
       <div className={`${styles.banner} ${styles.bannerError}`} role="alert" data-state="forbidden">
         <div className={styles.bannerBody}>
-          <div className={styles.bannerTitle}>Access denied</div>
+          <div className={styles.bannerTitle}>Akses ditolak</div>
           <p className={styles.bannerText}>
             {error?.code === 'AUTHORIZATION_REQUIRED' || error?.code
               ? `${error.code}${error.message ? `: ${error.message}` : ''}`
-              : 'You do not have permission to view this overview (401/403).'}
+              : 'Anda tidak punya izin melihat ringkasan ini (401/403).'}
           </p>
         </div>
       </div>

@@ -11,14 +11,21 @@ function productiveClass(state: ProductiveState): string {
   return styles.prodIdle
 }
 
+function productiveOwnerLabel(state: ProductiveState): string {
+  if (state === 'PRODUCTIVE') return 'Produktif'
+  if (state === 'STALLED') return 'Macet'
+  return 'Menganggur'
+}
+
 function ProductiveBadge({ state }: { state: ProductiveState }) {
   const isProd = state === 'PRODUCTIVE'
+  const label = productiveOwnerLabel(state)
   return (
     <span
       className={`${styles.prodState} ${productiveClass(state)}`}
       data-productive-state={state}
       role="status"
-      aria-label={`Work state: ${state}`}
+      aria-label={`Status kerja: ${label}`}
     >
       {isProd ? (
         <span className={`${styles.pulseDot} ${styles.pulseDotLive}`} aria-hidden="true" />
@@ -26,7 +33,7 @@ function ProductiveBadge({ state }: { state: ProductiveState }) {
         <span className={styles.hollowDot} aria-hidden="true" />
       )}
       <SemanticIcon kind={state} />
-      <span>{state}</span>
+      <span>{label}</span>
     </span>
   )
 }
@@ -56,8 +63,8 @@ export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
       data-owner-primary-title={display.primaryTitle}
     >
       <div className={styles.ongoingTop}>
-        <div style={{ minWidth: 0 }}>
-          <div className={styles.taskId}>{item.taskId}</div>
+        <div className={styles.ongoingTitleBlock} style={{ minWidth: 0 }}>
+          {/* Human title primary; technical id secondary (ART human task card). */}
           <h3
             className={styles.ongoingTitle}
             data-testid="overview-ongoing-owner-title"
@@ -65,6 +72,9 @@ export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
           >
             {display.primaryTitle}
           </h3>
+          <div className={styles.taskId} data-field="taskId" title={item.taskId}>
+            {item.taskId}
+          </div>
           {/* Technical title secondary only — never owner primary. */}
           {display.technicalTitle && display.technicalTitle !== display.primaryTitle ? (
             <div
@@ -101,7 +111,7 @@ export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
 
       <div className={styles.ages} data-testid="ongoing-ages">
         <div>
-          <span className={styles.ageLabel}>Started</span>
+          <span className={styles.ageLabel}>Dimulai</span>
           <span data-field="started-age">{item.startedAge}</span>
         </div>
         <div>
@@ -109,7 +119,7 @@ export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
           <span data-field="heartbeat-age">{item.heartbeatAge}</span>
         </div>
         <div>
-          <span className={styles.ageLabel}>Material progress</span>
+          <span className={styles.ageLabel}>Progres material</span>
           <span data-field="material-age">{item.materialProgressAge}</span>
         </div>
       </div>
@@ -136,7 +146,7 @@ export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
 
 export function OngoingZeroClick({
   items,
-  emptyLabel = 'No ONGOING work.',
+  emptyLabel = 'Tidak ada pekerjaan Sedang dikerjakan.',
 }: {
   items: OverviewOngoingItem[]
   emptyLabel?: string
@@ -144,7 +154,7 @@ export function OngoingZeroClick({
   return (
     <section data-testid="overview-ongoing" aria-labelledby="ov-ongoing-title">
       <h2 id="ov-ongoing-title" className={styles.sectionLabel}>
-        ONGOING (zero-click)
+        Sedang dikerjakan sekarang
       </h2>
       {items.length === 0 ? (
         <EmptySlot>{emptyLabel}</EmptySlot>

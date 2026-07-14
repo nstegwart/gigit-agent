@@ -26,9 +26,11 @@
 
 .title {
   margin: 0;
-  font-size: 1.25rem;
-  font-weight: 650;
+  font-size: 1.5rem; /* page title scale (ART 24/32) */
+  font-weight: 600;
   letter-spacing: -0.02em;
+  line-height: 1.3;
+  color: var(--text, #17202a);
 }
 
 .metaRow {
@@ -424,16 +426,36 @@
   outline-offset: -2px;
 }
 
+/* Human title primary; technical id secondary (ART human task card). */
+.titleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
 .taskTitle {
+  display: block;
+  font-size: 1rem;
   font-weight: 600;
-  color: var(--text, #171a21);
+  line-height: 1.35;
+  color: var(--text, #17202a);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .taskId {
   font-family: var(--mono, ui-monospace, monospace);
-  font-size: 0.75rem;
-  color: #4a5568;
-  margin-top: 2px;
+  font-size: 0.72rem;
+  font-weight: 400;
+  line-height: 1.3;
+  color: #58616f;
+  margin-top: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Owner humanDisplay block — field density only; no art redesign. */

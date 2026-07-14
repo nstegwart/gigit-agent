@@ -50,7 +50,7 @@ export function WorkLoadingState() {
       aria-busy="true"
       data-testid="work-state-loading"
     >
-      <span className={styles.srOnly}>Loading work items…</span>
+      <span className={styles.srOnly}>Memuat item pekerjaan…</span>
       <div className={styles.skeletonRow} />
       <div className={styles.skeletonRow} />
       <div className={styles.skeletonRow} />
@@ -74,16 +74,17 @@ export function WorkEmptyState({
 }) {
   const bucketLabel = activeBucket
     ? BUCKET_SEMANTICS[activeBucket]?.label ?? activeBucket
-    : 'this bucket'
-  const title = kind === 'zero-results' ? 'No matching work items' : 'No work in this board'
+    : 'bucket ini'
+  const title =
+    kind === 'zero-results' ? 'Tidak ada pekerjaan yang cocok' : 'Tidak ada pekerjaan di board ini'
   const body =
     kind === 'zero-results'
       ? staleOverlayActive
-        ? `No server rows in ${bucketLabel} with the STALE overlay on. Clear STALE or switch bucket.`
-        : `No server rows in the ${bucketLabel} bucket for the current pin.`
+        ? `Tidak ada baris server di ${bucketLabel} dengan filter BASI aktif. Hapus BASI atau ganti bucket.`
+        : `Tidak ada baris server di bucket ${bucketLabel} untuk pin saat ini.`
       : activeBucket
-        ? `No tracked work items in ${bucketLabel} for the active stage.`
-        : 'This board has no tracked work items for the active stage.'
+        ? `Tidak ada pekerjaan terlacak di ${bucketLabel} untuk tahap aktif.`
+        : 'Board ini tidak punya pekerjaan terlacak untuk tahap aktif.'
   const showClearStale = kind === 'zero-results' && !!staleOverlayActive && !!onClearStale
   const showSwitchOngoing =
     kind === 'zero-results' &&
@@ -110,7 +111,7 @@ export function WorkEmptyState({
               onClick={onClearStale}
               data-testid="work-empty-clear-stale"
             >
-              Clear STALE filter
+              Hapus filter BASI
             </button>
           ) : null}
           {showSwitchOngoing ? (
@@ -120,7 +121,7 @@ export function WorkEmptyState({
               onClick={onSwitchToOngoing}
               data-testid="work-empty-switch-ongoing"
             >
-              Switch to Ongoing
+              Pindah ke Sedang dikerjakan
             </button>
           ) : null}
         </div>
@@ -179,14 +180,14 @@ export function WorkStates({
       >
         <Icon name="alert" size={18} />
         <div className={styles.bannerBody}>
-          <p className={styles.bannerTitle}>Disconnected</p>
+          <p className={styles.bannerTitle}>Terputus</p>
           <p className={styles.bannerText}>
-            Transport is down. Work data may be incomplete until reconnect.
+            Transport mati. Data pekerjaan mungkin tidak lengkap sampai tersambung kembali.
           </p>
         </div>
         <div className={styles.bannerActions}>
           <ActionButton
-            label="Reconnect"
+            label="Sambungkan kembali"
             onClick={onReconnect}
             primary
             testId="work-reconnect"
@@ -205,9 +206,9 @@ export function WorkStates({
       >
         <Icon name="lock" size={18} />
         <div className={styles.bannerBody}>
-          <p className={styles.bannerTitle}>Forbidden</p>
+          <p className={styles.bannerTitle}>Akses ditolak</p>
           <p className={styles.bannerText}>
-            {error?.message ?? 'You are not authorized to view this work list (401/403).'}
+            {error?.message ?? 'Anda tidak berwenang melihat daftar pekerjaan ini (401/403).'}
           </p>
           {error?.code ? (
             <p className={styles.fieldError} data-testid="work-error-code">
@@ -230,8 +231,8 @@ export function WorkStates({
       >
         <Icon name="alert" size={18} />
         <div className={styles.bannerBody}>
-          <p className={styles.bannerTitle}>Could not load work</p>
-          <p className={styles.bannerText}>{error?.message ?? 'Unknown error'}</p>
+          <p className={styles.bannerTitle}>Tidak dapat memuat pekerjaan</p>
+          <p className={styles.bannerText}>{error?.message ?? 'Kesalahan tidak diketahui'}</p>
           {error?.code ? (
             <p className={styles.fieldError} data-testid="work-error-code">
               {error.code}
@@ -245,7 +246,7 @@ export function WorkStates({
         </div>
         <div className={styles.bannerActions}>
           {error?.retryable !== false ? (
-            <ActionButton label="Retry" onClick={onRetry} primary testId="work-retry" />
+            <ActionButton label="Coba lagi" onClick={onRetry} primary testId="work-retry" />
           ) : null}
         </div>
       </div>
@@ -263,13 +264,13 @@ export function WorkStates({
         >
           <Icon name="alert" size={18} />
           <div className={styles.bannerBody}>
-            <p className={styles.bannerTitle}>Partial data</p>
+            <p className={styles.bannerTitle}>Data sebagian</p>
             <p className={styles.bannerText}>
-              {partialMessage ?? 'Some sections failed; showing available rows only.'}
+              {partialMessage ?? 'Beberapa bagian gagal; hanya menampilkan baris yang tersedia.'}
             </p>
           </div>
           <div className={styles.bannerActions}>
-            <ActionButton label="Retry" onClick={onRetry} testId="work-retry" />
+            <ActionButton label="Coba lagi" onClick={onRetry} testId="work-retry" />
           </div>
         </div>
       ) : null}
@@ -282,13 +283,14 @@ export function WorkStates({
         >
           <Icon name="clock" size={18} />
           <div className={styles.bannerBody}>
-            <p className={styles.bannerTitle}>Stale envelope</p>
+            <p className={styles.bannerTitle}>Envelope basi</p>
             <p className={styles.bannerText}>
-              {envelopeStaleReason ?? 'Server marked this response stale. Refresh for current pin.'}
+              {envelopeStaleReason ??
+                'Server menandai respons ini basi. Muat ulang untuk pin terkini.'}
             </p>
           </div>
           <div className={styles.bannerActions}>
-            <ActionButton label="Refresh" onClick={onRefresh} primary testId="work-refresh" />
+            <ActionButton label="Muat ulang" onClick={onRefresh} primary testId="work-refresh" />
           </div>
         </div>
       ) : null}
@@ -301,9 +303,9 @@ export function WorkStates({
         >
           <Icon name="flag" size={18} />
           <div className={styles.bannerBody}>
-            <p className={styles.bannerTitle}>Needs human decision</p>
+            <p className={styles.bannerTitle}>Memerlukan keputusan manusia</p>
             <p className={styles.bannerText}>
-              {needsHumanMessage ?? 'An open blocking decision is elevated for this board.'}
+              {needsHumanMessage ?? 'Keputusan pemblokir terbuka dinaikkan untuk board ini.'}
             </p>
           </div>
         </div>

@@ -1567,7 +1567,9 @@ export function projectFeatures(
   const data: FeaturesData = stripSensitiveFields({
     surfaceVersion: CONTROL_CENTER_UI_SURFACE_VERSION,
     features: agg.features.map((f) => ({ ...f })),
-    items: page.items.map(({ createdAt: _c, id: _i, ...rest }) => rest as FeatureUiSummary),
+    // Strip pagination-only createdAt; KEEP FeatureUiSummary.id (detailHref needs it).
+    // Previously `id` was destructured away → /features/undefined → "Feature not found".
+    items: page.items.map(({ createdAt: _c, ...rest }) => rest as FeatureUiSummary),
     pageSize: page.pageSize,
   })
   let surfaceState = baseSurfaceState(agg)

@@ -79,7 +79,7 @@ export function WorkScreen({
     >
       <div className={styles.header}>
         <h1 className={styles.title} id={`${uid}-title`}>
-          Work
+          Pekerjaan
         </h1>
         <div className={styles.metaRow}>
           <PinnedRevisionBadge pinned={pinned} />

@@ -438,11 +438,14 @@
 .taskId {
   font-family: var(--mono);
   font-size: 0.72rem;
+  font-weight: 400;
   color: var(--cc-text-faint, #58616f);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Technical id is secondary progressive disclosure under human title. */
+  order: 2;
 }
 
 .ownerAction {
@@ -595,6 +598,108 @@
   scroll-margin-top: 0.5rem;
 }
 
+/* ----- program position (ART narrative lead) ----- */
+.programPosition {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg, 16px);
+  background: var(--surface);
+  padding: var(--sp-4) var(--sp-5, 24px);
+  min-width: 0;
+  /* Primary narrative gets ≥2× visual weight vs secondary metric cards. */
+  box-shadow: none;
+}
+
+.programEyebrow {
+  margin: 0 0 var(--sp-2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cc-text-faint, #58616f);
+}
+
+.programHeadline {
+  margin: 0 0 var(--sp-3);
+  font-size: clamp(1.5rem, 2.2vw, 2rem); /* 24–32 editorial scale */
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  color: var(--text, #17202a);
+  max-width: 40rem;
+}
+
+.programStatement {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--text, #344054);
+  max-width: 42rem; /* ~65–75ch narrative column */
+}
+
+.programMeta {
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--cc-text-dim, #58616f);
+}
+
+.programMeta li {
+  padding-left: 0.85rem;
+  position: relative;
+}
+
+.programMeta li::before {
+  content: '·';
+  position: absolute;
+  left: 0;
+  color: var(--cc-text-faint, #58616f);
+}
+
+.readinessNote {
+  margin: 0 0 var(--sp-3);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--cc-text-dim, #58616f);
+}
+
+.nextCueCard {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 12px);
+  background: var(--surface);
+  padding: var(--sp-3) var(--sp-4);
+  border-left: 3px solid var(--cc-accent, #4f3fd4);
+  min-width: 0;
+}
+
+.nextCueLead {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text, #17202a);
+  max-width: 42rem;
+}
+
+.nextCueMeta {
+  margin: 0.35rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--cc-text-dim, #58616f);
+  max-width: 42rem;
+}
+
+.ongoingTitleBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
 /* ----- priority / global pair ----- */
 .priorityGlobal {
   display: grid;
@@ -704,8 +809,10 @@
 
 .ongoingTitle {
   margin: 0;
-  font-size: 0.95rem;
-  font-weight: 650;
+  font-size: 1.0625rem; /* primary human title — above metadata */
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text, #17202a);
   min-width: 0;
   overflow-wrap: anywhere;
 }

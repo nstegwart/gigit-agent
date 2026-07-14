@@ -1,6 +1,7 @@
 /**
  * Presentation maps for Work buckets / overlays.
  * Labels and icons only — never used to assign membership.
+ * Owner chrome default: plain id-ID (01A OWNER MODE).
  */
 import type { IconName } from '#/lib/icons'
 import {
@@ -19,27 +20,27 @@ export interface BucketSemantic {
 }
 
 export const BUCKET_SEMANTICS: Readonly<Record<PrimaryBucket, BucketSemantic>> = {
-  DONE: { label: 'Done', shortLabel: 'Done', icon: 'check', tone: 'done' },
+  DONE: { label: 'Selesai', shortLabel: 'Selesai', icon: 'check', tone: 'done' },
   RECONCILIATION_PENDING: {
-    label: 'Reconciliation pending',
-    shortLabel: 'Reconcile',
+    label: 'Sedang dicocokkan',
+    shortLabel: 'Cocokkan',
     icon: 'alert',
     tone: 'recon',
   },
-  ONGOING: { label: 'Ongoing', shortLabel: 'Ongoing', icon: 'bolt', tone: 'ongoing' },
-  NEXT: { label: 'Next', shortLabel: 'Next', icon: 'arrow', tone: 'next' },
-  QUEUED: { label: 'Queued', shortLabel: 'Queued', icon: 'inbox', tone: 'queued' },
-  BLOCKED: { label: 'Blocked', shortLabel: 'Blocked', icon: 'lock', tone: 'blocked' },
+  ONGOING: { label: 'Sedang dikerjakan', shortLabel: 'Dikerjakan', icon: 'bolt', tone: 'ongoing' },
+  NEXT: { label: 'Berikutnya', shortLabel: 'Berikut', icon: 'arrow', tone: 'next' },
+  QUEUED: { label: 'Menunggu giliran', shortLabel: 'Antri', icon: 'inbox', tone: 'queued' },
+  BLOCKED: { label: 'Terhambat', shortLabel: 'Hambat', icon: 'lock', tone: 'blocked' },
 }
 
 export const OVERLAY_LABELS: Readonly<Record<StaleOverlayKind, string>> = {
-  STALE_DATA_SOURCE: 'Stale data source',
-  EXPIRED_STALLED_RUN: 'Expired / stalled run',
-  STALE_CLAIM: 'Stale claim',
-  STALE_DISPATCH_PLAN: 'Stale dispatch plan',
-  STALE_ACCOUNT_SYNC: 'Stale account sync',
-  BEYOND_STAGE_ONGOING: 'Beyond-stage claim',
-  RECONCILIATION_DRILLDOWN: 'Reconciliation drilldown',
+  STALE_DATA_SOURCE: 'Sumber data basi',
+  EXPIRED_STALLED_RUN: 'Run kedaluwarsa / macet',
+  STALE_CLAIM: 'Klaim basi',
+  STALE_DISPATCH_PLAN: 'Rencana dispatch basi',
+  STALE_ACCOUNT_SYNC: 'Sinkron akun basi',
+  BEYOND_STAGE_ONGOING: 'Klaim di luar tahap',
+  RECONCILIATION_DRILLDOWN: 'Drilldown pencocokan',
 }
 
 /** Overlays treated as the STALE chip family (ARCHITECTURE §9.1). */
@@ -58,9 +59,9 @@ export function formatAgeSeconds(seconds: number | null | undefined): string {
 export function livenessLabel(liveness: string | null | undefined): string {
   if (!liveness) return ''
   const u = String(liveness).toUpperCase()
-  if (u === 'PRODUCTIVE') return 'Productive'
-  if (u === 'IDLE') return 'Idle'
-  if (u === 'STALLED') return 'Stalled'
-  if (u === 'EXPIRED') return 'Expired'
+  if (u === 'PRODUCTIVE') return 'Produktif'
+  if (u === 'IDLE') return 'Menganggur'
+  if (u === 'STALLED') return 'Macet'
+  if (u === 'EXPIRED') return 'Kedaluwarsa'
   return String(liveness)
 }
