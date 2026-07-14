@@ -41,6 +41,22 @@ export function hasE2ECredentials() {
   return Boolean(username && password)
 }
 
+/** Soft probe — process-local MCP bearer for Playwright/request fixtures. */
+export function hasMcpBearer() {
+  return Boolean(process.env.CAIRN_MCP_BEARER?.trim())
+}
+
+/** Fail-closed MCP bearer (never print the value). */
+export function requireMcpBearer() {
+  const bearer = process.env.CAIRN_MCP_BEARER?.trim() ?? ''
+  if (!bearer) {
+    throw new Error(
+      'FAIL-CLOSED mcp-auth: CAIRN_MCP_BEARER required (process-local synthetic from auth-fixture).',
+    )
+  }
+  return bearer
+}
+
 export function resolveBoardId(defaultId = 'ibils') {
   return process.env.BOARD_ID?.trim() || defaultId
 }

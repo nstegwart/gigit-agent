@@ -1,5 +1,7 @@
 /**
  * Fail-closed login → storageState writer for promoted flows.
+ * Zero-user iso DBs: same form is product first-admin bootstrap.
+ * Prefer process-local CAIRN_E2E_* from auth-fixture ensureAuthSecretsInEnv.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -14,6 +16,9 @@ export const AUTH_STORAGE_STATE_PATH = path.resolve(
 )
 export const SESSION_COOKIE_NAME = 'cairn_session'
 
+/** Re-export MCP header helper for flows that share auth surface. */
+export { mcpAuthHeaders, ensureAuthSecretsInEnv } from './auth-fixture.mjs'
+
 export function ensureAuthStorageDir() {
   fs.mkdirSync(path.dirname(AUTH_STORAGE_STATE_PATH), { recursive: true })
 }
@@ -22,6 +27,19 @@ export function ensureAuthStorageDir() {
  * @param {import('@playwright/test').Page} page
  * @param {string} [outPath]
  */
+/** Fill controlled React inputs so canSubmit enables. */
+async function fillReactInput(page, selector, value) {
+  const loc = page.locator(selector)
+  await loc.waitFor({ state: 'visible', timeout: 30_000 })
+  await loc.click()
+  await loc.evaluate((el, v) => {
+    const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+    desc?.set?.call(el, v)
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  }, value)
+}
+
 export async function loginAndSaveStorageState(page, outPath = AUTH_STORAGE_STATE_PATH) {
   const { username, password } = requireE2ECredentials()
   ensureAuthStorageDir()
@@ -30,9 +48,18 @@ export async function loginAndSaveStorageState(page, outPath = AUTH_STORAGE_STAT
   await page.goto(`${base}/login`, { waitUntil: 'domcontentloaded' })
   await page.locator('.auth-card').waitFor({ state: 'visible', timeout: 30_000 })
 
-  await page.locator('input[autocomplete="username"]').fill(username)
-  await page.locator('input[type="password"]').fill(password)
-  await page.locator('button.auth-submit').click()
+  await fillReactInput(page, 'input[autocomplete="username"]', username)
+  await fillReactInput(page, 'input[type="password"]', password)
+  const submit = page.locator('button.auth-submit')
+  await submit.waitFor({ state: 'visible', timeout: 15_000 })
+  // Fail closed if still disabled after React fill
+  const disabled = await submit.isDisabled()
+  if (disabled) {
+    throw new Error(
+      'FAIL-CLOSED auth: auth-submit still disabled after fill (React state not updated or validation failed)',
+    )
+  }
+  await submit.click()
 
   await Promise.race([
     page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 30_000 }),

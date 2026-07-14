@@ -47,22 +47,27 @@ Iso DB names must match `cairn_tm_e2e_|c3_|iso_|synth_*` — ambient `cairn_task
 
 Default Playwright run (no hand-exported passwords):
 
-1. **Config load** — `ensureAuthSecretsInEnv()` generates process-local `CAIRN_E2E_USERNAME` / `CAIRN_E2E_PASSWORD` + `CAIRN_MCP_BEARER` + `CAIRN_BEARER_PRINCIPALS_JSON` (never committed).
-2. **globalSetup** — clones local ambient board tables into disposable `cairn_tm_e2e_authfix_*` iso DB with **zero users** (skips `users`/`sessions`/`user_boards` data). Sets `CAIRN_DB_NAME` to the iso name.
-3. **webServer** — `vite preview` inherits iso DB + bearer principals JSON.
-4. **setup-auth** — product `/login` first-admin bootstrap → `qa/e2e/fixtures/storage/admin.json` (gitignored).
-5. **chromium** — `storageState` for UI; `extraHTTPHeaders.Authorization` for `/mcp` request fixtures.
-6. **globalTeardown** — drop iso DB, erase `admin.json`, scrub secret env keys.
+1. **Config load** — `ensureAuthSecretsInEnv()` pins a **run-scoped** `CAIRN_E2E_AUTH_RUN_ID` + generates process-local `CAIRN_E2E_USERNAME` / `CAIRN_E2E_PASSWORD` + `CAIRN_MCP_BEARER` + `CAIRN_BEARER_PRINCIPALS_JSON` (never committed).
+2. **webServer** (`start-auth-preview.mjs`) — prepares iso DB + secrets using the same run id; preview inherits `CAIRN_DB_NAME` + bearer principals JSON.
+3. **globalSetup** — reuses **this run's** meta only (`.artifact/e2e-auth-runtime-<runId>.json`); clones ambient boards into disposable `cairn_tm_e2e_authfix_*` if nothing prepared yet. Never reads a shared fixed meta path (parallel workers cannot clobber each other).
+4. **setup-auth** — product `/login` first-admin bootstrap (or product-schema session seed fallback) → `qa/e2e/fixtures/storage/admin.json` (gitignored).
+5. **chromium** — `storageState` for UI; `extraHTTPHeaders.Authorization` for `/mcp` request fixtures. Raw MCP SDK specs (`mcp-client.spec.ts`) pass the same bearer via `StreamableHTTPClientTransport` `requestInit` (never logged).
+6. **globalTeardown** — DROP **only** the iso DB owned by this run's meta (`cairn_tm_e2e_authfix_*` + matching `runId`); erase run-scoped secrets sidecar + `admin.json`; scrub secret env keys.
 
 | Variable | Notes |
 | --- | --- |
+| `CAIRN_E2E_AUTH_RUN_ID` | Auto-generated per Playwright invocation; shared across webServer/setup/teardown |
+| `CAIRN_E2E_AUTH_RUNTIME_META_PATH` | Override run-scoped meta path (default `.artifact/e2e-auth-runtime-<runId>.json`) |
+| `CAIRN_E2E_AUTH_SECRETS_PATH` | Override secrets sidecar (default `.artifact/e2e-auth-secrets-<runId>.json`, mode 600) |
 | `CAIRN_E2E_SKIP_ISO_AUTH=1` | Skip iso clone (requires pre-existing user + credentials) |
 | `CAIRN_E2E_KEEP_ISO_DB=1` | Leave iso DB after teardown (debug) |
 | `CAIRN_E2E_KEEP_STORAGE=1` | Keep `admin.json` after teardown |
 | `CAIRN_E2E_FORCE_FRESH_SERVER=1` | Do not reuseExistingServer on preview |
-| `CAIRN_MCP_BEARER` | Process-local; also used as project `extraHTTPHeaders` |
+| `CAIRN_MCP_BEARER` | Process-local; also used as project `extraHTTPHeaders` + MCP SDK transport |
 
-Helpers: `qa/e2e/lib/auth-fixture.mjs`, `tests/e2e/fixtures/mcp-auth.ts`, `tests/e2e/fixtures/global-setup.ts`.
+**Gitignore (exact):** `.artifact/e2e-auth-secrets.json`, `.artifact/e2e-auth-secrets-*.json`, `.artifact/e2e-auth-runtime.json`, `.artifact/e2e-auth-runtime-*.json`, `qa/e2e/fixtures/storage/admin.json`.
+
+Helpers: `qa/e2e/lib/auth-fixture.mjs` (+ `auth-fixture.d.mts` for TS), `qa/e2e/lib/start-auth-preview.mjs`, `tests/e2e/fixtures/mcp-auth.ts`, `tests/e2e/fixtures/global-setup.ts` / `global-teardown.ts`.
 
 ```bash
 pnpm build

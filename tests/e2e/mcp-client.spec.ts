@@ -2,15 +2,37 @@
 // (StreamableHTTPClientTransport), exactly like Claude Desktop / Cursor would, and
 // exercises the full handshake + tools + resources. Proves Cairn is a real MCP server,
 // not just a JSON endpoint.
+//
+// Auth: process-local CAIRN_MCP_BEARER from ensureAuthSecretsInEnv / secrets sidecar
+// (run-scoped). Wired via transport requestInit — never logged.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { expect, test } from '@playwright/test'
 
-const MCP_URL = 'http://localhost:3210/mcp'
+import {
+  loadSecretsSidecar,
+  mcpAuthHeaders,
+} from '../../qa/e2e/lib/auth-fixture.mjs'
 
+function resolveMcpUrl(): string {
+  const base = (
+    process.env.WEB_BASE?.trim() ||
+    `http://127.0.0.1:${process.env.PORT || 3210}`
+  ).replace(/\/$/, '')
+  return `${base}/mcp`
+}
+
+/**
+ * Connect SDK transport with Bearer from process-local fixture.
+ * Does not log the token (headers applied opaquely to requestInit).
+ */
 async function connect() {
+  loadSecretsSidecar()
+  const headers = mcpAuthHeaders()
   const client = new Client({ name: 'cairn-e2e', version: '1.0.0' })
-  const transport = new StreamableHTTPClientTransport(new URL(MCP_URL))
+  const transport = new StreamableHTTPClientTransport(new URL(resolveMcpUrl()), {
+    requestInit: { headers },
+  })
   await client.connect(transport)
   return { client, transport }
 }

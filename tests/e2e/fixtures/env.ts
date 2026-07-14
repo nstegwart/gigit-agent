@@ -1,10 +1,28 @@
 /**
  * Environment helpers for the C3-F5 Playwright / qa/e2e harness.
  * Never embed credentials. Fail closed when required auth env is missing.
+ *
+ * IBILS auth fixture (AC-IBILS-01): process-local CAIRN_E2E_* + CAIRN_MCP_BEARER are
+ * materialised by ensureAuthSecretsInEnv (playwright.config) + start-auth-preview iso clone.
  */
+import {
+  loadSecretsSidecar,
+  resolveAuthSecretsSidecarPath,
+} from '../../../qa/e2e/lib/auth-fixture.mjs'
 
 export const DEFAULT_WEB_BASE = 'http://127.0.0.1:3210'
 export const DEFAULT_PORT = 3210
+
+/** Load process-local run-scoped secrets sidecar into env (workers share via file, mode 600). */
+function loadSecretsSidecarIntoEnv(): void {
+  try {
+    loadSecretsSidecar()
+  } catch {
+    /* ignore corrupt sidecar — require* will fail closed */
+  }
+  // Ensure path env is pinned even when sidecar missing (fail-closed callers still see path).
+  void resolveAuthSecretsSidecarPath()
+}
 
 /** Resolved browser base URL (WEB_BASE wins; else local preview default). */
 export function resolveWebBase(): string {
@@ -29,13 +47,14 @@ export type E2ECredentials = {
  * Fail-closed: missing either var throws (never ambient empty session).
  */
 export function requireE2ECredentials(): E2ECredentials {
+  loadSecretsSidecarIntoEnv()
   const username = process.env.CAIRN_E2E_USERNAME?.trim() ?? ''
   const password = process.env.CAIRN_E2E_PASSWORD ?? ''
   if (!username || !password) {
     throw new Error(
       [
         'FAIL-CLOSED auth: CAIRN_E2E_USERNAME and CAIRN_E2E_PASSWORD are required.',
-        'Set synthetic local/staging credentials in the environment.',
+        'Playwright start-auth-preview / ensureAuthSecretsInEnv should inject process-local synthetics.',
         'Never embed passwords in repo files or ambient browser sessions.',
       ].join(' '),
     )
@@ -45,9 +64,31 @@ export function requireE2ECredentials(): E2ECredentials {
 
 /** Soft probe — true only when both env vars are non-empty. */
 export function hasE2ECredentials(): boolean {
+  loadSecretsSidecarIntoEnv()
   const username = process.env.CAIRN_E2E_USERNAME?.trim() ?? ''
   const password = process.env.CAIRN_E2E_PASSWORD ?? ''
   return Boolean(username && password)
+}
+
+/** Soft probe — true when MCP bearer fixture is present for extraHTTPHeaders. */
+export function hasMcpBearer(): boolean {
+  loadSecretsSidecarIntoEnv()
+  return Boolean(process.env.CAIRN_MCP_BEARER?.trim())
+}
+
+/**
+ * Fail-closed MCP bearer for request fixtures.
+ * Prefer project-level extraHTTPHeaders; this is for explicit callers.
+ */
+export function requireMcpBearer(): string {
+  loadSecretsSidecarIntoEnv()
+  const bearer = process.env.CAIRN_MCP_BEARER?.trim() ?? ''
+  if (!bearer) {
+    throw new Error(
+      'FAIL-CLOSED mcp-auth: CAIRN_MCP_BEARER required (process-local synthetic from ensureAuthSecretsInEnv).',
+    )
+  }
+  return bearer
 }
 
 export function resolveBoardId(defaultId = 'ibils'): string {
