@@ -1,0 +1,62 @@
+OWNER_TARGET: {base_url: http://127.0.0.1:33211/, port: 33211, account: synthetic-staging-only, device: n/a}
+RELEASE_ROOT: /opt/mfs/staging/cairn-taskmanager-v3
+SOURCE_ROOT:  /opt/mfs/staging/cairn-taskmanager-v3/source
+COMPOSE_FILE: /opt/mfs/staging/cairn-taskmanager-v3/source/deploy/staging/docker-compose.yml
+ENV_FILE:     /opt/mfs/staging/cairn-taskmanager-v3/source/deploy/staging/.env
+RELEASE_SHA:  <unset>
+BACKUP_MARKER_OK path=/tmp/BACKUP_MARKER.txt bytes=347
+SCHEMA_COMPAT_OK version=006 (app-only; no dump restore; pins must stay for prior+recovery)
+GATES_OK current=9e41737cf64ba34a00b64ff5cff20d63be86a919 previous=b207830e50d6e0a98c58ea9c3d9c14a4a9019e1a approval=rehearse-c5-20260714T102300Z
+======== REHEARSE_ROLLBACK_PLAN ========
+OWNER_TARGET: {base_url: http://127.0.0.1:33211/, port: 33211, account: staging-synthetic, device: n/a}
+CLASS: PRIOR_SHA_APP_ONLY + CURRENT_SHA_RECOVERY
+CURRENT_SHA:  9e41737cf64ba34a00b64ff5cff20d63be86a919
+PREVIOUS_SHA: b207830e50d6e0a98c58ea9c3d9c14a4a9019e1a
+APPROVAL_ID:  rehearse-c5-20260714T102300Z
+BACKUP_MARKER: /tmp/BACKUP_MARKER.txt
+DRY_RUN: 1
+EXECUTE: 1
+MUTATION_APPROVED_ENV: 1
+RELEASE_ROOT: /opt/mfs/staging/cairn-taskmanager-v3
+SOURCE_ROOT: /opt/mfs/staging/cairn-taskmanager-v3/source
+FORBIDDEN: production, greenfield, wipe-volume, down -v
+PHASES:
+  1. record MySQL StartedAt + volume presence
+  2. pin RELEASE_SHA=PREVIOUS; app-only force-recreate --no-deps cairn-tm-v3-app
+  3. prior health/smoke (unauth 401 + optional auth SHA match)
+  4. pin RELEASE_SHA=CURRENT; app-only force-recreate --no-deps cairn-tm-v3-app
+  5. current recovery health/smoke
+  6. assert MySQL StartedAt unchanged + volume present
+  7. cleanup temp workdir
+========================================
+MYSQL_STARTED_AT_PRE=2026-07-14T10:21:41.912772674Z
+PHASE_PRIOR begin
+ENV_PIN_OK RELEASE_SHA=b207830e50d6e0a98c58ea9c3d9c14a4a9019e1a
+APP_ONLY_RECREATE begin sha=b207830e50d6e0a98c58ea9c3d9c14a4a9019e1a service=cairn-tm-v3-app (no-deps; volume untouched)
+IMAGE_PRESENT sha=b207830e50d6e0a98c58ea9c3d9c14a4a9019e1a
+ Container cairn-tm-v3-app Recreate 
+ Container cairn-tm-v3-app Recreated 
+ Container cairn-tm-v3-app Starting 
+ Container cairn-tm-v3-app Started 
+APP_ONLY_RECREATE_OK sha=b207830e50d6e0a98c58ea9c3d9c14a4a9019e1a
+PRIOR_LIVENESS_OK http=401
+AUTH_HEALTH_SHA_OK sha=b207830e50d6e0a98c58ea9c3d9c14a4a9019e1a schema=006
+PHASE_PRIOR_OK AC-ROLL-01
+MYSQL_VOLUME_PRESERVED volume=cairn-tm-v3-mysql-data StartedAt=2026-07-14T10:21:41.912772674Z
+PHASE_RECOVERY begin
+ENV_PIN_OK RELEASE_SHA=9e41737cf64ba34a00b64ff5cff20d63be86a919
+APP_ONLY_RECREATE begin sha=9e41737cf64ba34a00b64ff5cff20d63be86a919 service=cairn-tm-v3-app (no-deps; volume untouched)
+IMAGE_PRESENT sha=9e41737cf64ba34a00b64ff5cff20d63be86a919
+ Container cairn-tm-v3-app Recreate 
+ Container cairn-tm-v3-app Recreated 
+ Container cairn-tm-v3-app Starting 
+ Container cairn-tm-v3-app Started 
+APP_ONLY_RECREATE_OK sha=9e41737cf64ba34a00b64ff5cff20d63be86a919
+CURRENT_LIVENESS_OK http=401
+AUTH_HEALTH_SHA_OK sha=9e41737cf64ba34a00b64ff5cff20d63be86a919 schema=006
+PHASE_RECOVERY_OK AC-ROLL-02
+MYSQL_VOLUME_PRESERVED volume=cairn-tm-v3-mysql-data StartedAt=2026-07-14T10:21:41.912772674Z
+CLEANUP_OK
+REHEARSE_ROLLBACK_OK current=9e41737cf64ba34a00b64ff5cff20d63be86a919 previous=b207830e50d6e0a98c58ea9c3d9c14a4a9019e1a mysql_started_at=2026-07-14T10:21:41.912772674Z
+AC-ROLL-01: PROVEN (prior redeploy + smoke)
+AC-ROLL-02: PROVEN (current recovery + smoke + volume preserve)

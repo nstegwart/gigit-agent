@@ -406,8 +406,8 @@ Staging rehearsal must redeploy **actual previous full SHA** and recover current
 | `AC-UI-06` | C3 / C5 | keyboard/axe/WCAG checks pass | _pending C* worker_ |
 | `AC-UI-07` | C3 / C5 | all declared mission questions map to annotated screenshots/evidence | _pending C* worker_ |
 | `AC-PERF-01` | C4 | stated staging scale/latency/freshness budgets pass programmatically | _pending C* worker_ |
-| `AC-ROLL-01` | C5 | actual previous SHA redeploy is rehearsed | _pending C* worker_ |
-| `AC-ROLL-02` | C5 | rollback/forward-fix criteria and current-SHA recovery proven | _pending C* worker_ |
+| `AC-ROLL-01` | C5 | actual previous SHA redeploy is rehearsed | PASS 2026-07-14 (program-emitted, orchestrator-executed; `.artifact/c5-rollback-rehearsal/2026-07-14T102300Z-execute.log`; prior=b207830 auth healthz SHA-match) |
+| `AC-ROLL-02` | C5 | rollback/forward-fix criteria and current-SHA recovery proven | PASS 2026-07-14 (program-emitted, orchestrator-executed; same log; current=9e41737 auth healthz SHA-match + mysql volume/StartedAt unchanged) |
 | `AC-GIT-01` | integrator | integrator identity is exact | _pending C* worker_ |
 | `AC-GIT-02` | integrator post C* | each verified checkpoint has branch/full+short SHA/push: OK | _pending C* worker_ |
 | `AC-GIT-03` | all checkpoints | no unrelated paths/worktree/branch switch/force/no-verify | _pending C* worker_ |
