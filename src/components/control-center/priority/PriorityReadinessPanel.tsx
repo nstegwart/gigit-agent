@@ -2,6 +2,8 @@ import {
   formatBoolean,
   formatCappedBy,
   formatReadinessPercent,
+  humanBoolean,
+  humanCappedBy,
 } from './display'
 import type { PriorityReadinessProps } from './types'
 import styles from './priority.module.css'
@@ -25,6 +27,7 @@ export function PriorityReadinessPanel(props: PriorityReadinessProps) {
   const rawDisplay = formatReadinessPercent(rawTaskReadinessPercent)
   const isNaBoard = boardDisplay === 'N-A'
   const completeClass = complete ? styles.semanticOk : styles.semanticFail
+  const cappedRaw = formatCappedBy(cappedBy)
 
   return (
     <section
@@ -36,13 +39,13 @@ export function PriorityReadinessPanel(props: PriorityReadinessProps) {
     >
       <header className={styles.panelHead}>
         <h2 id="priority-readiness-heading" className={styles.panelTitle}>
-          Readiness (server)
+          Kesiapan (dari server)
         </h2>
       </header>
 
       <dl className={styles.statGrid}>
         <div className={styles.stat}>
-          <dt>Board readiness %</dt>
+          <dt title="boardReadinessPercent">Kesiapan board (%)</dt>
           <dd
             data-testid="priority-board-readiness"
             className={isNaBoard ? styles.semanticNa : undefined}
@@ -51,7 +54,7 @@ export function PriorityReadinessPanel(props: PriorityReadinessProps) {
           </dd>
         </div>
         <div className={styles.stat}>
-          <dt>Raw task readiness %</dt>
+          <dt title="rawTaskReadinessPercent">Kesiapan tugas mentah (%)</dt>
           <dd
             data-testid="priority-raw-readiness"
             className={rawDisplay === 'N-A' ? styles.semanticNa : undefined}
@@ -60,22 +63,34 @@ export function PriorityReadinessPanel(props: PriorityReadinessProps) {
           </dd>
         </div>
         <div className={styles.stat}>
-          <dt>Complete</dt>
+          <dt title="complete">Selesai (complete)</dt>
           <dd data-testid="priority-complete" className={completeClass}>
             <span className={styles.semanticIcon} aria-hidden="true">
               {complete ? '✓' : '✗'}
             </span>
-            {formatBoolean(complete)}
+            {humanBoolean(complete, 'Ya — board dinyatakan complete.', 'Belum complete.')}{' '}
+            <code className={styles.mono} title="complete raw boolean">
+              {formatBoolean(complete)}
+            </code>
           </dd>
         </div>
         <div className={styles.stat}>
-          <dt>Capped by</dt>
-          <dd data-testid="priority-capped-by" className={styles.mono}>
-            {formatCappedBy(cappedBy)}
+          <dt title="cappedBy">Dibatasi oleh</dt>
+          <dd>
+            <span>{humanCappedBy(cappedBy)}</span>
+            <div>
+              <code
+                data-testid="priority-capped-by"
+                className={styles.mono}
+                title={cappedRaw}
+              >
+                {cappedRaw}
+              </code>
+            </div>
           </dd>
         </div>
         <div className={styles.stat}>
-          <dt>G5 pass (rollup)</dt>
+          <dt title="g5Pass">G5 lolos (rollup)</dt>
           <dd
             data-testid="priority-readiness-g5-pass"
             className={g5Pass ? styles.semanticOk : styles.semanticFail}
@@ -83,24 +98,28 @@ export function PriorityReadinessPanel(props: PriorityReadinessProps) {
             <span className={styles.semanticIcon} aria-hidden="true">
               {g5Pass ? '✓' : '✗'}
             </span>
-            {formatBoolean(g5Pass)}
+            {humanBoolean(g5Pass, 'Sembilan domain G5 lolos.', 'G5 belum lolos.')}{' '}
+            <code className={styles.mono}>{formatBoolean(g5Pass)}</code>
           </dd>
         </div>
       </dl>
 
       {(taskReadinessPolicyVersion || boardReadinessPolicyVersion) && (
-        <p className={styles.policyLine} data-testid="priority-readiness-policy">
-          {taskReadinessPolicyVersion ? (
-            <span>
-              Task policy: <code>{taskReadinessPolicyVersion}</code>
-            </span>
-          ) : null}
-          {boardReadinessPolicyVersion ? (
-            <span>
-              Board policy: <code>{boardReadinessPolicyVersion}</code>
-            </span>
-          ) : null}
-        </p>
+        <details className={styles.details} data-testid="priority-readiness-policy">
+          <summary className={styles.detailsSummary}>Detail teknis — versi kebijakan</summary>
+          <p className={styles.policyLine}>
+            {taskReadinessPolicyVersion ? (
+              <span>
+                Kebijakan tugas: <code>{taskReadinessPolicyVersion}</code>
+              </span>
+            ) : null}
+            {boardReadinessPolicyVersion ? (
+              <span>
+                Kebijakan board: <code>{boardReadinessPolicyVersion}</code>
+              </span>
+            ) : null}
+          </p>
+        </details>
       )}
     </section>
   )

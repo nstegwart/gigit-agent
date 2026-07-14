@@ -4,6 +4,7 @@ import styles from './priority.module.css'
 /**
  * DISTINCT product/tracked denominators from server rollup.
  * Never averages or re-derives denominators client-side.
+ * Labels are id-ID primary; technical field names stay on title / Detail teknis.
  */
 export function PriorityDenominatorsPanel(props: PriorityRollupDenominatorsProps) {
   const {
@@ -27,7 +28,7 @@ export function PriorityDenominatorsPanel(props: PriorityRollupDenominatorsProps
     >
       <header className={styles.panelHead}>
         <h2 id="priority-denominators-heading" className={styles.panelTitle}>
-          DISTINCT denominators
+          Penyebut terpisah (DISTINCT)
         </h2>
       </header>
 
@@ -48,30 +49,32 @@ export function PriorityDenominatorsPanel(props: PriorityRollupDenominatorsProps
 
       <dl className={styles.statGrid}>
         <div className={styles.stat}>
-          <dt>Product denominator</dt>
+          <dt title="productDenominator">Penyebut produk</dt>
           <dd data-testid="priority-product-denominator">{productDenominator}</dd>
         </div>
         <div className={styles.stat}>
-          <dt>Tracked work denominator</dt>
+          <dt title="trackedWorkDenominator">Penyebut pekerjaan terlacak</dt>
           <dd data-testid="priority-tracked-denominator">{trackedWorkDenominator}</dd>
         </div>
         <div className={styles.stat}>
-          <dt>Stage PROD_READY</dt>
+          <dt title="stageProdReady">Tahap PROD_READY</dt>
           <dd data-testid="priority-stage-prod-ready">{stageProdReady}</dd>
         </div>
         <div className={styles.stat}>
-          <dt>PROD_READY with evidence</dt>
+          <dt title="prodReadyWithEvidence">PROD_READY dengan bukti</dt>
           <dd data-testid="priority-prod-ready-evidence">{prodReadyWithEvidence}</dd>
         </div>
         <div className={styles.stat}>
-          <dt>Unclassified count</dt>
+          <dt title="unclassifiedCount">Jumlah belum terklasifikasi</dt>
           <dd data-testid="priority-unclassified-count">{unclassifiedCount}</dd>
         </div>
       </dl>
 
       {productTaskIds && productTaskIds.length > 0 ? (
         <details className={styles.details}>
-          <summary className={styles.detailsSummary}>Product task IDs (DISTINCT)</summary>
+          <summary className={styles.detailsSummary}>
+            Detail teknis — ID tugas produk (DISTINCT)
+          </summary>
           <ul className={styles.idList} data-testid="priority-product-task-ids">
             {productTaskIds.map((id) => (
               <li key={id} className={styles.idItem}>
@@ -84,7 +87,9 @@ export function PriorityDenominatorsPanel(props: PriorityRollupDenominatorsProps
 
       {trackedTaskIds && trackedTaskIds.length > 0 ? (
         <details className={styles.details}>
-          <summary className={styles.detailsSummary}>Tracked task IDs (DISTINCT)</summary>
+          <summary className={styles.detailsSummary}>
+            Detail teknis — ID tugas terlacak (DISTINCT)
+          </summary>
           <ul className={styles.idList} data-testid="priority-tracked-task-ids">
             {trackedTaskIds.map((id) => (
               <li key={id} className={styles.idItem}>
