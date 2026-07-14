@@ -1,8 +1,10 @@
 /**
  * ART S12 decision detail shell from pinned decisions envelope.
+ * Page title uses owner humanDisplay (blockedShell when unreviewed) — never raw technical title alone.
  */
 import type { DecisionDetailViewModel } from '#/lib/control-center-route-adapters'
 import { DecisionCard } from './DecisionCard'
+import { resolveDecisionOwnerDisplay } from './decisionActions'
 
 export type DecisionDetailScreenProps = DecisionDetailViewModel & {
   onRetry?: () => void
@@ -20,6 +22,9 @@ export function DecisionDetailScreen({
   onRetry,
   className,
 }: DecisionDetailScreenProps) {
+  const owner = item ? resolveDecisionOwnerDisplay(item) : null
+  const pageTitle = owner?.primaryTitle ?? 'Keputusan tidak ditemukan'
+
   return (
     <section
       className={className}
@@ -27,12 +32,23 @@ export function DecisionDetailScreen({
       data-surface-state={surfaceState}
       data-board-id={boardId}
       data-decision-id={decisionId}
+      data-content-review-required={
+        owner?.contentReviewRequired ? 'true' : owner ? 'false' : undefined
+      }
     >
       <header style={{ marginBottom: 16 }}>
         <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: 0 }}>Detail keputusan</p>
         <h1 style={{ fontSize: 22, margin: '4px 0 8px' }} data-testid="decision-detail-title">
-          {item?.title ?? 'Keputusan tidak ditemukan'}
+          {pageTitle}
         </h1>
+        {owner?.statusSentence ? (
+          <p
+            style={{ margin: '0 0 8px', color: 'var(--text-muted)' }}
+            data-testid="decision-detail-status-sentence"
+          >
+            {owner.statusSentence}
+          </p>
+        ) : null}
         <a href={listHref} data-testid="decision-detail-back">
           ← Kotak masuk keputusan
         </a>

@@ -177,15 +177,37 @@ export function defaultSnoozedUntil(nowMs: number = Date.now()): string {
   return new Date(nowMs + 24 * 60 * 60 * 1000).toISOString()
 }
 
-const CONTENT_REVIEW_FALLBACK_TITLE = 'Konten pemilik memerlukan peninjauan'
-const CONTENT_REVIEW_FALLBACK_STATUS =
+/**
+ * Grounded in buildContentReviewRequiredShell / projectOwnerHumanDisplayUi
+ * (src/server/human-display.ts + control-center-ui.ts). Never invent alternate copy.
+ */
+const BLOCKED_SHELL_TITLE = 'Konten pemilik memerlukan peninjauan'
+const BLOCKED_SHELL_STATUS =
   'Status peninjauan: CONTENT_REVIEW_REQUIRED. Salinan pemilik tidak siap.'
-const CONTENT_REVIEW_FALLBACK_ACTION =
+const BLOCKED_SHELL_ACTION =
   'Tinjau atau tugaskan peninjauan salinan manusia untuk item ini.'
+const BLOCKED_SHELL_BLOCKER =
+  'CONTENT_REVIEW_REQUIRED — salinan hilang, basi, konflik, atau belum ditinjau.'
+
+/** Plain-language chip label — never the raw enum as primary visible text. */
+export const CONTENT_REVIEW_CHIP_LABEL = 'Perlu tinjauan konten'
+
+function trimOrEmpty(v: string | null | undefined): string {
+  return (v ?? '').trim()
+}
+
+/** True when a string is only the technical review enum (not a full shell sentence). */
+function isBareReviewEnum(v: string): boolean {
+  return v === 'CONTENT_REVIEW_REQUIRED'
+}
 
 /**
  * Resolve owner-readable display from DTO HumanDisplay fields.
- * Fail closed to CONTENT_REVIEW_REQUIRED shell — never raw technical title alone as primary.
+ * Fail closed to blockedShell sentences — never raw technical title or bare
+ * CONTENT_REVIEW_REQUIRED enum as primary title.
+ *
+ * Owner-ready only when contentReviewRequired === false, ownerPrimaryTitle
+ * present, and effectiveReviewStatus === 'REVIEWED' (same bar as work rows).
  */
 export function resolveDecisionOwnerDisplay(item: DecisionItemView): {
   primaryTitle: string
@@ -199,61 +221,68 @@ export function resolveDecisionOwnerDisplay(item: DecisionItemView): {
   technicalTitle: string
 } {
   const hd: DecisionOwnerHumanDisplayView | null | undefined = item.ownerHumanDisplay
-  const contentReviewRequired =
-    hd?.contentReviewRequired === true ||
-    item.contentReviewRequired === true ||
-    !hd ||
-    !String(hd.ownerPrimaryTitle ?? item.ownerPrimaryTitle ?? '').trim()
-
   const primaryFromHd =
-    (hd?.ownerPrimaryTitle && hd.ownerPrimaryTitle.trim()) ||
-    (item.ownerPrimaryTitle && item.ownerPrimaryTitle.trim()) ||
+    trimOrEmpty(hd?.ownerPrimaryTitle) ||
+    trimOrEmpty(item.ownerPrimaryTitle) ||
     ''
+  const statusRaw =
+    trimOrEmpty(hd?.effectiveReviewStatus) ||
+    trimOrEmpty(item.effectiveReviewStatus) ||
+    ''
+  const reviewFlag =
+    hd?.contentReviewRequired ?? item.contentReviewRequired
 
-  const technicalTitle = item.title?.trim() || item.decisionId
+  // Strict REVIEWED only — never trust inconsistent contentReviewRequired=false.
+  const ready =
+    reviewFlag === false &&
+    primaryFromHd.length > 0 &&
+    !isBareReviewEnum(primaryFromHd) &&
+    statusRaw === 'REVIEWED'
+
+  const contentReviewRequired = !ready
+  const technicalTitle = trimOrEmpty(item.title) || item.decisionId
 
   if (contentReviewRequired) {
+    // Prefer projected blockedShell fields; never bare enum / technical as primary.
+    const projectedTitle =
+      primaryFromHd && !isBareReviewEnum(primaryFromHd)
+        ? primaryFromHd
+        : BLOCKED_SHELL_TITLE
     return {
-      primaryTitle: primaryFromHd || CONTENT_REVIEW_FALLBACK_TITLE,
+      primaryTitle: projectedTitle,
       statusSentence:
-        (hd?.statusSentence && hd.statusSentence.trim()) ||
-        (item.statusSentence && item.statusSentence.trim()) ||
-        CONTENT_REVIEW_FALLBACK_STATUS,
+        trimOrEmpty(hd?.statusSentence) ||
+        trimOrEmpty(item.statusSentence) ||
+        BLOCKED_SHELL_STATUS,
       ownerAction:
-        (hd?.ownerAction && hd.ownerAction.trim()) ||
-        (item.ownerActions[0] && item.ownerActions[0].trim()) ||
-        CONTENT_REVIEW_FALLBACK_ACTION,
-      whyItMatters: hd?.whyItMatters?.trim() || item.whyItMatters || null,
-      next: hd?.next?.trim() || item.next || null,
+        trimOrEmpty(hd?.ownerAction) ||
+        trimOrEmpty(item.ownerActions[0]) ||
+        BLOCKED_SHELL_ACTION,
+      whyItMatters: trimOrEmpty(hd?.whyItMatters) || item.whyItMatters || null,
+      next: trimOrEmpty(hd?.next) || item.next || null,
       blocker:
-        hd?.blocker?.trim() ||
-        item.blocker ||
-        'CONTENT_REVIEW_REQUIRED — salinan hilang, basi, konflik, atau belum ditinjau.',
+        trimOrEmpty(hd?.blocker) || item.blocker || BLOCKED_SHELL_BLOCKER,
       contentReviewRequired: true,
-      effectiveReviewStatus:
-        hd?.effectiveReviewStatus ||
-        item.effectiveReviewStatus ||
-        'CONTENT_REVIEW_REQUIRED',
+      effectiveReviewStatus: statusRaw || 'CONTENT_REVIEW_REQUIRED',
       technicalTitle,
     }
   }
 
   return {
-    primaryTitle: primaryFromHd || technicalTitle,
+    primaryTitle: primaryFromHd,
     statusSentence:
-      (hd?.statusSentence && hd.statusSentence.trim()) ||
-      (item.statusSentence && item.statusSentence.trim()) ||
+      trimOrEmpty(hd?.statusSentence) ||
+      trimOrEmpty(item.statusSentence) ||
       '',
     ownerAction:
-      (hd?.ownerAction && hd.ownerAction.trim()) ||
-      (item.ownerActions[0] && item.ownerActions[0].trim()) ||
+      trimOrEmpty(hd?.ownerAction) ||
+      trimOrEmpty(item.ownerActions[0]) ||
       '',
-    whyItMatters: hd?.whyItMatters?.trim() || item.whyItMatters || null,
-    next: hd?.next?.trim() || item.next || null,
-    blocker: hd?.blocker?.trim() || item.blocker || null,
+    whyItMatters: trimOrEmpty(hd?.whyItMatters) || item.whyItMatters || null,
+    next: trimOrEmpty(hd?.next) || item.next || null,
+    blocker: trimOrEmpty(hd?.blocker) || item.blocker || null,
     contentReviewRequired: false,
-    effectiveReviewStatus:
-      hd?.effectiveReviewStatus || item.effectiveReviewStatus || 'REVIEWED',
+    effectiveReviewStatus: statusRaw || 'REVIEWED',
     technicalTitle,
   }
 }
