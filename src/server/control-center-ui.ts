@@ -1298,6 +1298,7 @@ function withEmptyIfZero(
 /**
  * Build lifecycle stage counts from project readinessStage (+ taskCount weight).
  * Empty when no proven stages — never invents MAP_VERIFIED/etc.
+ * Prefer buildOverviewLifecycleFromTasks for owner progress visibility.
  */
 export function buildOverviewLifecycleFromProjects(
   projects: ReadonlyArray<ProjectUiSummary>,
@@ -1318,6 +1319,41 @@ export function buildOverviewLifecycleFromProjects(
     .sort((a, b) => a.stage.localeCompare(b.stage))
 }
 
+/**
+ * Build lifecycle stage histogram from distinct work-row lifecycle stages.
+ * This is the owner-visible mapping/delivery progress (MAPPED, MAP_VERIFIED, …).
+ * Empty when no task carries a proven stage — never invents stages.
+ */
+export function buildOverviewLifecycleFromTasks(
+  rows: ReadonlyArray<{ lifecycleStage?: string | null }>,
+): Array<OverviewLifecycleStageCount> {
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    const stage =
+      typeof row.lifecycleStage === 'string' && row.lifecycleStage.length > 0
+        ? row.lifecycleStage
+        : null
+    if (!stage) continue
+    counts.set(stage, (counts.get(stage) ?? 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([stage, count]) => ({ stage, count }))
+    .sort((a, b) => a.stage.localeCompare(b.stage))
+}
+
+/**
+ * Prefer task-stage histogram (lifecycle truth) over project PRODUCT readinessStage.
+ * Project-only readiness is often empty while Stage-1 MAP_VERIFIED advances, which
+ * previously rendered Overview as "No lifecycle rollup" despite real progress.
+ */
+export function buildOverviewLifecycle(
+  agg: Pick<ControlCenterAggregation, 'workRows' | 'projects'>,
+): Array<OverviewLifecycleStageCount> {
+  const fromTasks = buildOverviewLifecycleFromTasks(agg.workRows)
+  if (fromTasks.length > 0) return fromTasks
+  return buildOverviewLifecycleFromProjects(agg.projects)
+}
+
 export function projectOverview(
   agg: ControlCenterAggregation,
 ): PinnedEnvelope<OverviewData> {
@@ -1325,7 +1361,7 @@ export function projectOverview(
   const needsHuman = agg.decisions.some(
     (d) => d.blocking && (d.status === 'OPEN' || d.status === 'ACKNOWLEDGED'),
   )
-  const lifecycle = buildOverviewLifecycleFromProjects(agg.projects)
+  const lifecycle = buildOverviewLifecycle(agg)
   const materialEvents = agg.auditEvents.map((e) => ({ ...e }))
   const data: OverviewData = stripSensitiveFields({
     surfaceVersion: CONTROL_CENTER_UI_SURFACE_VERSION,

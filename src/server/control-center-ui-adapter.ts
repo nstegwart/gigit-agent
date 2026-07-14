@@ -2249,12 +2249,20 @@ export async function loadControlCenterAggregation(
   const runtimeForDefinition = ctxResultEarly.ctx
 
   // Soft-load lifecycle rows for overlay (never definition authority).
+  // Prefer durable V3 stage when present — same authority as list_tasks / advance_task
+  // so Overview/Work MAP_VERIFIED counts match lifecycle truth (not stale legacy column).
   let lifecycleTasksForOverlay: WorkTask[] = []
   try {
-    const tasksDoc = await readTasks(boardId)
-    lifecycleTasksForOverlay = tasksDoc.tasks ?? []
+    const { loadLifecycleTaskOverlay } = await import('#/server/board-mcp')
+    const overlay = await loadLifecycleTaskOverlay(boardId)
+    lifecycleTasksForOverlay = [...overlay.values()]
   } catch {
-    lifecycleTasksForOverlay = []
+    try {
+      const tasksDoc = await readTasks(boardId)
+      lifecycleTasksForOverlay = tasksDoc.tasks ?? []
+    } catch {
+      lifecycleTasksForOverlay = []
+    }
   }
 
   if (runtimeForDefinition?.controlData?.imports) {
@@ -2367,8 +2375,13 @@ export async function loadControlCenterAggregation(
     }
 
     try {
-      const tasksDoc = await readTasks(boardId)
-      tasks = tasksDoc.tasks ?? []
+      // Prefer V3-overlay soft-load already prepared above when non-empty.
+      if (lifecycleTasksForOverlay.length > 0) {
+        tasks = lifecycleTasksForOverlay
+      } else {
+        const tasksDoc = await readTasks(boardId)
+        tasks = tasksDoc.tasks ?? []
+      }
     } catch (e) {
       sectionErrors.push({
         section: 'tasks',

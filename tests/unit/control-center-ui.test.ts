@@ -26,6 +26,9 @@ import { makePassingDomain } from '#/server/g5'
 import type { DecisionV3Record } from '#/server/decisions-v3'
 import {
   aggregateControlCenter,
+  buildOverviewLifecycle,
+  buildOverviewLifecycleFromProjects,
+  buildOverviewLifecycleFromTasks,
   compareOngoingZeroClick,
   CONTROL_CENTER_UI_SCHEMA,
   createPinnedEnvelope,
@@ -267,6 +270,63 @@ describe('DISTINCT counts + six exclusive buckets + STALE overlay', () => {
     const overview = projectOverview(agg)
     expect(overview.data.buckets).toEqual(b)
     expect(overview.data.overlays.STALE_DATA_SOURCE).toBeGreaterThanOrEqual(1)
+  })
+
+  it('overview lifecycle histogram prefers task stages over empty project readiness', () => {
+    // Stage-1 mapping progress must show even when PRODUCT readinessStage is null
+    // (UNCLASSIFIED / no PRODUCT receipt) — owner-visible MAP_VERIFIED progress.
+    expect(
+      buildOverviewLifecycleFromTasks([
+        { lifecycleStage: 'MAPPED' },
+        { lifecycleStage: 'MAPPED' },
+        { lifecycleStage: 'MAP_VERIFIED' },
+        { lifecycleStage: null },
+        { lifecycleStage: 'MAP_VERIFIED' },
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        { stage: 'MAPPED', count: 2 },
+        { stage: 'MAP_VERIFIED', count: 2 },
+      ]),
+    )
+    expect(buildOverviewLifecycleFromProjects([{ readinessStage: null, taskCount: 99 } as never])).toEqual(
+      [],
+    )
+    const agg = aggregateControlCenter({
+      pin: PIN,
+      now: NOW,
+      tasks: [
+        productTask('T-MV-1', 'MAP_VERIFIED'),
+        productTask('T-MV-2', 'MAP_VERIFIED'),
+        productTask('T-MP-1', 'MAPPED'),
+      ],
+      projects: [
+        {
+          id: 'p1',
+          name: 'proj',
+          taskCount: 3,
+          doneCount: 0,
+          readinessPercent: null,
+          readinessStage: null,
+          readinessEvidenceOk: null,
+        },
+      ],
+      g5Domains: [],
+    })
+    // Prefer task stages even when project readinessStage is empty.
+    expect(buildOverviewLifecycle(agg)).toEqual(
+      expect.arrayContaining([
+        { stage: 'MAP_VERIFIED', count: 2 },
+        { stage: 'MAPPED', count: 1 },
+      ]),
+    )
+    const overview = projectOverview(agg)
+    expect(overview.data.lifecycle).toEqual(
+      expect.arrayContaining([
+        { stage: 'MAP_VERIFIED', count: 2 },
+        { stage: 'MAPPED', count: 1 },
+      ]),
+    )
   })
 
   it('stale completed-task exception: DONE + STALE_CLAIM overlay, not RECONCILIATION_PENDING', () => {

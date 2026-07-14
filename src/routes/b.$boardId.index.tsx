@@ -107,9 +107,24 @@ function ControlCenterOverview() {
     )
   }, [boardId, q.data])
 
+  // Surface live lifecycle progress in the app summary bar (owner-visible).
+  // Prefer server task-stage histogram; never invent MAP_VERIFIED when absent.
+  const liveStageFromLifecycle = (() => {
+    const rows = (q.data?.data as { lifecycle?: Array<{ stage?: string; count?: number }> } | null)
+      ?.lifecycle
+    if (!Array.isArray(rows) || rows.length === 0) return null
+    const mv = rows.find((r) => r?.stage === 'MAP_VERIFIED')
+    const mapped = rows.find((r) => r?.stage === 'MAPPED')
+    const total = rows.reduce((s, r) => s + (typeof r?.count === 'number' ? r.count : 0), 0)
+    const mvN = typeof mv?.count === 'number' ? mv.count : 0
+    const mappedN = typeof mapped?.count === 'number' ? mapped.count : 0
+    if (total <= 0) return null
+    return `MAP_VERIFIED ${mvN}/${total} · MAPPED ${mappedN}`
+  })()
+
   const props = overviewEnvelopeToProps(q.data, {
     boardLabel: boardMeta?.name,
-    liveStage: 'mfs-rebuild control center',
+    liveStage: liveStageFromLifecycle ?? 'mfs-rebuild control center',
     transport: q.isError ? 'offline' : 'online',
     onRetry,
     onReconnect: onRetry,
