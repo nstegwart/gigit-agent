@@ -48,6 +48,7 @@ export type AuthCleanupResult = {
   dbDropped: boolean
   dbDropSkipped?: string | null
   storageErased: boolean
+  storageStatePath?: string
   envScrubbed: string[]
   mode: string | null
   isoDb: string | null
@@ -66,6 +67,7 @@ export type AuthSecretsResult = {
   runId: string
   runtimeMetaPath: string
   secretsSidecarPath: string
+  storageStatePath: string
 }
 
 export type McpAuthFixture = {
@@ -111,6 +113,10 @@ export function resolveAuthSecretsSidecarPath(opts?: {
   runId?: string
   secretsPath?: string
 }): string
+export function resolveAuthStorageStatePath(opts?: {
+  runId?: string
+  storagePath?: string
+}): string
 
 /** @deprecated Prefer resolveAuthRuntimeMetaPath — exported as callable alias. */
 export function AUTH_RUNTIME_META_PATH(opts?: {
@@ -121,6 +127,11 @@ export function AUTH_RUNTIME_META_PATH(opts?: {
 export function AUTH_SECRETS_SIDECAR_PATH(opts?: {
   runId?: string
   secretsPath?: string
+}): string
+/** @deprecated Prefer resolveAuthStorageStatePath — exported as callable alias. */
+export function AUTH_STORAGE_STATE_RESOLVER(opts?: {
+  runId?: string
+  storagePath?: string
 }): string
 
 export function generateE2ECredentials(opts?: {
@@ -146,6 +157,7 @@ export function ensureAuthSecretsInEnv(opts?: {
   username?: string
   password?: string
   boardId?: string
+  storagePath?: string
 }): AuthSecretsResult
 
 export function cloneAmbientBoardsToIsolatedDb(opts?: {

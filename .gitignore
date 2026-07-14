@@ -16,12 +16,13 @@ test-results
 playwright-report
 .playwright
 
-# IBILS auth fixture — secret sidecars + run-scoped runtime meta (never commit)
+# IBILS auth fixture — secret sidecars + run-scoped runtime meta + storageState (never commit)
 .artifact/e2e-auth-secrets.json
 .artifact/e2e-auth-secrets-*.json
 .artifact/e2e-auth-runtime.json
 .artifact/e2e-auth-runtime-*.json
-# Canonical Playwright storageState produced by setup-auth (also ignored under storage/.gitignore)
+.artifact/e2e-auth-storage-*.json
+# Legacy shared Playwright storageState (CLI flows; Playwright uses run-scoped path above)
 qa/e2e/fixtures/storage/admin.json
 
 # board data: publish ONLY the demo board + committed index + conventions.

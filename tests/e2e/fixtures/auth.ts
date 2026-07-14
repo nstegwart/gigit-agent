@@ -2,14 +2,28 @@
  * Fail-closed authenticated storageState helpers for Cairn UI E2E.
  * Cookie name: cairn_session (src/server/auth.ts SESSION_COOKIE).
  * Credentials: CAIRN_E2E_USERNAME / CAIRN_E2E_PASSWORD only (env).
+ * storageState path: run-scoped via resolveAuthStorageStatePath (not shared admin.json).
  */
 import { type Browser, type BrowserContext, type Page, expect } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { resolveAuthStorageStatePath } from '../../../qa/e2e/lib/auth-fixture.mjs'
 import { requireE2ECredentials } from './env'
 
-/** Canonical storageState path used by Playwright projects + qa/e2e flows. */
+/**
+ * Resolve this Playwright invocation's storageState path (run-scoped).
+ * Prefer this over the frozen legacy shared path.
+ */
+export function getAuthStorageStatePath(): string {
+  return resolveAuthStorageStatePath()
+}
+
+/**
+ * @deprecated Frozen shared path — races concurrent teardowns.
+ * Playwright setup/projects must use getAuthStorageStatePath() / resolveAuthStorageStatePath().
+ * Kept for CLI / external callers that still target admin.json explicitly.
+ */
 export const AUTH_STORAGE_STATE_PATH = path.join(
   process.cwd(),
   'qa/e2e/fixtures/storage/admin.json',
@@ -17,8 +31,9 @@ export const AUTH_STORAGE_STATE_PATH = path.join(
 
 export const SESSION_COOKIE_NAME = 'cairn_session'
 
-export function ensureAuthStorageDir(): void {
-  fs.mkdirSync(path.dirname(AUTH_STORAGE_STATE_PATH), { recursive: true })
+export function ensureAuthStorageDir(outPath?: string): void {
+  const target = outPath || resolveAuthStorageStatePath()
+  fs.mkdirSync(path.dirname(target), { recursive: true })
 }
 
 /**
@@ -30,9 +45,12 @@ export function ensureAuthStorageDir(): void {
  * (iso DB scrypt user + sessions row) and write storageState. UI path preferred when
  * auth-submit enables; APP client JS prototype crash → schema seed residual path.
  */
-export async function loginAndSaveStorageState(page: Page, outPath = AUTH_STORAGE_STATE_PATH): Promise<void> {
+export async function loginAndSaveStorageState(
+  page: Page,
+  outPath = resolveAuthStorageStatePath(),
+): Promise<void> {
   const { username, password } = requireE2ECredentials()
-  ensureAuthStorageDir()
+  ensureAuthStorageDir(outPath)
 
   await page.goto('/login', { waitUntil: 'domcontentloaded' })
   await expect(page.locator('.auth-card')).toBeVisible({ timeout: 30_000 })
@@ -83,7 +101,9 @@ export async function loginAndSaveStorageState(page: Page, outPath = AUTH_STORAG
 }
 
 /** Load storageState only if the file exists and contains cairn_session; else throw. */
-export function requireExistingStorageState(filePath = AUTH_STORAGE_STATE_PATH): string {
+export function requireExistingStorageState(
+  filePath = resolveAuthStorageStatePath(),
+): string {
   if (!fs.existsSync(filePath)) {
     throw new Error(
       `FAIL-CLOSED auth: storageState missing at ${filePath}. Run setup-auth project or qa/e2e/flows/auth-login.mjs first.`,
@@ -109,7 +129,7 @@ export function requireExistingStorageState(filePath = AUTH_STORAGE_STATE_PATH):
 /** Open a context with validated storageState (fail-closed). */
 export async function newAuthenticatedContext(
   browser: Browser,
-  filePath = AUTH_STORAGE_STATE_PATH,
+  filePath = resolveAuthStorageStatePath(),
 ): Promise<BrowserContext> {
   const state = requireExistingStorageState(filePath)
   return browser.newContext({ storageState: state })

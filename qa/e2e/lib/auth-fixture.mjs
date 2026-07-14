@@ -42,6 +42,11 @@ const SESSION_DAYS = 30
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '../../..')
 
+/**
+ * Legacy shared Playwright storageState path (CLI flows only).
+ * Playwright projects MUST use resolveAuthStorageStatePath() — concurrent teardowns
+ * unlinking this shared file caused mid-run ENOENT (P1 storage-race).
+ */
 export const AUTH_STORAGE_STATE_PATH = path.join(
   REPO_ROOT,
   'qa/e2e/fixtures/storage/admin.json',
@@ -101,11 +106,33 @@ export function resolveAuthSecretsSidecarPath(opts = {}) {
 }
 
 /**
+ * Run-scoped Playwright storageState path (gitignored under .artifact/).
+ * Override with CAIRN_E2E_AUTH_STORAGE_PATH (absolute or repo-relative).
+ * Never defaults to the shared qa/e2e/fixtures/storage/admin.json path —
+ * that global path races concurrent suite teardowns (ENOENT mid-run).
+ */
+export function resolveAuthStorageStatePath(opts = {}) {
+  const override =
+    opts.storagePath?.trim() || process.env.CAIRN_E2E_AUTH_STORAGE_PATH?.trim()
+  if (override) {
+    const abs = path.isAbsolute(override) ? override : path.resolve(REPO_ROOT, override)
+    process.env.CAIRN_E2E_AUTH_STORAGE_PATH = abs
+    return abs
+  }
+  const runId = resolveAuthRunId(opts)
+  const abs = path.join(REPO_ROOT, `.artifact/e2e-auth-storage-${runId}.json`)
+  process.env.CAIRN_E2E_AUTH_STORAGE_PATH = abs
+  return abs
+}
+
+/**
  * Live path accessors (not frozen strings — parallel runs use distinct files).
- * Prefer resolveAuthRuntimeMetaPath / resolveAuthSecretsSidecarPath by name.
+ * Prefer resolveAuthRuntimeMetaPath / resolveAuthSecretsSidecarPath /
+ * resolveAuthStorageStatePath by name.
  */
 export { resolveAuthRuntimeMetaPath as AUTH_RUNTIME_META_PATH }
 export { resolveAuthSecretsSidecarPath as AUTH_SECRETS_SIDECAR_PATH }
+export { resolveAuthStorageStatePath as AUTH_STORAGE_STATE_RESOLVER }
 
 /** Tables that must stay empty (product bootstrap creates first admin). */
 export const AUTH_FIXTURE_SKIP_DATA_TABLES = Object.freeze([
@@ -228,6 +255,9 @@ export function loadSecretsSidecar() {
     if (raw.CAIRN_E2E_AUTH_SECRETS_PATH) {
       process.env.CAIRN_E2E_AUTH_SECRETS_PATH = raw.CAIRN_E2E_AUTH_SECRETS_PATH
     }
+    if (raw.CAIRN_E2E_AUTH_STORAGE_PATH) {
+      process.env.CAIRN_E2E_AUTH_STORAGE_PATH = raw.CAIRN_E2E_AUTH_STORAGE_PATH
+    }
     if (raw.CAIRN_E2E_USERNAME) process.env.CAIRN_E2E_USERNAME = raw.CAIRN_E2E_USERNAME
     if (raw.CAIRN_E2E_PASSWORD) process.env.CAIRN_E2E_PASSWORD = raw.CAIRN_E2E_PASSWORD
     if (raw.CAIRN_MCP_BEARER) process.env.CAIRN_MCP_BEARER = raw.CAIRN_MCP_BEARER
@@ -247,11 +277,13 @@ export function writeSecretsSidecar() {
   const runId = resolveAuthRunId()
   const sidecarPath = resolveAuthSecretsSidecarPath()
   const metaPath = resolveAuthRuntimeMetaPath()
+  const storagePath = resolveAuthStorageStatePath()
   fs.mkdirSync(path.dirname(sidecarPath), { recursive: true })
   const payload = {
     CAIRN_E2E_AUTH_RUN_ID: runId,
     CAIRN_E2E_AUTH_RUNTIME_META_PATH: metaPath,
     CAIRN_E2E_AUTH_SECRETS_PATH: sidecarPath,
+    CAIRN_E2E_AUTH_STORAGE_PATH: storagePath,
     CAIRN_E2E_USERNAME: process.env.CAIRN_E2E_USERNAME ?? '',
     CAIRN_E2E_PASSWORD: process.env.CAIRN_E2E_PASSWORD ?? '',
     CAIRN_MCP_BEARER: process.env.CAIRN_MCP_BEARER ?? '',
@@ -293,6 +325,7 @@ export function ensureAuthSecretsInEnv(opts = {}) {
   const runId = resolveAuthRunId(opts)
   resolveAuthRuntimeMetaPath(opts)
   resolveAuthSecretsSidecarPath(opts)
+  resolveAuthStorageStatePath(opts)
 
   // Prefer sidecar so workers match webServer secrets (do not re-roll).
   if (!opts.forceNew) {
@@ -307,6 +340,9 @@ export function ensureAuthSecretsInEnv(opts = {}) {
   process.env.CAIRN_MCP_BEARER = mcp.bearer
   process.env.CAIRN_BEARER_PRINCIPALS_JSON = mcp.principalsJson
 
+  // Re-pin storage after sidecar restore (sidecar may have set CAIRN_E2E_AUTH_STORAGE_PATH).
+  const storageStatePath = resolveAuthStorageStatePath(opts)
+
   // Keep sidecar in sync when we (re)generate
   writeSecretsSidecar()
 
@@ -318,6 +354,7 @@ export function ensureAuthSecretsInEnv(opts = {}) {
     runId,
     runtimeMetaPath: resolveAuthRuntimeMetaPath(),
     secretsSidecarPath: resolveAuthSecretsSidecarPath(),
+    storageStatePath,
   }
 }
 
@@ -562,7 +599,7 @@ export async function prepareIsolatedAuthFixture(opts = {}) {
     port: clone.port,
     tableStats: clone.tableStats,
     userCount: clone.userCount,
-    storageStatePath: AUTH_STORAGE_STATE_PATH,
+    storageStatePath: resolveAuthStorageStatePath(opts),
     note: clone.note,
   }
   writeRuntimeMeta(meta)
@@ -585,11 +622,16 @@ export async function cleanupIsolatedAuthFixture(opts = {}) {
     opts.keepStorage === true ||
     process.env.CAIRN_E2E_KEEP_STORAGE === '1'
 
+  // Only erase THIS run's storageState — never the legacy shared admin.json
+  // unless it is explicitly this run's resolved path (override).
+  const storageStatePath = resolveAuthStorageStatePath(opts)
+
   const result = {
     cleanedAt: new Date().toISOString(),
     dbDropped: false,
     dbDropSkipped: null,
     storageErased: false,
+    storageStatePath,
     envScrubbed: [],
     mode: meta.mode ?? null,
     isoDb: meta.isoDb ?? process.env.CAIRN_ISO_DB_NAME ?? null,
@@ -615,9 +657,9 @@ export async function cleanupIsolatedAuthFixture(opts = {}) {
     }
   }
 
-  if (!keepStorage && fs.existsSync(AUTH_STORAGE_STATE_PATH)) {
+  if (!keepStorage && storageStatePath && fs.existsSync(storageStatePath)) {
     try {
-      fs.unlinkSync(AUTH_STORAGE_STATE_PATH)
+      fs.unlinkSync(storageStatePath)
       result.storageErased = true
     } catch (e) {
       result.storageEraseError = String(e?.message || e)
@@ -671,7 +713,7 @@ export async function seedProductAdminSessionAndStorageState(opts = {}) {
   const userId = crypto.randomUUID()
   const token = crypto.randomBytes(32).toString('hex') // 64 hex chars — matches sessions.token CHAR(64)
   const passwordHash = await hashPasswordProduct(creds.password)
-  const outPath = opts.outPath || AUTH_STORAGE_STATE_PATH
+  const outPath = opts.outPath || resolveAuthStorageStatePath(opts)
   const baseUrl = (opts.baseUrl || process.env.WEB_BASE || 'http://127.0.0.1:3210').replace(
     /\/$/,
     '',

@@ -1,7 +1,8 @@
 /**
- * Auth fixture harness unit suite (repair-final):
- * - run-scoped meta/secrets paths do not collide across concurrent runIds
+ * Auth fixture harness unit suite (repair-final + P1 storage-race):
+ * - run-scoped meta/secrets/storage paths do not collide across concurrent runIds
  * - cleanup ownership gate refuses foreign runId / non-owned prefix
+ * - cleanup A leaves peer B storageState intact
  * - type surface / secret ignore rules (support evidence)
  *
  * No live MySQL / no product RBAC mutation. Pure fs + path logic.
@@ -14,6 +15,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   AUTH_FIXTURE_OWNED_DB_PREFIX,
   AUTH_FIXTURE_SKIP_DATA_TABLES,
+  AUTH_STORAGE_STATE_PATH,
+  cleanupIsolatedAuthFixture,
   ensureAuthSecretsInEnv,
   eraseSecretsSidecar,
   isOwnedIsoDbForCleanup,
@@ -21,6 +24,7 @@ import {
   resolveAuthRunId,
   resolveAuthRuntimeMetaPath,
   resolveAuthSecretsSidecarPath,
+  resolveAuthStorageStatePath,
   writeSecretsSidecar,
 } from '../../qa/e2e/lib/auth-fixture.mjs'
 
@@ -28,6 +32,7 @@ const ENV_KEYS = [
   'CAIRN_E2E_AUTH_RUN_ID',
   'CAIRN_E2E_AUTH_RUNTIME_META_PATH',
   'CAIRN_E2E_AUTH_SECRETS_PATH',
+  'CAIRN_E2E_AUTH_STORAGE_PATH',
   'CAIRN_E2E_USERNAME',
   'CAIRN_E2E_PASSWORD',
   'CAIRN_MCP_BEARER',
@@ -104,6 +109,7 @@ describe('run-scoped meta / secrets paths (concurrency)', () => {
     const secrets = ensureAuthSecretsInEnv()
     expect(secrets.runId).toBe(runId)
     expect(secrets.secretsSidecarPath).toContain(`e2e-auth-secrets-${runId}.json`)
+    expect(secrets.storageStatePath).toContain(`e2e-auth-storage-${runId}.json`)
     expect(fs.existsSync(secrets.secretsSidecarPath)).toBe(true)
     const mode = fs.statSync(secrets.secretsSidecarPath).mode & 0o777
     expect(mode).toBe(0o600)
@@ -133,6 +139,79 @@ describe('run-scoped meta / secrets paths (concurrency)', () => {
     process.env.CAIRN_E2E_AUTH_RUN_ID = 'par_2'
     process.env.CAIRN_E2E_AUTH_SECRETS_PATH = p2
     eraseSecretsSidecar()
+  })
+})
+
+describe('run-scoped storageState path (P1 concurrency)', () => {
+  it('distinct runIds resolve to distinct storageState paths under .artifact/', () => {
+    clearAuthEnv()
+    const a = resolveAuthStorageStatePath({ runId: 'storA_unit' })
+    clearAuthEnv()
+    const b = resolveAuthStorageStatePath({ runId: 'storB_unit' })
+    expect(a).toContain('e2e-auth-storage-storA_unit.json')
+    expect(b).toContain('e2e-auth-storage-storB_unit.json')
+    expect(a).not.toBe(b)
+    expect(a).not.toBe(AUTH_STORAGE_STATE_PATH)
+    expect(b).not.toBe(AUTH_STORAGE_STATE_PATH)
+    expect(process.env.CAIRN_E2E_AUTH_STORAGE_PATH).toBe(b)
+  })
+
+  it('explicit CAIRN_E2E_AUTH_STORAGE_PATH override pins absolute path', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-storage-unit-'))
+    const custom = path.join(dir, 'custom-storage.json')
+    process.env.CAIRN_E2E_AUTH_STORAGE_PATH = custom
+    process.env.CAIRN_E2E_AUTH_RUN_ID = 'override-run'
+    expect(resolveAuthStorageStatePath()).toBe(custom)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('cleanup A erases only run A storage; peer B survives (and legacy admin.json untouched)', async () => {
+    clearAuthEnv()
+    const pathA = resolveAuthStorageStatePath({ runId: 'stor_cleanup_A' })
+    clearAuthEnv()
+    const pathB = resolveAuthStorageStatePath({ runId: 'stor_cleanup_B' })
+
+    fs.mkdirSync(path.dirname(pathA), { recursive: true })
+    fs.writeFileSync(pathA, `${JSON.stringify({ cookies: [{ name: 'cairn_session', value: 'a' }] })}\n`)
+    fs.writeFileSync(pathB, `${JSON.stringify({ cookies: [{ name: 'cairn_session', value: 'b' }] })}\n`)
+
+    // Marker on legacy shared path — cleanup must not unlink unless it is this run's path
+    const legacy = AUTH_STORAGE_STATE_PATH
+    const legacyExisted = fs.existsSync(legacy)
+    let legacyMarker: string | null = null
+    if (!legacyExisted) {
+      fs.mkdirSync(path.dirname(legacy), { recursive: true })
+      legacyMarker = `unit-legacy-marker-${Date.now()}`
+      fs.writeFileSync(legacy, `${JSON.stringify({ marker: legacyMarker })}\n`)
+    }
+
+    clearAuthEnv()
+    process.env.CAIRN_E2E_AUTH_RUN_ID = 'stor_cleanup_A'
+    process.env.CAIRN_E2E_AUTH_STORAGE_PATH = pathA
+    const resultA = await cleanupIsolatedAuthFixture({ keepDb: true })
+    expect(resultA.storageErased).toBe(true)
+    expect(resultA.storageStatePath).toBe(pathA)
+    expect(fs.existsSync(pathA)).toBe(false)
+    expect(fs.existsSync(pathB)).toBe(true)
+    expect(fs.existsSync(legacy)).toBe(true)
+
+    // cleanup B
+    clearAuthEnv()
+    process.env.CAIRN_E2E_AUTH_RUN_ID = 'stor_cleanup_B'
+    process.env.CAIRN_E2E_AUTH_STORAGE_PATH = pathB
+    const resultB = await cleanupIsolatedAuthFixture({ keepDb: true })
+    expect(resultB.storageErased).toBe(true)
+    expect(fs.existsSync(pathB)).toBe(false)
+
+    // remove our legacy marker only if we created it
+    if (legacyMarker && fs.existsSync(legacy)) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(legacy, 'utf8')) as { marker?: string }
+        if (raw.marker === legacyMarker) fs.unlinkSync(legacy)
+      } catch {
+        /* leave foreign file alone */
+      }
+    }
   })
 })
 
@@ -233,26 +312,30 @@ describe('type / contract surface', () => {
     expect(text).toContain('ensureAuthSecretsInEnv')
     expect(text).toContain('isOwnedIsoDbForCleanup')
     expect(text).toContain('resolveAuthRuntimeMetaPath')
+    expect(text).toContain('resolveAuthStorageStatePath')
+    expect(text).toContain('storageStatePath')
   })
 })
 
 describe('gitignore exact secret rules', () => {
-  it('root .gitignore lists secret sidecars, runtime meta, and storageState', () => {
+  it('root .gitignore lists secret sidecars, runtime meta, storageState, and legacy admin.json', () => {
     const gi = fs.readFileSync(path.join(process.cwd(), '.gitignore'), 'utf8')
     expect(gi).toContain('.artifact/e2e-auth-secrets.json')
     expect(gi).toContain('.artifact/e2e-auth-secrets-*.json')
     expect(gi).toContain('.artifact/e2e-auth-runtime.json')
     expect(gi).toContain('.artifact/e2e-auth-runtime-*.json')
+    expect(gi).toContain('.artifact/e2e-auth-storage-*.json')
     expect(gi).toContain('qa/e2e/fixtures/storage/admin.json')
   })
 
-  it('git check-ignore accepts representative secret/meta paths', async () => {
+  it('git check-ignore accepts representative secret/meta/storage paths', async () => {
     const { execFileSync } = await import('node:child_process')
     const samples = [
       '.artifact/e2e-auth-secrets.json',
       '.artifact/e2e-auth-secrets-runX.json',
       '.artifact/e2e-auth-runtime.json',
       '.artifact/e2e-auth-runtime-runX.json',
+      '.artifact/e2e-auth-storage-runX.json',
       'qa/e2e/fixtures/storage/admin.json',
     ]
     for (const s of samples) {
@@ -266,7 +349,7 @@ describe('gitignore exact secret rules', () => {
 })
 
 describe('writeSecretsSidecar propagates run path pins', () => {
-  it('sidecar JSON includes runId + meta/secrets path keys (no password log)', () => {
+  it('sidecar JSON includes runId + meta/secrets/storage path keys (no password log)', () => {
     const runId = `unit_pin_${Date.now().toString(36)}`
     process.env.CAIRN_E2E_AUTH_RUN_ID = runId
     process.env.CAIRN_E2E_USERNAME = 'e2e_unit'
@@ -278,6 +361,7 @@ describe('writeSecretsSidecar propagates run path pins', () => {
     expect(raw.CAIRN_E2E_AUTH_RUN_ID).toBe(runId)
     expect(raw.CAIRN_E2E_AUTH_RUNTIME_META_PATH).toContain(`e2e-auth-runtime-${runId}.json`)
     expect(raw.CAIRN_E2E_AUTH_SECRETS_PATH).toBe(p)
+    expect(raw.CAIRN_E2E_AUTH_STORAGE_PATH).toContain(`e2e-auth-storage-${runId}.json`)
     expect(raw.CAIRN_E2E_PASSWORD).toBe('unit-secret-pw')
     eraseSecretsSidecar()
   })

@@ -1,7 +1,10 @@
 import { defineConfig, devices } from '@playwright/test'
-import path from 'node:path'
 
-import { ensureAuthSecretsInEnv, mcpAuthHeaders } from './qa/e2e/lib/auth-fixture.mjs'
+import {
+  ensureAuthSecretsInEnv,
+  mcpAuthHeaders,
+  resolveAuthStorageStatePath,
+} from './qa/e2e/lib/auth-fixture.mjs'
 
 /**
  * C3-F5 harness + IBILS auth fixture (AC-IBILS-01 green path).
@@ -18,7 +21,7 @@ import { ensureAuthSecretsInEnv, mcpAuthHeaders } from './qa/e2e/lib/auth-fixtur
  * Escape: CAIRN_E2E_SKIP_ISO_AUTH=1 skips iso clone (requires external bootstrapped user).
  */
 
-// Config-load: pin run-scoped meta/secrets paths + materialise process-local secrets
+// Config-load: pin run-scoped meta/secrets/storage paths + materialise process-local secrets
 // so project.use headers resolve now. Run id propagates to webServer/globalSetup/teardown.
 // DB clone remains async in start-auth-preview / globalSetup.
 const authSecrets = ensureAuthSecretsInEnv()
@@ -26,6 +29,9 @@ const authSecrets = ensureAuthSecretsInEnv()
 process.env.CAIRN_E2E_AUTH_RUN_ID = authSecrets.runId
 process.env.CAIRN_E2E_AUTH_RUNTIME_META_PATH = authSecrets.runtimeMetaPath
 process.env.CAIRN_E2E_AUTH_SECRETS_PATH = authSecrets.secretsSidecarPath
+const AUTH_STORAGE_STATE =
+  authSecrets.storageStatePath || resolveAuthStorageStatePath()
+process.env.CAIRN_E2E_AUTH_STORAGE_PATH = AUTH_STORAGE_STATE
 
 const PORT = Number(process.env.PORT || 3210)
 const WEB_BASE = (process.env.WEB_BASE?.trim() || `http://127.0.0.1:${PORT}`).replace(
@@ -36,8 +42,6 @@ const HEADED =
   process.env.HEADED === '1' ||
   process.env.HEADED === 'true' ||
   process.env.HEADED === 'yes'
-
-const AUTH_STORAGE_STATE = path.join('qa/e2e/fixtures/storage/admin.json')
 
 /** MCP Authorization for Playwright request fixture (product specs post /mcp without headers). */
 function resolveMcpExtraHeaders(): Record<string, string> {
