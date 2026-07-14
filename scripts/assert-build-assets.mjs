@@ -145,6 +145,65 @@ export function computeClientManifestHash(names, byName) {
 }
 
 /**
+ * Forbidden tokens / source-map paths that must never ship in client index chunks.
+ * Root class (investigate-final-login-prototype): server db + mysql2 + safer-buffer in
+ * browser graph → TypeError on Buffer.prototype during login hydration.
+ */
+export const CLIENT_BUNDLE_FORBIDDEN = [
+  { id: 'mysql2', pattern: /mysql2/ },
+  { id: 'safer-buffer', pattern: /safer-buffer/ },
+  { id: 'createPool', pattern: /createPool/ },
+  { id: 'src/server/db.ts', pattern: /src\/server\/db\.ts|server\/db\.ts/ },
+]
+
+/**
+ * Scan client index-*.js (+ optional .map) for server/db/mysql leak markers.
+ * @param {string} clientAssetsDir
+ * @returns {{
+ *   ok: boolean
+ *   scanned: string[]
+ *   hits: { file: string, id: string, sample: string }[]
+ * }}
+ */
+export function assertClientBundleNoServerRuntime(clientAssetsDir) {
+  /** @type {string[]} */
+  const scanned = []
+  /** @type {{ file: string, id: string, sample: string }[]} */
+  const hits = []
+  if (!existsSync(clientAssetsDir) || !statSync(clientAssetsDir).isDirectory()) {
+    return { ok: false, scanned, hits: [{ file: clientAssetsDir, id: 'missing-assets-dir', sample: 'dist/client/assets missing' }] }
+  }
+  const names = readdirSync(clientAssetsDir).filter(
+    (n) =>
+      /^index-.*\.js$/.test(n) ||
+      /^index-.*\.js\.map$/.test(n),
+  )
+  for (const name of names) {
+    const full = join(clientAssetsDir, name)
+    let text
+    try {
+      text = readFileSync(full, 'utf8')
+    } catch {
+      continue
+    }
+    scanned.push(name)
+    for (const rule of CLIENT_BUNDLE_FORBIDDEN) {
+      const m = text.match(rule.pattern)
+      if (m) {
+        const idx = m.index ?? 0
+        const sample = text.slice(Math.max(0, idx - 24), idx + (m[0]?.length ?? 0) + 24)
+        hits.push({ file: name, id: rule.id, sample: sample.replace(/\s+/g, ' ').slice(0, 120) })
+      }
+    }
+  }
+  // No index chunk yet (fixture trees, partial dist) → skip, do not fail coherence.
+  if (scanned.length === 0) {
+    return { ok: true, scanned, hits: [], skipped: 'no-index-chunk' }
+  }
+  return { ok: hits.length === 0, scanned, hits }
+}
+
+/**
  * @param {{
  *   distRoot?: string
  *   serverRoots?: string[]
@@ -239,7 +298,12 @@ export function assertBuildAssetCoherence(options = {}) {
     emptyRefsFail = true
   }
 
-  const ok = layoutOk && missing.length === 0 && !emptyRefsFail
+  const clientBoundary = assertClientBundleNoServerRuntime(clientAssetsDir)
+  const ok =
+    layoutOk &&
+    missing.length === 0 &&
+    !emptyRefsFail &&
+    clientBoundary.ok
 
   const report = {
     ok,
@@ -256,6 +320,7 @@ export function assertBuildAssetCoherence(options = {}) {
     missingCount: missing.length,
     missing,
     emptyRefsFail,
+    clientBoundary,
     // Sample present (styles + first few) for logs — full list in manifest
     stylesRefs: referenced.filter((u) => /\/styles-[^/]+\.css$/.test(u)),
     clientManifest: {
@@ -374,10 +439,27 @@ Env: DIST_ROOT, ASSERT_WRITE_MANIFEST=1, ASSERT_JSON=1, ASSERT_STRICT_EMPTY=0
         `MISSING_PUBLIC_ASSET ${m.url} (basename=${m.basename}) sources=${m.sources.join('|')}`,
       )
     }
-    if (!report.ok) {
-      console.error(
-        'HINT: SSR embedded a public /assets/* URL not emitted under dist/client/assets. Rebuild clean (rm -rf dist) — do not copy stale hashed files or disable hashes.',
+    if (report.clientBoundary) {
+      console.log(
+        `  client_boundary=${report.clientBoundary.ok ? 'OK' : 'FAIL'} scanned=${report.clientBoundary.scanned.join(',') || '(none)'}`,
       )
+      for (const h of report.clientBoundary.hits) {
+        console.error(
+          `CLIENT_SERVER_LEAK id=${h.id} file=${h.file} sample=${JSON.stringify(h.sample)}`,
+        )
+      }
+    }
+    if (!report.ok) {
+      if (report.missingCount > 0 || report.emptyRefsFail || !report.layout.serverExists) {
+        console.error(
+          'HINT: SSR embedded a public /assets/* URL not emitted under dist/client/assets. Rebuild clean (rm -rf dist) — do not copy stale hashed files or disable hashes.',
+        )
+      }
+      if (report.clientBoundary && !report.clientBoundary.ok) {
+        console.error(
+          'HINT: client index chunk contains server runtime (mysql2/safer-buffer/createPool/db.ts). Move createServerFn + #/server/* runtime out of route modules into pure server-fn modules.',
+        )
+      }
     }
   }
 
@@ -395,7 +477,7 @@ if (isDirect) {
 // Allow `node --eval` / tests to import without side effects.
 export const meta = {
   REPO_ROOT,
-  version: 1,
+  version: 2,
   contract:
-    'quoted absolute /assets/* in dist/server must exist under dist/client/assets',
+    'quoted absolute /assets/* in dist/server must exist under dist/client/assets; client index must not contain mysql2/safer-buffer/createPool/src/server/db.ts',
 }

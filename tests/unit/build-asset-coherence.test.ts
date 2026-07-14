@@ -30,6 +30,12 @@ type AssertMod = {
     names: string[]
     byName: Map<string, { size: number }>
   }
+  assertClientBundleNoServerRuntime: (clientAssetsDir: string) => {
+    ok: boolean
+    scanned: string[]
+    hits: { file: string; id: string; sample: string }[]
+    skipped?: string
+  }
   assertBuildAssetCoherence: (opts?: {
     distRoot?: string
     writeManifest?: boolean
@@ -40,6 +46,11 @@ type AssertMod = {
     missing: { url: string; basename: string }[]
     referencedCount: number
     emptyRefsFail?: boolean
+    clientBoundary?: {
+      ok: boolean
+      scanned: string[]
+      hits: { file: string; id: string; sample: string }[]
+    }
     clientManifest: { hash: string; assetCount: number }
     manifestPath?: string
     stylesRefs: string[]
@@ -133,6 +144,35 @@ describe('computeClientManifestHash', () => {
   })
 })
 
+describe('assertClientBundleNoServerRuntime', () => {
+  it('FAIL when index chunk embeds createPool/mysql2/safer-buffer/db.ts', async () => {
+    const { assertClientBundleNoServerRuntime } = await loadMod()
+    const dist = makeDist({
+      clientAssets: {
+        'index-LEAK.js':
+          'var n=require("mysql2");createPool({});// safer-buffer src/server/db.ts\n',
+      },
+    })
+    const r = assertClientBundleNoServerRuntime(join(dist, 'client', 'assets'))
+    expect(r.ok).toBe(false)
+    expect(r.hits.map((h) => h.id).sort()).toEqual(
+      expect.arrayContaining(['createPool', 'mysql2', 'safer-buffer', 'src/server/db.ts']),
+    )
+  })
+
+  it('PASS when index has no server runtime markers', async () => {
+    const { assertClientBundleNoServerRuntime } = await loadMod()
+    const dist = makeDist({
+      clientAssets: {
+        'index-CLEAN.js': 'console.log("hydrate");\n',
+      },
+    })
+    const r = assertClientBundleNoServerRuntime(join(dist, 'client', 'assets'))
+    expect(r.ok).toBe(true)
+    expect(r.hits).toEqual([])
+  })
+})
+
 describe('assertBuildAssetCoherence fixtures', () => {
   it('PASS when SSR styles + preloads exist on client', async () => {
     const { assertBuildAssetCoherence } = await loadMod()
@@ -159,6 +199,8 @@ describe('assertBuildAssetCoherence fixtures', () => {
     expect(r.stylesRefs).toEqual(['/assets/styles-HASH1.css'])
     expect(r.clientManifest.hash).toMatch(/^[0-9a-f]{64}$/)
     expect(r.manifestPath).toBeTruthy()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((r as any).clientBoundary?.ok).toBe(true)
     const man = JSON.parse(readFileSync(r.manifestPath!, 'utf8'))
     expect(man.clientManifestHash).toBe(r.clientManifest.hash)
     expect(man.ok).toBe(true)

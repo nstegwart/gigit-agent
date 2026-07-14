@@ -1,6 +1,7 @@
 /**
- * Route-module import + prepareDecisionOwnerEnvelope with mocked runtime.
- * Proves route exports and pin-hash + stable idempotency emission without HTTP.
+ * decisions-owner-fns import + prepareDecisionOwnerEnvelope with mocked runtime.
+ * Proves server-fn module exports and pin-hash + stable idempotency emission without HTTP.
+ * (Helpers live in #/server/decisions-owner-fns — not re-exported from client routes.)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -35,7 +36,7 @@ vi.mock('#/server/control-plane-runtime-context', () => ({
   }),
 }))
 
-describe('route import prepareDecisionOwnerEnvelope', () => {
+describe('decisions-owner-fns prepareDecisionOwnerEnvelope', () => {
   beforeEach(() => {
     getBoardStateMock.mockClear()
     boardHashMock.mockClear()
@@ -52,19 +53,30 @@ describe('route import prepareDecisionOwnerEnvelope', () => {
     vi.clearAllMocks()
   })
 
-  it('imports prepare + decisionDeps + owner server fns from decisions route', async () => {
+  it('imports prepare + decisionDeps from runtime; owner fns from decisions-owner-fns', async () => {
+    const runtime = await import('#/server/decisions-owner-runtime')
+    const fns = await import('#/server/decisions-owner-fns')
+    expect(typeof runtime.prepareDecisionOwnerEnvelope).toBe('function')
+    expect(typeof runtime.decisionDeps).toBe('function')
+    expect(typeof runtime.resolveCurrentDecisionPinHash).toBe('function')
+    expect(typeof fns.acknowledgeDecisionOwnerFn).toBe('function')
+    expect(typeof fns.resolveDecisionOwnerFn).toBe('function')
+    expect(typeof fns.rejectDecisionOwnerFn).toBe('function')
+    expect(typeof fns.snoozeDecisionOwnerFn).toBe('function')
+    expect('prepareDecisionOwnerEnvelope' in fns).toBe(false)
+    expect('decisionDeps' in fns).toBe(false)
+  })
+
+  it('route layout does not re-export server fns or runtime helpers', async () => {
     const mod = await import('#/routes/b.$boardId.decisions')
-    expect(typeof mod.prepareDecisionOwnerEnvelope).toBe('function')
-    expect(typeof mod.decisionDeps).toBe('function')
-    expect(typeof mod.resolveCurrentDecisionPinHash).toBe('function')
-    expect(typeof mod.acknowledgeDecisionOwnerFn).toBe('function')
-    expect(typeof mod.resolveDecisionOwnerFn).toBe('function')
-    expect(typeof mod.rejectDecisionOwnerFn).toBe('function')
-    expect(typeof mod.snoozeDecisionOwnerFn).toBe('function')
+    expect('acknowledgeDecisionOwnerFn' in mod).toBe(false)
+    expect('prepareDecisionOwnerEnvelope' in mod).toBe(false)
+    expect('decisionDeps' in mod).toBe(false)
+    expect('resolveCurrentDecisionPinHash' in mod).toBe(false)
   })
 
   it('prepareDecisionOwnerEnvelope resolves current pin + emits unique stable keys', async () => {
-    const { prepareDecisionOwnerEnvelope } = await import('#/routes/b.$boardId.decisions')
+    const { prepareDecisionOwnerEnvelope } = await import('#/server/decisions-owner-runtime')
 
     const ack = await prepareDecisionOwnerEnvelope({
       action: 'acknowledge',
@@ -120,14 +132,14 @@ describe('route import prepareDecisionOwnerEnvelope', () => {
 
   it('resolveCurrentDecisionPinHash falls back to boardHash when import pin absent', async () => {
     getBoardStateMock.mockResolvedValueOnce(null as never)
-    const { resolveCurrentDecisionPinHash } = await import('#/routes/b.$boardId.decisions')
+    const { resolveCurrentDecisionPinHash } = await import('#/server/decisions-owner-runtime')
     const h = await resolveCurrentDecisionPinHash('mfs-rebuild')
     expect(h).toBe('live-board-hash-fallback')
     expect(boardHashMock).toHaveBeenCalledWith('mfs-rebuild')
   })
 
   it('decisionDeps includes idempotency (typecheck regression fix)', async () => {
-    const { decisionDeps } = await import('#/routes/b.$boardId.decisions')
+    const { decisionDeps } = await import('#/server/decisions-owner-runtime')
     const d = decisionDeps()
     expect(d).toHaveProperty('idempotency')
     expect(d).toHaveProperty('decisions')

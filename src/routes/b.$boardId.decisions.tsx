@@ -1,5 +1,5 @@
 // Decisions layout — inbox at index, ART decision detail at $decisionId.
-// Re-exports owner mutation helpers from index for stable import path.
+// Re-exports owner mutation helpers from server-fn module (not route body).
 import { Outlet, createFileRoute } from '@tanstack/react-router'
 
 import { boardQueryOptions } from '#/lib/board-query'
@@ -15,13 +15,7 @@ function DecisionsLayout() {
   return <Outlet />
 }
 
-export {
-  decisionDeps,
-  resolveCurrentDecisionPinHash,
-  prepareDecisionOwnerEnvelope,
-  acknowledgeDecisionOwnerFn,
-  resolveDecisionOwnerFn,
-  rejectDecisionOwnerFn,
-  snoozeDecisionOwnerFn,
-} from '#/routes/b.$boardId.decisions.index'
-export type { DecisionMutationResult } from '#/routes/b.$boardId.decisions.index'
+// Do not re-export createServerFn handles from this layout — re-exports pull the
+// server-fn module into the shared client index graph and can retain server deps.
+// Consumers import from #/server/decisions-owner-fns (handles) or
+// #/server/decisions-owner-runtime (helpers, server/tests only).
