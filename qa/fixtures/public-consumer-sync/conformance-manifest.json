@@ -1,0 +1,62 @@
+{
+  "contractId": "MFS_PUBLIC_CONSUMER_SYNC_CONTRACT_V1",
+  "openapiVersion": "MFS_PUBLIC_CONSUMER_SYNC_V1",
+  "schemaVersion": "MFS_PUBLIC_SNAPSHOT_V1",
+  "serializerVersion": "PUBLIC_SNAPSHOT_V1",
+  "rateLimitPolicyId": "PUBLIC_SNAPSHOT_RATE_LIMIT_V1",
+  "rateLimit": {
+    "sustainedPerMinute": 60,
+    "burst": 20
+  },
+  "endpoint": "GET /api/public-snapshot",
+  "query": {
+    "boardId": "required"
+  },
+  "headers": {
+    "request": [
+      "If-None-Match (optional)"
+    ],
+    "response200": [
+      "etag",
+      "x-public-serializer",
+      "cache-control",
+      "x-snapshot-stale?"
+    ],
+    "response304": [
+      "etag",
+      "x-public-serializer"
+    ],
+    "response429": [
+      "retry-after",
+      "x-ratelimit-limit",
+      "x-ratelimit-remaining",
+      "x-ratelimit-policy"
+    ]
+  },
+  "fixtures": {
+    "golden200": "golden-public-snapshot-200.json",
+    "rateLimited429": "rate-limited-429.json",
+    "stale503": "stale-or-missing-503.json",
+    "invalidPin": "invalid-pin-snapshot.json",
+    "hostileLeak": "hostile-leak-snapshot.json",
+    "mockPublishFail": "publish-with-mock-labels.json",
+    "atomicPublishOk": "atomic-publish-receipt.example.json",
+    "expectedPin": "expected-pin.json"
+  },
+  "checks": [
+    "schema_and_pin",
+    "etag_304",
+    "rate_limit_429",
+    "freshness_shape",
+    "counts_consistency",
+    "redaction",
+    "atomic_publish_no_mock"
+  ],
+  "authority": {
+    "tmRepoWrite": "docs/control-center/public-consumer-sync/** + qa fixtures/conformance only",
+    "publicConsumerWrite": "EXCLUDED \u2014 separate MFS sync worker",
+    "sourcePathUnresolved": "/opt/mfs/workspace/CONTRACT",
+    "servedPathUnresolved": "/var/www/contract",
+    "deployAuthority": "UNRESOLVED in this packet \u2014 owner must authorize"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "boardId": "mfs-rebuild",
+  "pin": {
+    "canonicalSnapshotId": "synth-canonical-authority-8f018ac-v1",
+    "canonicalHash": "c079737849d70d0dfc81facd9dcde9e0b7bad51e471a7b1b29b56be2a6b05e39",
+    "boardRev": 125,
+    "lifecycleRev": 3,
+    "serializerVersion": "PUBLIC_SNAPSHOT_V1"
+  },
+  "schemaVersion": "MFS_PUBLIC_SNAPSHOT_V1",
+  "notes": "Pin values frozen from investigate-final-public-parity-r3 staging probe (synth board). Live pins advance; conformance LIVE mode re-pins from response."
+}

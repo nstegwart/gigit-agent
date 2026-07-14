@@ -1,0 +1,72 @@
+{
+  "accounts": [
+    {
+      "accountIdMasked": "acc_plaintextSECRET",
+      "email": "user@example.com",
+      "status": "ACTIVE"
+    }
+  ],
+  "boardId": "mfs-rebuild",
+  "boardRollup": {
+    "boardReadinessPercent": null,
+    "cappedBy": "EMPTY_PRODUCT_SCOPE",
+    "prodReadyWithEvidence": 0,
+    "productDenominator": 0,
+    "rawTaskReadinessPercent": null,
+    "stageProdReady": 0,
+    "trackedWorkDenominator": 8,
+    "unclassifiedCount": 8
+  },
+  "buckets": {
+    "BLOCKED": 8,
+    "DONE": 0,
+    "NEXT": 0,
+    "ONGOING": 0,
+    "QUEUED": 0,
+    "RECONCILIATION_PENDING": 0
+  },
+  "completion": {
+    "complete": false,
+    "g5Pass": false
+  },
+  "decisionCount": 0,
+  "domainBlockers": [],
+  "etag": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "features": [],
+  "freshness": {
+    "ageMs": 0,
+    "generatedAt": "2026-07-14T01:55:47.431Z",
+    "publicationIntervalMs": 60000,
+    "publishedAt": "2026-07-14T01:55:47.431Z",
+    "stale": true
+  },
+  "g5": {
+    "domainPassCount": 0,
+    "domainRequiredCount": 9,
+    "g5Pass": false
+  },
+  "password": "LEAK",
+  "payloadSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pin": {
+    "boardRev": 125,
+    "canonicalHash": "c079737849d70d0dfc81facd9dcde9e0b7bad51e471a7b1b29b56be2a6b05e39",
+    "canonicalSnapshotId": "synth-canonical-authority-8f018ac-v1",
+    "lifecycleRev": 3,
+    "serializerVersion": "PUBLIC_SNAPSHOT_V1"
+  },
+  "priorityRollup": null,
+  "projects": [],
+  "runs": [],
+  "schemaVersion": "MFS_PUBLIC_SNAPSHOT_V1",
+  "staleOverlays": {},
+  "tasks": [
+    {
+      "bucket": "NEXT",
+      "comment": "private",
+      "id": "t1",
+      "title": "x"
+    }
+  ],
+  "token": "LEAK",
+  "usableCapacity": 0
+}

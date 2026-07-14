@@ -1,0 +1,81 @@
+{
+  "publish_schema": "MFS_PUBLIC_CONSUMER_PUBLISH_V1",
+  "source": {
+    "api": "GET /api/public-snapshot",
+    "boardId": "mfs-rebuild",
+    "schemaVersion": "MFS_PUBLIC_SNAPSHOT_V1",
+    "pin": {
+      "canonicalSnapshotId": "synth-canonical-authority-8f018ac-v1",
+      "canonicalHash": "c079737849d70d0dfc81facd9dcde9e0b7bad51e471a7b1b29b56be2a6b05e39",
+      "boardRev": 125,
+      "lifecycleRev": 3,
+      "serializerVersion": "PUBLIC_SNAPSHOT_V1"
+    },
+    "etag": "b8b57d0ffc805cb1048970715017626435dad86c92ebfa9efda2fd59447c81fb",
+    "payloadSha256": "b8b57d0ffc805cb1048970715017626435dad86c92ebfa9efda2fd59447c81fb",
+    "freshness": {
+      "generatedAt": "2026-07-14T01:55:47.431Z",
+      "publishedAt": "2026-07-14T01:55:47.431Z",
+      "publicationIntervalMs": 60000,
+      "stale": true,
+      "ageMs": 0
+    },
+    "counts": {
+      "tasks": 8,
+      "runs": 7,
+      "accounts": 1,
+      "buckets": {
+        "BLOCKED": 8,
+        "DONE": 0,
+        "NEXT": 0,
+        "ONGOING": 0,
+        "QUEUED": 0,
+        "RECONCILIATION_PENDING": 0
+      },
+      "usableCapacity": 0
+    },
+    "fetchedAt": "2026-07-14T02:00:00.000Z"
+  },
+  "publish": {
+    "mode": "atomic_rename",
+    "stagingDir": ".publish-tmp/<publishId>",
+    "targetDir": "<PUBLIC_CONSUMER_SERVE_ROOT>",
+    "manifestPath": "PUBLIC_SNAPSHOT_MANIFEST.json",
+    "noMockLabels": true,
+    "steps": [
+      "fetch+validate pin/schema/redaction",
+      "write all assets under stagingDir",
+      "fsync",
+      "atomic rename/swap into targetDir",
+      "write publish receipt with pin+etag+counts"
+    ]
+  },
+  "assets": [
+    {
+      "path": "PUBLIC_SNAPSHOT_MANIFEST.json",
+      "contentClass": "live_public_snapshot_pin",
+      "pin": {
+        "canonicalSnapshotId": "synth-canonical-authority-8f018ac-v1",
+        "canonicalHash": "c079737849d70d0dfc81facd9dcde9e0b7bad51e471a7b1b29b56be2a6b05e39",
+        "boardRev": 125,
+        "lifecycleRev": 3,
+        "serializerVersion": "PUBLIC_SNAPSHOT_V1"
+      },
+      "counts": {
+        "tasks": 8,
+        "runs": 7,
+        "accounts": 1,
+        "usableCapacity": 0
+      }
+    },
+    {
+      "path": "assets/public-snapshot-data.js",
+      "contentClass": "window.MFS_PUBLIC_SNAPSHOT assignment from validated payload",
+      "mock_label_forbidden": true
+    }
+  ],
+  "rollback": {
+    "strategy": "keep previous targetDir snapshot as .prev until next success",
+    "trigger": "validation failure OR partial write OR redaction failure"
+  }
+}

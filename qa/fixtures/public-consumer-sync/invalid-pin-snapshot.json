@@ -1,0 +1,236 @@
+{
+  "accounts": [
+    {
+      "accountIdMasked": "acc_***l001",
+      "provider": "GROK",
+      "status": "ACTIVE",
+      "usable": false
+    }
+  ],
+  "boardId": "mfs-rebuild",
+  "boardRollup": {
+    "boardReadinessPercent": null,
+    "cappedBy": "EMPTY_PRODUCT_SCOPE",
+    "prodReadyWithEvidence": 0,
+    "productDenominator": 0,
+    "rawTaskReadinessPercent": null,
+    "stageProdReady": 0,
+    "trackedWorkDenominator": 8,
+    "unclassifiedCount": 8
+  },
+  "buckets": {
+    "BLOCKED": 8,
+    "DONE": 0,
+    "NEXT": 0,
+    "ONGOING": 0,
+    "QUEUED": 0,
+    "RECONCILIATION_PENDING": 0
+  },
+  "completion": {
+    "complete": false,
+    "g5Pass": false
+  },
+  "decisionCount": 2,
+  "domainBlockers": [
+    {
+      "code": "DATA_INTEGRITY",
+      "count": 1,
+      "reason": "section:classification"
+    },
+    {
+      "code": "UNCLASSIFIED",
+      "count": 8,
+      "reason": "rollup.unclassifiedCount"
+    }
+  ],
+  "etag": "b8b57d0ffc805cb1048970715017626435dad86c92ebfa9efda2fd59447c81fb",
+  "features": [
+    {
+      "id": "feat-checkout",
+      "name": "Checkout Flow",
+      "phase": "build",
+      "projectId": "proj-sales-web"
+    },
+    {
+      "id": "feat-login",
+      "name": "Login Flow",
+      "phase": "qa",
+      "projectId": "proj-auth"
+    },
+    {
+      "id": "feat-session-expiry",
+      "name": "Session Expiry",
+      "phase": "spec",
+      "projectId": "proj-auth"
+    }
+  ],
+  "freshness": {
+    "ageMs": 0,
+    "generatedAt": "2026-07-14T01:55:47.431Z",
+    "publicationIntervalMs": 60000,
+    "publishedAt": "2026-07-14T01:55:47.431Z",
+    "stale": true
+  },
+  "g5": {
+    "domainPassCount": 0,
+    "domainRequiredCount": 9,
+    "g5Pass": false
+  },
+  "payloadSha256": "b8b57d0ffc805cb1048970715017626435dad86c92ebfa9efda2fd59447c81fb",
+  "pin": {
+    "boardRev": 1.5,
+    "canonicalHash": "",
+    "canonicalSnapshotId": "synth-canonical-authority-8f018ac-v1",
+    "lifecycleRev": 3,
+    "serializerVersion": "PUBLIC_SNAPSHOT_V1"
+  },
+  "priorityRollup": {
+    "allClosureCapacity": 5,
+    "frontierState": "PRIORITY_FRONTIER_EMPTY",
+    "majorityAllocationPass": null,
+    "membershipDenominator": 0,
+    "portfolioId": "SALES_WEB_RELATED_BACKEND",
+    "priorityCapacityShare": null,
+    "priorityClosureCapacity": 1,
+    "reason": "PRIORITY_FRONTIER_EMPTY"
+  },
+  "projects": [
+    {
+      "id": "proj-auth",
+      "name": "Auth Platform",
+      "status": "active"
+    },
+    {
+      "id": "proj-sales-web",
+      "name": "Sales Web Rebuild",
+      "status": "active"
+    }
+  ],
+  "runs": [
+    {
+      "accountRefMasked": "acc_***d001",
+      "agentRole": "PRODUCT",
+      "lastHeartbeatAt": null,
+      "runId": "e5277c90",
+      "status": "RUNNING",
+      "taskId": "task-next-1"
+    },
+    {
+      "accountRefMasked": "acc_***5001",
+      "agentRole": "PRODUCT",
+      "lastHeartbeatAt": "2026-07-14T00:40:09.238Z",
+      "runId": "e5r614fbfc5",
+      "status": "RUNNING",
+      "taskId": "task-next-1"
+    },
+    {
+      "accountRefMasked": "acc_***l001",
+      "agentRole": "PRODUCT",
+      "lastHeartbeatAt": "2026-07-14T01:17:46.425Z",
+      "runId": "fin1-fef1149bxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "status": "SUCCEEDED",
+      "taskId": "task-next-1"
+    },
+    {
+      "accountRefMasked": "acc_***l001",
+      "agentRole": "PRODUCT",
+      "lastHeartbeatAt": null,
+      "runId": "fin2-fef1149bxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "status": "CANCELLED",
+      "taskId": "task-next-1"
+    },
+    {
+      "accountRefMasked": null,
+      "agentRole": "PRODUCT",
+      "lastHeartbeatAt": null,
+      "runId": "finw-fef1149bxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "status": "CANCELLED",
+      "taskId": "task-next-1"
+    },
+    {
+      "accountRefMasked": "acc_***cdbg",
+      "agentRole": "PRODUCT",
+      "lastHeartbeatAt": null,
+      "runId": "synth-stg-evfp5-dbg-dbg-mrjx9mjq-2d5e15-nocol",
+      "status": "RUNNING",
+      "taskId": "task-next-1"
+    },
+    {
+      "accountRefMasked": null,
+      "agentRole": "PRODUCT",
+      "lastHeartbeatAt": "2026-07-14T00:01:43.953Z",
+      "runId": "synth-stg-smoke-run-srmrjvyqkn41av4v",
+      "status": "RUNNING",
+      "taskId": "task-next-1"
+    }
+  ],
+  "schemaVersion": "MFS_PUBLIC_SNAPSHOT_V1",
+  "staleOverlays": {
+    "BEYOND_STAGE_ONGOING": 0,
+    "EXPIRED_STALLED_RUN": 1,
+    "RECONCILIATION_DRILLDOWN": 0,
+    "STALE_ACCOUNT_SYNC": 0,
+    "STALE_CLAIM": 0,
+    "STALE_DATA_SOURCE": 0,
+    "STALE_DISPATCH_PLAN": 0
+  },
+  "tasks": [
+    {
+      "bucket": "BLOCKED",
+      "id": "task-blocked-1",
+      "projectId": "proj-auth",
+      "readinessPercent": null,
+      "title": "SYNTH BLOCKED needs-human"
+    },
+    {
+      "bucket": "BLOCKED",
+      "id": "task-done-1",
+      "projectId": "proj-sales-web",
+      "readinessPercent": null,
+      "title": "SYNTH DONE \u2014 positive PRODUCT classification"
+    },
+    {
+      "bucket": "BLOCKED",
+      "id": "task-missing-proof-1",
+      "projectId": "proj-sales-web",
+      "readinessPercent": null,
+      "title": "SYNTH missing-proof (DATA_INTEGRITY / UNCLASSIFIED)"
+    },
+    {
+      "bucket": "BLOCKED",
+      "id": "task-next-1",
+      "projectId": "proj-sales-web",
+      "readinessPercent": null,
+      "title": "SYNTH NEXT candidate"
+    },
+    {
+      "bucket": "BLOCKED",
+      "id": "task-ongoing-1",
+      "projectId": "proj-sales-web",
+      "readinessPercent": null,
+      "title": "SYNTH ONGOING implementer work"
+    },
+    {
+      "bucket": "BLOCKED",
+      "id": "task-queued-1",
+      "projectId": "proj-auth",
+      "readinessPercent": null,
+      "title": "SYNTH QUEUED waiting capacity"
+    },
+    {
+      "bucket": "BLOCKED",
+      "id": "task-recon-1",
+      "projectId": "proj-sales-web",
+      "readinessPercent": null,
+      "title": "SYNTH RECONCILIATION_PENDING"
+    },
+    {
+      "bucket": "BLOCKED",
+      "id": "task-stale-1",
+      "projectId": "proj-sales-web",
+      "readinessPercent": null,
+      "title": "SYNTH STALE deep-link fixture"
+    }
+  ],
+  "usableCapacity": 0
+}

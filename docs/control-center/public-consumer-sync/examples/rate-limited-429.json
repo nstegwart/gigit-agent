@@ -1,0 +1,6 @@
+{
+  "error": "public snapshot rate limit exceeded",
+  "code": "RATE_LIMITED",
+  "policyId": "PUBLIC_SNAPSHOT_RATE_LIMIT_V1",
+  "retryAfterSeconds": 1
+}

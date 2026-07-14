@@ -1,0 +1,5 @@
+{
+  "error": "public snapshot unavailable",
+  "code": "STALE_OR_MISSING",
+  "stale": true
+}

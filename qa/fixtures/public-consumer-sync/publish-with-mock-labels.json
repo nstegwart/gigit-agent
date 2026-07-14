@@ -1,0 +1,30 @@
+{
+  "publish_schema": "MFS_PUBLIC_CONSUMER_PUBLISH_V1",
+  "source": {
+    "api": "GET /api/public-snapshot",
+    "boardId": "mfs-rebuild",
+    "pin": {
+      "canonicalSnapshotId": "synth-canonical-authority-8f018ac-v1",
+      "canonicalHash": "c079737849d70d0dfc81facd9dcde9e0b7bad51e471a7b1b29b56be2a6b05e39",
+      "boardRev": 125,
+      "lifecycleRev": 3,
+      "serializerVersion": "PUBLIC_SNAPSHOT_V1"
+    },
+    "etag": "b8b57d0ffc805cb1048970715017626435dad86c92ebfa9efda2fd59447c81fb",
+    "fetchedAt": "2026-07-14T02:00:00.000Z"
+  },
+  "assets": [
+    {
+      "path": "assets/owner-cockpit-data.js",
+      "status_cap": "LOCAL ONLY",
+      "MOCK_LABEL": "MOCK \u2014 preview desain"
+    },
+    {
+      "path": "CONTRACT_MANIFEST.json",
+      "counts": {
+        "tasks": 639
+      }
+    }
+  ],
+  "atomic": false
+}

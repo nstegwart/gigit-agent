@@ -1,0 +1,436 @@
+openapi: 3.1.0
+info:
+  title: MFS Public Consumer Sync — Public Snapshot Consume + Atomic Publish Contract
+  version: MFS_PUBLIC_CONSUMER_SYNC_V1
+  description: |
+    Handoff contract for a SEPARATE MFS sync worker that:
+      1) consumes task-manager GET /api/public-snapshot (ETag/304/429/503)
+      2) validates pin (canonicalHash/boardRev/lifecycleRev/serializer), freshness, counts, redaction
+      3) publishes consumer assets atomically WITHOUT mock labels
+
+    Parent: MFS_CONTROL_PLANE_SYNC_API_V1 (authenticated control-plane mutations — not this file).
+    Serializer: PUBLIC_SNAPSHOT_V1. Schema: MFS_PUBLIC_SNAPSHOT_V1.
+    Rate limit: PUBLIC_SNAPSHOT_RATE_LIMIT_V1 (60/min sustained, burst 20).
+
+    Explicit non-claims:
+    - publicConsumer.writeAuthority = EXCLUDED from gigit-agent workers
+    - no /opt/mfs/workspace/CONTRACT, /var/www/contract, nginx, or deploy authorization
+    - never include tokens or raw account identity
+    - MOCK_LABEL / LOCAL ONLY inventory is not TM board readiness
+  contact:
+    name: gigit-agent public-consumer handoff
+servers:
+  - url: http://127.0.0.1:33211
+    description: Staging loopback (when tunnel/deployed); synthetic data only
+  - url: https://task-manager.example.invalid
+    description: Placeholder — not a production grant
+tags:
+  - name: PublicSnapshot
+  - name: RateLimit
+  - name: PublishReceipt
+  - name: Errors
+paths:
+  /api/public-snapshot:
+    get:
+      tags: [PublicSnapshot]
+      operationId: get_public_snapshot
+      summary: Allowlisted public board snapshot (unauthenticated)
+      description: |
+        Materialized once from pinned aggregation. Fail-closed on missing pin/allowlist.
+        Shared store/rate-limiter with MCP public snapshot surfaces.
+      parameters:
+        - name: boardId
+          in: query
+          required: true
+          schema:
+            type: string
+            examples: [mfs-rebuild]
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+            description: Quoted etag from prior 200; match → 304
+      responses:
+        "200":
+          description: Public snapshot payload
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Quoted SHA-256 hex
+            x-public-serializer:
+              schema:
+                type: string
+                enum: [PUBLIC_SNAPSHOT_V1]
+            x-snapshot-stale:
+              schema:
+                type: string
+                enum: ["0", "1"]
+            cache-control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicSnapshotPayload'
+              examples:
+                golden:
+                  $ref: '#/components/examples/GoldenPublicSnapshot200'
+        "304":
+          description: Not modified — empty body; retain prior validated payload
+          headers:
+            ETag:
+              schema:
+                type: string
+            x-public-serializer:
+              schema:
+                type: string
+                enum: [PUBLIC_SNAPSHOT_V1]
+        "429":
+          description: PUBLIC_SNAPSHOT_RATE_LIMIT_V1 exceeded
+          headers:
+            Retry-After:
+              schema:
+                type: string
+            x-ratelimit-limit:
+              schema:
+                type: string
+            x-ratelimit-remaining:
+              schema:
+                type: string
+            x-ratelimit-policy:
+              schema:
+                type: string
+                enum: [PUBLIC_SNAPSHOT_RATE_LIMIT_V1]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitedError'
+              examples:
+                limited:
+                  $ref: '#/components/examples/RateLimited429'
+        "503":
+          description: Stale, missing, or board not allowlisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaleOrMissingError'
+              examples:
+                missing:
+                  $ref: '#/components/examples/StaleOrMissing503'
+
+components:
+  schemas:
+    PublicSnapshotPin:
+      type: object
+      additionalProperties: false
+      required:
+        - canonicalSnapshotId
+        - canonicalHash
+        - boardRev
+        - lifecycleRev
+        - serializerVersion
+      properties:
+        canonicalSnapshotId:
+          type: string
+          minLength: 1
+        canonicalHash:
+          type: string
+          minLength: 1
+          description: Prefer 64-char lowercase hex SHA-256
+        boardRev:
+          type: integer
+        lifecycleRev:
+          type: integer
+        serializerVersion:
+          type: string
+          enum: [PUBLIC_SNAPSHOT_V1]
+
+    PublicFreshness:
+      type: object
+      required:
+        - generatedAt
+        - publishedAt
+        - publicationIntervalMs
+        - stale
+        - ageMs
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        publishedAt:
+          type: string
+          format: date-time
+        publicationIntervalMs:
+          type: number
+          exclusiveMinimum: 0
+        stale:
+          type: boolean
+        ageMs:
+          type: number
+          minimum: 0
+
+    PublicBucketCounts:
+      type: object
+      required: [DONE, RECONCILIATION_PENDING, ONGOING, NEXT, QUEUED, BLOCKED]
+      properties:
+        DONE: { type: integer, minimum: 0 }
+        RECONCILIATION_PENDING: { type: integer, minimum: 0 }
+        ONGOING: { type: integer, minimum: 0 }
+        NEXT: { type: integer, minimum: 0 }
+        QUEUED: { type: integer, minimum: 0 }
+        BLOCKED: { type: integer, minimum: 0 }
+
+    PublicTaskSummary:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        projectId: { type: ["string", "null"] }
+        title: { type: ["string", "null"] }
+        bucket: { type: ["string", "null"] }
+        readinessPercent: { type: ["number", "null"] }
+
+    PublicRunSummary:
+      type: object
+      required: [runId, status]
+      properties:
+        runId: { type: string }
+        status: { type: string }
+        taskId: { type: ["string", "null"] }
+        agentRole: { type: ["string", "null"] }
+        accountRefMasked:
+          type: ["string", "null"]
+          description: Canonical mask acc_***XXXX when present
+        lastHeartbeatAt: { type: ["string", "null"] }
+
+    PublicAccountSummary:
+      type: object
+      required: [accountIdMasked, status]
+      properties:
+        accountIdMasked:
+          type: string
+          pattern: '^acc_\*{3}[A-Za-z0-9]{4}$'
+        status: { type: string }
+        provider: { type: ["string", "null"] }
+        usable: { type: boolean }
+
+    PublicDomainBlocker:
+      type: object
+      required: [code, count]
+      properties:
+        code:
+          type: string
+          description: Allowlisted business codes only
+        count:
+          type: integer
+          minimum: 0
+        reason:
+          type: ["string", "null"]
+
+    PublicSnapshotPayload:
+      type: object
+      required:
+        - schemaVersion
+        - boardId
+        - pin
+        - boardRollup
+        - completion
+        - buckets
+        - decisionCount
+        - g5
+        - usableCapacity
+        - freshness
+        - etag
+        - payloadSha256
+      properties:
+        schemaVersion:
+          type: string
+          enum: [MFS_PUBLIC_SNAPSHOT_V1]
+        boardId:
+          type: string
+        pin:
+          $ref: '#/components/schemas/PublicSnapshotPin'
+        boardRollup:
+          type: object
+          additionalProperties: true
+        completion:
+          type: object
+          properties:
+            complete: { type: boolean }
+            g5Pass: { type: boolean }
+        buckets:
+          $ref: '#/components/schemas/PublicBucketCounts'
+        staleOverlays:
+          type: object
+          additionalProperties: { type: integer }
+        priorityRollup:
+          type: ["object", "null"]
+        projects:
+          type: array
+          items: { type: object }
+        features:
+          type: array
+          items: { type: object }
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicTaskSummary'
+        runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicRunSummary'
+        accounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicAccountSummary'
+        decisionCount:
+          type: integer
+          minimum: 0
+        g5:
+          type: object
+          properties:
+            g5Pass: { type: boolean }
+            domainPassCount: { type: integer }
+            domainRequiredCount: { type: integer }
+        usableCapacity:
+          type: integer
+          minimum: 0
+        domainBlockers:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicDomainBlocker'
+        freshness:
+          $ref: '#/components/schemas/PublicFreshness'
+        etag:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        payloadSha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+
+    RateLimitedError:
+      type: object
+      required: [error, code, policyId, retryAfterSeconds]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [RATE_LIMITED]
+        policyId:
+          type: string
+          enum: [PUBLIC_SNAPSHOT_RATE_LIMIT_V1]
+        retryAfterSeconds:
+          type: integer
+          minimum: 0
+
+    StaleOrMissingError:
+      type: object
+      required: [error, code, stale]
+      properties:
+        error: { type: string }
+        code:
+          type: string
+          enum: [STALE_OR_MISSING]
+        stale:
+          type: boolean
+          enum: [true]
+
+    AtomicPublishReceipt:
+      type: object
+      description: |
+        Consumer-side publish receipt (written by SEPARATE MFS worker when authorized).
+        Not produced by task-manager HTTP API.
+      required: [publish_schema, source, publish]
+      properties:
+        publish_schema:
+          type: string
+          enum: [MFS_PUBLIC_CONSUMER_PUBLISH_V1]
+        source:
+          type: object
+          required: [api, boardId, pin, etag]
+          properties:
+            api:
+              type: string
+              enum: ["GET /api/public-snapshot"]
+            boardId: { type: string }
+            schemaVersion:
+              type: string
+              enum: [MFS_PUBLIC_SNAPSHOT_V1]
+            pin:
+              $ref: '#/components/schemas/PublicSnapshotPin'
+            etag: { type: string }
+            payloadSha256: { type: string }
+            freshness:
+              $ref: '#/components/schemas/PublicFreshness'
+            counts: { type: object }
+            fetchedAt: { type: string, format: date-time }
+        publish:
+          type: object
+          required: [mode, noMockLabels]
+          properties:
+            mode:
+              type: string
+              enum: [atomic_rename]
+            stagingDir: { type: string }
+            targetDir: { type: string }
+            manifestPath: { type: string }
+            noMockLabels:
+              type: boolean
+              enum: [true]
+            steps:
+              type: array
+              items: { type: string }
+        assets:
+          type: array
+          items: { type: object }
+        rollback:
+          type: object
+          properties:
+            strategy: { type: string }
+            trigger: { type: string }
+
+  examples:
+    GoldenPublicSnapshot200:
+      summary: Synth staging-shaped golden (see examples/golden-public-snapshot-200.json)
+      value:
+        schemaVersion: MFS_PUBLIC_SNAPSHOT_V1
+        boardId: mfs-rebuild
+        pin:
+          canonicalSnapshotId: synth-canonical-authority-8f018ac-v1
+          canonicalHash: c079737849d70d0dfc81facd9dcde9e0b7bad51e471a7b1b29b56be2a6b05e39
+          boardRev: 125
+          lifecycleRev: 3
+          serializerVersion: PUBLIC_SNAPSHOT_V1
+        buckets:
+          DONE: 0
+          RECONCILIATION_PENDING: 0
+          ONGOING: 0
+          NEXT: 0
+          QUEUED: 0
+          BLOCKED: 8
+        usableCapacity: 0
+        decisionCount: 2
+        freshness:
+          generatedAt: "2026-07-14T01:55:47.431Z"
+          publishedAt: "2026-07-14T01:55:47.431Z"
+          publicationIntervalMs: 60000
+          stale: true
+          ageMs: 0
+        etag: b8b57d0ffc805cb1048970715017626435dad86c92ebfa9efda2fd59447c81fb
+        payloadSha256: b8b57d0ffc805cb1048970715017626435dad86c92ebfa9efda2fd59447c81fb
+    RateLimited429:
+      summary: Rate limit body
+      value:
+        error: public snapshot rate limit exceeded
+        code: RATE_LIMITED
+        policyId: PUBLIC_SNAPSHOT_RATE_LIMIT_V1
+        retryAfterSeconds: 1
+    StaleOrMissing503:
+      summary: Fail-closed unavailable
+      value:
+        error: public snapshot unavailable
+        code: STALE_OR_MISSING
+        stale: true
