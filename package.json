@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "vite dev --port 3000",
     "generate-routes": "tsr generate",
-    "build": "vite build && node scripts/assert-build-assets.mjs --write-manifest",
+    "build": "vite build && node scripts/align-ssr-style-urls.mjs && node scripts/assert-build-assets.mjs --write-manifest",
+    "align-ssr-style-urls": "node scripts/align-ssr-style-urls.mjs",
     "assert-build-assets": "node scripts/assert-build-assets.mjs --write-manifest",
     "preview": "vite preview",
     "test": "vitest run",

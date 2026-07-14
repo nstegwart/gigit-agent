@@ -27,7 +27,10 @@ COPY tsconfig.json vite.config.ts ./
 COPY public ./public
 COPY src ./src
 COPY migrations ./migrations
-# Post-build SSR↔client asset coherence verifier (fail closed before image runtime).
+# Post-build: align SSR absolute styles URLs to the single client emit, then
+# assert SSR↔client asset coherence (fail closed before image runtime).
+# Align is required so Linux dual-env content-hash split cannot ship a 404 CSS URL.
+COPY scripts/align-ssr-style-urls.mjs ./scripts/align-ssr-style-urls.mjs
 COPY scripts/assert-build-assets.mjs ./scripts/assert-build-assets.mjs
 # Committed seed index only (demo board is not staging SSOT; staging uses synthetic MySQL fixtures).
 COPY data/boards.json data/conventions.json ./data/
