@@ -216,13 +216,69 @@ function mapProjects(agg: ControlCenterAggregation): Array<PublicProjectSummary>
   }))
 }
 
+/**
+ * Public feature rows with real progress nodes when the aggregation carries them
+ * (featureContractId join on FeatureUiSummary) or when workRows link by featureId.
+ * Never invents task ids/titles/stages — empty progressNodes when join has none.
+ */
 function mapFeatures(agg: ControlCenterAggregation): Array<PublicFeatureSummary> {
-  return agg.features.map((f) => ({
-    id: f.id,
-    projectId: f.projectId ?? null,
-    name: f.name ?? null,
-    phase: f.phase ?? null,
-  }))
+  return agg.features.map((f) => {
+    const fromFeature = Array.isArray(f.progressNodes)
+      ? f.progressNodes.map((n) => ({
+          taskId: n.taskId,
+          title:
+            typeof n.title === 'string' && n.title.trim().length > 0 ? n.title : n.taskId,
+          lifecycleStage:
+            typeof n.lifecycleStage === 'string' && n.lifecycleStage.length > 0
+              ? n.lifecycleStage
+              : null,
+          status: typeof n.status === 'string' && n.status.length > 0 ? n.status : null,
+        }))
+      : null
+
+    const linkedRows = agg.workRows.filter((r) => r.featureId === f.id)
+    const progressNodes =
+      fromFeature ??
+      linkedRows.map((r) => ({
+        taskId: r.taskId,
+        title:
+          typeof r.title === 'string' && r.title.trim().length > 0 ? r.title : r.taskId,
+        lifecycleStage:
+          typeof r.lifecycleStage === 'string' && r.lifecycleStage.length > 0
+            ? r.lifecycleStage
+            : null,
+        status: null as string | null,
+      }))
+
+    const stageCounts: Record<string, number> = {}
+    if (f.stageCounts && typeof f.stageCounts === 'object') {
+      for (const [k, v] of Object.entries(f.stageCounts)) {
+        if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+          stageCounts[k] = Math.floor(v)
+        }
+      }
+    } else {
+      for (const n of progressNodes) {
+        const stage = n.lifecycleStage ?? 'UNKNOWN'
+        stageCounts[stage] = (stageCounts[stage] ?? 0) + 1
+      }
+    }
+
+    const taskCount =
+      typeof f.taskCount === 'number' && Number.isFinite(f.taskCount)
+        ? Math.max(0, Math.floor(f.taskCount))
+        : progressNodes.length
+
+    return {
+      id: f.id,
+      projectId: f.projectId ?? null,
+      name: f.name ?? null,
+      phase: f.phase ?? null,
+      taskCount,
+      stageCounts: Object.keys(stageCounts).length > 0 ? stageCounts : null,
+      progressNodes,
+    }
+  })
 }
 
 function mapTasks(agg: ControlCenterAggregation): Array<PublicTaskSummary> {
@@ -309,13 +365,18 @@ function mapAccounts(agg: ControlCenterAggregation): Array<PublicAccountSummary>
  * Structural section error codes — pin/schema/hash/load/authority incompleteness.
  * These remain hard fail-closed (mapper throws → HTTP/MCP 503 STALE_OR_MISSING).
  * Domain codes (DATA_INTEGRITY / UNCLASSIFIED / ACCOUNT_SYNC_*) are NOT structural.
+ *
+ * PARTIAL_SOURCE is section-scoped (see STRUCTURAL_PARTIAL_SOURCE_SECTIONS):
+ * overlay partials (human_display, audit, dispatch, …) must NOT 503 a pin-complete
+ * public materialization — they soft-force stale via collectPublicDomainBlockers /
+ * forceStale when needed, or are ignored when they do not affect public fields.
  */
 export const PUBLIC_STRUCTURAL_SECTION_CODES: ReadonlySet<string> = new Set([
   'PIN_AUTHORITY_FALLBACK',
   'PIN_AUTHORITY_INCOMPLETE',
   'PIN_AUTHORITY_MISSING',
   'REVISION_AUTHORITY_MISSING',
-  'PARTIAL_SOURCE',
+  // Note: bare PARTIAL_SOURCE is NOT globally structural — see section gate below.
   'SCHEMA_INVALID',
   'SCHEMA_MISMATCH',
   'HASH_MISMATCH',
@@ -325,15 +386,42 @@ export const PUBLIC_STRUCTURAL_SECTION_CODES: ReadonlySet<string> = new Set([
   'SOURCE_UNAVAILABLE',
   'RUNTIME_UNAVAILABLE',
   'DEFINITION_MISMATCH',
+  'DEFINITION_AUTHORITY_STALE',
   'CANONICAL_LOAD_FAILED',
 ])
 
-export function isPublicStructuralSectionCode(code: string | null | undefined): boolean {
+/**
+ * Sections where PARTIAL_SOURCE means authority/runtime incompleteness → hard 503.
+ * Overlay/non-authority sections are excluded so public pin-complete boards still
+ * materialize (AC-PUBLIC-01) instead of false STALE_OR_MISSING.
+ */
+export const STRUCTURAL_PARTIAL_SOURCE_SECTIONS: ReadonlySet<string> = new Set([
+  'runtime_context',
+  'definition',
+  'revisions',
+  'pin',
+  'canonical',
+  'board_revisions',
+  'authority',
+  'load',
+  'source',
+])
+
+export function isPublicStructuralSectionCode(
+  code: string | null | undefined,
+  section?: string | null,
+): boolean {
   if (code == null || code === '') return false
   const c = String(code).trim()
+  if (c === 'PARTIAL_SOURCE') {
+    // Fail-closed when section is missing (unknown authority surface).
+    if (section == null || section === '') return true
+    const s = String(section).trim().toLowerCase()
+    return STRUCTURAL_PARTIAL_SOURCE_SECTIONS.has(s)
+  }
   if (PUBLIC_STRUCTURAL_SECTION_CODES.has(c)) return true
   // Prefix traps for load/schema/hash families
-  if (/^(PIN_|SCHEMA_|HASH_|LOAD_|REVISION_)/i.test(c) && !isPublicDomainBlockerCode(c)) {
+  if (/^(PIN_|SCHEMA_|HASH_|LOAD_|REVISION_|DEFINITION_)/i.test(c) && !isPublicDomainBlockerCode(c)) {
     return true
   }
   return false
@@ -413,7 +501,7 @@ export function assertAggregationPublicReady(agg: ControlCenterAggregation): voi
     )
   }
   const structural = (agg.sectionErrors ?? []).filter((e) =>
-    isPublicStructuralSectionCode(e.code),
+    isPublicStructuralSectionCode(e.code, e.section),
   )
   if (structural.length > 0) {
     throw new ControlCenterPublicSnapshotError(
@@ -422,6 +510,7 @@ export function assertAggregationPublicReady(agg: ControlCenterAggregation): voi
       {
         sectionErrorCount: structural.length,
         sectionCodes: structural.map((e) => e.code),
+        sectionNames: structural.map((e) => e.section),
       },
     )
   }

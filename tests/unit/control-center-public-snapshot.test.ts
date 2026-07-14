@@ -656,6 +656,7 @@ describe('control-center-public-snapshot mapper', () => {
       expect((e as ControlCenterPublicSnapshotError).code).toBe('STALE_OR_PARTIAL')
     }
 
+    // Authority-bearing PARTIAL_SOURCE (runtime_context) remains hard fail-closed.
     const partial = {
       ...agg,
       sectionErrors: [
@@ -671,7 +672,7 @@ describe('control-center-public-snapshot mapper', () => {
     }
 
     // Schema/hash structural codes also hard-fail (never soft domain path).
-    for (const code of ['SCHEMA_INVALID', 'HASH_MISMATCH', 'PIN_AUTHORITY_INCOMPLETE']) {
+    for (const code of ['SCHEMA_INVALID', 'HASH_MISMATCH', 'PIN_AUTHORITY_INCOMPLETE', 'DEFINITION_AUTHORITY_STALE']) {
       try {
         mapControlCenterAggregationToPublicInput({
           ...agg,
@@ -682,6 +683,41 @@ describe('control-center-public-snapshot mapper', () => {
         expect((e as ControlCenterPublicSnapshotError).code).toBe('STALE_OR_PARTIAL')
       }
     }
+  })
+
+  it('overlay PARTIAL_SOURCE (human_display/audit) does not 503 pin-complete public materialize', () => {
+    const base = buildAgg()
+    // Live control-center often emits overlay PARTIAL_SOURCE while pin is complete.
+    // Public surface must still materialize (AC-PUBLIC-01) — not false STALE_OR_MISSING.
+    const overlayPartial = {
+      ...base,
+      sectionErrors: [
+        {
+          section: 'human_display',
+          code: 'PARTIAL_SOURCE',
+          message: 'HumanDisplayStore unavailable',
+        },
+        {
+          section: 'audit',
+          code: 'PARTIAL_SOURCE',
+          message: 'material audit unavailable',
+        },
+      ],
+    }
+    const input = mapControlCenterAggregationToPublicInput(overlayPartial)
+    expect(input.boardId).toBe(PIN.boardId)
+    expect(input.pin.canonicalSnapshotId).toBe(PIN.canonicalSnapshotId)
+    expect(input.pin.boardRev).toBe(PIN.boardRev)
+
+    const mat = materializePublicSnapshotFromControlCenter(overlayPartial, {
+      nowMs: Date.parse('2026-07-13T12:00:12.000Z'),
+      publicationIntervalMs: 60_000,
+    })
+    expect(mat.payload.schemaVersion).toBe(PUBLIC_SNAPSHOT_SCHEMA)
+    expect(mat.etag).toMatch(/^[a-f0-9]{64}$/)
+    expect(mat.payload.pin.serializerVersion).toBe(PUBLIC_SERIALIZER_VERSION)
+    // Overlay partial alone is not a domain blocker forceStale path.
+    expect(mat.payload.freshness.stale).toBe(false)
   })
 
   it('domain blockers DATA_INTEGRITY / ACCOUNT_SYNC_MISSING → sanitized soft path (not throw)', () => {
@@ -749,5 +785,119 @@ describe('control-center-public-snapshot mapper', () => {
     expect(input.forceStale).toBe(false)
     expect(input.usableCapacity).toBe(4)
     expect(input.domainBlockers ?? []).toEqual([])
+  })
+
+  it('maps feature progressNodes + stageCounts for public unauth consumers (no invent)', () => {
+    const base = buildAgg()
+    const withProgress = {
+      ...base,
+      features: [
+        {
+          id: 'feat-1',
+          projectId: 'proj-1',
+          name: 'Feature One',
+          phase: 'build',
+          flowBranch: 'open' as const,
+          taskCount: 2,
+          progressNodes: [
+            {
+              taskId: 't-a',
+              title: 'Menampilkan harga checkout',
+              lifecycleStage: 'MAP_VERIFIED',
+              status: 'active',
+              blockedReason: null,
+            },
+            {
+              taskId: 't-b',
+              title: 'Membuat tagihan pending',
+              lifecycleStage: 'MAPPED',
+              status: 'queued',
+              blockedReason: null,
+            },
+          ],
+          stageCounts: { MAP_VERIFIED: 1, MAPPED: 1 },
+        },
+      ],
+    }
+    const input = mapControlCenterAggregationToPublicInput(withProgress)
+    const feat = input.features?.find((f) => f.id === 'feat-1')
+    expect(feat).toBeTruthy()
+    expect(feat?.taskCount).toBe(2)
+    expect(feat?.stageCounts).toEqual({ MAP_VERIFIED: 1, MAPPED: 1 })
+    expect(feat?.progressNodes).toHaveLength(2)
+    expect(feat?.progressNodes?.[0]).toMatchObject({
+      taskId: 't-a',
+      title: 'Menampilkan harga checkout',
+      lifecycleStage: 'MAP_VERIFIED',
+      status: 'active',
+    })
+
+    const mat = materializePublicSnapshotFromControlCenter(withProgress)
+    const pub = mat.payload.features.find((f) => f.id === 'feat-1')
+    expect(pub?.progressNodes).toHaveLength(2)
+    expect(pub?.progressNodes?.[0]?.taskId).toBe('t-a')
+    expect(pub?.stageCounts?.MAP_VERIFIED).toBe(1)
+  })
+
+  it('derives public progressNodes from workRows.featureId when feature projector omits nodes', () => {
+    const agg = aggregateControlCenter({
+      pin: PIN,
+      tasks: [
+        productTask('t-done', 'PROD_READY', { featureId: 'feat-1' }),
+        productTask('t-ongoing', 'IN_PROGRESS', {
+          featureId: 'feat-1',
+          claimState: 'VALID_CURRENT',
+          runLiveness: 'RUNNING',
+          accountRef: 'raw-account-id-xyz7890',
+          heartbeatAt: '2026-07-13T11:55:00.000Z',
+          materialProgressAt: '2026-07-13T11:50:00.000Z',
+          startedAt: '2026-07-13T11:00:00.000Z',
+          agentId: 'agent-1',
+          role: 'implementer',
+        }),
+        productTask('t-queued', 'READY'),
+        productTask('t-blocked', 'READY', { hardBlocker: true }),
+      ],
+      g5Domains: allG5Pass(),
+      projects: [
+        {
+          id: 'proj-1',
+          name: 'Project One',
+          status: 'ACTIVE',
+          taskCount: 4,
+          doneCount: 0,
+          blockedCount: 0,
+        },
+      ],
+      features: [
+        {
+          id: 'feat-1',
+          projectId: 'proj-1',
+          name: 'Feature One',
+          phase: 'build',
+          flowBranch: 'open',
+          taskCount: 0,
+        },
+      ],
+      accountSyncMeta: {
+        authoritative: true,
+        sourceRevision: 1,
+        generatedAt: NOW,
+        stale: false,
+        staleReason: null,
+        usableCapacity: 4,
+        readbackParityOk: true,
+      },
+      priorityPackets: [],
+      now: NOW,
+    })
+    expect(agg.workRows.some((r) => r.featureId === 'feat-1')).toBe(true)
+    const input = mapControlCenterAggregationToPublicInput(agg)
+    const feat = input.features?.find((f) => f.id === 'feat-1')
+    expect(feat).toBeTruthy()
+    expect(Array.isArray(feat?.progressNodes)).toBe(true)
+    expect((feat?.progressNodes?.length ?? 0) >= 1).toBe(true)
+    expect(feat?.progressNodes?.[0]?.taskId).toBeTruthy()
+    expect(feat?.progressNodes?.[0]?.title).toBeTruthy()
   })
 })

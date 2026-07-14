@@ -83,11 +83,25 @@ export interface PublicProjectSummary {
   status?: string | null
 }
 
+/** Linked task progress for a public feature (sanitized; never invents nodes). */
+export interface PublicFeatureProgressNode {
+  taskId: string
+  title: string
+  lifecycleStage?: string | null
+  status?: string | null
+}
+
 export interface PublicFeatureSummary {
   id: string
   projectId?: string | null
   name?: string | null
   phase?: string | null
+  /** Linked task count when proven (0 when none). */
+  taskCount?: number | null
+  /** Lifecycle stage histogram among linked tasks. */
+  stageCounts?: Record<string, number> | null
+  /** Real progress nodes from featureContractId join — empty array when none. */
+  progressNodes?: PublicFeatureProgressNode[] | null
 }
 
 export interface PublicTaskSummary {
@@ -583,12 +597,39 @@ export function materializePublicSnapshot(input: PublicAggregationInput): Materi
       })),
     )
     const features = sortById(
-      (input.features ?? []).map((f) => ({
-        id: f.id,
-        projectId: f.projectId ?? null,
-        name: f.name ?? null,
-        phase: f.phase ?? null,
-      })),
+      (input.features ?? []).map((f) => {
+        const progressNodes = Array.isArray(f.progressNodes)
+          ? f.progressNodes.map((n) => ({
+              taskId: n.taskId,
+              title: typeof n.title === 'string' && n.title.trim() ? n.title : n.taskId,
+              lifecycleStage:
+                typeof n.lifecycleStage === 'string' && n.lifecycleStage.length > 0
+                  ? n.lifecycleStage
+                  : null,
+              status:
+                typeof n.status === 'string' && n.status.length > 0 ? n.status : null,
+            }))
+          : null
+        const stageCounts =
+          f.stageCounts && typeof f.stageCounts === 'object' && !Array.isArray(f.stageCounts)
+            ? { ...f.stageCounts }
+            : null
+        const taskCount =
+          typeof f.taskCount === 'number' && Number.isFinite(f.taskCount)
+            ? Math.max(0, Math.floor(f.taskCount))
+            : progressNodes
+              ? progressNodes.length
+              : null
+        return {
+          id: f.id,
+          projectId: f.projectId ?? null,
+          name: f.name ?? null,
+          phase: f.phase ?? null,
+          taskCount,
+          stageCounts,
+          progressNodes,
+        }
+      }),
     )
     const tasks = sortById(
       (input.tasks ?? []).map((t) => ({

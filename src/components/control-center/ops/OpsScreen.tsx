@@ -12,7 +12,7 @@ function AccountFlags({ row }: { row: OpsAccountRowView }) {
       ) : null}
       {row.quarantine ? (
         <span className={`${styles.chip} ${styles.flagQuarantine}`} data-flag="quarantine">
-          <span aria-hidden="true">⛔</span> quarantine
+          <span aria-hidden="true">⛔</span> karantina
         </span>
       ) : null}
       {row.isTombstone ? (
@@ -22,7 +22,7 @@ function AccountFlags({ row }: { row: OpsAccountRowView }) {
       ) : null}
       {!row.isLimit && !row.quarantine && !row.isTombstone ? (
         <span className={styles.chip} data-flag="ok">
-          <span aria-hidden="true">○</span> clear
+          <span aria-hidden="true">○</span> bersih
         </span>
       ) : null}
     </div>
@@ -49,21 +49,21 @@ function AccountCard({ row }: { row: OpsAccountRowView }) {
           <dd>{row.status}</dd>
         </div>
         <div>
-          <dt>Provider</dt>
+          <dt>Penyedia</dt>
           <dd>{row.providerKind ?? '—'}</dd>
         </div>
         <div>
-          <dt>Capacity</dt>
+          <dt>Kapasitas</dt>
           <dd className={styles.capacityBar} data-field="capacity">
             {row.capacityLabel}
           </dd>
         </div>
         <div>
-          <dt>Physical slots</dt>
+          <dt>Slot fisik</dt>
           <dd className={styles.idCell}>{row.physicalSlotsDisplay ?? '—'}</dd>
         </div>
         <div>
-          <dt>Reason</dt>
+          <dt>Alasan</dt>
           <dd>{row.reason ?? '—'}</dd>
         </div>
       </dl>
@@ -136,23 +136,23 @@ export function OpsScreen({
 
       <header className={styles.pageHead}>
         <div>
-          <p className={styles.eyebrow}>Mission Q7</p>
+          <p className={styles.eyebrow}>Misi Q7</p>
           <h1 id="ops-page-title" className={styles.pageTitle}>
-            Ops / Accounts
+            Operasi / Akun
           </h1>
           <p className={styles.pageSub}>
-            Masked account capacity, quarantine, LIMIT, and sync audit from the pinned envelope.
-            Raw identity and tokens are never shown.
+            Kapasitas akun ter-mask, karantina, LIMIT, dan audit sinkron dari envelope pin. Identitas
+            mentah dan token tidak pernah ditampilkan.
           </p>
         </div>
         <div className={styles.summaryStrip}>
           <span className={`${styles.chip} ${styles.chipAccent}`} data-testid="ops-account-count">
             <span aria-hidden="true">◎</span>
-            {accounts.length} accounts
+            {accounts.length} akun
           </span>
           {usableCapacity != null ? (
             <span className={styles.chip} data-testid="ops-usable-capacity">
-              usable capacity {usableCapacity}
+              kapasitas pakai {usableCapacity}
             </span>
           ) : null}
           {quarantineCount != null ? (
@@ -160,7 +160,7 @@ export function OpsScreen({
               className={`${styles.chip}${quarantineCount > 0 ? ` ${styles.flagQuarantine}` : ''}`}
               data-testid="ops-quarantine-count"
             >
-              quarantine {quarantineCount}
+              karantina {quarantineCount}
             </span>
           ) : null}
           {accountSyncStale ? (
@@ -168,11 +168,11 @@ export function OpsScreen({
               className={`${styles.chip} ${styles.flagSyncStale}`}
               data-testid="ops-sync-stale"
             >
-              <span aria-hidden="true">⚠</span> account sync stale
+              <span aria-hidden="true">⚠</span> sinkron akun basi
             </span>
           ) : (
             <span className={styles.chip} data-testid="ops-sync-fresh">
-              sync fresh
+              sinkron segar
             </span>
           )}
         </div>
@@ -216,12 +216,12 @@ export function OpsScreen({
           data-testid="ops-error"
         >
           <p className={styles.bannerTitle}>
-            {error.code}: ops unavailable
+            {error.code}: operasi tidak tersedia
           </p>
           <p className={styles.bannerBody}>{error.message}</p>
           {onRetry ? (
             <button type="button" className={styles.retryBtn} onClick={onRetry}>
-              Retry
+              Coba lagi
             </button>
           ) : null}
         </div>
@@ -234,10 +234,10 @@ export function OpsScreen({
           role="status"
           data-testid="ops-partial-banner"
         >
-          <p className={styles.bannerTitle}>Honest projection gaps</p>
+          <p className={styles.bannerTitle}>Celah proyeksi jujur</p>
           <p className={styles.bannerBody}>
-            Per-account last-sync timestamps are not on AccountUiSummary; envelope pin boardRev is
-            the source revision shown above.
+            Stempel last-sync per akun tidak ada di AccountUiSummary; boardRev pin envelope adalah
+            revisi sumber yang ditampilkan di atas.
           </p>
           {projectionGaps && projectionGaps.length > 0 ? (
             <ul className={styles.gapList}>
@@ -256,17 +256,17 @@ export function OpsScreen({
           data-testid="ops-stale-banner"
         >
           <p className={styles.bannerTitle}>
-            {accountSyncStale ? 'Account sync stale' : 'Stale pin'}
+            {accountSyncStale ? 'Sinkron akun basi' : 'Pin basi'}
           </p>
           <p className={styles.bannerBody}>
             {pin?.staleReason ??
               (accountSyncStale
-                ? 'Server flagged STALE_ACCOUNT_SYNC or pin staleness — refresh for audit truth.'
-                : 'Pinned aggregation is stale.')}
+                ? 'Server menandai STALE_ACCOUNT_SYNC atau pin basi — muat ulang untuk kebenaran audit.'
+                : 'Agregasi pin basi.')}
           </p>
           {onRefresh ? (
             <button type="button" className={styles.retryBtn} onClick={onRefresh}>
-              Refresh
+              Muat ulang
             </button>
           ) : null}
         </div>
@@ -281,7 +281,7 @@ export function OpsScreen({
 
       {surfaceState === 'empty' || surfaceState === 'zero-results' ? (
         <p className={styles.empty} data-testid="ops-empty">
-          No accounts on this pin.
+          Tidak ada akun pada pin ini.
         </p>
       ) : null}
 
@@ -291,13 +291,13 @@ export function OpsScreen({
             <table className={styles.table}>
               <thead>
                 <tr>
-                  <th scope="col">Masked account</th>
+                  <th scope="col">Akun ter-mask</th>
                   <th scope="col">Status</th>
-                  <th scope="col">Provider</th>
-                  <th scope="col">Capacity</th>
-                  <th scope="col">Physical slots</th>
-                  <th scope="col">Flags</th>
-                  <th scope="col">Reason</th>
+                  <th scope="col">Penyedia</th>
+                  <th scope="col">Kapasitas</th>
+                  <th scope="col">Slot fisik</th>
+                  <th scope="col">Bendera</th>
+                  <th scope="col">Alasan</th>
                 </tr>
               </thead>
               <tbody>

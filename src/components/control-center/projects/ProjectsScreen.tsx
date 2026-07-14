@@ -15,7 +15,7 @@ function ProjectionGapDisclosure({ projectionGaps }: { projectionGaps: string[] 
   return (
     <details className={styles.gapDisclosure} data-testid="projects-partial-banner">
       <summary className={styles.gapDisclosureSummary}>
-        Honest projection gaps ({projectionGaps.length})
+        Celah proyeksi jujur ({projectionGaps.length})
       </summary>
       <div className={styles.gapDisclosureBody}>
         <p className={styles.bannerBody}>
@@ -61,36 +61,36 @@ function ProjectCard({ row }: { row: ProjectRowView }) {
       </span>
       <dl className={styles.cardMeta}>
         <div>
-          <dt>Tasks</dt>
+          <dt>Tugas</dt>
           <dd className={styles.metric}>{row.taskCount}</dd>
         </div>
         <div>
-          <dt>Done</dt>
+          <dt>Selesai</dt>
           <dd className={styles.metric}>{row.doneCount}</dd>
         </div>
         <div>
-          <dt>Blocked</dt>
+          <dt>Terhambat</dt>
           <dd className={styles.metric}>{row.blockedCount}</dd>
         </div>
         <div>
-          <dt>Ready</dt>
+          <dt>Siap</dt>
           <dd className={styles.metric} data-field="readiness-percent">
             {formatReadinessPercent(row.readinessPercent)}
           </dd>
         </div>
         <div>
-          <dt>Stage</dt>
+          <dt>Tahap</dt>
           <dd data-field="readiness-stage">{row.readinessStage ?? '—'}</dd>
         </div>
         <div>
-          <dt>Evidence</dt>
+          <dt>Bukti</dt>
           <dd data-field="readiness-evidence-ok">
             {formatEvidenceOk(row.readinessEvidenceOk)}
           </dd>
         </div>
       </dl>
       <a className={styles.linkBtn} href={row.detailHref} data-testid="project-detail-link">
-        Open project
+        Buka proyek
       </a>
     </li>
   )
@@ -160,24 +160,23 @@ export function ProjectsScreen({
 
       <header className={styles.pageHead}>
         <div>
-          <p className={styles.eyebrow}>IA · Projects</p>
+          <p className={styles.eyebrow}>IA · Proyek</p>
           <h1 id="projects-page-title" className={styles.pageTitle}>
-            Projects
+            Proyek
           </h1>
           <p className={styles.pageSub}>
-            Server-derived project summaries from the pinned control-center envelope, including
-            readiness percent / stage / evidence when the projector proves them. Not recomputed in
-            the browser.
+            Ringkasan proyek dari envelope control-center yang di-pin, termasuk persen kesiapan /
+            tahap / bukti bila proyektor membuktikannya. Tidak dihitung ulang di browser.
           </p>
         </div>
         <div className={styles.summaryStrip}>
           <span className={`${styles.chip} ${styles.chipAccent}`} data-testid="projects-count">
             <span aria-hidden="true">▣</span>
-            {projects.length} projects
+            {projects.length} proyek
           </span>
           {productDenominator != null ? (
             <span className={styles.chip} data-testid="projects-product-denom">
-              product denom {productDenominator}
+              denom produk {productDenominator}
             </span>
           ) : null}
         </div>
@@ -204,7 +203,11 @@ export function ProjectsScreen({
       ) : null}
 
       {bucketCounts && Object.keys(bucketCounts).length > 0 ? (
-        <div className={styles.summaryStrip} data-testid="projects-bucket-strip" aria-label="Bucket counts">
+        <div
+          className={styles.summaryStrip}
+          data-testid="projects-bucket-strip"
+          aria-label="Hitungan bucket"
+        >
           {Object.entries(bucketCounts).map(([k, v]) => (
             <span key={k} className={styles.chip}>
               {k} <strong>{v}</strong>
@@ -220,12 +223,12 @@ export function ProjectsScreen({
           data-testid="projects-error"
         >
           <p className={styles.bannerTitle}>
-            {error.code}: projects unavailable
+            {error.code}: proyek tidak tersedia
           </p>
           <p className={styles.bannerBody}>{error.message}</p>
           {onRetry ? (
             <button type="button" className={styles.retryBtn} onClick={onRetry}>
-              Retry
+              Coba lagi
             </button>
           ) : null}
         </div>
@@ -233,13 +236,13 @@ export function ProjectsScreen({
 
       {surfaceState === 'stale' ? (
         <div className={`${styles.banner} ${styles.banner_stale}`} role="status" data-testid="projects-stale">
-          <p className={styles.bannerTitle}>Stale pin</p>
+          <p className={styles.bannerTitle}>Pin basi</p>
           <p className={styles.bannerBody}>
-            {pin?.staleReason ?? 'Pinned aggregation is stale — refresh for current projects.'}
+            {pin?.staleReason ?? 'Agregasi pin basi — muat ulang untuk proyek terkini.'}
           </p>
           {onRefresh ? (
             <button type="button" className={styles.retryBtn} onClick={onRefresh}>
-              Refresh
+              Muat ulang
             </button>
           ) : null}
         </div>
@@ -254,7 +257,7 @@ export function ProjectsScreen({
 
       {surfaceState === 'empty' || surfaceState === 'zero-results' ? (
         <p className={styles.empty} data-testid="projects-empty">
-          No projects on this pin.
+          Tidak ada proyek pada pin ini.
         </p>
       ) : null}
 
@@ -264,17 +267,17 @@ export function ProjectsScreen({
             <table className={styles.table}>
               <thead>
                 <tr>
-                  <th scope="col">Project</th>
-                  <th scope="col">Name</th>
+                  <th scope="col">Proyek</th>
+                  <th scope="col">Nama</th>
                   <th scope="col">Status</th>
-                  <th scope="col">Tasks</th>
-                  <th scope="col">Done</th>
-                  <th scope="col">Blocked</th>
-                  <th scope="col">Ready</th>
-                  <th scope="col">Stage</th>
-                  <th scope="col">Evidence</th>
+                  <th scope="col">Tugas</th>
+                  <th scope="col">Selesai</th>
+                  <th scope="col">Terhambat</th>
+                  <th scope="col">Siap</th>
+                  <th scope="col">Tahap</th>
+                  <th scope="col">Bukti</th>
                   <th scope="col">
-                    <span className="sr-only">Open</span>
+                    <span className="sr-only">Buka</span>
                   </th>
                 </tr>
               </thead>
@@ -313,7 +316,7 @@ export function ProjectsScreen({
                         href={row.detailHref}
                         data-testid="project-detail-link"
                       >
-                        Open
+                        Buka
                       </a>
                     </td>
                   </tr>

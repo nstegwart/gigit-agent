@@ -178,7 +178,7 @@ describe('projectsEnvelopeToProps + ProjectsScreen', () => {
       true,
     )
     // Honest eyebrow: Projects is not Mission Q2–Q4 primary.
-    expect(root.textContent).toMatch(/IA · Projects/)
+    expect(root.textContent).toMatch(/IA · Proyek|IA · Projects/)
     expect(root.textContent).not.toMatch(/Mission Q2–Q4/)
   })
 
@@ -207,7 +207,7 @@ describe('projectsEnvelopeToProps + ProjectsScreen', () => {
     } as any
     render(<ProjectsScreen {...props} />)
     const disclosure = screen.getByTestId('projects-partial-banner')
-    const summary = within(disclosure).getByText(/Honest projection gaps \(2\)/i)
+    const summary = within(disclosure).getByText(/Celah proyeksi jujur \(2\)|Honest projection gaps \(2\)/i)
     expect(summary).toBeTruthy()
     expect(summary.tagName).toBe('SUMMARY')
     expect(disclosure.textContent).toContain('p-legacy missing')
@@ -440,7 +440,7 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
     }
     render(<FeaturesScreen {...props} />)
     const disclosure = screen.getByTestId('features-partial-banner')
-    const summary = within(disclosure).getByText(/Honest projection gaps \(2\)/i)
+    const summary = within(disclosure).getByText(/Celah proyeksi jujur \(2\)|Honest projection gaps \(2\)/i)
     expect(summary).toBeTruthy()
     expect(summary.tagName).toBe('SUMMARY')
     expect(disclosure.textContent).toContain('f-open missing checklist')
@@ -570,7 +570,7 @@ describe('agentsEnvelopeToProps + AgentsScreen', () => {
     expect(within(ongoing).getByTestId('agent-ongoing-ages').textContent).toMatch(/1h/)
     expect(within(ongoing).getByTestId('agent-ongoing-ages').textContent).toMatch(/10m/)
     expect(within(ongoing).getByTestId('agent-ongoing-ages').textContent).toMatch(/20m/)
-    expect(within(ongoing).getByText(/Evidence/)).toBeTruthy()
+    expect(within(ongoing).getByText(/Bukti|Evidence/)).toBeTruthy()
   })
 
   it('run rows keep server order in DOM and expose claim/locks/controller/parent', () => {
@@ -588,7 +588,7 @@ describe('agentsEnvelopeToProps + AgentsScreen', () => {
     expect(ownership.textContent).toMatch(/ctrl-1/)
     expect(ownership.textContent).toMatch(/parent-0/)
     // Q6 is Decisions; Agents is Mission Q2 only.
-    expect(root.textContent).toMatch(/Mission Q2/)
+    expect(root.textContent).toMatch(/Misi Q2|Mission Q2/)
     expect(root.textContent).not.toMatch(/Mission Q2 \/ Q6/)
   })
 
@@ -610,7 +610,7 @@ describe('agentsEnvelopeToProps + AgentsScreen', () => {
     }
     render(<AgentsScreen {...props} />)
     const disclosure = screen.getByTestId('agents-partial-banner')
-    const summary = within(disclosure).getByText(/Honest projection gaps \(2\)/i)
+    const summary = within(disclosure).getByText(/Celah proyeksi jujur \(2\)|Honest projection gaps \(2\)/i)
     expect(summary).toBeTruthy()
     expect(summary.tagName).toBe('SUMMARY')
     expect(disclosure.textContent).toContain('agent-auth stale')

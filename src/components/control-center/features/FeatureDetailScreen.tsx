@@ -204,7 +204,7 @@ export function FeatureDetailScreen({
       </div>
 
       <div className={styles.card} data-testid="feature-detail-progress">
-        <h2 className={styles.progressTitle}>Progress node tugas</h2>
+        <h2 className={styles.progressTitle}>Node progres tugas</h2>
         <p className={styles.pageSub} style={{ marginTop: 0, marginBottom: 12 }}>
           Node di bawah berasal dari tugas yang terhubung ke fitur ini (featureContractId) pada pin
           saat ini — bukan tebakan klien.

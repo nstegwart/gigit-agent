@@ -79,7 +79,7 @@ function ReconciliationBlock({ item }: { item: WorkItemRow }) {
       ) : null}
       {r.claimId ? (
         <>
-          <dt>Claim</dt>
+          <dt>Klaim</dt>
           <dd>
             {r.claimId}
             {r.claimState ? ` (${r.claimState})` : ''}
@@ -88,13 +88,13 @@ function ReconciliationBlock({ item }: { item: WorkItemRow }) {
       ) : null}
       {!r.claimId && r.claimState ? (
         <>
-          <dt>Claim state</dt>
+          <dt>Status klaim</dt>
           <dd>{r.claimState}</dd>
         </>
       ) : null}
       {r.lockId ? (
         <>
-          <dt>Lock</dt>
+          <dt>Kunci</dt>
           <dd>
             {r.lockId}
             {r.lockOwner ? ` · ${r.lockOwner}` : ''}
@@ -103,7 +103,7 @@ function ReconciliationBlock({ item }: { item: WorkItemRow }) {
       ) : null}
       {r.action ? (
         <>
-          <dt>Action</dt>
+          <dt>Tindakan</dt>
           <dd>
             {r.action}
             {r.dryRun === true ? ' (dry-run)' : r.dryRun === false ? ' (live)' : ''}
@@ -112,13 +112,13 @@ function ReconciliationBlock({ item }: { item: WorkItemRow }) {
       ) : null}
       {age ? (
         <>
-          <dt>Age</dt>
+          <dt>Usia</dt>
           <dd>{age}</dd>
         </>
       ) : null}
       {r.ownerAgentId || r.ownerRole || r.ownerMaskedAccount ? (
         <>
-          <dt>Owner</dt>
+          <dt>Pemilik</dt>
           <dd>
             {[r.ownerAgentId, r.ownerRole, r.ownerMaskedAccount].filter(Boolean).join(' · ')}
           </dd>
@@ -150,13 +150,13 @@ function OngoingBlock({ item }: { item: WorkItemRow }) {
   return (
     <div className={styles.ongoingMeta} data-testid="work-row-ongoing">
       {o.targetGate ? <span>Gate {o.targetGate}</span> : null}
-      {o.agentId ? <span>Agent {o.agentId}</span> : null}
+      {o.agentId ? <span>Agen {o.agentId}</span> : null}
       {o.role ? <span>{o.role}</span> : null}
       {o.model || o.effort ? <span>{[o.model, o.effort].filter(Boolean).join(' / ')}</span> : null}
-      {o.maskedAccount ? <span>Acct {o.maskedAccount}</span> : null}
-      {started ? <span>Started {started}</span> : null}
+      {o.maskedAccount ? <span>Akun {o.maskedAccount}</span> : null}
+      {started ? <span>Dimulai {started}</span> : null}
       {heartbeat ? <span>HB {heartbeat}</span> : null}
-      {material ? <span>Progress {material}</span> : null}
+      {material ? <span>Progres {material}</span> : null}
       {o.liveness ? (
         <span className={styles.liveness} data-liveness={live}>
           <span

@@ -415,9 +415,13 @@ export function AppShell({ children }: { children: ReactNode }) {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search features, agents…"
+              placeholder={
+                controlCenter ? 'Cari fitur, agen…' : 'Search features, agents…'
+              }
               autoComplete="off"
-              aria-label="Search features and agents"
+              aria-label={
+                controlCenter ? 'Cari fitur dan agen' : 'Search features and agents'
+              }
             />
           </div>
           <ThemeButton />

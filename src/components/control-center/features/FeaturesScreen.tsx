@@ -19,11 +19,11 @@ function ProjectionGapDisclosure({ projectionGaps }: { projectionGaps: string[] 
   return (
     <details className={styles.gapDisclosure} data-testid="features-partial-banner">
       <summary className={styles.gapDisclosureSummary}>
-        Honest projection gaps ({projectionGaps.length})
+        Celah proyeksi jujur ({projectionGaps.length})
       </summary>
       <div className={styles.gapDisclosureBody}>
         <p className={styles.bannerBody}>
-          List surface shows envelope fields only — checklist/comments live on detail routes.
+          Daftar hanya menampilkan field envelope — checklist/komentar ada di rute detail.
         </p>
         <ul className={styles.gapList}>
           {projectionGaps.map((g) => (
@@ -240,12 +240,12 @@ export function FeaturesScreen({
           data-testid="features-error"
         >
           <p className={styles.bannerTitle}>
-            {error.code}: features unavailable
+            {error.code}: fitur tidak tersedia
           </p>
           <p className={styles.bannerBody}>{error.message}</p>
           {onRetry ? (
             <button type="button" className={styles.retryBtn} onClick={onRetry}>
-              Retry
+              Coba lagi
             </button>
           ) : null}
         </div>
@@ -253,13 +253,13 @@ export function FeaturesScreen({
 
       {surfaceState === 'stale' ? (
         <div className={`${styles.banner} ${styles.banner_stale}`} role="status">
-          <p className={styles.bannerTitle}>Stale pin</p>
+          <p className={styles.bannerTitle}>Pin basi</p>
           <p className={styles.bannerBody}>
-            {pin?.staleReason ?? 'Pinned aggregation is stale — refresh for current features.'}
+            {pin?.staleReason ?? 'Agregasi pin basi — muat ulang untuk fitur terkini.'}
           </p>
           {onRefresh ? (
             <button type="button" className={styles.retryBtn} onClick={onRefresh}>
-              Refresh
+              Muat ulang
             </button>
           ) : null}
         </div>
@@ -274,7 +274,7 @@ export function FeaturesScreen({
 
       {surfaceState === 'empty' || surfaceState === 'zero-results' ? (
         <p className={styles.empty} data-testid="features-empty">
-          No features on this pin.
+          Tidak ada fitur pada pin ini.
         </p>
       ) : null}
 

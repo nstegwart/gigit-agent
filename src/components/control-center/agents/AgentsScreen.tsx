@@ -71,7 +71,7 @@ function ProjectionGapDisclosure({
   return (
     <details className={styles.gapDisclosure} data-testid="agents-partial-banner">
       <summary className={styles.gapDisclosureSummary}>
-        Honest projection gaps ({projectionGaps.length})
+        Celah proyeksi jujur ({projectionGaps.length})
       </summary>
       <div className={styles.gapDisclosureBody}>
         <p className={styles.bannerBody}>
@@ -132,7 +132,7 @@ function OngoingCard({ row }: { row: AgentOngoingRowView }) {
 
       <div className={styles.ages} data-testid="agent-ongoing-ages">
         <div>
-          <span className={styles.ageLabel}>Started</span>
+          <span className={styles.ageLabel}>Dimulai</span>
           <span data-field="started-age">{row.startedAge}</span>
         </div>
         <div>
@@ -148,15 +148,15 @@ function OngoingCard({ row }: { row: AgentOngoingRowView }) {
       <div className={styles.summaryStrip}>
         {row.evidenceLink ? (
           <a className={styles.linkBtn} href={row.evidenceLink} data-field="evidence">
-            Evidence
+            Bukti
           </a>
         ) : (
           <span className={styles.metaChip} data-field="evidence">
-            no evidence
+            tanpa bukti
           </span>
         )}
         <a className={styles.linkBtn} href={row.taskHref} data-testid="agent-task-link">
-          Open task
+          Buka tugas
         </a>
       </div>
     </li>
@@ -297,7 +297,7 @@ function RunCardMobile({ row }: { row: AgentRunRowView }) {
       <RunOwnershipCell row={row} />
       <dl className={styles.cardMeta}>
         <div>
-          <dt>Task</dt>
+          <dt>Tugas</dt>
           <dd>
             {row.taskHref && row.taskId ? (
               <IdText value={row.taskId}>
@@ -311,7 +311,7 @@ function RunCardMobile({ row }: { row: AgentRunRowView }) {
           </dd>
         </div>
         <div>
-          <dt>Started</dt>
+          <dt>Dimulai</dt>
           <dd>
             <TimeText value={row.startedAt} />
           </dd>
@@ -402,23 +402,23 @@ export function AgentsScreen({
 
       <header className={styles.pageHead}>
         <div>
-          <p className={styles.eyebrow}>Mission Q2</p>
+          <p className={styles.eyebrow}>Misi Q2</p>
           <h1 id="agents-page-title" className={styles.pageTitle}>
-            Agents / Runs
+            Agen / Run
           </h1>
           <p className={styles.pageSub}>
-            Zero-click ONGOING ownership and run inventory from the pinned envelope, including
-            claim / locks / controller / parent when the server projects them. Stall order is
-            server-defined — not recomputed here.
+            Kepemilikan ONGOING zero-click dan inventaris run dari envelope pin, termasuk claim /
+            lock / controller / parent bila server memproyeksikannya. Urutan stall ditentukan
+            server — tidak dihitung ulang di sini.
           </p>
         </div>
         <div className={styles.summaryStrip}>
           <span className={`${styles.chip} ${styles.chipAccent}`} data-testid="agents-ongoing-count">
             <span aria-hidden="true">●</span>
-            {ongoing.length} ongoing
+            {ongoing.length} berlangsung
           </span>
           <span className={styles.chip} data-testid="agents-run-count">
-            {runs.length} runs
+            {runs.length} run
           </span>
           <span className={styles.chip}>pageSize {pageSize}</span>
         </div>
@@ -447,12 +447,12 @@ export function AgentsScreen({
           data-testid="agents-error"
         >
           <p className={styles.bannerTitle}>
-            {error.code}: agents unavailable
+            {error.code}: agen tidak tersedia
           </p>
           <p className={styles.bannerBody}>{error.message}</p>
           {onRetry ? (
             <button type="button" className={styles.retryBtn} onClick={onRetry}>
-              Retry
+              Coba lagi
             </button>
           ) : null}
         </div>
@@ -460,13 +460,13 @@ export function AgentsScreen({
 
       {surfaceState === 'stale' ? (
         <div className={`${styles.banner} ${styles.banner_stale}`} role="status">
-          <p className={styles.bannerTitle}>Stale pin</p>
+          <p className={styles.bannerTitle}>Pin basi</p>
           <p className={styles.bannerBody}>
-            {pin?.staleReason ?? 'Pinned aggregation is stale — refresh for current runs.'}
+            {pin?.staleReason ?? 'Agregasi pin basi — muat ulang untuk run terkini.'}
           </p>
           {onRefresh ? (
             <button type="button" className={styles.retryBtn} onClick={onRefresh}>
-              Refresh
+              Muat ulang
             </button>
           ) : null}
         </div>
@@ -481,7 +481,7 @@ export function AgentsScreen({
 
       {surfaceState === 'empty' || surfaceState === 'zero-results' || (!hideList && !hasRows) ? (
         <p className={styles.empty} data-testid="agents-empty">
-          No agents or runs on this pin.
+          Tidak ada agen atau run pada pin ini.
         </p>
       ) : null}
 
@@ -527,16 +527,16 @@ export function AgentsScreen({
               <thead>
                 <tr>
                   <th scope="col">Run</th>
-                  <th scope="col">Task</th>
-                  <th scope="col">Agent</th>
-                  <th scope="col">Role</th>
+                  <th scope="col">Tugas</th>
+                  <th scope="col">Agen</th>
+                  <th scope="col">Peran</th>
                   <th scope="col">Model</th>
                   <th scope="col">Effort</th>
-                  <th scope="col">Account</th>
+                  <th scope="col">Akun</th>
                   <th scope="col">Status</th>
-                  <th scope="col">State</th>
-                  <th scope="col">Ownership</th>
-                  <th scope="col">Started</th>
+                  <th scope="col">Keadaan</th>
+                  <th scope="col">Kepemilikan</th>
+                  <th scope="col">Dimulai</th>
                   <th scope="col">Heartbeat</th>
                   <th scope="col">Material</th>
                 </tr>
