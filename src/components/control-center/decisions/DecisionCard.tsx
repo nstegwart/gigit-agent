@@ -1,5 +1,6 @@
 import {
   actionLabel,
+  CONTENT_REVIEW_CHIP_LABEL,
   decisionActionAvailability,
   decisionMutationRevs,
   defaultSnoozedUntil,
@@ -170,8 +171,10 @@ export function DecisionCard({
           <span
             className={`${styles.chip} ${styles.contentReviewBadge}`}
             data-testid="decision-content-review"
+            role="status"
+            title={owner.effectiveReviewStatus}
           >
-            CONTENT_REVIEW_REQUIRED
+            {CONTENT_REVIEW_CHIP_LABEL}
           </span>
         ) : null}
         {item.status === 'REJECTED' ? (
@@ -237,9 +240,15 @@ export function DecisionCard({
       {owner.contentReviewRequired &&
       owner.technicalTitle &&
       owner.technicalTitle !== owner.primaryTitle ? (
-        <p className={styles.technicalTitleNote} data-testid="decision-technical-title">
-          Technical: {owner.technicalTitle}
-        </p>
+        <details className={styles.diagDetails} data-testid="decision-technical-title">
+          <summary>Detail teknis</summary>
+          <p className={styles.technicalTitleNote}>
+            Judul teknis: {owner.technicalTitle}
+          </p>
+          <p className={styles.technicalTitleNote}>
+            Status peninjauan: {owner.effectiveReviewStatus}
+          </p>
+        </details>
       ) : null}
 
       <div className={styles.field}>

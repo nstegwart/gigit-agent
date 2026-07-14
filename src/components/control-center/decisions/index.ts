@@ -7,6 +7,7 @@ export {
   decisionMutationRevs,
   defaultSnoozedUntil,
   resolveDecisionOwnerDisplay,
+  CONTENT_REVIEW_CHIP_LABEL,
   isOpenDecisionStatus,
   isTerminalDecisionStatus,
   isExpiredDecisionStatus,
