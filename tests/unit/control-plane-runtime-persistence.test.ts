@@ -788,6 +788,141 @@ describe('connection-pinned MySQL named lock', () => {
       code: 'INVALID_INPUT',
     })
   })
+
+  it('nested same context + same lockName: exactly one GET_LOCK + one RELEASE on same pin', async () => {
+    const exec = createMemorySqlExecutor()
+    let nestedSawHeld = false
+    let outerConn: string | undefined
+    let innerConn: string | undefined
+
+    await withMysqlNamedLock(exec, 'board-re', async () => {
+      outerConn = exec.heldNamedLocks.get('cp_rt_board-re')
+      expect(outerConn).toMatch(/^memory-conn-/)
+      await withMysqlNamedLock(exec, 'board-re', async () => {
+        nestedSawHeld = true
+        innerConn = exec.heldNamedLocks.get('cp_rt_board-re')
+        // Still held by the outer pin — no second connection acquired the lock.
+        expect(innerConn).toBe(outerConn)
+      })
+      // Outer still holds after inner returns (refcount / context unwind).
+      expect(exec.heldNamedLocks.get('cp_rt_board-re')).toBe(outerConn)
+    })
+
+    expect(nestedSawHeld).toBe(true)
+    const getCalls = exec.calls.filter((c) => /SELECT GET_LOCK/i.test(c.sql))
+    const relCalls = exec.calls.filter((c) => /SELECT RELEASE_LOCK/i.test(c.sql))
+    expect(getCalls).toHaveLength(1)
+    expect(relCalls).toHaveLength(1)
+    expect(getCalls[0]!.connectionId).toBe(relCalls[0]!.connectionId)
+    expect(getCalls[0]!.connectionId).toBe(outerConn)
+    expect(exec.heldNamedLocks.has('cp_rt_board-re')).toBe(false)
+  })
+
+  it('independent concurrent async contexts are not treated as reentrant', async () => {
+    const exec = createMemorySqlExecutor()
+    let firstEntered = false
+    let secondRejected = false
+
+    const first = withMysqlNamedLock(exec, 'board-indep', async () => {
+      firstEntered = true
+      // Hold long enough for concurrent peer to attempt GET_LOCK on another pin.
+      await new Promise((r) => setTimeout(r, 30))
+      return 'first'
+    })
+
+    // Yield so first acquires the lock before second starts.
+    await new Promise((r) => setTimeout(r, 5))
+    const second = withMysqlNamedLock(exec, 'board-indep', async () => 'second').then(
+      () => {
+        throw new Error('second should not enter critical section')
+      },
+      (e: unknown) => {
+        secondRejected = true
+        expect(e).toMatchObject({ code: 'DATA_INTEGRITY' })
+        return 'rejected'
+      },
+    )
+
+    const [a, b] = await Promise.all([first, second])
+    expect(a).toBe('first')
+    expect(b).toBe('rejected')
+    expect(firstEntered).toBe(true)
+    expect(secondRejected).toBe(true)
+    const getCalls = exec.calls.filter((c) => /SELECT GET_LOCK/i.test(c.sql))
+    // Two independent contexts each open a pin and issue GET_LOCK.
+    expect(getCalls.length).toBeGreaterThanOrEqual(2)
+    expect(exec.heldNamedLocks.has('cp_rt_board-indep')).toBe(false)
+  })
+
+  it('different lock names in same context acquire independently', async () => {
+    const exec = createMemorySqlExecutor()
+    await withMysqlNamedLock(exec, 'board-a', async () => {
+      expect(exec.heldNamedLocks.get('cp_rt_board-a')).toMatch(/^memory-conn-/)
+      await withMysqlNamedLock(exec, 'board-b', async () => {
+        expect(exec.heldNamedLocks.get('cp_rt_board-a')).toMatch(/^memory-conn-/)
+        expect(exec.heldNamedLocks.get('cp_rt_board-b')).toMatch(/^memory-conn-/)
+        // Different pins for different lock names.
+        expect(exec.heldNamedLocks.get('cp_rt_board-a')).not.toBe(
+          exec.heldNamedLocks.get('cp_rt_board-b'),
+        )
+      })
+      expect(exec.heldNamedLocks.has('cp_rt_board-b')).toBe(false)
+      expect(exec.heldNamedLocks.get('cp_rt_board-a')).toMatch(/^memory-conn-/)
+    })
+    const getCalls = exec.calls.filter((c) => /SELECT GET_LOCK/i.test(c.sql))
+    const relCalls = exec.calls.filter((c) => /SELECT RELEASE_LOCK/i.test(c.sql))
+    expect(getCalls).toHaveLength(2)
+    expect(relCalls).toHaveLength(2)
+    expect(exec.heldNamedLocks.size).toBe(0)
+  })
+
+  it('thrown inner and outer still clean up pin/lock (no leak)', async () => {
+    const exec = createMemorySqlExecutor()
+
+    await expect(
+      withMysqlNamedLock(exec, 'board-throw-inner', async () => {
+        await withMysqlNamedLock(exec, 'board-throw-inner', async () => {
+          throw new Error('inner-boom')
+        })
+      }),
+    ).rejects.toThrow('inner-boom')
+    expect(exec.heldNamedLocks.has('cp_rt_board-throw-inner')).toBe(false)
+
+    await expect(
+      withMysqlNamedLock(exec, 'board-throw-outer', async () => {
+        await withMysqlNamedLock(exec, 'board-throw-outer', async () => 'ok')
+        throw new Error('outer-boom')
+      }),
+    ).rejects.toThrow('outer-boom')
+    expect(exec.heldNamedLocks.has('cp_rt_board-throw-outer')).toBe(false)
+
+    const getCalls = exec.calls.filter((c) => /SELECT GET_LOCK/i.test(c.sql))
+    const relCalls = exec.calls.filter((c) => /SELECT RELEASE_LOCK/i.test(c.sql))
+    // Two outer frames (inner throw + outer throw suites) → 2 GET + 2 RELEASE
+    expect(getCalls).toHaveLength(2)
+    expect(relCalls).toHaveLength(2)
+  })
+
+  it('nested runs.withBoardLock → locks.withBoardLock same exec reuses single GET_LOCK', async () => {
+    // Mirrors register outer + acquireCollisionLocks inner (same boardId, shared exec).
+    const exec = createMemorySqlExecutor()
+    const runs = createMysqlRunRegistryStore(exec, { useNamedLock: true })
+    const locks = createMysqlLockStore(exec, { useNamedLock: true })
+    let nested = false
+    await runs.withBoardLock('board-nest', async () => {
+      await locks.withBoardLock('board-nest', async () => {
+        nested = true
+        expect(exec.heldNamedLocks.get('cp_rt_board-nest')).toMatch(/^memory-conn-/)
+      })
+    })
+    expect(nested).toBe(true)
+    const getCalls = exec.calls.filter((c) => /SELECT GET_LOCK/i.test(c.sql))
+    const relCalls = exec.calls.filter((c) => /SELECT RELEASE_LOCK/i.test(c.sql))
+    expect(getCalls).toHaveLength(1)
+    expect(relCalls).toHaveLength(1)
+    expect(getCalls[0]!.connectionId).toBe(relCalls[0]!.connectionId)
+    expect(exec.heldNamedLocks.has('cp_rt_board-nest')).toBe(false)
+  })
 })
 
 describe('store put CAS rejects stale/fenced overwrites', () => {

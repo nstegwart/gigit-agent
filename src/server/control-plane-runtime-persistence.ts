@@ -5,6 +5,8 @@
  * Uses entity_rev + fencing_token columns; soft board_id isolation.
  * No board-mcp wiring. Injectable SqlExecutor — unit tests use memory backend.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 import type {
   AccountSyncSnapshot,
   AccountSyncStore,
@@ -270,9 +272,46 @@ function createBoardLockChain() {
 }
 
 /**
+ * Async call-context for nested withMysqlNamedLock reentrancy.
+ *
+ * Nested register → acquireCollisionLocks (and heartbeat → renew, terminate →
+ * release) re-enter the same board lockName on the same SqlExecutor. Without
+ * reentrancy, each call pins a *different* pool connection and the inner
+ * GET_LOCK waits 10s on the outer pin → deterministic self-deadlock.
+ *
+ * Keyed by executor identity + lockName so:
+ * - same async context + same exec + same name → reuse outer pin (no 2nd GET_LOCK)
+ * - different lock names → independent acquire (still process-exclusive)
+ * - independent async roots → separate ALS stores (no cross-request sharing)
+ */
+type MysqlNamedLockHeld = {
+  exec: SqlExecutor
+  lockName: string
+  pinned: PinnedSqlExecutor
+  depth: number
+}
+
+const mysqlNamedLockAls = new AsyncLocalStorage<Map<string, MysqlNamedLockHeld>>()
+const mysqlNamedLockExecIds = new WeakMap<SqlExecutor, number>()
+let mysqlNamedLockExecSeq = 0
+
+function mysqlNamedLockContextKey(exec: SqlExecutor, lockName: string): string {
+  let id = mysqlNamedLockExecIds.get(exec)
+  if (id == null) {
+    id = ++mysqlNamedLockExecSeq
+    mysqlNamedLockExecIds.set(exec, id)
+  }
+  return `${id}\0${lockName}`
+}
+
+/**
  * MySQL named lock on a **pinned connection**.
  * GET_LOCK and RELEASE_LOCK are connection-scoped; both MUST run on the same
  * physical connection, and RELEASE is guaranteed in finally before release().
+ *
+ * Re-entrant within the same async context for the same executor + lockName:
+ * nested calls execute under the outer pin without a second GET_LOCK/RELEASE.
+ * Only the outermost frame acquires, releases, and returns the pin.
  *
  * Requires SqlExecutor.getConnection (connection-pinned contract).
  * Exported for unit tests that assert acquire/release connection identity.
@@ -289,8 +328,22 @@ export async function withMysqlNamedLock<T>(
       { boardId },
     )
   }
-  const pinned = await exec.getConnection()
   const lockName = `cp_rt_${boardId}`.slice(0, 64)
+  const key = mysqlNamedLockContextKey(exec, lockName)
+  const store = mysqlNamedLockAls.getStore()
+  const held = store?.get(key)
+  if (held) {
+    // Same async context + same executor + same lockName: reenter outer pin.
+    held.depth += 1
+    try {
+      return await fn()
+    } finally {
+      held.depth -= 1
+    }
+  }
+
+  const pinned = await exec.getConnection()
+  let acquired = false
   try {
     const acq = await pinned.execute<{ l: number }>('SELECT GET_LOCK(?, 10) AS l', [lockName])
     const ok = asNumber(acq.rows[0]?.l, 0) === 1
@@ -301,12 +354,38 @@ export async function withMysqlNamedLock<T>(
         connectionId: pinned.connectionId,
       })
     }
-    try {
-      return await fn()
-    } finally {
-      // Same pinned connection as GET_LOCK — never use the pool here.
-      await pinned.execute('SELECT RELEASE_LOCK(?) AS r', [lockName])
+    acquired = true
+    const entry: MysqlNamedLockHeld = { exec, lockName, pinned, depth: 1 }
+
+    const runCritical = async (): Promise<T> => {
+      const active = mysqlNamedLockAls.getStore()
+      if (!active) {
+        // Defensive: ALS must be established by the outer run() below.
+        throw new RuntimePersistenceError(
+          'DATA_INTEGRITY',
+          'withMysqlNamedLock missing async lock context',
+          { boardId, lockName },
+        )
+      }
+      active.set(key, entry)
+      try {
+        return await fn()
+      } finally {
+        active.delete(key)
+        if (acquired) {
+          // Same pinned connection as GET_LOCK — never use the pool here.
+          await pinned.execute('SELECT RELEASE_LOCK(?) AS r', [lockName])
+          acquired = false
+        }
+      }
     }
+
+    // Reuse parent ALS map when nesting a *different* lockName under an outer hold;
+    // otherwise establish a fresh map for this independent async root.
+    if (store) {
+      return await runCritical()
+    }
+    return await mysqlNamedLockAls.run(new Map<string, MysqlNamedLockHeld>(), runCritical)
   } finally {
     pinned.release()
   }
