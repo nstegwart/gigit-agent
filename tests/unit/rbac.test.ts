@@ -435,7 +435,9 @@ describe('bearer principal resolution', () => {
 
   it('legacy token PRESENT without board binding → disabled (principal null)', async () => {
     const secret = 'legacy-test-write-token-value'
-    const r = await resolveBearerPrincipal(secret, { envWriteToken: secret })
+    // Explicit null overrides any ambient process.env.CAIRN_WRITE_TOKEN_BOARD_ID —
+    // this test asserts the UNBOUND fail-closed path, not the host shell's own state.
+    const r = await resolveBearerPrincipal(secret, { envWriteToken: secret, envWriteTokenBoardId: '' })
     expect(r.principal).toBeNull()
     expect(r.mechanism.kind).toBe('OK')
   })

@@ -217,6 +217,14 @@ export const MIGRATION_MANIFEST: ReadonlyArray<MigrationEntry> = [
     description:
       'Immutable programmatic stage-evidence receipt registry (control_plane_stage_evidence_receipts); additive table only',
   },
+  {
+    version: '007',
+    filename: '007_globals_table.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '007_globals_table.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'Greenfield/DR gap fix: create globals key-value table (readGlobal/readConventions) if absent; no-op where it already exists',
+  },
 ] as const
 
 export function sha256Hex(content: string | Buffer): string {

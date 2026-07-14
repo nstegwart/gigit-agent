@@ -151,6 +151,7 @@ export const REQUIRED_TABLES_BY_MIGRATION: Readonly<Record<string, ReadonlyArray
     'control_plane_collision_locks',
   ],
   '006': ['control_plane_stage_evidence_receipts'],
+  '007': ['globals'],
 }
 
 /** Tables required given applied migration versions (004/005/006 probes). */
