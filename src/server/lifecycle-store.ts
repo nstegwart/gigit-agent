@@ -289,6 +289,7 @@ export type LifecycleV3ErrorCode =
   | 'AUTHORIZATION_REQUIRED'
   | 'UNKNOWN_STAGE'
   | 'TASK_NOT_FOUND'
+  | 'INVALID_INPUT'
 
 export class LifecycleV3Error extends Error {
   readonly code: LifecycleV3ErrorCode
@@ -544,6 +545,40 @@ function assertRunValid(
   }
 }
 
+/** MySQL control_plane_stage_evidence_receipts.receipt_id VARCHAR(64). */
+export const STAGE_RECEIPT_ID_MAX_LEN = 64
+
+/**
+ * Allocate a stage-evidence receiptId that always fits VARCHAR(64).
+ * Prefer human-readable `rcpt-${stage}-${taskId}-${ms}` when ≤64 chars;
+ * otherwise compact to `rcpt-${stage}-${taskSha12}-${ms36}`.
+ * Client-supplied receiptId is accepted only when 1..64 and non-empty after trim.
+ */
+export function allocateStageReceiptId(
+  toStage: string,
+  taskId: string,
+  clientReceiptId?: string | null,
+  nowMs: number = Date.now(),
+): string {
+  if (typeof clientReceiptId === 'string' && clientReceiptId.trim()) {
+    const trimmed = clientReceiptId.trim()
+    if (trimmed.length > STAGE_RECEIPT_ID_MAX_LEN) {
+      throw new LifecycleV3Error(
+        'INVALID_INPUT',
+        `receiptId exceeds ${STAGE_RECEIPT_ID_MAX_LEN} chars (MySQL VARCHAR limit)`,
+        { length: trimmed.length, max: STAGE_RECEIPT_ID_MAX_LEN },
+      )
+    }
+    return trimmed
+  }
+  const readable = `rcpt-${toStage}-${taskId}-${nowMs}`
+  if (readable.length <= STAGE_RECEIPT_ID_MAX_LEN) return readable
+  const taskPart = createHash('sha256').update(taskId).digest('hex').slice(0, 12)
+  const compact = `rcpt-${toStage}-${taskPart}-${nowMs.toString(36)}`
+  if (compact.length <= STAGE_RECEIPT_ID_MAX_LEN) return compact
+  return compact.slice(0, STAGE_RECEIPT_ID_MAX_LEN)
+}
+
 function validateStageEvidence(
   toStage: LifecycleStageKey,
   receipt: StageReceipt,
@@ -709,10 +744,11 @@ export async function submitStageEvidence(
     })
   }
 
-  const receiptId =
-    typeof inp.receiptId === 'string' && inp.receiptId.trim()
-      ? inp.receiptId.trim()
-      : `rcpt-${inp.toStage}-${inp.taskId}-${Date.now()}`
+  // control_plane_stage_evidence_receipts.receipt_id is VARCHAR(64).
+  // Long task ids (e.g. T-NODE-FC-WEB-PREMIUM-E2E-R01-PAY-SUCCESS) made the
+  // naive `rcpt-${stage}-${taskId}-${Date.now()}` form exceed 64 → MySQL
+  // ER_DATA_TOO_LONG sanitized to opaque MCP_HANDLER_ERROR on submit.
+  const receiptId = allocateStageReceiptId(inp.toStage, inp.taskId, inp.receiptId, Date.now())
 
   const partial: Omit<StageReceipt, 'receiptHash'> = {
     receiptId,
