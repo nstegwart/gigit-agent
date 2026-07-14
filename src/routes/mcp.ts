@@ -31,6 +31,12 @@ import {
   type Principal,
 } from '#/server/rbac'
 import { resolvePublicSnapshotClientIp } from '#/routes/api.public-snapshot'
+import {
+  getSharedObservabilityIntegration,
+  observationResultFromHttpStatus,
+  resolveIncomingRequestId,
+  withRequestIdResponse,
+} from '#/server/observability-integration'
 
 const SERVER_NAME = 'cairn-board'
 const SERVER_VERSION = '1.3.0'
@@ -352,7 +358,79 @@ export async function authGate(request: Request): Promise<Request | Response> {
   return rebuildRequest(request, body)
 }
 
+/**
+ * Extract safe tool names from a JSON-RPC body for observation meta only.
+ * Never logs arguments (may contain secrets).
+ */
+function safeToolNamesFromBody(body: string): Array<string> {
+  try {
+    const msgs = parseRpcMessages(body)
+    return toolsCallEntries(msgs).map((c) => c.name).slice(0, 8)
+  } catch {
+    return []
+  }
+}
+
+function observeMcpHttp(
+  requestId: string,
+  opts: {
+    toolNames?: ReadonlyArray<string>
+    actorRole?: string | null
+    actorId?: string | null
+    result: 'ok' | 'error' | 'deny' | 'timeout'
+    errorCode?: string | null
+    latencyMs: number
+    httpStatus?: number
+    phase: 'auth_gate' | 'handler' | 'session_deny'
+  },
+): void {
+  const obs = getSharedObservabilityIntegration()
+  const primaryTool = opts.toolNames?.[0]
+  if (primaryTool) {
+    obs.observeMcp(
+      {
+        requestId,
+        toolName: primaryTool,
+        actorRole: opts.actorRole ?? null,
+        actorId: opts.actorId ?? null,
+        meta: {
+          phase: opts.phase,
+          toolCount: opts.toolNames?.length ?? 0,
+          httpStatus: opts.httpStatus ?? null,
+          // never include args / body / tokens
+        },
+      },
+      {
+        result: opts.result,
+        errorCode: opts.errorCode ?? null,
+        latencyMs: opts.latencyMs,
+      },
+    )
+    return
+  }
+  obs
+    .beginRequest({
+      requestId,
+      endpoint: '/mcp',
+      method: 'POST',
+      channel: 'mcp',
+      actorRole: opts.actorRole ?? null,
+      actorId: opts.actorId ?? null,
+      meta: {
+        phase: opts.phase,
+        httpStatus: opts.httpStatus ?? null,
+      },
+    })
+    .end({
+      result: opts.result,
+      errorCode: opts.errorCode ?? null,
+      latencyMs: opts.latencyMs,
+    })
+}
+
 async function handle(request: Request): Promise<Response> {
+  const requestId = resolveIncomingRequestId(request)
+  const startedAt = Date.now()
   // Capture non-spoofable IP BEFORE authGate rebuilds the Request (body clone drops .ip / socket).
   // Never raw XFF — resolvePublicSnapshotClientIp uses socket/runtime or trusted-edge only.
   const clientIp = resolvePublicSnapshotClientIp(request)
@@ -361,18 +439,62 @@ async function handle(request: Request): Promise<Response> {
   try {
     gated = await authGate(request)
   } catch {
+    const latencyMs = Math.max(0, Date.now() - startedAt)
+    observeMcpHttp(requestId, {
+      result: 'error',
+      errorCode: 'MCP_HANDLER_ERROR',
+      latencyMs,
+      httpStatus: 500,
+      phase: 'auth_gate',
+    })
     // Never echo raw gate errors
-    return rpcError(500, 'MCP_HANDLER_ERROR', 'MCP_HANDLER_ERROR', null, -32603)
+    return withRequestIdResponse(
+      rpcError(500, 'MCP_HANDLER_ERROR', 'MCP_HANDLER_ERROR', null, -32603),
+      requestId,
+    )
   }
-  if (gated instanceof Response) return gated
+  if (gated instanceof Response) {
+    const latencyMs = Math.max(0, Date.now() - startedAt)
+    let errorCode: string | null = null
+    try {
+      const cloned = gated.clone()
+      const body = (await cloned.json()) as { error?: { data?: { code?: string }; message?: string } }
+      errorCode = body?.error?.data?.code ?? body?.error?.message ?? null
+    } catch {
+      errorCode = gated.status === 401 ? 'AUTHORIZATION_REQUIRED' : null
+    }
+    observeMcpHttp(requestId, {
+      result: observationResultFromHttpStatus(gated.status),
+      errorCode,
+      latencyMs,
+      httpStatus: gated.status,
+      phase: 'auth_gate',
+    })
+    return withRequestIdResponse(gated, requestId)
+  }
   request = gated
 
   const auth = await resolveMcpAuthContext(request)
   const authWithIp: McpAuthContext = { ...auth, clientIp }
+  const actorRole = authWithIp.principal?.role ?? null
+  const actorId = authWithIp.principal?.actorId ?? null
 
   // Cookie elevation hard-deny (defensive; resolve already strips session channel).
   if (authWithIp.principal && authWithIp.principal.channel === 'session') {
-    return rpcError(403, 'COOKIE_ELEVATION_DENIED', 'COOKIE_ELEVATION_DENIED')
+    const latencyMs = Math.max(0, Date.now() - startedAt)
+    observeMcpHttp(requestId, {
+      result: 'deny',
+      errorCode: 'COOKIE_ELEVATION_DENIED',
+      latencyMs,
+      httpStatus: 403,
+      phase: 'session_deny',
+      actorRole,
+      actorId,
+    })
+    return withRequestIdResponse(
+      rpcError(403, 'COOKIE_ELEVATION_DENIED', 'COOKIE_ELEVATION_DENIED'),
+      requestId,
+    )
   }
 
   // Production/default: warm one durable control-plane context before tools register.
@@ -396,10 +518,44 @@ async function handle(request: Request): Promise<Response> {
   try {
     await server.connect(transport)
     try {
-      return await transport.handleRequest(request)
+      // Peek tool names for meta only when body is readable; never log args.
+      let toolNames: Array<string> = []
+      try {
+        const peek = request.clone()
+        const bodyText = await peek.text()
+        toolNames = safeToolNamesFromBody(bodyText)
+      } catch {
+        toolNames = []
+      }
+      const response = await transport.handleRequest(request)
+      const latencyMs = Math.max(0, Date.now() - startedAt)
+      observeMcpHttp(requestId, {
+        toolNames,
+        actorRole,
+        actorId,
+        result: observationResultFromHttpStatus(response.status),
+        errorCode: response.status >= 400 ? `HTTP_${response.status}` : null,
+        latencyMs,
+        httpStatus: response.status,
+        phase: 'handler',
+      })
+      return withRequestIdResponse(response, requestId)
     } catch {
+      const latencyMs = Math.max(0, Date.now() - startedAt)
+      observeMcpHttp(requestId, {
+        actorRole,
+        actorId,
+        result: 'error',
+        errorCode: 'MCP_HANDLER_ERROR',
+        latencyMs,
+        httpStatus: 500,
+        phase: 'handler',
+      })
       // Never echo raw transport/handler Error.message or stacks
-      return rpcError(500, 'MCP_HANDLER_ERROR', 'MCP_HANDLER_ERROR', null, -32603)
+      return withRequestIdResponse(
+        rpcError(500, 'MCP_HANDLER_ERROR', 'MCP_HANDLER_ERROR', null, -32603),
+        requestId,
+      )
     }
   } finally {
     // Stateless JSON response is fully buffered before return → safe to release.

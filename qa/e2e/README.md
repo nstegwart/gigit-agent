@@ -155,6 +155,9 @@ node qa/e2e/flows/staging-agent-smoke.mjs --real
 | Keyboard nav              | `flows/keyboard-nav.mjs`                         | optional `--auth`    | Focus ring after Tab                                                 |
 | Screenshot manifest       | `flows/screenshot-manifest-capture.mjs`          | dry-run default      | §13 schema + collector                                               |
 | Public snapshot           | `flows/public-snapshot.mjs`                      | none                 | `/api/public-snapshot` HTTP probe                                    |
+| **Security probes**       | `flows/security-probes.mjs`                      | none (optional bearer) | Unauth healthz/MCP/public + rate-limit + redaction (AC-AUTH/PUBLIC) |
+| **Perf budgets**          | `flows/perf-budgets.mjs`                         | none                 | Scale-1000 fixture + p95; opt-in `--load-10m` 20rps×10m (AC-PERF-01) |
+| Scale-1000 fixture        | `qa/fixtures/staging/scale-1000/generate.mjs`    | n/a                  | Deterministic 1000 tasks / 200 runs / 20 accounts / 100 decisions    |
 
 ### Example commands (piecewise)
 
@@ -176,6 +179,15 @@ node qa/e2e/flows/a11y-axe.mjs --route /login --unauth
 
 # Manifest dry-run
 node qa/e2e/flows/screenshot-manifest-capture.mjs --dry-run
+
+# Security + perf (staging/local target)
+WEB_BASE=http://127.0.0.1:33211 BOARD_ID=mfs-rebuild node qa/e2e/flows/security-probes.mjs
+WEB_BASE=http://127.0.0.1:33211 BOARD_ID=mfs-rebuild node qa/e2e/flows/perf-budgets.mjs
+# Long load opt-in (exact):
+# WEB_BASE=… PERF_LOAD_RPS=20 PERF_LOAD_DURATION_SEC=600 node qa/e2e/flows/perf-budgets.mjs --load-10m
+node qa/fixtures/staging/scale-1000/generate.mjs
+node qa/e2e/flows/security-probes.mjs --self-test
+node qa/e2e/flows/perf-budgets.mjs --self-test
 ```
 
 ## Layout

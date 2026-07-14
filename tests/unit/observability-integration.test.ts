@@ -12,7 +12,14 @@ import {
   evaluateLatencyErrorBudgetAlert,
   evaluateLiveMcpUnauthorizedAlert,
   evaluateRepeatedImportReconcileAlert,
+  getSharedObservabilityIntegration,
+  newObservationRequestId,
+  observationResultFromHttpStatus,
+  resetSharedObservabilityIntegration,
+  resolveIncomingRequestId,
   runbookForAlert,
+  setSharedObservabilityIntegrationForTests,
+  withRequestIdResponse,
 } from '#/server/observability-integration'
 
 describe('OPS-OBS-WIRE foundation — integration facade', () => {
@@ -199,7 +206,55 @@ describe('OPS-OBS-WIRE foundation — integration facade', () => {
     expect(r.ok).toBe(true)
     expect(r.metricCategoriesCovered).toBe(V3_METRIC_CATEGORIES.length)
     expect(r.alertsWithRunbooks).toBe(V3_ALERT_IDS.length)
-    expect(r.residualGaps.some((g) => /not wired/i.test(g))).toBe(true)
+    // residual: external provider + live drill still open; routes now wire shared integration
+    expect(r.residualGaps.length).toBeGreaterThan(0)
+    expect(r.residualGaps.some((g) => /external metrics|live alert drill|not yet instrumented/i.test(g))).toBe(
+      true,
+    )
+  })
+
+  it('shared integration singleton supports request id + http status mapping', () => {
+    resetSharedObservabilityIntegration()
+    setSharedObservabilityIntegrationForTests(null)
+    const sink = createMemoryLogSink()
+    const local = createObservabilityIntegration({
+      sink,
+      nowIso: () => '2026-07-14T00:00:00.000Z',
+      nowMs: () => 5000,
+    })
+    setSharedObservabilityIntegrationForTests(local)
+    expect(getSharedObservabilityIntegration()).toBe(local)
+
+    const req = new Request('http://127.0.0.1/api/healthz', {
+      headers: { 'x-request-id': 'obs-test-req-id-12345' },
+    })
+    expect(resolveIncomingRequestId(req)).toBe('obs-test-req-id-12345')
+    expect(newObservationRequestId().startsWith('obs-')).toBe(true)
+    expect(observationResultFromHttpStatus(200)).toBe('ok')
+    expect(observationResultFromHttpStatus(401)).toBe('deny')
+    expect(observationResultFromHttpStatus(503)).toBe('error')
+
+    local
+      .beginRequest({
+        requestId: 'shared-1',
+        endpoint: '/api/healthz',
+        method: 'GET',
+        channel: 'http',
+        boardRev: 7,
+        lifecycleRev: 3,
+      })
+      .end({ result: 'ok', latencyMs: 11 })
+    expect(sink.snapshot()[0]?.boardRev).toBe(7)
+    expect(sink.snapshot()[0]?.lifecycleRev).toBe(3)
+
+    const res = withRequestIdResponse(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      'obs-header-1',
+    )
+    expect(res.headers.get('x-request-id')).toBe('obs-header-1')
+
+    setSharedObservabilityIntegrationForTests(null)
+    resetSharedObservabilityIntegration()
   })
 
   it('log helper redacts via shared facade path', () => {

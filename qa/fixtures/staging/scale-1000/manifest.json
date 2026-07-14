@@ -1,0 +1,32 @@
+{
+  "fixtureId": "staging-scale-1000-v1",
+  "version": 1,
+  "purpose": "Deterministic AC-PERF-01 scale fixture (synthetic only)",
+  "syntheticOnly": true,
+  "productionDerived": false,
+  "boardId": "mfs-rebuild-scale",
+  "generatedAt": "2026-07-14T00:00:00.000Z",
+  "counts": {
+    "tasks": 1000,
+    "runs": 200,
+    "accounts": 20,
+    "decisions": 100
+  },
+  "expected": {
+    "tasks": 1000,
+    "runs": 200,
+    "accounts": 20,
+    "decisions": 100
+  },
+  "pin": {
+    "canonicalSnapshotId": "scale-snap-7fe870c3cee6f82a",
+    "canonicalHash": "7fe870c3cee6f82a51faa0d3b33907f68cb98be71e41608b4397da59d33d85d8",
+    "taskHash": "7fe870c3cee6f82a51faa0d3b33907f68cb98be71e41608b4397da59d33d85d8",
+    "boardRev": 1,
+    "lifecycleRev": 1
+  },
+  "residualGaps": [
+    "fixture files only — not loaded into DB unless an explicit seeder consumes them",
+    "does not claim live p95 / 20rps proof by itself"
+  ]
+}

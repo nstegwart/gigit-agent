@@ -1,12 +1,16 @@
 /**
- * Request / MCP observability integration facade (AC-OPS-02 / AC-OPS-03 foundation).
+ * Request / MCP observability integration facade (AC-OPS-02 / AC-OPS-03).
  *
- * Wraps createObservabilityFacade for future middleware wiring.
+ * Wraps createObservabilityFacade for product route wiring.
  * Produces sanitized structured logs, V3 metrics samples, and alert evaluations
- * with runbook IDs. No external provider dependency (memory sink only).
+ * with runbook IDs. No external provider dependency (memory sink + optional
+ * redacted console JSON lines). Process-shared via getSharedObservabilityIntegration.
  *
- * Do not import this from routes yet — foundation only (OPS-OBS-WIRE step 1).
+ * Wired on: src/routes/mcp.ts, api.healthz.ts, api.public-snapshot.ts.
+ * Never logs payload secrets / cookies / bearer tokens / Authorization headers.
  */
+
+import { randomUUID } from 'node:crypto'
 
 import {
   STAGING_RUNBOOKS,
@@ -85,6 +89,157 @@ export function createMemoryLogSink(): StructuredLogSink {
       entries.length = 0
     },
   }
+}
+
+/** Composite sink — fan-out to memory + optional console (already redacted entries). */
+export function createCompositeLogSink(
+  ...sinks: ReadonlyArray<StructuredLogSink>
+): StructuredLogSink {
+  return {
+    emit(entry) {
+      for (const s of sinks) s.emit(entry)
+    },
+    snapshot() {
+      // Prefer first sink that retains history (memory).
+      for (const s of sinks) {
+        const snap = s.snapshot()
+        if (snap.length > 0) return snap
+      }
+      return sinks[0]?.snapshot() ?? []
+    },
+    clear() {
+      for (const s of sinks) s.clear()
+    },
+  }
+}
+
+/**
+ * Console JSON sink for ops. Emits only StructuredLogFields (already redacted).
+ * Disabled when CAIRN_OBS_CONSOLE=0 or VITEST/NODE_ENV=test unless CAIRN_OBS_CONSOLE=1.
+ */
+export function createConsoleStructuredLogSink(
+  write: (line: string) => void = (line) => {
+    // eslint-disable-next-line no-console
+    console.info(line)
+  },
+): StructuredLogSink {
+  return {
+    emit(entry) {
+      write(
+        JSON.stringify({
+          schema: OBSERVABILITY_INTEGRATION_SCHEMA,
+          ...entry,
+        }),
+      )
+    },
+    snapshot: () => [],
+    clear() {
+      /* no-op */
+    },
+  }
+}
+
+function defaultSharedSink(): StructuredLogSink {
+  const memory = createMemoryLogSink()
+  const env = typeof process !== 'undefined' ? process.env : undefined
+  const forceOn = env?.CAIRN_OBS_CONSOLE === '1' || env?.CAIRN_OBS_CONSOLE === 'true'
+  const forceOff = env?.CAIRN_OBS_CONSOLE === '0' || env?.CAIRN_OBS_CONSOLE === 'false'
+  const isTest =
+    env?.VITEST === 'true' ||
+    env?.NODE_ENV === 'test' ||
+    env?.VITEST_WORKER_ID != null
+  if (forceOff || (isTest && !forceOn)) return memory
+  if (forceOn || !isTest) {
+    return createCompositeLogSink(memory, createConsoleStructuredLogSink())
+  }
+  return memory
+}
+
+/** Stable request id: inbound x-request-id when safe, else UUID. */
+export function newObservationRequestId(): string {
+  return `obs-${randomUUID()}`
+}
+
+const SAFE_REQUEST_ID_RE = /^[A-Za-z0-9._:-]{8,128}$/
+
+export function resolveIncomingRequestId(request: Request): string {
+  try {
+    const raw =
+      request.headers.get('x-request-id') ??
+      request.headers.get('x-correlation-id') ??
+      ''
+    const trimmed = raw.trim()
+    if (trimmed && SAFE_REQUEST_ID_RE.test(trimmed)) return trimmed
+  } catch {
+    /* ignore */
+  }
+  return newObservationRequestId()
+}
+
+/** Map HTTP status to observation result (no body/secrets). */
+export function observationResultFromHttpStatus(
+  status: number,
+): ObservationResult['result'] {
+  if (status === 401 || status === 403) return 'deny'
+  if (status === 408 || status === 504) return 'timeout'
+  if (status >= 500) return 'error'
+  if (status >= 400) return 'error'
+  return 'ok'
+}
+
+/** Attach x-request-id without mutating original Headers object in place when frozen. */
+export function withRequestIdHeaders(
+  headers: HeadersInit | undefined,
+  requestId: string,
+): Headers {
+  const h = new Headers(headers)
+  if (!h.has('x-request-id')) h.set('x-request-id', requestId)
+  return h
+}
+
+export function withRequestIdResponse(
+  response: Response,
+  requestId: string,
+): Response {
+  const headers = withRequestIdHeaders(response.headers, requestId)
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Process-shared integration (product routes)
+// ---------------------------------------------------------------------------
+
+let sharedIntegration: ObservabilityIntegration | null = null
+let sharedOverride: ObservabilityIntegration | null = null
+
+/**
+ * Process-shared observability integration used by HTTP/MCP routes.
+ * Memory metrics + redacted logs; optional console JSON when not in test.
+ */
+export function getSharedObservabilityIntegration(): ObservabilityIntegration {
+  if (sharedOverride) return sharedOverride
+  if (!sharedIntegration) {
+    sharedIntegration = createObservabilityIntegration({
+      sink: defaultSharedSink(),
+    })
+  }
+  return sharedIntegration
+}
+
+/** Test-only override of the shared singleton. Pass null to clear override. */
+export function setSharedObservabilityIntegrationForTests(
+  integration: ObservabilityIntegration | null,
+): void {
+  sharedOverride = integration
+}
+
+/** Drop process-shared instance (tests). Does not clear override. */
+export function resetSharedObservabilityIntegration(): void {
+  sharedIntegration = null
 }
 
 export interface AlertEvaluationInput {
@@ -532,8 +687,8 @@ export function createObservabilityIntegration(opts?: {
         JSON.stringify(log).includes('should-redact') ||
         obs.logSnapshot().some((e) => JSON.stringify(e).includes('should-redact'))
       const residualGaps: Array<string> = [
-        'not wired into HTTP/MCP middleware routes (foundation only)',
-        'no external metrics/log provider (memory sink)',
+        'routes wire shared integration (mcp/healthz/public-snapshot); other surfaces not yet instrumented',
+        'no external metrics/log provider (memory sink + optional console JSON)',
         'no staging live alert drill',
       ]
       const ok =
@@ -554,3 +709,26 @@ export function createObservabilityIntegration(opts?: {
 
 /** Re-export runbook lookup for middleware callers without reaching into core. */
 export { runbookForAlert, V3_ALERT_IDS, V3_METRIC_CATEGORIES, STAGING_RUNBOOKS }
+
+/**
+ * Observe one completed HTTP request on the shared (or provided) integration.
+ * Safe meta only — never pass cookies/tokens/body.
+ */
+export function observeHttpRequest(
+  ctx: RequestObservationContext,
+  result: ObservationResult,
+  integration: ObservabilityIntegration = getSharedObservabilityIntegration(),
+): StructuredLogFields {
+  return integration.beginRequest(ctx).end(result)
+}
+
+/**
+ * Observe one completed MCP tool/gate outcome on the shared (or provided) integration.
+ */
+export function observeMcpInvocation(
+  ctx: McpObservationContext,
+  result: ObservationResult,
+  integration: ObservabilityIntegration = getSharedObservabilityIntegration(),
+): StructuredLogFields {
+  return integration.observeMcp(ctx, result)
+}

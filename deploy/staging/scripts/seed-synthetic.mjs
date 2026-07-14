@@ -43,6 +43,7 @@ const SEED_MODULE = path.join(
   'qa/e2e/fixtures/seed/seed-isolated.mjs',
 )
 const POLICY_PATH = path.join(ROOT, 'qa/fixtures/staging/seed-policy.json')
+const PROVENANCE_GATE = path.join(ROOT, 'qa/fixtures/staging/provenance-gate.mjs')
 
 function argFlag(name) {
   return process.argv.includes(name)
@@ -54,6 +55,43 @@ function loadPolicy() {
   } catch (e) {
     return { loadError: String(e?.message || e) }
   }
+}
+
+async function loadProvenanceGate() {
+  if (!fs.existsSync(PROVENANCE_GATE)) {
+    throw Object.assign(new Error(`provenance gate missing: ${PROVENANCE_GATE}`), {
+      code: 'PROVENANCE_GATE_MISSING',
+    })
+  }
+  return import(pathToFileURL(PROVENANCE_GATE).href)
+}
+
+/**
+ * Enforce evaluateStagingDataLoad(SYNTHETIC) + seed-policy before any DB work.
+ * Fail-closed: production-derived policy or gate refusal → exit non-zero.
+ */
+async function enforceProvenance(policy) {
+  const gate = await loadProvenanceGate()
+  const enforced = gate.enforceSyntheticSeedProvenance(policy)
+  if (!enforced.ok) {
+    const err = new Error(enforced.message || 'staging provenance refused')
+    err.code = enforced.code || 'STAGING_PROVENANCE_REFUSED'
+    err.decision = enforced.decision
+    throw err
+  }
+  // Direct evaluateStagingDataLoad call (product seed path enforcement)
+  const decision = gate.evaluateStagingDataLoad({
+    mode: 'SYNTHETIC',
+    purpose: policy.purpose ?? 'staging-synthetic-seed',
+    productionDerived: false,
+  })
+  if (!decision.ok) {
+    const err = new Error(decision.message || 'evaluateStagingDataLoad refused')
+    err.code = decision.code || 'STAGING_PROVENANCE_REFUSED'
+    err.decision = decision
+    throw err
+  }
+  return decision
 }
 
 async function main() {
@@ -73,33 +111,47 @@ async function main() {
   if (argFlag('--self-test')) {
     const r = seed.runSeedSelfTests()
     const policy = loadPolicy()
+    let provenance = null
+    try {
+      provenance = await enforceProvenance(policy)
+    } catch (e) {
+      provenance = { ok: false, error: String(e?.message || e), code: e?.code ?? null }
+    }
     const out = {
       mode: 'self-test',
       policyId: policy.policyId ?? null,
       databaseName: seed.STAGING_DB_NAME,
+      provenanceOk: provenance?.ok === true,
+      provenanceMode: provenance?.mode ?? null,
       ...r,
+      ok: Boolean(r.ok && provenance?.ok === true),
     }
     console.log(JSON.stringify(out, null, 2))
-    process.exit(r.ok ? 0 : 1)
+    process.exit(out.ok ? 0 : 1)
   }
 
   if (argFlag('--disposable-proof')) {
+    const policy = loadPolicy()
+    await enforceProvenance(policy)
     const r = await seed.runDisposableUpsertProof()
     console.log(JSON.stringify(r, null, 2))
     process.exit(r.ok ? 0 : 1)
   }
 
-  // Live staging path
+  // Live staging path — provenance FIRST (before any seed DB mutation)
   const policy = loadPolicy()
-  if (policy.productionDerived === true) {
+  if (policy.loadError) {
     console.error(
       JSON.stringify({
         ok: false,
-        error: 'seed-policy.json marks productionDerived=true — refused',
+        error: `seed-policy load failed: ${policy.loadError}`,
+        code: 'SEED_POLICY_LOAD_ERROR',
       }),
     )
     process.exit(1)
   }
+
+  const provenanceDecision = await enforceProvenance(policy)
 
   const result = await seed.seedStagingSynthetic({
     provenancePath:
@@ -124,6 +176,12 @@ async function main() {
         syntheticOnly: result.syntheticOnly,
         provenancePath: result.provenancePath,
         policyId: policy.policyId ?? null,
+        provenance: {
+          ok: provenanceDecision.ok,
+          mode: provenanceDecision.mode,
+          schema: provenanceDecision.schema,
+          residualGaps: provenanceDecision.residualGaps,
+        },
       },
       null,
       2,

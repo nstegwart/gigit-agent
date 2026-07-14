@@ -18,6 +18,7 @@ import {
   type HealthzDeps,
   type HealthExpected,
   type HealthObserved,
+  type HealthzPayload,
   type MigrationHealthInfo,
   type DependencyHealth,
 } from '#/server/health'
@@ -30,6 +31,12 @@ import {
 import { sessionUser } from '#/server/auth-store'
 import { SESSION_COOKIE } from '#/server/auth'
 import { MIGRATION_MANIFEST, migrationStatus, type MigrationHistoryRow } from '#/server/migrations'
+import {
+  getSharedObservabilityIntegration,
+  observationResultFromHttpStatus,
+  resolveIncomingRequestId,
+  withRequestIdResponse,
+} from '#/server/observability-integration'
 
 function parseCookie(header: string | null, name: string): string | undefined {
   if (!header) return undefined
@@ -487,12 +494,59 @@ function healthUnavailableResponse(): Response {
 }
 
 export async function healthzGetHandler(request: Request): Promise<Response> {
+  const requestId = resolveIncomingRequestId(request)
+  const obs = getSharedObservabilityIntegration()
+  const startedAt = Date.now()
   try {
     const result = await handleHealthz(request, healthzDeps)
-    return healthzResultToResponse(result)
+    const payload = result.payload as HealthzPayload | { error: string; code: string }
+    const isHealth = payload && typeof payload === 'object' && 'boardRev' in payload
+    const healthPayload = isHealth ? (payload as HealthzPayload) : null
+    const errorCode =
+      !isHealth && payload && typeof payload === 'object' && 'code' in payload
+        ? String((payload as { code: string }).code)
+        : healthPayload?.status === 'unhealthy'
+          ? (healthPayload.unhealthyReasons[0] ?? 'UNHEALTHY')
+          : null
+    const obsResult = observationResultFromHttpStatus(result.status)
+    const latencyMs = Math.max(0, Date.now() - startedAt)
+    obs
+      .beginRequest({
+        requestId,
+        endpoint: '/api/healthz',
+        method: 'GET',
+        channel: 'http',
+        boardRev: healthPayload?.boardRev ?? null,
+        lifecycleRev: healthPayload?.lifecycleRev ?? null,
+        actorRole: null,
+        actorId: null,
+        meta: {
+          route: 'healthz',
+          httpStatus: result.status,
+          ...(healthPayload
+            ? {
+                healthStatus: healthPayload.status,
+                releaseMatch: healthPayload.release.match,
+                schemaMatch: healthPayload.schema.match,
+              }
+            : {}),
+        },
+      })
+      .end({ result: obsResult, errorCode, latencyMs })
+    return withRequestIdResponse(healthzResultToResponse(result), requestId)
   } catch {
+    const latencyMs = Math.max(0, Date.now() - startedAt)
+    obs
+      .beginRequest({
+        requestId,
+        endpoint: '/api/healthz',
+        method: 'GET',
+        channel: 'http',
+        meta: { route: 'healthz' },
+      })
+      .end({ result: 'error', errorCode: 'HEALTH_UNAVAILABLE', latencyMs })
     // Never echo raw handler errors / stacks / secret-bearing messages
-    return healthUnavailableResponse()
+    return withRequestIdResponse(healthUnavailableResponse(), requestId)
   }
 }
 

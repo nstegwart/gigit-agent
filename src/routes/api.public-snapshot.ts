@@ -19,6 +19,7 @@ import {
   publicSnapshotResultToResponse,
   type PublicAggregationInput,
   type PublicSnapshotDeps,
+  type PublicSnapshotHandlerResult,
 } from '#/server/public-snapshot'
 import { resolveClientIp } from '#/server/rate-limit'
 import { loadControlCenterAggregation } from '#/server/control-center-ui-adapter'
@@ -27,6 +28,12 @@ import {
   mapControlCenterAggregationToPublicInput,
 } from '#/server/control-center-public-snapshot'
 import { getSharedPublicSnapshotService } from '#/server/public-snapshot-service'
+import {
+  getSharedObservabilityIntegration,
+  observationResultFromHttpStatus,
+  resolveIncomingRequestId,
+  withRequestIdResponse,
+} from '#/server/observability-integration'
 
 /**
  * Explicit public-board allowlist (fail-closed).
@@ -220,9 +227,124 @@ export function getPublicSnapshotDeps(): PublicSnapshotDeps {
   return publicSnapshotDepsOverride ?? buildSharedPublicSnapshotDeps()
 }
 
+function publicSnapshotErrorCode(result: PublicSnapshotHandlerResult): string | null {
+  if (result.kind === 'rate_limited') return 'RATE_LIMITED'
+  if (result.kind === 'not_modified') return null
+  if (result.kind === 'ok') return null
+  try {
+    const parsed = JSON.parse(result.body) as { code?: string }
+    return typeof parsed.code === 'string' ? parsed.code : 'PUBLIC_SNAPSHOT_ERROR'
+  } catch {
+    return 'PUBLIC_SNAPSHOT_ERROR'
+  }
+}
+
+function publicSnapshotBoardId(request: Request): string | null {
+  try {
+    const url = new URL(request.url)
+    const id = url.searchParams.get('boardId') ?? url.searchParams.get('board') ?? ''
+    return id.trim() || null
+  } catch {
+    return null
+  }
+}
+
+/** Best-effort pin revs from 200 body only — never log payload content. */
+function publicSnapshotRevisions(result: PublicSnapshotHandlerResult): {
+  boardRev: number | null
+  lifecycleRev: number | null
+} {
+  if (result.kind !== 'ok') return { boardRev: null, lifecycleRev: null }
+  try {
+    const parsed = JSON.parse(result.body) as {
+      pin?: { boardRev?: number; lifecycleRev?: number }
+      boardRev?: number
+      lifecycleRev?: number
+    }
+    const boardRev =
+      typeof parsed.pin?.boardRev === 'number'
+        ? parsed.pin.boardRev
+        : typeof parsed.boardRev === 'number'
+          ? parsed.boardRev
+          : null
+    const lifecycleRev =
+      typeof parsed.pin?.lifecycleRev === 'number'
+        ? parsed.pin.lifecycleRev
+        : typeof parsed.lifecycleRev === 'number'
+          ? parsed.lifecycleRev
+          : null
+    return { boardRev, lifecycleRev }
+  } catch {
+    return { boardRev: null, lifecycleRev: null }
+  }
+}
+
 export async function publicSnapshotGetHandler(request: Request): Promise<Response> {
-  const result = await handlePublicSnapshotGet(request, getPublicSnapshotDeps())
-  return publicSnapshotResultToResponse(result)
+  const requestId = resolveIncomingRequestId(request)
+  const obs = getSharedObservabilityIntegration()
+  const boardId = publicSnapshotBoardId(request)
+  const startedAt = Date.now()
+  try {
+    const result = await handlePublicSnapshotGet(request, getPublicSnapshotDeps())
+    const latencyMs = Math.max(0, Date.now() - startedAt)
+    const revs = publicSnapshotRevisions(result)
+    const obsResult = observationResultFromHttpStatus(result.status)
+    obs
+      .beginRequest({
+        requestId,
+        endpoint: '/api/public-snapshot',
+        method: 'GET',
+        channel: 'http',
+        boardId,
+        boardRev: revs.boardRev,
+        lifecycleRev: revs.lifecycleRev,
+        actorRole: 'PUBLIC',
+        actorId: null,
+        meta: {
+          route: 'public-snapshot',
+          httpStatus: result.status,
+          kind: result.kind,
+          // never log body / etag full payload — only presence flags
+          hasEtag: result.kind === 'ok' || result.kind === 'not_modified',
+        },
+      })
+      .end({
+        result: obsResult,
+        errorCode: publicSnapshotErrorCode(result),
+        latencyMs,
+      })
+    return withRequestIdResponse(publicSnapshotResultToResponse(result), requestId)
+  } catch {
+    const latencyMs = Math.max(0, Date.now() - startedAt)
+    obs
+      .beginRequest({
+        requestId,
+        endpoint: '/api/public-snapshot',
+        method: 'GET',
+        channel: 'http',
+        boardId,
+        actorRole: 'PUBLIC',
+        meta: { route: 'public-snapshot' },
+      })
+      .end({ result: 'error', errorCode: 'PUBLIC_SNAPSHOT_HANDLER_ERROR', latencyMs })
+    return withRequestIdResponse(
+      new Response(
+        JSON.stringify({
+          error: 'public snapshot unavailable',
+          code: 'PUBLIC_SNAPSHOT_HANDLER_ERROR',
+          failClosed: true,
+        }),
+        {
+          status: 503,
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            'cache-control': 'no-store',
+          },
+        },
+      ),
+      requestId,
+    )
+  }
 }
 
 export const Route = createFileRoute('/api/public-snapshot')({
