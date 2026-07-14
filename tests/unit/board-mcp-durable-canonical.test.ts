@@ -1717,6 +1717,87 @@ describe('applyImport → MCP list/get canonical definition parity', () => {
     })
   })
 
+  it('applyDurableV3StageOverlay prefers durable V3 stage over legacy column', async () => {
+    const { applyDurableV3StageOverlay } = await import('#/server/board-mcp')
+    const lifecycleByTaskId = new Map([
+      [
+        't-legacy-mapped',
+        {
+          id: 't-legacy-mapped',
+          title: 'Legacy still MAPPED',
+          dependencies: [],
+          impacts: [],
+          checkpoints: [],
+          lifecycleStage: 'MAPPED',
+          blockedReason: null,
+          lastReceiptAt: null,
+        },
+      ],
+      [
+        't-no-v3',
+        {
+          id: 't-no-v3',
+          title: 'No V3 record',
+          dependencies: [],
+          impacts: [],
+          checkpoints: [],
+          lifecycleStage: 'MAPPED',
+          blockedReason: null,
+          lastReceiptAt: null,
+        },
+      ],
+    ])
+    const v3ByTaskId = new Map([
+      [
+        't-legacy-mapped',
+        {
+          taskId: 't-legacy-mapped',
+          stage: 'MAP_VERIFIED',
+          entityRev: 1,
+          boardRev: 10,
+          lifecycleRev: 1,
+          taskHash: 'h',
+          canonicalSnapshotId: 'snap',
+          canonicalHash: 'ch',
+          implementerRunId: 'run-1',
+          implementerAgentId: null,
+          implementerModel: null,
+          implementerThreadId: null,
+          history: [{ ts: '2026-07-14T13:00:00.000Z', toStage: 'MAP_VERIFIED' }],
+          stageReceipts: {},
+          blockedReason: null,
+        },
+      ],
+      [
+        't-v3-only',
+        {
+          taskId: 't-v3-only',
+          stage: 'MAP_VERIFIED',
+          entityRev: 1,
+          boardRev: 10,
+          lifecycleRev: 1,
+          taskHash: 'h2',
+          canonicalSnapshotId: 'snap',
+          canonicalHash: 'ch',
+          implementerRunId: null,
+          implementerAgentId: null,
+          implementerModel: null,
+          implementerThreadId: null,
+          history: [],
+          stageReceipts: {},
+          blockedReason: null,
+        },
+      ],
+    ])
+    applyDurableV3StageOverlay(lifecycleByTaskId as never, v3ByTaskId as never)
+    expect(lifecycleByTaskId.get('t-legacy-mapped')?.lifecycleStage).toBe('MAP_VERIFIED')
+    expect(lifecycleByTaskId.get('t-legacy-mapped')?.lastReceiptAt).toBe('2026-07-14T13:00:00.000Z')
+    // untouched when no V3 record
+    expect(lifecycleByTaskId.get('t-no-v3')?.lifecycleStage).toBe('MAPPED')
+    // stub created for V3-only ids
+    expect(lifecycleByTaskId.get('t-v3-only')?.lifecycleStage).toBe('MAP_VERIFIED')
+  })
+
   it('lifecycle overlay left-joins stage without inventing missing stages', () => {
     const projection = {
       projects: [{ id: 'p1' }],

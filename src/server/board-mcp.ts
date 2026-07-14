@@ -3537,20 +3537,103 @@ export async function resolveBoardDefinitionAuthority(
   }
 }
 
-/** Soft-load lifecycle WorkTask rows for left-join overlay (never definition authority). */
-export async function loadLifecycleTaskOverlay(
+/**
+ * Soft-load durable Lifecycle V3 task states (board_docs lifecycle_v3_tasks).
+ * Read-only — never bootstraps/persists. Same durable map advance_task mutates.
+ */
+export async function loadDurableLifecycleV3TaskStates(
   boardId: string,
-): Promise<Map<string, WorkTask>> {
+): Promise<Map<string, TaskLifecycleV3State>> {
   try {
-    const doc = await readTasks(boardId)
-    const map = new Map<string, WorkTask>()
-    for (const t of doc.tasks ?? []) {
-      if (t?.id) map.set(t.id, t)
+    const doc = await readDoc<{ tasks?: Record<string, TaskLifecycleV3State> }>(
+      boardId,
+      LIFECYCLE_V3_TASKS_DOC,
+      { tasks: {} },
+    )
+    const map = new Map<string, TaskLifecycleV3State>()
+    const tasks = doc?.tasks ?? {}
+    for (const [id, st] of Object.entries(tasks)) {
+      if (id && st && typeof st === 'object') map.set(id, st as TaskLifecycleV3State)
     }
     return map
   } catch {
     return new Map()
   }
+}
+
+/**
+ * Prefer durable V3 stage over legacy tasks.lifecycle_stage so list_tasks /
+ * rollup / work surfaces match advance_task / getTask V3 authority.
+ * When no V3 record exists, legacy stage is left unchanged.
+ */
+export function applyDurableV3StageOverlay(
+  lifecycleByTaskId: Map<string, WorkTask>,
+  v3ByTaskId: ReadonlyMap<string, TaskLifecycleV3State>,
+): Map<string, WorkTask> {
+  for (const [taskId, v3] of v3ByTaskId) {
+    if (!v3 || typeof v3 !== 'object') continue
+    // V3 stage is authoritative when a durable record exists (including null).
+    const stage = (v3.stage as string | null | undefined) ?? null
+    const hist = Array.isArray(v3.history) ? v3.history : []
+    const last = hist.length ? hist[hist.length - 1] : undefined
+    const lastReceiptAt =
+      (last && typeof last.ts === 'string' && last.ts) || null
+    const blockedReason =
+      v3.blockedReason != null
+        ? String(v3.blockedReason)
+        : last && 'blocker' in last && last.blocker != null
+          ? String(last.blocker)
+          : null
+
+    const existing = lifecycleByTaskId.get(taskId)
+    if (existing) {
+      lifecycleByTaskId.set(taskId, {
+        ...existing,
+        lifecycleStage: stage,
+        blockedReason: blockedReason ?? existing.blockedReason ?? null,
+        lastReceiptAt: lastReceiptAt ?? existing.lastReceiptAt ?? null,
+      })
+    } else {
+      // Minimal stub so definition-only left-join still surfaces V3 stage.
+      lifecycleByTaskId.set(taskId, {
+        id: taskId,
+        title: taskId,
+        dependencies: [],
+        impacts: [],
+        checkpoints: [],
+        lifecycleStage: stage,
+        blockedReason,
+        lastReceiptAt,
+      })
+    }
+  }
+  return lifecycleByTaskId
+}
+
+/**
+ * Soft-load lifecycle WorkTask rows for left-join overlay (never definition authority).
+ * Stage authority: durable lifecycle_v3_tasks when present, else legacy tasks.lifecycle_stage.
+ * Matches advance_task / createDurableLifecycleV3Storage.getTask stage source of truth.
+ */
+export async function loadLifecycleTaskOverlay(
+  boardId: string,
+): Promise<Map<string, WorkTask>> {
+  const map = new Map<string, WorkTask>()
+  try {
+    const doc = await readTasks(boardId)
+    for (const t of doc.tasks ?? []) {
+      if (t?.id) map.set(t.id, t)
+    }
+  } catch {
+    /* empty legacy overlay */
+  }
+  try {
+    const v3 = await loadDurableLifecycleV3TaskStates(boardId)
+    if (v3.size > 0) applyDurableV3StageOverlay(map, v3)
+  } catch {
+    /* keep legacy stages */
+  }
+  return map
 }
 
 /** Soft-load runs grouped by taskId (overlay only). */
@@ -5408,13 +5491,50 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
   )
   secureTool(
     'get_task_lifecycle',
-    { title: 'Get task lifecycle', description: 'Current stage, rev (for optimistic lock), implementer run, and stage history for one task. Pinned envelope.', inputSchema: { ...BOARD_ARG, id: z.string() } },
+    {
+      title: 'Get task lifecycle',
+      description:
+        'Current stage, rev (for optimistic lock), implementer run, and stage history for one task. Stage authority matches advance_task (durable V3 when present). Pinned envelope.',
+      inputSchema: { ...BOARD_ARG, id: z.string() },
+    },
     async ({ boardId, id }) => {
       try {
         const bid0 = await bid(boardId)
         const lc = await taskLifecycle(bid0, id)
         if (!lc) return jsonText({ error: `task not found: ${id}`, code: 'NOT_FOUND' })
-        return jsonText(await pinnedEnvelopeFromBoard(bid0, { taskLifecycle: lc, ...lc }))
+        // Prefer durable V3 stage (same map advance mutates). Keep legacy rev for
+        // dual-write CAS; entityRev lives on V3 and is not this field.
+        let stage = lc.stage
+        let implementerRun = lc.implementerRun
+        let lifecycle = lc.lifecycle
+        try {
+          const v3Map = await loadDurableLifecycleV3TaskStates(bid0)
+          const v3 = v3Map.get(id)
+          if (v3) {
+            stage = (v3.stage as string | null | undefined) ?? null
+            if (v3.implementerRunId != null) implementerRun = v3.implementerRunId
+            // JSON clone keeps TaskLifecycleRow.lifecycle (Json) assignable.
+            lifecycle = JSON.parse(
+              JSON.stringify({
+                v3: true,
+                ...v3,
+                history: [...(v3.history ?? [])],
+                stageReceipts: { ...(v3.stageReceipts ?? {}) },
+              }),
+            ) as typeof lc.lifecycle
+          }
+        } catch {
+          /* legacy only */
+        }
+        const merged = {
+          stage,
+          rev: lc.rev,
+          implementerRun,
+          lifecycle,
+        }
+        return jsonText(
+          await pinnedEnvelopeFromBoard(bid0, { taskLifecycle: merged, ...merged }),
+        )
       } catch (e) {
         return asErr(e)
       }
@@ -6198,12 +6318,13 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         }
         mapped = rows
       } else {
-        const [{ tasks: all }, cfg, m] = await Promise.all([
-          readTasks(id0),
+        // No-pin path: still overlay durable V3 stages so list matches advance authority.
+        const [lifecycleByTaskId, cfg, m] = await Promise.all([
+          loadLifecycleTaskOverlay(id0),
           readLifecycle(id0),
           modelOf(id0),
         ])
-        let tasks = all
+        let tasks = [...lifecycleByTaskId.values()]
         if (projectId) tasks = tasks.filter((t) => t.projectId === projectId)
         if (featureId) {
           tasks = tasks.filter(
@@ -6221,25 +6342,28 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         if (typeof rawArgs.scope === 'string' && rawArgs.scope) {
           tasks = tasks.filter((t) => t.scope === rawArgs.scope)
         }
-        mapped = tasks.map((t) => ({
-          id: t.id,
-          title: t.title,
-          projectId: t.projectId ?? null,
-          phase: t.phase ?? null,
-          scope: t.scope ?? null,
-          lifecycleStage: t.lifecycleStage ?? null,
-          readinessPercent: stageReadiness(cfg, t.lifecycleStage),
-          nextGate: nextStage(cfg, t.lifecycleStage)?.key ?? null,
-          nextEvidence: nextEvidence(cfg, t.lifecycleStage),
-          blockedReason: t.blockedReason ?? null,
-          lastReceiptAt: t.lastReceiptAt ?? null,
-          ...runInfo(m.runsByTask[t.id]),
-          done: t.checkpoints.filter((c) => c.done).length,
-          total: t.checkpoints.length,
-          deps: t.dependencies.length,
-          derivedDone: deriveCheckpoints(stageReadiness(cfg, t.lifecycleStage), t.checkpoints).done,
-          createdAt: t.updated ?? t.lastReceiptAt ?? pin.generatedAt,
-        }))
+        mapped = tasks.map((t) => {
+          const st = t.lifecycleStage ?? null
+          return {
+            id: t.id,
+            title: t.title,
+            projectId: t.projectId ?? null,
+            phase: t.phase ?? null,
+            scope: t.scope ?? null,
+            lifecycleStage: st,
+            readinessPercent: stageReadiness(cfg, st),
+            nextGate: nextStage(cfg, st)?.key ?? null,
+            nextEvidence: nextEvidence(cfg, st),
+            blockedReason: t.blockedReason ?? null,
+            lastReceiptAt: t.lastReceiptAt ?? null,
+            ...runInfo(m.runsByTask[t.id]),
+            done: (t.checkpoints ?? []).filter((c) => c.done).length,
+            total: (t.checkpoints ?? []).length,
+            deps: (t.dependencies ?? []).length,
+            derivedDone: deriveCheckpoints(stageReadiness(cfg, st), t.checkpoints ?? []).done,
+            createdAt: t.updated ?? t.lastReceiptAt ?? pin.generatedAt,
+          }
+        })
       }
       mapped.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
       const page = paginateReadRows(mapped, {
@@ -6284,6 +6408,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           loadLifecycleTaskOverlay(bd),
           loadRunsByTaskOverlay(bd),
         ])
+        // lifecycleByTaskId already prefers durable V3 stage (loadLifecycleTaskOverlay).
         const overlay = lifecycleByTaskId.get(taskId)
         let stage = overlay?.lifecycleStage ?? null
         let rev = 0
@@ -6292,8 +6417,9 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         try {
           const lc = await taskLifecycle(bd, taskId)
           if (lc) {
-            stage = lc.stage ?? stage
+            // Legacy rev for dual-write CAS; stage only if overlay had no V3/legacy value.
             rev = lc.rev ?? 0
+            if (stage == null && lc.stage != null) stage = lc.stage
             const hist =
               (
                 lc.lifecycle as {
@@ -6301,8 +6427,8 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
                 } | null
               )?.history ?? []
             const last = hist[hist.length - 1]
-            if (last?.blocker != null) blockedReason = last.blocker
-            if (last?.ts) lastReceiptAt = last.ts
+            if (blockedReason == null && last?.blocker != null) blockedReason = last.blocker
+            if (lastReceiptAt == null && last?.ts) lastReceiptAt = last.ts
           }
         } catch {
           /* overlay only */
@@ -6348,12 +6474,22 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
 
       const t = await readTask(bd, taskId)
       if (!t) return jsonText({ ok: false, error: `task not found: ${taskId}`, code: 'NOT_FOUND' })
-      const [cfg, lc, m] = await Promise.all([readLifecycle(bd), taskLifecycle(bd, taskId), modelOf(bd)])
-      const stage = lc?.stage ?? null
+      const [cfg, lc, m, v3Map] = await Promise.all([
+        readLifecycle(bd),
+        taskLifecycle(bd, taskId),
+        modelOf(bd),
+        loadDurableLifecycleV3TaskStates(bd),
+      ])
+      const v3 = v3Map.get(taskId)
+      // Durable V3 stage wins when present (same as advance / list overlay).
+      const stage =
+        v3 != null ? ((v3.stage as string | null | undefined) ?? null) : (lc?.stage ?? null)
       const hist =
-        ((lc?.lifecycle as { history?: Array<{ ts?: string; blocker?: string | null }> } | null)?.history) ??
-        []
-      const last = hist[hist.length - 1]
+        v3 && Array.isArray(v3.history)
+          ? v3.history
+          : ((lc?.lifecycle as { history?: Array<{ ts?: string; blocker?: string | null }> } | null)
+              ?.history ?? [])
+      const last = hist[hist.length - 1] as { ts?: string; blocker?: string | null } | undefined
       const task = {
         ...t,
         lifecycleStage: stage,
@@ -6730,8 +6866,11 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
       })
       legacyFeatureQueue = asLegacyFeatureQueue({ now: [], next: [] })
     } else {
-      const [{ tasks }, m] = await Promise.all([readTasks(id), modelOf(id)])
-      rows = tasks.map((t) => ({
+      const [lifecycleByTaskId, m] = await Promise.all([
+        loadLifecycleTaskOverlay(id),
+        modelOf(id),
+      ])
+      rows = [...lifecycleByTaskId.values()].map((t) => ({
         id: t.id,
         title: t.title,
         projectId: t.projectId ?? null,
