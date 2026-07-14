@@ -2,7 +2,10 @@
 
 **Document class:** SCREENSHOT / VISUAL PROOF SPEC
 **Authority:** ART-UX-DIRECTION § EXACT STAGING SCREENSHOT MATRIX
-**Status:** SPEC ONLY this task — **no captures** → `NOT SHIPPABLE: no visual proof`
+**Status:** PARTIAL real capture (2026-07-14) — 8/24 S-ids + 3 extra nine-IA surfaces
+captured against live staging at current HEAD. Remaining 16 S-ids and the loading/error/
+stale/keyboard/zoom states are still `NOT SHIPPABLE: no visual proof`. See
+`.artifact/art-screenshots-2026-07-14/MANIFEST.md` for capture parameters and findings.
 
 ## 1. Capture rules
 
@@ -71,8 +74,25 @@ Capture when visual gate expands:
 - Baseline replace only with reviewer receipt.
 - Pair proof: Figma/reference path + device/browser shot path (VISUAL_GATE v1).
 
-## 5. This task
+## 5. This task (2026-07-14 update)
 
-- **Zero** screenshots captured.
-- Token/CSS foundation only.
-- Final status must remain **LOCAL ONLY** with literal `NOT SHIPPABLE: no visual proof`.
+- **8 of 24** S-ids captured for real against live staging (current HEAD, authenticated
+  session, real synthetic board data): S01, S02, S03, S07, S11, plus 3 additional nine-IA
+  surfaces (Priority, Projects, Agents) from §3. Evidence:
+  `.artifact/art-screenshots-2026-07-14/` (PNGs + MANIFEST.md with exact capture params
+  per §1 capture rules: URL, release SHA, viewport, browser version, board/fixture).
+- **Not captured this pass:** S04-S06, S08-S10, S12-S24 (decision detail, knowledge
+  domains, search, documentation export, stale/loading/error network-injection states,
+  keyboard focus sequence, 200% zoom, empty query) — most of these also have the
+  documented **route gap** in §2 (no product route yet) and cannot be captured until that
+  gap closes.
+- Real finding from the captured set: the token/CSS/IA visual foundation is genuinely
+  live and coherent (light-first, no reject-list violations, working id-ID aliases,
+  clean 390px reflow). The visible gap is in **content**, not styling — raw technical
+  enum/error strings (`CONTENT_REVIEW_REQUIRED`, `DATA_INTEGRITY: ...`,
+  `productDenominator=0 ...`) render directly as primary user-facing copy on the
+  Overview/Priority screens instead of going through the `humanDisplay` contract. See
+  MANIFEST.md for the full finding.
+- Status remains **LOCAL ONLY** overall (majority of matrix still has zero visual proof)
+  but is no longer `NOT SHIPPABLE: no visual proof` in the literal zero-capture sense —
+  use `PARTIAL: 8/24 real, remainder unproven` going forward.
