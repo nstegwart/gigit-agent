@@ -2397,14 +2397,23 @@ export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Sto
 
     async getTask(bid, taskId) {
       if (bid !== boardId) return null
+      const pin = await this.getBoardPin(boardId)
+      if (!pin) return null
       const doc = await loadTasksDoc()
       if (doc.tasks[taskId]) {
-        return cloneState(doc.tasks[taskId])
+        // Align pin fields on every read. entityRev/stage/history are durable
+        // authority; boardRev/lifecycleRev/canonical* track the live board pin so
+        // advance_task CAS does not STALE after unrelated board writes (upsert_run)
+        // bump boardRev while the task entity is untouched.
+        const t = cloneState(doc.tasks[taskId])
+        t.boardRev = pin.boardRev
+        t.lifecycleRev = pin.lifecycleRev
+        t.canonicalSnapshotId = pin.canonicalSnapshotId
+        t.canonicalHash = pin.canonicalHash
+        return t
       }
       // No durable V3 record — bootstrap from legacy and PERSIST (lazy backfill).
       try {
-        const pin = await this.getBoardPin(boardId)
-        if (!pin) return null
         return await bootstrapAndPersistV3(taskId, pin)
       } catch {
         return null
