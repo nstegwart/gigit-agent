@@ -193,6 +193,28 @@ svg:not([class]) { width: 15px; height: 15px; flex: none; vertical-align: -2px; 
   transition: background .12s ease, color .12s ease;
   outline-offset: 2px;
 }
+.nav-item .nav-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.nav-item .nav-lbl-id {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--text-dim, #58616f);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 11rem;
+}
+.nav-item.active .nav-lbl-id {
+  color: var(--text-dim, #58616f);
+  font-weight: 550;
+}
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
 .nav-item.active .nav-ico { color: var(--accent); }

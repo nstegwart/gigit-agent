@@ -197,6 +197,14 @@ export function featureUiSummaryToRowView(
     phase?: string | null
     flowBranch?: FeatureRowView['flowBranch']
     taskCount?: number | null
+    progressNodes?: ReadonlyArray<{
+      taskId?: string | null
+      title?: string | null
+      lifecycleStage?: string | null
+      status?: string | null
+      blockedReason?: string | null
+    }> | null
+    stageCounts?: Record<string, number> | null
     pageRoutes?: string[] | null
     apiEndpoints?: string[] | null
     logicRules?: string[] | null
@@ -208,6 +216,41 @@ export function featureUiSummaryToRowView(
   },
 ): FeatureRowView {
   const featureId = typeof f.id === 'string' ? f.id : ''
+  const progressNodes = Array.isArray(f.progressNodes)
+    ? f.progressNodes
+        .filter((n) => n && typeof n.taskId === 'string' && n.taskId.length > 0)
+        .map((n) => {
+          const taskId = String(n.taskId)
+          return {
+            taskId,
+            title:
+              (typeof n.title === 'string' && n.title.trim()) || taskId || '—',
+            lifecycleStage:
+              typeof n.lifecycleStage === 'string' && n.lifecycleStage.trim()
+                ? n.lifecycleStage
+                : null,
+            status: typeof n.status === 'string' && n.status.trim() ? n.status : null,
+            blockedReason:
+              typeof n.blockedReason === 'string' && n.blockedReason.trim()
+                ? n.blockedReason
+                : null,
+            detailHref: boardId
+              ? `/b/${encodeURIComponent(boardId)}/work/${encodeURIComponent(taskId)}`
+              : `/work/${encodeURIComponent(taskId)}`,
+          }
+        })
+    : []
+  const stageCounts: Record<string, number> = {}
+  if (f.stageCounts && typeof f.stageCounts === 'object') {
+    for (const [k, v] of Object.entries(f.stageCounts)) {
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) stageCounts[k] = v
+    }
+  } else {
+    for (const n of progressNodes) {
+      const stage = n.lifecycleStage ?? 'UNKNOWN'
+      stageCounts[stage] = (stageCounts[stage] ?? 0) + 1
+    }
+  }
   return {
     featureId,
     projectId: f.projectId ?? null,
@@ -217,6 +260,8 @@ export function featureUiSummaryToRowView(
     taskCount: typeof f.taskCount === 'number' && Number.isFinite(f.taskCount) ? f.taskCount : 0,
     detailHref: featureId ? featureDetailHref(boardId, featureId) : '',
     projectHref: f.projectId ? projectDetailHref(boardId, f.projectId) : null,
+    progressNodes,
+    stageCounts,
     pageRoutes: asServerStringList(f.pageRoutes),
     apiEndpoints: asServerStringList(f.apiEndpoints),
     logicRules: asServerStringList(f.logicRules),

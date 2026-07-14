@@ -200,6 +200,14 @@ function WorkRoute() {
     [patchSearch, search.overlay],
   )
 
+  const onTextQueryChange = useCallback(
+    (query: string) => {
+      const qtrim = query.trim()
+      patchSearch({ query: qtrim ? query : undefined, cursor: undefined })
+    },
+    [patchSearch],
+  )
+
   const onNextPage = useCallback(() => {
     const next = q.data?.nextCursor
     if (next) patchSearch({ cursor: next })
@@ -245,7 +253,12 @@ function WorkRoute() {
 
   return (
     <div className="wrap" data-testid="control-center-work-route">
-      <WorkScreen {...props} state={state} />
+      <WorkScreen
+        {...props}
+        state={state}
+        textQuery={filters.query ?? null}
+        onTextQueryChange={onTextQueryChange}
+      />
     </div>
   )
 }

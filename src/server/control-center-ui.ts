@@ -373,6 +373,18 @@ export interface ProjectUiSummary {
   readinessEvidenceOk?: boolean | null
 }
 
+/**
+ * One linked task node on a feature detail progress rail (server-derived).
+ * Presentation truth only — never invents bucket membership or readiness %.
+ */
+export interface FeatureProgressNodeUi {
+  taskId: string
+  title: string
+  lifecycleStage: string | null
+  status: string | null
+  blockedReason: string | null
+}
+
 export interface FeatureUiSummary {
   id: string
   projectId: string | null
@@ -380,6 +392,14 @@ export interface FeatureUiSummary {
   phase: string | null
   flowBranch: 'success' | 'fail' | 'expired' | 'open' | null
   taskCount: number
+  /**
+   * Linked work-task progress nodes for feature detail (server-derived from
+   * featureContractId join). Empty array when no linked tasks; omit only when
+   * projector cannot join (never invent nodes).
+   */
+  progressNodes?: FeatureProgressNodeUi[] | null
+  /** Counts of lifecycleStage among linked tasks (server). Empty when none. */
+  stageCounts?: Record<string, number> | null
   /** Optional server-derived context — null/omit when source truth absent (never invent). */
   pageRoutes?: string[] | null
   apiEndpoints?: string[] | null

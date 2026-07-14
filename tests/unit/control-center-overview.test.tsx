@@ -651,7 +651,7 @@ describe('control-center overview components', () => {
     render(<Overview {...populatedProps({ surfaceState: 'needs-human' })} />)
     const card = screen.getByTestId('overview-decision-card')
     expect(attr(card, 'data-blocking')).toBe('true')
-    expect(within(card).getByText(/Owner action/i)).toBeTruthy()
+    expect(within(card).getByText(/Tindakan owner/i)).toBeTruthy()
     expect(
       within(card).getByText(/Choose option A or B; blocking decisions cannot be snoozed/),
     ).toBeTruthy()
@@ -1013,7 +1013,8 @@ describe('control-center overview components', () => {
     render(<Overview {...populatedProps()} />)
     const lower = screen.getByTestId('overview-lower')
     expect(lower.querySelector('[data-panel="projects"]')?.textContent).toMatch(/sales-rebuild/)
-    expect(lower.querySelector('[data-panel="lifecycle"]')?.textContent).toMatch(/BUILT/)
+    // id-ID stage labels; raw stage remains on data-stage/title attributes
+    expect(lower.querySelector('[data-panel="lifecycle"]')?.textContent).toMatch(/Terbangun|BUILT/)
     expect(lower.querySelector('[data-panel="g5"]')?.textContent).toMatch(/security/)
     expect(lower.querySelector('[data-panel="decisions"]')?.textContent).toMatch(/2 terbuka/)
     expect(lower.querySelector('[data-panel="material-events"]')?.textContent).toMatch(

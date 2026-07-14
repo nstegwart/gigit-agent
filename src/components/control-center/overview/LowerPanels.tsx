@@ -1,3 +1,4 @@
+import { formatLifecycleStageLabel } from '#/lib/display-label'
 import styles from './overview.module.css'
 import type { OverviewLowerPanels } from './types'
 import { EmptySlot } from './SurfaceBanner'
@@ -37,14 +38,19 @@ export function LowerPanels({ data }: { data: OverviewLowerPanels | null }) {
       </div>
 
       <div className={styles.panel} data-panel="lifecycle">
-        <h2 className={styles.panelTitle}>Lifecycle</h2>
+        <h2 className={styles.panelTitle}>Progres tahap (lifecycle)</h2>
         {data.lifecycle.length === 0 ? (
           <p className={styles.panelMuted}>Tidak ada rollup lifecycle.</p>
         ) : (
-          <ul className={styles.panelList}>
+          <ul className={styles.panelList} data-testid="overview-lifecycle-histogram">
             {data.lifecycle.map((row) => (
-              <li key={row.stage} className={styles.panelRow}>
-                <span>{row.stage}</span>
+              <li
+                key={row.stage}
+                className={styles.panelRow}
+                data-stage={row.stage}
+                data-testid="overview-lifecycle-row"
+              >
+                <span title={row.stage}>{formatLifecycleStageLabel(row.stage)}</span>
                 <span className={styles.bucketCount}>{row.count}</span>
               </li>
             ))}

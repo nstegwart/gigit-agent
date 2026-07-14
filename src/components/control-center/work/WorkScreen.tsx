@@ -1,11 +1,13 @@
-import { useId } from 'react'
+import { useId, useMemo } from 'react'
 import { pinnedSurfaceDataAttrs } from '#/components/control-center/PinnedSurface'
+import { formatLifecycleStageLabel } from '#/lib/display-label'
 import { BucketTabs } from './BucketTabs'
 import { PinnedRevisionBadge } from './PinnedRevisionBadge'
 import { StaleOverlayFilter } from './StaleOverlayFilter'
 import { WorkList } from './WorkList'
 import { WorkPagination } from './WorkPagination'
 import { WorkStates } from './WorkStates'
+import { BUCKET_SEMANTICS } from './labels'
 import type { WorkScreenProps } from './types'
 import styles from './work.module.css'
 
@@ -46,6 +48,8 @@ export function WorkScreen({
   onRefresh,
   onReconnect,
   onRowActivate,
+  textQuery = null,
+  onTextQueryChange,
   className,
 }: WorkScreenProps) {
   const rawUid = useId()
@@ -65,6 +69,20 @@ export function WorkScreen({
         }
       : null,
   )
+
+  /** Page-local stage histogram for scanability (display of served rows only). */
+  const pageStageChips = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const item of items) {
+      const stage = item.lifecycleStage?.trim()
+      if (!stage) continue
+      counts.set(stage, (counts.get(stage) ?? 0) + 1)
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])
+  }, [items])
+
+  const activeBucketLabel = BUCKET_SEMANTICS[activeBucket]?.label ?? activeBucket
+  const queryValue = textQuery ?? ''
 
   return (
     <section
@@ -100,6 +118,70 @@ export function WorkScreen({
           onChange={onStaleOverlayChange}
           disabled={controlsDisabled}
         />
+      </div>
+
+      <div className={styles.filterBar} data-testid="work-filter-bar">
+        <label className={styles.filterSearchLabel} htmlFor={`${uid}-query`}>
+          <span className={styles.filterSearchCaption}>Cari di halaman ini</span>
+          <input
+            id={`${uid}-query`}
+            type="search"
+            className={styles.filterSearch}
+            data-testid="work-query-input"
+            placeholder="Judul, id, tahap…"
+            value={queryValue}
+            disabled={controlsDisabled || !onTextQueryChange}
+            onChange={(e) => onTextQueryChange?.(e.target.value)}
+            aria-label="Filter teks daftar pekerjaan"
+          />
+        </label>
+        <div
+          className={styles.activeFilterChips}
+          data-testid="work-active-filter-chips"
+          aria-label="Filter aktif"
+        >
+          <span className={styles.filterChip} data-filter="bucket" data-bucket={activeBucket}>
+            Bucket: {activeBucketLabel}
+          </span>
+          {staleOverlayActive ? (
+            <span className={styles.filterChip} data-filter="stale">
+              Overlay: BASI
+            </span>
+          ) : null}
+          {queryValue.trim() ? (
+            <span className={styles.filterChip} data-filter="query">
+              Cari: {queryValue.trim()}
+              {onTextQueryChange ? (
+                <button
+                  type="button"
+                  className={styles.filterChipClear}
+                  onClick={() => onTextQueryChange('')}
+                  aria-label="Hapus filter pencarian"
+                >
+                  ×
+                </button>
+              ) : null}
+            </span>
+          ) : null}
+        </div>
+        {pageStageChips.length > 0 ? (
+          <div
+            className={styles.stageChipStrip}
+            data-testid="work-page-stage-chips"
+            aria-label="Ringkasan tahap pada halaman ini"
+          >
+            {pageStageChips.map(([stage, count]) => (
+              <span
+                key={stage}
+                className={styles.stageChip}
+                data-stage={stage}
+                title={stage}
+              >
+                {formatLifecycleStageLabel(stage)} · {count}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div

@@ -340,7 +340,59 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
         listHref="/b/mfs-rebuild/features"
       />,
     )
-    expect(screen.getByTestId('feature-detail-not-found').textContent).toMatch(/Feature not found/)
+    expect(screen.getByTestId('feature-detail-not-found').textContent).toMatch(
+      /Fitur tidak ditemukan|Feature not found/,
+    )
+  })
+
+  it('FeatureDetailScreen renders real progress nodes and stage chips', () => {
+    const withNodes: FeaturesData = {
+      ...data,
+      features: [
+        {
+          ...data.items[0]!,
+          taskCount: 2,
+          progressNodes: [
+            {
+              taskId: 'T-NODE-1',
+              title: 'Menampilkan harga checkout',
+              lifecycleStage: 'MAP_VERIFIED',
+              status: 'blocked',
+              blockedReason: 'Menunggu quote API',
+            },
+            {
+              taskId: 'T-NODE-2',
+              title: 'Membuat tagihan pending',
+              lifecycleStage: 'MAPPED',
+              status: 'queued',
+              blockedReason: null,
+            },
+          ],
+          stageCounts: { MAP_VERIFIED: 1, MAPPED: 1 },
+        },
+      ],
+      items: data.items,
+    } as FeaturesData
+    const found = featureDetailFromEnvelope(basePin(withNodes), 'f-1')
+    render(
+      <FeatureDetailScreen
+        surfaceState="populated"
+        boardId="mfs-rebuild"
+        feature={found.feature}
+        pin={found.pin}
+        error={null}
+        listHref={found.listHref}
+      />,
+    )
+    expect(screen.getByTestId('feature-detail-progress')).toBeTruthy()
+    const nodes = screen.getAllByTestId('feature-progress-node')
+    expect(nodes).toHaveLength(2)
+    expect(nodes[0].textContent).toMatch(/Menampilkan harga checkout/)
+    expect(nodes[0].textContent).toMatch(/Peta terverifikasi|MAP_VERIFIED/)
+    expect(screen.getByTestId('feature-detail-stage-chips').textContent).toMatch(
+      /Peta terverifikasi|Terpetakan|MAP/,
+    )
+    expect(found.feature?.progressNodes[0]?.detailHref).toContain('/work/T-NODE-1')
   })
 
   it('renders flow branch + context chips + responsive structure', () => {

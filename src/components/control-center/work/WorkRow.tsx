@@ -1,4 +1,5 @@
 import { Icon } from '#/lib/icons'
+import { formatLifecycleStageLabel } from '#/lib/display-label'
 import type { PrimaryBucket } from '#/lib/control-plane-types'
 import {
   BUCKET_SEMANTICS,
@@ -331,7 +332,16 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
         <ReconciliationBlock item={item} />
         <OngoingBlock item={item} />
         <div className={styles.ongoingMeta}>
-          {item.lifecycleStage ? <span>{item.lifecycleStage}</span> : null}
+          {item.lifecycleStage ? (
+            <span
+              className={styles.stageChip}
+              data-testid="work-row-stage"
+              data-stage={item.lifecycleStage}
+              title={item.lifecycleStage}
+            >
+              {formatLifecycleStageLabel(item.lifecycleStage)}
+            </span>
+          ) : null}
           {item.projectId ? <span>{item.projectId}</span> : null}
           {item.readinessDisplay != null && item.readinessDisplay !== '' ? (
             <span>{String(item.readinessDisplay)}</span>
@@ -374,7 +384,18 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
         </div>
       </td>
       <td className={styles.reason}>
-        {item.lifecycleStage ?? '—'}
+        {item.lifecycleStage ? (
+          <span
+            className={styles.stageChip}
+            data-testid="work-row-stage"
+            data-stage={item.lifecycleStage}
+            title={item.lifecycleStage}
+          >
+            {formatLifecycleStageLabel(item.lifecycleStage)}
+          </span>
+        ) : (
+          '—'
+        )}
         {item.projectId ? (
           <>
             <br />

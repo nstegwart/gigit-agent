@@ -107,7 +107,8 @@ const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
     to: '/priority',
     match: (p) => p.startsWith('/priority'),
   },
-  { sep: true, label: 'Structure' },
+  // Separator chrome id-ID; item .lbl stays English (UI_CONTRACT §2 / e2e).
+  { sep: true, label: 'Struktur' },
   {
     id: 'projects',
     label: 'Projects',
@@ -124,7 +125,7 @@ const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
     match: (p) => p.startsWith('/features'),
     count: (n) => n.features,
   },
-  { sep: true, label: 'Ops' },
+  { sep: true, label: 'Operasi' },
   {
     id: 'agents',
     label: 'Agents / Runs',
@@ -368,7 +369,18 @@ export function AppShell({ children }: { children: ReactNode }) {
                 }
               >
                 <Icon name={n.icon} size={17} className="nav-ico" />
-                <span className="lbl">{n.label}</span>
+                <span className="nav-text">
+                  <span className="lbl">{n.label}</span>
+                  {controlCenter && n.label in CONTROL_CENTER_NAV_LABELS_ID ? (
+                    <span className="nav-lbl-id" aria-hidden="true">
+                      {
+                        CONTROL_CENTER_NAV_LABELS_ID[
+                          n.label as keyof typeof CONTROL_CENTER_NAV_LABELS_ID
+                        ]
+                      }
+                    </span>
+                  ) : null}
+                </span>
                 {n.count ? (
                   <span className="nav-count" aria-label={`${n.count(counts)} items`}>
                     {n.count(counts)}

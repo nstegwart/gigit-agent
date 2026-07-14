@@ -1,3 +1,4 @@
+import { formatLifecycleStageLabel, formatOperationalLabel } from '#/lib/display-label'
 import type { FeatureRowView, FeaturesPinView, FeaturesSurfaceState } from './types'
 import styles from './features.module.css'
 
@@ -15,19 +16,35 @@ const CONTEXT_FIELDS: Array<{
   >
   label: string
 }> = [
-  { key: 'pageRoutes', label: 'Routes / pages' },
+  { key: 'pageRoutes', label: 'Rute / halaman' },
   { key: 'apiEndpoints', label: 'API' },
-  { key: 'logicRules', label: 'Rules' },
+  { key: 'logicRules', label: 'Aturan' },
   { key: 'dataContext', label: 'Data' },
   { key: 'geoVariants', label: 'Geo' },
   { key: 'providerVariants', label: 'Provider' },
   { key: 'sideEffectsReadback', label: 'Readback' },
-  { key: 'styleContext', label: 'Style' },
+  { key: 'styleContext', label: 'Gaya' },
 ]
 
 function branchLabel(branch: FeatureRowView['flowBranch']): string {
   if (!branch) return '—'
+  if (branch === 'success') return 'Sukses'
+  if (branch === 'fail') return 'Gagal'
+  if (branch === 'expired') return 'Kedaluwarsa'
+  if (branch === 'open') return 'Terbuka'
   return branch
+}
+
+function statusLabel(status: string | null): string {
+  if (!status) return '—'
+  const u = status.toLowerCase()
+  if (u === 'blocked') return 'Terhambat'
+  if (u === 'done' || u === 'completed') return 'Selesai'
+  if (u === 'running' || u === 'in_progress' || u === 'active') return 'Berjalan'
+  if (u === 'queued' || u === 'pending') return 'Antri'
+  if (u === 'failed' || u === 'fail') return 'Gagal'
+  if (u === 'expired') return 'Kedaluwarsa'
+  return formatOperationalLabel(status)
 }
 
 export interface FeatureDetailScreenProps {
@@ -43,7 +60,7 @@ export interface FeatureDetailScreenProps {
 
 /**
  * Control-center feature detail — resolves from pinned FeaturesData, not legacy plan.
- * Owner-facing summary + progressive disclosure of technical context.
+ * Owner-facing summary + real progress nodes + progressive technical context.
  */
 export function FeatureDetailScreen({
   surfaceState,
@@ -64,7 +81,7 @@ export function FeatureDetailScreen({
         data-board-id={boardId}
       >
         <a href={listHref} className={styles.linkBtn} data-testid="feature-detail-back">
-          ← Features
+          ← Fitur
         </a>
         <div className={styles.skeleton} data-testid="feature-detail-skeleton" aria-hidden="true">
           <div className={styles.skeletonCard} />
@@ -82,21 +99,21 @@ export function FeatureDetailScreen({
         data-board-id={boardId}
       >
         <a href={listHref} className={styles.linkBtn} data-testid="feature-detail-back">
-          ← Features
+          ← Fitur
         </a>
         <div
           className={`${styles.banner} ${styles.banner_error}`}
           role="alert"
           data-testid="feature-detail-not-found"
         >
-          <p className={styles.bannerTitle}>Feature not found</p>
+          <p className={styles.bannerTitle}>Fitur tidak ditemukan</p>
           <p className={styles.bannerBody}>
             {error?.message ??
-              'Feature id is not in the pinned control-center features set for this board.'}
+              'Id fitur tidak ada di set fitur control-center yang di-pin untuk board ini.'}
           </p>
           {onRetry ? (
             <button type="button" className={styles.retryBtn} onClick={onRetry}>
-              Retry
+              Coba lagi
             </button>
           ) : null}
         </div>
@@ -110,6 +127,9 @@ export function FeatureDetailScreen({
     values: feature[key],
   })).filter((g) => g.values.length > 0)
 
+  const stageEntries = Object.entries(feature.stageCounts).sort((a, b) => b[1] - a[1])
+  const nodes = feature.progressNodes
+
   return (
     <section
       className={[styles.root, className].filter(Boolean).join(' ')}
@@ -119,18 +139,18 @@ export function FeatureDetailScreen({
       data-feature-id={feature.featureId}
     >
       <a href={listHref} className={styles.linkBtn} data-testid="feature-detail-back">
-        ← Features
+        ← Fitur
       </a>
 
       <header className={styles.pageHead}>
         <div>
-          <p className={styles.eyebrow}>IA · Feature detail</p>
+          <p className={styles.eyebrow}>IA · Detail fitur</p>
           <h1 id="feature-detail-title" className={styles.pageTitle} data-testid="feature-detail-title">
             {feature.name}
           </h1>
           <p className={styles.pageSub}>
-            Ringkasan fitur dari pin control-center — progress tugas dan konteks alur (bukan
-            legacy plan checklist).
+            Ringkasan fitur dari pin control-center — progress node tugas nyata dan konteks alur
+            (bukan checklist plan legacy).
           </p>
         </div>
         <div className={styles.summaryStrip}>
@@ -138,13 +158,13 @@ export function FeatureDetailScreen({
             {feature.featureId}
           </span>
           <span className={styles.chip} data-testid="feature-detail-phase">
-            Phase {feature.phase ?? '—'}
+            Fase {feature.phase ?? '—'}
           </span>
           <span className={styles.chip} data-testid="feature-detail-tasks">
-            {feature.taskCount} tasks
+            {feature.taskCount} tugas
           </span>
           <span className={styles.chip} data-testid="feature-detail-flow">
-            Flow {branchLabel(feature.flowBranch)}
+            Alur {branchLabel(feature.flowBranch)}
           </span>
         </div>
       </header>
@@ -159,7 +179,7 @@ export function FeatureDetailScreen({
       <div className={styles.card} data-testid="feature-detail-meta">
         <dl className={styles.cardMeta}>
           <div>
-            <dt>Project</dt>
+            <dt>Proyek</dt>
             <dd className={styles.idCell}>
               {feature.projectHref && feature.projectId ? (
                 <a href={feature.projectHref}>{feature.projectId}</a>
@@ -169,24 +189,91 @@ export function FeatureDetailScreen({
             </dd>
           </div>
           <div>
-            <dt>Tasks linked</dt>
+            <dt>Tugas terhubung</dt>
             <dd className={styles.metric}>{feature.taskCount}</dd>
           </div>
           <div>
-            <dt>Phase</dt>
+            <dt>Fase</dt>
             <dd>{feature.phase ?? '—'}</dd>
           </div>
           <div>
-            <dt>Flow branch</dt>
+            <dt>Cabang alur</dt>
             <dd>{branchLabel(feature.flowBranch)}</dd>
           </div>
         </dl>
       </div>
 
+      <div className={styles.card} data-testid="feature-detail-progress">
+        <h2 className={styles.progressTitle}>Progress node tugas</h2>
+        <p className={styles.pageSub} style={{ marginTop: 0, marginBottom: 12 }}>
+          Node di bawah berasal dari tugas yang terhubung ke fitur ini (featureContractId) pada pin
+          saat ini — bukan tebakan klien.
+        </p>
+        {stageEntries.length > 0 ? (
+          <div
+            className={styles.stageChipStrip}
+            data-testid="feature-detail-stage-chips"
+            aria-label="Ringkasan tahap lifecycle"
+          >
+            {stageEntries.map(([stage, count]) => (
+              <span
+                key={stage}
+                className={styles.stageChip}
+                data-stage={stage}
+                title={stage}
+              >
+                {formatLifecycleStageLabel(stage)} · {count}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {nodes.length === 0 ? (
+          <p className={styles.empty} data-testid="feature-detail-progress-empty">
+            Tidak ada tugas terhubung pada pin ini (jujur kosong — tidak diisi tebakan).
+          </p>
+        ) : (
+          <ol className={styles.progressList} data-testid="feature-detail-progress-list">
+            {nodes.map((n) => (
+              <li
+                key={n.taskId}
+                className={styles.progressNode}
+                data-testid="feature-progress-node"
+                data-task-id={n.taskId}
+                data-stage={n.lifecycleStage ?? undefined}
+              >
+                <div className={styles.progressNodeHead}>
+                  <a href={n.detailHref} className={styles.progressNodeTitle}>
+                    {n.title}
+                  </a>
+                  <code className={styles.progressNodeId}>{n.taskId}</code>
+                </div>
+                <div className={styles.progressNodeMeta}>
+                  <span
+                    className={styles.stageChip}
+                    data-testid="feature-progress-stage"
+                    title={n.lifecycleStage ?? ''}
+                  >
+                    {n.lifecycleStage
+                      ? formatLifecycleStageLabel(n.lifecycleStage)
+                      : 'Tahap tidak diketahui'}
+                  </span>
+                  <span className={styles.chip} data-testid="feature-progress-status">
+                    {statusLabel(n.status)}
+                  </span>
+                  {n.blockedReason ? (
+                    <span className={styles.progressBlocker} data-testid="feature-progress-blocker">
+                      Hambatan: {n.blockedReason}
+                    </span>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+
       <div className={styles.card} data-testid="feature-detail-context">
-        <h2 className={styles.pageTitle} style={{ fontSize: '1.05rem', marginBottom: 12 }}>
-          Konteks alur
-        </h2>
+        <h2 className={styles.progressTitle}>Konteks alur</h2>
         {contextGroups.length === 0 ? (
           <p className={styles.empty} data-testid="feature-detail-context-empty">
             Tidak ada konteks rute/API/rule dari pin (jujur kosong — tidak diisi tebakan).
@@ -213,9 +300,9 @@ export function FeatureDetailScreen({
 
       {feature.taskCount > 0 ? (
         <p className={styles.pageSub} data-testid="feature-detail-work-hint">
-          Lihat tugas terkait di{' '}
-          <a href={`/b/${encodeURIComponent(boardId)}/work`}>Pekerjaan</a> (filter feature contract
-          di detail teknis tugas).
+          Lihat daftar pekerjaan board di{' '}
+          <a href={`/b/${encodeURIComponent(boardId)}/work`}>Pekerjaan</a> (filter bucket + tahap di
+          baris tugas).
         </p>
       ) : null}
     </section>

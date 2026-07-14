@@ -1558,6 +1558,33 @@ export function buildControlCenterAggregationFromSources(
       featureTasks.flatMap((t) => t.side_effects_readback ?? []),
     )
     // style context: no first-class WorkTask field — leave null (never invent).
+    // Progress nodes: linked tasks only (featureContractId join) — never invent.
+    const progressNodes = featureTasks
+      .map((t) => {
+        const title =
+          (typeof t.title === 'string' && t.title.trim()) ||
+          (typeof t.objective === 'string' && t.objective.trim()) ||
+          t.id
+        return {
+          taskId: t.id,
+          title,
+          lifecycleStage:
+            typeof t.lifecycleStage === 'string' && t.lifecycleStage.trim()
+              ? t.lifecycleStage
+              : null,
+          status: typeof t.status === 'string' && t.status.trim() ? t.status : null,
+          blockedReason:
+            typeof t.blockedReason === 'string' && t.blockedReason.trim()
+              ? t.blockedReason
+              : null,
+        }
+      })
+      .sort((a, b) => a.taskId.localeCompare(b.taskId))
+    const stageCounts: Record<string, number> = {}
+    for (const n of progressNodes) {
+      const stage = n.lifecycleStage ?? 'UNKNOWN'
+      stageCounts[stage] = (stageCounts[stage] ?? 0) + 1
+    }
     return {
       id: f.id,
       projectId: f.projectId,
@@ -1565,6 +1592,8 @@ export function buildControlCenterAggregationFromSources(
       phase: String(f.fase ?? ''),
       flowBranch: deriveFeatureFlowBranch(f, featureTasks),
       taskCount: featureTasks.length,
+      progressNodes,
+      stageCounts,
       pageRoutes,
       apiEndpoints,
       logicRules,

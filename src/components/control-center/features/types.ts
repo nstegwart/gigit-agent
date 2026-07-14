@@ -29,6 +29,17 @@ export interface FeaturesPinView {
   staleReason: string | null
 }
 
+/** Linked task progress node (server-derived; presentation only). */
+export interface FeatureProgressNodeView {
+  taskId: string
+  title: string
+  lifecycleStage: string | null
+  status: string | null
+  blockedReason: string | null
+  /** Deep link to work detail when boardId known. */
+  detailHref: string
+}
+
 export interface FeatureRowView {
   featureId: string
   projectId: string | null
@@ -38,6 +49,10 @@ export interface FeatureRowView {
   taskCount: number
   detailHref: string
   projectHref: string | null
+  /** Server-derived progress nodes for feature detail; empty when none linked. */
+  progressNodes: FeatureProgressNodeView[]
+  /** Stage histogram among linked tasks (server counts). */
+  stageCounts: Record<string, number>
   /** Server-derived flow context — empty when source truth absent (never invent). */
   pageRoutes: string[]
   apiEndpoints: string[]

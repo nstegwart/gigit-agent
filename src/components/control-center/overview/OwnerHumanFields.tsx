@@ -58,14 +58,14 @@ export function OwnerHumanFields({
           data-testid={`${testIdPrefix}-why`}
           data-field="whyItMatters"
         >
-          <span className={styles.ownerFieldLabel}>Why</span>
+          <span className={styles.ownerFieldLabel}>Mengapa penting</span>
           {whyItMatters}
         </p>
       ) : null}
 
       {next ? (
         <p className={styles.ownerField} data-testid={`${testIdPrefix}-next`} data-field="next">
-          <span className={styles.ownerFieldLabel}>Next</span>
+          <span className={styles.ownerFieldLabel}>Berikutnya</span>
           {next}
         </p>
       ) : null}
@@ -76,7 +76,7 @@ export function OwnerHumanFields({
           data-testid={`${testIdPrefix}-blocker`}
           data-field="blocker"
         >
-          <span className={styles.ownerFieldLabel}>Blocker</span>
+          <span className={styles.ownerFieldLabel}>Hambatan</span>
           {blocker}
         </p>
       ) : null}
@@ -87,7 +87,7 @@ export function OwnerHumanFields({
           data-testid={`${testIdPrefix}-action`}
           data-field="ownerAction"
         >
-          <span className={styles.ownerActionLabel}>Owner action</span>
+          <span className={styles.ownerActionLabel}>Tindakan owner</span>
           {ownerAction}
         </div>
       ) : null}
@@ -96,7 +96,7 @@ export function OwnerHumanFields({
         <ul
           className={styles.ownerCitations}
           data-testid={`${testIdPrefix}-citations`}
-          aria-label="Citations"
+          aria-label="Kutipan sumber"
         >
           {citations.map((c, i) => (
             <li

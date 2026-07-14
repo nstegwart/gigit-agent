@@ -21,6 +21,30 @@ export function formatOperationalLabel(raw: string | null | undefined): string {
 }
 
 /**
+ * Owner-facing id-ID labels for lifecycle stage keys (presentation only).
+ * Unknown keys fall back to formatOperationalLabel — never invents progress.
+ */
+const LIFECYCLE_STAGE_LABELS_ID: Readonly<Record<string, string>> = {
+  MAPPING: 'Pemetaan',
+  MAPPED: 'Terpetakan',
+  MAP_VERIFIED: 'Peta terverifikasi',
+  BUILT: 'Terbangun',
+  FUNCTIONAL: 'Fungsional',
+  INTEGRATED: 'Terintegrasi',
+  STAGING_PROVEN: 'Terbukti di staging',
+  PROD_READY: 'Siap produksi',
+  LIVE_VERIFIED: 'Terverifikasi live',
+}
+
+/** Human id-ID stage label; raw key remains available via title/data attributes. */
+export function formatLifecycleStageLabel(raw: string | null | undefined): string {
+  if (raw == null) return ''
+  const s = String(raw).trim()
+  if (!s) return ''
+  return LIFECYCLE_STAGE_LABELS_ID[s] ?? formatOperationalLabel(s)
+}
+
+/**
  * Truncate long mono IDs while keeping head + tail distinguishable.
  * Full value must remain available via title/aria on the consumer.
  */

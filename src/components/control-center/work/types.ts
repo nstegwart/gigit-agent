@@ -232,5 +232,11 @@ export interface WorkScreenProps {
   onRefresh?: () => void
   onReconnect?: () => void
   onRowActivate?: (item: WorkItemRow) => void
+  /**
+   * Active free-text scan filter (`?query=`). Display-only narrowing of the
+   * served page — never invents bucket membership.
+   */
+  textQuery?: string | null
+  onTextQueryChange?: (query: string) => void
   className?: string
 }

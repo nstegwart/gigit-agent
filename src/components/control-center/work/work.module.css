@@ -76,6 +76,113 @@
   gap: var(--sp-2, 8px);
 }
 
+/* ---- scanability: query + active chips + page stage strip ---- */
+.filterBar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.filterSearchLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 28rem;
+}
+
+.filterSearchCaption {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-dim, #58616f);
+}
+
+.filterSearch {
+  min-height: 44px;
+  width: 100%;
+  padding: 0 12px;
+  border: 1px solid var(--border, #e4e8ee);
+  border-radius: var(--r-sm, 8px);
+  background: var(--surface, #fff);
+  color: var(--text, #171a21);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.filterSearch:focus-visible {
+  outline: 2px solid var(--accent, #6d5efc);
+  outline-offset: 2px;
+}
+
+.filterSearch:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.activeFilterChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.filterChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e4e8ee);
+  background: var(--surface-2, #f4f6f9);
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--text, #171a21);
+}
+
+.filterChipClear {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim, #58616f);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0;
+}
+
+.filterChipClear:focus-visible {
+  outline: 2px solid var(--accent, #6d5efc);
+  outline-offset: 1px;
+}
+
+.stageChipStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.stageChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent, #6d5efc) 28%, var(--border, #e4e8ee));
+  background: color-mix(in srgb, var(--accent, #6d5efc) 8%, var(--surface, #fff));
+  font-size: 0.75rem;
+  font-weight: 650;
+  color: var(--text, #171a21);
+  white-space: nowrap;
+}
+
 .tablist {
   display: flex;
   flex-wrap: wrap;
