@@ -154,11 +154,15 @@ node qa/e2e/flows/staging-agent-smoke.mjs --contract
 export STAGING_URL=http://127.0.0.1:33211
 export BOARD_ID=mfs-rebuild
 export EXPECTED_SHA=<40-char release sha>   # fail-closed vs healthz
-export STAGING_BEARER_TOKEN='…'             # never commit/print
+export STAGING_ROOT_BEARER_TOKEN='…'        # never commit/print
+export STAGING_AGENT_BEARER_TOKEN='…'       # dual-principal required
+export STAGING_AGENT_ID='…'
+# Full live-pin CAS authority (preferred for --real when fixture pin ≠ live board):
+export STAGING_BIND_LIVE_PIN=1              # alias: STAGING_BIND_LIVE_BOARD_REV=1
 node qa/e2e/flows/staging-agent-smoke.mjs --real
 ```
 
-**Real sequence (fail-closed):** unauth `/api/healthz` → 401; auth healthz SHA/schema; unauth sensitive MCP deny; `tools/list`; `publish_dispatch_plan` → `get_next` → `sync_accounts` → `register_run` → `heartbeat_run`; readback `list_tasks` / `get_rollup` / `list_audit` / `get_task_lifecycle`; unique `synth-stg-smoke-*` ids + cleanup/reconcile rules. Pin/revision/hash mismatch → non-zero exit.
+**Real sequence (fail-closed):** unauth `/api/healthz` → 401; auth healthz SHA/schema; unauth sensitive MCP deny; `tools/list`; when `STAGING_BIND_LIVE_PIN=1` (or legacy `STAGING_BIND_LIVE_BOARD_REV=1`) bind complete live pin (`canonicalSnapshotId`/`canonicalHash`/`boardRev`/`lifecycleRev`) from authenticated probe as working CAS authority before pin parity/mutation (incomplete → `INCOMPLETE_LIVE_PIN`; never invents `taskHash`); else fixture pin parity fail-closed (`PIN_PARITY_MISMATCH`). Then `publish_dispatch_plan` → `get_next` → `sync_accounts` → `register_run` → `heartbeat_run`; readback `list_tasks` / `get_rollup` / `list_audit` / `get_task_lifecycle`; unique `synth-stg-smoke-*` ids + cleanup/reconcile rules. One bounded `STALE_REVISION` recovery. Pin/revision/hash mismatch → non-zero exit.
 
 **Playwright contract:** `tests/e2e/fixtures/staging-agent-smoke.contract.harness.spec.ts` (`harness-contract` project).
 

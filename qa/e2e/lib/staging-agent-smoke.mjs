@@ -406,6 +406,93 @@ export function rebindDispatchExpectedBoardRev(dispatch, newRev) {
   return dispatch
 }
 
+/**
+ * Full live-pin bind for --real: STAGING_BIND_LIVE_PIN=1 or legacy STAGING_BIND_LIVE_BOARD_REV=1.
+ * Explicit opts.bindLivePin / opts.bindLiveBoardRev win over env.
+ */
+export function resolveBindLivePin(opts = {}, env = process.env) {
+  if (opts.bindLivePin === true || opts.bindLiveBoardRev === true) return true
+  if (opts.bindLivePin === false || opts.bindLiveBoardRev === false) return false
+  const e = env ?? {}
+  return e.STAGING_BIND_LIVE_PIN === '1' || e.STAGING_BIND_LIVE_BOARD_REV === '1'
+}
+
+/**
+ * Required CAS authority fields from authenticated runtime probe.
+ * taskHash is optional — never invented when runtime omits it.
+ * @returns {{ ok: boolean, pin: object, missing: string[], code: string|null }}
+ */
+export function extractCompleteLivePin(runtimePin) {
+  const required = ['canonicalSnapshotId', 'canonicalHash', 'boardRev', 'lifecycleRev']
+  const missing = []
+  /** @type {Record<string, unknown>} */
+  const pin = {}
+  for (const f of required) {
+    const v = runtimePin?.[f]
+    if (v === undefined || v === null || v === '') {
+      missing.push(f)
+      continue
+    }
+    if (f === 'boardRev' || f === 'lifecycleRev') {
+      const n = Number(v)
+      if (!Number.isFinite(n) || n < 0) {
+        missing.push(f)
+      } else {
+        pin[f] = n
+      }
+    } else {
+      pin[f] = v
+    }
+  }
+  // Never invent taskHash from fixture when runtime omits it.
+  if (runtimePin?.taskHash !== undefined && runtimePin?.taskHash !== null && runtimePin?.taskHash !== '') {
+    pin.taskHash = runtimePin.taskHash
+  }
+  return {
+    ok: missing.length === 0,
+    pin,
+    missing,
+    code: missing.length ? 'INCOMPLETE_LIVE_PIN' : null,
+  }
+}
+
+/**
+ * Rebind dispatch CAS fields to a complete live pin and recompute planHash.
+ * Mutates and returns the same dispatch object.
+ */
+export function rebindDispatchToLivePin(dispatch, livePin) {
+  if (!dispatch || typeof dispatch !== 'object') {
+    throw new StagingAgentSmokeError('rebindDispatchToLivePin requires dispatch object', {
+      code: 'INVALID_DISPATCH',
+    })
+  }
+  const extracted = extractCompleteLivePin(livePin)
+  if (!extracted.ok) {
+    throw new StagingAgentSmokeError(
+      `rebindDispatchToLivePin incomplete live pin: ${extracted.missing.join(',')}`,
+      { code: 'INCOMPLETE_LIVE_PIN', missing: extracted.missing },
+    )
+  }
+  const p = extracted.pin
+  dispatch.canonicalSnapshotId = p.canonicalSnapshotId
+  dispatch.canonicalHash = p.canonicalHash
+  dispatch.expectedBoardRev = p.boardRev
+  if (Array.isArray(dispatch.items)) {
+    for (const it of dispatch.items) {
+      if (it && typeof it === 'object') it.expectedBoardRev = p.boardRev
+    }
+  }
+  dispatch.planHash = computePlanHash({
+    boardId: dispatch.boardId,
+    planId: dispatch.planId,
+    planVersion: dispatch.planVersion,
+    canonicalSnapshotId: dispatch.canonicalSnapshotId,
+    canonicalHash: dispatch.canonicalHash,
+    items: dispatch.items,
+  })
+  return dispatch
+}
+
 function isAuthDenied(result) {
   if (!result) return false
   if (result.httpStatus === 401 || result.httpStatus === 403) return true
@@ -601,7 +688,16 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
   }
   const failClosed = opts.failClosed !== false
   const boardId = opts.boardId ?? resolveSmokeBoardId()
-  const pin = opts.pin ?? loadStagingPin()
+  // Working pin starts as fixture/opts; may be replaced by full live pin when bindLivePin.
+  let pin = opts.pin ?? loadStagingPin()
+  const fixturePinSeed = {
+    canonicalSnapshotId: pin.canonicalSnapshotId ?? null,
+    canonicalHash: pin.canonicalHash ?? null,
+    boardRev: pin.boardRev ?? null,
+    lifecycleRev: pin.lifecycleRev ?? null,
+    // taskHash on fixture is computed; never force-copied onto live authority when runtime omits it
+    hasTaskHash: pin.taskHash != null && pin.taskHash !== '',
+  }
   const ids = opts.ids ?? buildSyntheticSmokeIds({ boardId })
   const now = opts.now ?? new Date().toISOString()
   // Dual-principal: prefer explicit root/agent; legacy single opts.bearer = root for all steps
@@ -628,6 +724,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
   const expectedSha = opts.expectedSha ?? null
   const expectedSchema = opts.expectedSchema ?? resolveExpectedSchema()
   const skipPinCheck = opts.skipPinCheck === true
+  const bindLivePin = resolveBindLivePin(opts)
   const requireBearer = opts.requireBearer !== false
   // Real mode always requires AGENT principal (fail-closed). Self-test may use single mock bearer.
   const requireAgentBearer =
@@ -644,6 +741,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     agentTokenRef: opts.agentTokenRef ?? null,
     dualPrincipal,
     principalMeta: opts.principalMeta ?? null,
+    bindLivePin,
     ids: {
       planId: ids.planId,
       runId: ids.runId,
@@ -654,10 +752,12 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
       canonicalSnapshotId: pin.canonicalSnapshotId,
       boardRev: pin.boardRev,
       lifecycleRev: pin.lifecycleRev,
-      taskHash: pin.taskHash,
+      taskHash: pin.taskHash ?? null,
       // hash present for parity; not a secret
       canonicalHash: pin.canonicalHash,
+      pinSource: 'fixture_or_opts',
     },
+    fixturePinSeed,
     steps: {},
     residuals: [],
     cleanup: {
@@ -888,7 +988,7 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     }
   }
 
-  // Pin parity before publish
+  // Pin probe → optional full live-pin bind (authority) → parity → publish
   let runtimePin =
     opts.runtimePin ??
     (await probeRuntimePin(baseUrl, { bearer: rootBearer, fetchImpl, secrets }))
@@ -899,19 +999,60 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
       boardRev: runtimePin?.boardRev ?? null,
       lifecycleRev: runtimePin?.lifecycleRev ?? null,
       canonicalSnapshotId: runtimePin?.canonicalSnapshotId ?? null,
+      canonicalHash: runtimePin?.canonicalHash ?? null,
       taskHash: runtimePin?.taskHash ?? null,
+      hasTaskHash: runtimePin?.taskHash != null && runtimePin?.taskHash !== '',
     },
     secrets,
   )
 
+  // Full live-pin bind BEFORE parity/mutation when STAGING_BIND_LIVE_* / bindLivePin.
+  // Fixture pin is NOT CAS authority under bindLivePin; incomplete runtime → fail-closed.
+  receipt.steps.livePinBind = {
+    attempted: bindLivePin,
+    ok: null,
+    missing: null,
+    bound: null,
+  }
+  if (bindLivePin) {
+    const extracted = extractCompleteLivePin(runtimePin)
+    receipt.steps.livePinBind.missing = extracted.missing
+    if (!extracted.ok) {
+      receipt.steps.livePinBind.ok = false
+      return fail(
+        'live_pin_bind',
+        'INCOMPLETE_LIVE_PIN',
+        `missing required live pin fields: ${extracted.missing.join(',')}`,
+      )
+    }
+    // Working pin = complete live fields only. Do not copy fixture taskHash when runtime omits it.
+    pin = { ...extracted.pin }
+    receipt.pin = {
+      canonicalSnapshotId: pin.canonicalSnapshotId,
+      boardRev: pin.boardRev,
+      lifecycleRev: pin.lifecycleRev,
+      taskHash: pin.taskHash ?? null,
+      canonicalHash: pin.canonicalHash,
+      pinSource: 'live_runtime',
+    }
+    receipt.steps.livePinBind.ok = true
+    receipt.steps.livePinBind.bound = {
+      canonicalSnapshotId: pin.canonicalSnapshotId,
+      boardRev: pin.boardRev,
+      lifecycleRev: pin.lifecycleRev,
+      hasCanonicalHash: Boolean(pin.canonicalHash),
+      hasTaskHash: pin.taskHash != null && pin.taskHash !== '',
+    }
+  }
+
   if (!skipPinCheck) {
+    // After bindLivePin, authority is the live working pin; otherwise fixture/opts pin.
     const authority = opts.authorityPin ?? pin
-    // When runtime lacks pin fields (health-only), compare only present authority fields that runtime has
     const parity = comparePinParity(runtimePin, authority)
     receipt.steps.pinParity = parity
     // Soft: if runtime provides zero comparable fields, residual note but continue only when allowWeakPin
     if (!parity.ok) {
-      if (opts.allowWeakPin && parity.compared?.length === 0) {
+      if (opts.allowWeakPin && parity.compared?.length === 0 && !bindLivePin) {
         receipt.residuals.push({
           step: 'pin_parity',
           code: 'PIN_UNOBSERVED',
@@ -923,11 +1064,11 @@ export async function runStagingAgentLifecycleSmoke(opts = {}) {
     }
   }
 
-  // 4) publish_dispatch_plan
+  // 4) publish_dispatch_plan — dispatch CAS from working pin (live when bindLivePin)
   const dispatch = opts.dispatch ?? buildDispatchPlanArgs({ pin, ids, now, boardId })
-  // If runtime boardRev observed and allowLiveRev, bind expectedBoardRev to live
-  if (opts.bindLiveBoardRev && Number.isFinite(Number(runtimePin?.boardRev))) {
-    rebindDispatchExpectedBoardRev(dispatch, Number(runtimePin.boardRev))
+  if (bindLivePin) {
+    // Even if caller passed opts.dispatch, force full live pin CAS fields + planHash.
+    rebindDispatchToLivePin(dispatch, pin)
   }
 
   // 4) publish_dispatch_plan — ROOT only
@@ -1298,8 +1439,11 @@ export function createStagingSmokeMockFetch(opts = {}) {
           schemaVersion: '006',
         },
         canonicalSnapshotId: pin.canonicalSnapshotId,
+        canonicalHash: pin.canonicalHash,
         boardRev: pin.boardRev,
         lifecycleRev: pin.lifecycleRev,
+        // taskHash intentionally omitted unless mock opts supply it — never invent
+        ...(opts.healthzTaskHash != null ? { taskHash: opts.healthzTaskHash } : {}),
         dependencies: [{ name: 'mysql', status: 'up' }],
         unhealthyReasons: [],
         checkedAt: now,
@@ -1673,6 +1817,193 @@ export async function runStagingAgentSmokeSelfTests() {
     ok(
       'pin-mismatch-no-auth-publish',
       threw && !c2.some((c) => c.name === 'publish_dispatch_plan' && c.hasAuth),
+    )
+  }
+
+  // bindLivePin=false keeps fixture authority → PIN_PARITY_MISMATCH when runtime differs
+  {
+    const liveDiff = {
+      ok: true,
+      httpStatus: 200,
+      canonicalSnapshotId: 'synth-canonical-authority-live-v1',
+      canonicalHash: 'f'.repeat(64),
+      boardRev: 172,
+      lifecycleRev: 40,
+    }
+    const { fetchImpl: fBindOff, calls: cBindOff } = createStagingSmokeMockFetch({
+      pin,
+      ids,
+      expectedSha,
+    })
+    let bindOffThrew = false
+    let bindOffCode = null
+    try {
+      await runStagingAgentLifecycleSmoke({
+        baseUrl: 'http://127.0.0.1:9',
+        mode: 'self-test',
+        pin,
+        ids,
+        bearer: root.bearer,
+        expectedSha,
+        expectedSchema: '006',
+        fetchImpl: fBindOff,
+        runtimePin: liveDiff,
+        bindLivePin: false,
+        failClosed: true,
+        initialize: false,
+      })
+    } catch (e) {
+      bindOffThrew = e instanceof StagingAgentSmokeError
+      bindOffCode = e?.code ?? null
+    }
+    ok(
+      'bind-live-false-pin-parity-mismatch',
+      bindOffThrew && bindOffCode === 'PIN_PARITY_MISMATCH',
+    )
+    ok(
+      'bind-live-false-no-auth-publish',
+      bindOffThrew && !cBindOff.some((c) => c.name === 'publish_dispatch_plan' && c.hasAuth),
+    )
+  }
+
+  // bindLivePin=true: full live pin becomes CAS authority before parity/mutation
+  {
+    const livePin = {
+      canonicalSnapshotId: 'synth-canonical-authority-live-v1',
+      canonicalHash: 'b'.repeat(64),
+      boardRev: 172,
+      lifecycleRev: 40,
+      // taskHash intentionally omitted — must not be invented from fixture
+    }
+    const idsLive = buildSyntheticSmokeIds({ smokeRunId: 'livepin01', boardId: 'mfs-rebuild' })
+    const { fetchImpl: fLive, calls: cLive } = createStagingSmokeMockFetch({
+      pin: livePin,
+      ids: idsLive,
+      expectedSha,
+      initialMemoryBoardRev: livePin.boardRev,
+    })
+    let liveReceipt = null
+    let liveErr = null
+    try {
+      liveReceipt = await runStagingAgentLifecycleSmoke({
+        baseUrl: 'http://127.0.0.1:9',
+        mode: 'self-test',
+        boardId: 'mfs-rebuild',
+        pin, // fixture pin differs from live
+        ids: idsLive,
+        bearer: root.bearer,
+        expectedSha,
+        expectedSchema: '006',
+        fetchImpl: fLive,
+        runtimePin: { ok: true, httpStatus: 200, ...livePin },
+        bindLivePin: true,
+        now: '2026-07-13T00:00:00.000Z',
+        failClosed: true,
+        initialize: false,
+      })
+    } catch (e) {
+      liveErr = e
+    }
+    const pubLive = cLive.find((c) => c.name === 'publish_dispatch_plan' && c.hasAuth)
+    ok('bind-live-true-lifecycle-ok', liveReceipt?.ok === true && !liveErr)
+    ok(
+      'bind-live-true-dispatch-uses-live-rev',
+      Number(pubLive?.expectedBoardRev) === Number(livePin.boardRev),
+    )
+    ok(
+      'bind-live-true-dispatch-uses-live-snapshot-hash',
+      pubLive?.args?.canonicalSnapshotId === livePin.canonicalSnapshotId &&
+        pubLive?.args?.canonicalHash === livePin.canonicalHash,
+    )
+    ok(
+      'bind-live-true-receipt-pin-source-live',
+      liveReceipt?.pin?.pinSource === 'live_runtime' &&
+        liveReceipt?.pin?.boardRev === livePin.boardRev,
+    )
+    ok(
+      'bind-live-true-no-invented-taskHash',
+      liveReceipt?.pin?.taskHash == null &&
+        liveReceipt?.steps?.livePinBind?.bound?.hasTaskHash === false,
+    )
+    ok(
+      'bind-live-true-bearer-redacted',
+      liveReceipt && !JSON.stringify(liveReceipt).includes(root.bearer),
+    )
+  }
+
+  // bindLivePin=true incomplete runtime pin → fail-closed before publish
+  {
+    const { fetchImpl: fInc, calls: cInc } = createStagingSmokeMockFetch({ pin, ids, expectedSha })
+    let incThrew = false
+    let incCode = null
+    try {
+      await runStagingAgentLifecycleSmoke({
+        baseUrl: 'http://127.0.0.1:9',
+        mode: 'self-test',
+        pin,
+        ids,
+        bearer: root.bearer,
+        expectedSha,
+        expectedSchema: '006',
+        fetchImpl: fInc,
+        runtimePin: {
+          ok: true,
+          httpStatus: 200,
+          canonicalSnapshotId: 'live-snap',
+          // canonicalHash missing
+          boardRev: 172,
+          lifecycleRev: 40,
+        },
+        bindLivePin: true,
+        failClosed: true,
+        initialize: false,
+      })
+    } catch (e) {
+      incThrew = e instanceof StagingAgentSmokeError
+      incCode = e?.code ?? null
+    }
+    ok('bind-live-incomplete-fail-close', incThrew && incCode === 'INCOMPLETE_LIVE_PIN')
+    ok(
+      'bind-live-incomplete-no-auth-publish',
+      incThrew && !cInc.some((c) => c.name === 'publish_dispatch_plan' && c.hasAuth),
+    )
+  }
+
+  // extractCompleteLivePin pure contract
+  {
+    const incomplete = extractCompleteLivePin({
+      canonicalSnapshotId: 'x',
+      boardRev: 1,
+      lifecycleRev: 2,
+    })
+    const completeNoTask = extractCompleteLivePin({
+      canonicalSnapshotId: 'x',
+      canonicalHash: 'y',
+      boardRev: 1,
+      lifecycleRev: 2,
+    })
+    const completeWithTask = extractCompleteLivePin({
+      canonicalSnapshotId: 'x',
+      canonicalHash: 'y',
+      boardRev: 1,
+      lifecycleRev: 2,
+      taskHash: 'abc',
+    })
+    ok('extract-live-incomplete-missing-hash', incomplete.ok === false && incomplete.missing.includes('canonicalHash'))
+    ok(
+      'extract-live-complete-no-invent-taskHash',
+      completeNoTask.ok === true && completeNoTask.pin.taskHash === undefined,
+    )
+    ok(
+      'extract-live-preserves-runtime-taskHash',
+      completeWithTask.ok === true && completeWithTask.pin.taskHash === 'abc',
+    )
+    ok(
+      'resolve-bind-live-env-legacy-and-alias',
+      resolveBindLivePin({}, { STAGING_BIND_LIVE_BOARD_REV: '1' }) === true &&
+        resolveBindLivePin({}, { STAGING_BIND_LIVE_PIN: '1' }) === true &&
+        resolveBindLivePin({ bindLivePin: false }, { STAGING_BIND_LIVE_PIN: '1' }) === false &&
+        resolveBindLivePin({}, {}) === false,
     )
   }
 
@@ -2267,7 +2598,9 @@ export async function runRealStagingAgentSmoke(opts = {}) {
       requireUnauthHealthDenial: true,
       // Real staging may not expose full pin on healthz — allow weak only when env set
       allowWeakPin: env.STAGING_ALLOW_WEAK_PIN === '1',
-      bindLiveBoardRev: env.STAGING_BIND_LIVE_BOARD_REV === '1',
+      // Full live-pin CAS authority: STAGING_BIND_LIVE_PIN=1 or legacy STAGING_BIND_LIVE_BOARD_REV=1
+      bindLivePin: resolveBindLivePin({}, env),
+      bindLiveBoardRev: resolveBindLivePin({}, env),
       failClosed: true,
       initialize: true,
       attemptRunDone: true,
