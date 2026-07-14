@@ -29,7 +29,7 @@ import {
   evaluateAccountSyncFreshness,
   evaluateCapacityPolicy,
   isCoalescableAccountSyncTrigger,
-  recordAccountReadback,
+  recordAccountReadbacks,
   surfacesHaveParity,
   syncAccounts,
   type AccountSyncDeps,
@@ -1035,19 +1035,27 @@ export function createAccountSyncScheduler(
 
     const surfaces = emptySurfaces()
     try {
+      // Publish all four surfaces first, then coalesce readback into one CAS put
+      // so fan-out is at most +1 entityRev (not +4). Exact sourceRevision/generatedAt
+      // per surface is preserved for parity audit.
       for (const surface of ACCOUNT_SYNC_READBACK_SURFACES) {
         const observed = await deps.surfacePublisher.publish(surface, envelope)
         surfaces[surface] = {
           sourceRevision: observed.sourceRevision,
           generatedAt: observed.generatedAt,
         }
-        await recordAccountReadback(deps.accountSync, {
-          boardId: intent.boardId,
-          surface,
-          sourceRevision: observed.sourceRevision,
-          generatedAt: observed.generatedAt,
-        })
       }
+      const readbackMap: Partial<
+        Record<AccountSyncReadbackSurface, { sourceRevision: number; generatedAt: string }>
+      > = {}
+      for (const surface of ACCOUNT_SYNC_READBACK_SURFACES) {
+        const observed = surfaces[surface]
+        if (observed) readbackMap[surface] = observed
+      }
+      await recordAccountReadbacks(deps.accountSync, {
+        boardId: intent.boardId,
+        surfaces: readbackMap,
+      })
     } catch (e) {
       // Surface publish failure is visible typed failure + fail-closed stale.
       await forceStaleUsableZero(intent.boardId, 'SURFACE_PUBLISH_FAILED')
@@ -1108,40 +1116,61 @@ export function createAccountSyncScheduler(
     }
   }
 
+  /**
+   * Fail-close under account-store withBoardLock (lock-serialized / CAS-safe RMW).
+   * Prevents concurrent authority syncAccounts put from being clobbered by a
+   * stale get→put based on a pre-authority snapshot (unlocked last-write-wins race).
+   * Preserves already-stale+usable0 no-op and board dispatchBlocked enforcement.
+   */
   async function forceStaleUsableZero(
     boardId: string,
     reason: string,
   ): Promise<AccountSyncSnapshot | null> {
-    const snap = await deps.accountSync.accounts.get(boardId)
-    if (!snap) return null
-    const capacity = evaluateCapacityPolicy({
-      accounts: snap.accounts,
-      forceZero: true,
-    })
-    const next: AccountSyncSnapshot = {
-      ...snap,
-      stale: true,
-      staleReason: reason,
-      usableCapacity: 0,
-      capacity: {
-        ...capacity,
+    return deps.accountSync.accounts.withBoardLock(boardId, async () => {
+      const snap = await deps.accountSync.accounts.get(boardId)
+      if (!snap) return null
+      // Fail-close no-op on exact already-stale state (stale + usableCapacity 0).
+      // Reason-only compound / notify failure loops must not re-bump entityRev.
+      if (snap.stale === true && snap.usableCapacity === 0) {
+        const board = await deps.accountSync.atomic.getBoardState(boardId)
+        if (!board.dispatchBlocked) {
+          await deps.accountSync.atomic.setBoardState({
+            ...board,
+            dispatchBlocked: true,
+            dispatchBlockedReason: `ACCOUNT_SYNC_STALE: ${snap.staleReason ?? reason}`,
+          })
+        }
+        return snap
+      }
+      const capacity = evaluateCapacityPolicy({
+        accounts: snap.accounts,
+        forceZero: true,
+      })
+      const next: AccountSyncSnapshot = {
+        ...snap,
+        stale: true,
+        staleReason: reason,
         usableCapacity: 0,
-        dispatchMode: 'BLOCKED',
-        dispatchAllowed: false,
-        limitingReasons: [
-          ...new Set([...(capacity.limitingReasons ?? []), 'ACCOUNT_SYNC_STALE', reason]),
-        ],
-      },
-      entityRev: snap.entityRev + 1,
-    }
-    await deps.accountSync.accounts.put(next)
-    const board = await deps.accountSync.atomic.getBoardState(boardId)
-    await deps.accountSync.atomic.setBoardState({
-      ...board,
-      dispatchBlocked: true,
-      dispatchBlockedReason: `ACCOUNT_SYNC_STALE: ${reason}`,
+        capacity: {
+          ...capacity,
+          usableCapacity: 0,
+          dispatchMode: 'BLOCKED',
+          dispatchAllowed: false,
+          limitingReasons: [
+            ...new Set([...(capacity.limitingReasons ?? []), 'ACCOUNT_SYNC_STALE', reason]),
+          ],
+        },
+        entityRev: snap.entityRev + 1,
+      }
+      await deps.accountSync.accounts.put(next)
+      const board = await deps.accountSync.atomic.getBoardState(boardId)
+      await deps.accountSync.atomic.setBoardState({
+        ...board,
+        dispatchBlocked: true,
+        dispatchBlockedReason: `ACCOUNT_SYNC_STALE: ${reason}`,
+      })
+      return next
     })
-    return next
   }
 
   async function enqueue(

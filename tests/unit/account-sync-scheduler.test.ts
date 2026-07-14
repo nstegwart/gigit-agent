@@ -1179,4 +1179,150 @@ describe('account-sync-scheduler foundation (AC-ACCOUNT SLA)', () => {
     expect(board.dispatchBlocked).toBe(true)
     expect(board.dispatchBlockedReason).toMatch(/NOTIFY_FAILED:TEST/)
   })
+
+  it('churn: publish four surfaces bounds entityRev to auth+1 (not +4); exact parity', async () => {
+    const d = makeDeps()
+    const surfaces = createMemoryAccountSyncSurfacePublisher()
+    const sched = createAccountSyncScheduler({
+      clock: d.clock,
+      accountSync: d.accountSync,
+      surfacePublisher: surfaces,
+    })
+    const gen = d.clock.nowISO()
+    const out = await sched.enqueue(
+      await intent(d, {
+        trigger: 'ORCHESTRATOR_LAUNCH',
+        sourceRevision: 200,
+        generatedAt: gen,
+        idempotencyKey: 'bound-rev-1',
+        // inUse 0 → healthy Grok remaining slots = 5 (AC-CAP bootstrap)
+        accounts: baseAccounts('OK', { effectiveInUse: 0, effectiveCap: 5 }),
+      }),
+    )
+    expect(out.kind).toBe('PUBLISHED')
+    expect(out.parityOk).toBe(true)
+    expect(out.stale).toBe(false)
+    expect(out.usableCapacity).toBe(5)
+    const snap = await d.accounts.get(BOARD)
+    // authority write (+1) + coalesced four-surface readback (+1) = 2, not 1+4=5
+    expect(snap?.entityRev).toBe(2)
+    expect(snap?.sourceRevision).toBe(200)
+    expect(snap?.generatedAt).toBe(gen)
+    expect(snap?.readbackSurfaces.mcp).toEqual({ sourceRevision: 200, generatedAt: gen })
+    expect(snap?.readbackSurfaces.api).toEqual({ sourceRevision: 200, generatedAt: gen })
+    expect(snap?.readbackSurfaces.ui).toEqual({ sourceRevision: 200, generatedAt: gen })
+    expect(snap?.readbackSurfaces.ops).toEqual({ sourceRevision: 200, generatedAt: gen })
+    expect(surfaces.log).toHaveLength(4)
+  })
+
+  it('churn: failClosedStale no-ops entityRev when already stale+usable0', async () => {
+    const d = makeDeps()
+    const surfaces = createMemoryAccountSyncSurfacePublisher()
+    const sched = createAccountSyncScheduler({
+      clock: d.clock,
+      accountSync: d.accountSync,
+      surfacePublisher: surfaces,
+    })
+    await sched.enqueue(
+      await intent(d, {
+        trigger: 'ORCHESTRATOR_LAUNCH',
+        sourceRevision: 1,
+        idempotencyKey: 'fc-noop-1',
+      }),
+    )
+    const first = await sched.failClosedStale(BOARD, 'NOTIFY_FAILED:A')
+    expect(first?.stale).toBe(true)
+    expect(first?.usableCapacity).toBe(0)
+    const revAfterFirst = first!.entityRev
+
+    const second = await sched.failClosedStale(BOARD, 'NOTIFY_FAILED:B')
+    expect(second?.entityRev).toBe(revAfterFirst)
+    expect(second?.usableCapacity).toBe(0)
+    expect(second?.stale).toBe(true)
+    // original reason retained (no put)
+    expect(second?.staleReason).toBe('NOTIFY_FAILED:A')
+
+    const third = await sched.failClosedStale(BOARD, 'SURFACE_PUBLISH_FAILED')
+    expect(third?.entityRev).toBe(revAfterFirst)
+  })
+
+  it('concurrent failClosedStale vs authority: newer sourceRevision not lost (lock-serialized)', async () => {
+    const d = makeDeps()
+    const surfaces = createMemoryAccountSyncSurfacePublisher()
+    const sched = createAccountSyncScheduler({
+      clock: d.clock,
+      accountSync: d.accountSync,
+      surfacePublisher: surfaces,
+    })
+    await sched.enqueue(
+      await intent(d, {
+        trigger: 'ORCHESTRATOR_LAUNCH',
+        sourceRevision: 1,
+        idempotencyKey: 'race-seed-1',
+        accounts: baseAccounts('OK', {
+          maskedAccountId: 'acct-seed',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        }),
+      }),
+    )
+
+    const authSource = 9999
+    const authMask = 'acct-authority-winner'
+    let authorityOk = false
+
+    const failClosers = Array.from({ length: 32 }, (_, i) =>
+      sched.failClosedStale(BOARD, `RACE_FAIL_CLOSE:${i}`),
+    )
+    // Multiple authority workers all try the same newer authority identity (retry CAS).
+    const authorities = Array.from({ length: 8 }, async (_, i) => {
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const live = await d.accounts.get(BOARD)
+        const board = await d.atomic.getBoardState(BOARD)
+        try {
+          const { syncAccounts } = await import('#/server/account-sync')
+          const r = await syncAccounts(d.accountSync, {
+            boardId: BOARD,
+            sourceRevision: authSource,
+            generatedAt: d.clock.nowISO(),
+            entityExpectedRev: live?.entityRev ?? 0,
+            expectedBoardRev: board.boardRev,
+            canonicalHash: 'canon-sched-pin',
+            accounts: baseAccounts('OK', {
+              maskedAccountId: authMask,
+              effectiveInUse: 0,
+              effectiveCap: 5,
+            }),
+            trigger: 'ORCHESTRATOR_LAUNCH',
+            idempotencyKey: `race-auth-${i}-a${attempt}`,
+            callerRole: 'ROOT_ORCHESTRATOR',
+            actorId: 'race-auth',
+          })
+          if (!r.replayed) authorityOk = true
+          return
+        } catch (e) {
+          if (e instanceof AccountSyncError && e.code === 'STALE_REVISION') continue
+          throw e
+        }
+      }
+      throw new Error(`authority worker ${i} exhausted retries`)
+    })
+
+    await Promise.all([...failClosers, ...authorities])
+
+    expect(authorityOk).toBe(true)
+    const final = await d.accounts.get(BOARD)
+    expect(final).not.toBeNull()
+    // Fail-close may run last (stale usable0) but must not restore pre-authority seed.
+    expect(final!.sourceRevision).toBe(authSource)
+    expect(final!.accounts[0]?.maskedAccountId).toBe(authMask)
+    expect(Number(final!.sourceRevision)).not.toBe(1)
+    const board = await d.atomic.getBoardState(BOARD)
+    if (final!.stale) {
+      expect(final!.usableCapacity).toBe(0)
+      expect(board.dispatchBlocked).toBe(true)
+    } else {
+      expect(final!.usableCapacity).toBe(5)
+    }
+  })
 })

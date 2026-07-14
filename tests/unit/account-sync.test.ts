@@ -18,10 +18,13 @@ import {
   evaluateCapacityPolicy,
   getSharedAccountSyncStore,
   isCoalescableAccountSyncTrigger,
+  isFailClosedStable,
   isImmediateAccountSyncTrigger,
+  isMaterialAccountSyncTransition,
   projectAccountSyncCcReadModel,
   readLatestAccountSyncSnapshot,
   recordAccountReadback,
+  recordAccountReadbacks,
   resetSharedAccountSyncStore,
   resolveProviderKindFromModel,
   setSharedAccountSyncStore,
@@ -737,6 +740,219 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
     }
     const board = await d.atomic.getBoardState(BOARD)
     expect(board.dispatchBlocked).toBe(false)
+  })
+
+  it('churn: already-stale re-eval does not bump entityRev when only staleReason compounds', async () => {
+    const d = deps()
+    const gen = d.clock.nowISO()
+    await syncAccounts(d, {
+      boardId: BOARD,
+      sourceRevision: 50,
+      generatedAt: gen,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
+      expectedBoardRev: 0,
+      accounts: [
+        {
+          maskedAccountId: 'acct-mask-001',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+      ],
+      trigger: 'ORCHESTRATOR_LAUNCH',
+      idempotencyKey: 'churn-fresh-1',
+      callerRole: 'ROOT_ORCHESTRATOR',
+    })
+    const afterCreate = await d.accounts.get(BOARD)
+    expect(afterCreate?.entityRev).toBe(1)
+    expect(afterCreate?.usableCapacity).toBe(5)
+
+    d.clock.advance(ACCOUNT_PUBLISH_SLA_MS + 1)
+    const firstStale = await evaluateAccountSyncFreshness(d, BOARD)
+    expect(firstStale?.stale).toBe(true)
+    expect(firstStale?.usableCapacity).toBe(0)
+    expect(firstStale?.entityRev).toBe(2)
+    expect(firstStale?.staleReason).toMatch(/SLA_MISS/)
+    expect(isFailClosedStable(firstStale!)).toBe(true)
+
+    // Force periodic-miss path while already fail-closed: reason would compound,
+    // but material transition is false → entityRev must stay.
+    await d.accounts.put({
+      ...firstStale!,
+      lastPeriodicHealthAtMs: d.clock.nowMs() - ACCOUNT_PERIODIC_HEALTH_MS - 1,
+    })
+    const second = await evaluateAccountSyncFreshness(d, BOARD)
+    expect(second?.entityRev).toBe(2)
+    expect(second?.usableCapacity).toBe(0)
+    expect(second?.stale).toBe(true)
+    // staleReason left as first material transition (no put on compound)
+    expect(second?.staleReason).toBe(firstStale?.staleReason)
+
+    const third = await evaluateAccountSyncFreshness(d, BOARD)
+    expect(third?.entityRev).toBe(2)
+    expect(isMaterialAccountSyncTransition(
+      { stale: true, usableCapacity: 0 },
+      { stale: true, usableCapacity: 0 },
+    )).toBe(false)
+  })
+
+  it('churn: coalesced four-surface readback is at most +1 entityRev; preserves parity', async () => {
+    const d = deps()
+    const gen = d.clock.nowISO()
+    await syncAccounts(d, {
+      boardId: BOARD,
+      sourceRevision: 77,
+      generatedAt: gen,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
+      expectedBoardRev: 0,
+      accounts: [
+        {
+          maskedAccountId: 'acct-mask-001',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+      ],
+      trigger: 'ORCHESTRATOR_LAUNCH',
+      idempotencyKey: 'churn-rb-1',
+      callerRole: 'ROOT_ORCHESTRATOR',
+    })
+    const afterAuth = await d.accounts.get(BOARD)
+    expect(afterAuth?.entityRev).toBe(1)
+    const authRev = afterAuth!.entityRev
+
+    const coalesced = await recordAccountReadbacks(d, {
+      boardId: BOARD,
+      surfaces: {
+        mcp: { sourceRevision: 77, generatedAt: gen },
+        api: { sourceRevision: 77, generatedAt: gen },
+        ui: { sourceRevision: 77, generatedAt: gen },
+        ops: { sourceRevision: 77, generatedAt: gen },
+      },
+    })
+    expect(coalesced.entityRev).toBe(authRev + 1)
+    expect(coalesced.stale).toBe(false)
+    expect(coalesced.usableCapacity).toBe(5)
+    expect(surfacesHaveParity(coalesced.readbackSurfaces, 77, gen)).toBe(true)
+    expect(coalesced.readbackSurfaces.mcp).toEqual({ sourceRevision: 77, generatedAt: gen })
+    expect(coalesced.readbackSurfaces.api).toEqual({ sourceRevision: 77, generatedAt: gen })
+    expect(coalesced.readbackSurfaces.ui).toEqual({ sourceRevision: 77, generatedAt: gen })
+    expect(coalesced.readbackSurfaces.ops).toEqual({ sourceRevision: 77, generatedAt: gen })
+
+    // Exact same readback again → no entityRev bump
+    const noop = await recordAccountReadbacks(d, {
+      boardId: BOARD,
+      surfaces: {
+        mcp: { sourceRevision: 77, generatedAt: gen },
+        api: { sourceRevision: 77, generatedAt: gen },
+        ui: { sourceRevision: 77, generatedAt: gen },
+        ops: { sourceRevision: 77, generatedAt: gen },
+      },
+    })
+    expect(noop.entityRev).toBe(authRev + 1)
+  })
+
+  it('churn: recover with live entityExpectedRev restores usableCapacity=5 (GROK_ONLY)', async () => {
+    const d = deps()
+    const gen = d.clock.nowISO()
+    const grokAcc = {
+      maskedAccountId: 'acct-mask-001',
+      status: 'OK' as const,
+      providerKind: 'GROK' as const,
+      effectiveInUse: 0,
+      effectiveCap: 5,
+    }
+    await syncAccounts(d, {
+      boardId: BOARD,
+      sourceRevision: 1,
+      generatedAt: gen,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
+      expectedBoardRev: 0,
+      accounts: [grokAcc],
+      trigger: 'ORCHESTRATOR_LAUNCH',
+      idempotencyKey: 'recover-1',
+      callerRole: 'ROOT_ORCHESTRATOR',
+    })
+    d.clock.advance(ACCOUNT_PUBLISH_SLA_MS + 1)
+    const stale = await evaluateAccountSyncFreshness(d, BOARD)
+    expect(stale?.usableCapacity).toBe(0)
+    expect(stale?.entityRev).toBe(2)
+
+    // Stale CAS with old entityExpectedRev → STALE_REVISION with currentEntityRev
+    await expect(
+      syncAccounts(d, {
+        boardId: BOARD,
+        sourceRevision: 2,
+        generatedAt: d.clock.nowISO(),
+        entityExpectedRev: 1,
+        canonicalHash: 'canon-test-pin',
+        expectedBoardRev: (await d.atomic.getBoardState(BOARD)).boardRev,
+        accounts: [grokAcc],
+        trigger: 'PERIODIC_HEALTH',
+        idempotencyKey: 'recover-stale-key',
+        callerRole: 'ROOT_ORCHESTRATOR',
+      }),
+    ).rejects.toMatchObject({
+      code: 'STALE_REVISION',
+      details: expect.objectContaining({ currentEntityRev: 2 }),
+    })
+
+    const live = await d.accounts.get(BOARD)
+    const board = await d.atomic.getBoardState(BOARD)
+    const recover = await syncAccounts(d, {
+      boardId: BOARD,
+      sourceRevision: 3,
+      generatedAt: d.clock.nowISO(),
+      entityExpectedRev: live!.entityRev,
+      canonicalHash: 'canon-test-pin',
+      expectedBoardRev: board.boardRev,
+      accounts: [grokAcc],
+      trigger: 'PERIODIC_HEALTH',
+      idempotencyKey: 'recover-ok',
+      callerRole: 'ROOT_ORCHESTRATOR',
+    })
+    expect(recover.usableCapacity).toBe(5)
+    expect(recover.stale).toBe(false)
+    expect(recover.capacity.dispatchMode).toBe('GROK_ONLY')
+  })
+
+  it('idempotency replay-before-CAS preserved after boardRev advances', async () => {
+    const d = deps()
+    const gen = d.clock.nowISO()
+    const body = {
+      boardId: BOARD,
+      sourceRevision: 9,
+      generatedAt: gen,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-test-pin',
+      expectedBoardRev: 0,
+      accounts: [
+        {
+          maskedAccountId: 'acct-mask-001',
+          status: 'OK' as const,
+          providerKind: 'GROK' as const,
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+      ],
+      trigger: 'ORCHESTRATOR_LAUNCH' as const,
+      idempotencyKey: 'idem-replay-cas',
+      callerRole: 'ROOT_ORCHESTRATOR' as const,
+    }
+    const first = await syncAccounts(d, body)
+    expect(first.replayed).toBeFalsy()
+    expect(first.usableCapacity).toBe(5)
+    await d.atomic.bumpBoardRev(BOARD)
+    const replay = await syncAccounts(d, body)
+    expect(replay.replayed).toBe(true)
+    expect(replay.usableCapacity).toBe(5)
+    // entityRev unchanged by pure replay
+    expect((await d.accounts.get(BOARD))?.entityRev).toBe(1)
   })
 
   it('AC-INGEST-05: masked account pool matches sync (no tokens)', async () => {

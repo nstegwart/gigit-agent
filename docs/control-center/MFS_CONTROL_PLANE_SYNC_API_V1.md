@@ -257,6 +257,11 @@ Fail-closed: FENCED, LEASE_EXPIRED, RUN_NOT_REGISTERED, STALE_REVISION.
 - Missed/stale publication: `stale=true`, alert `ACCOUNT_SYNC_STALE`, `usableCapacity=0` for new dispatch, fail-closed until multi-surface same-revision readback passes.
 - No server-local-only account transition.
 
+**MCP path (fail-closed scheduler):**
+
+- MCP `sync_accounts` **requires** the process-shared AccountSyncScheduler (surfaces + SLA). When the scheduler is not installed on the runtime context, the tool returns typed `ACCOUNT_SYNC_SCHEDULER_MISSING` and does **not** call raw `syncAccounts` (raw authority resets `readbackSurfaces` to null and would publish unverified parity).
+- Fail-close (`failClosedStale` / `forceStaleUsableZero`) is lock-serialized via account-store `withBoardLock` so concurrent authority writes cannot be clobbered by an unlocked get→put race.
+
 
 ## 5. Typed errors (subset + full set reference)
 
@@ -275,8 +280,38 @@ All codes from API_CONTRACT apply. Adapter-critical:
 | `HOLD_OR_EXCLUDE` | task disposition blocks claim |
 | `UNCLASSIFIED_SCOPE` | classification blocks progress |
 | `INTEGRATION_LOCKED` | second integrator |
+| `ACCOUNT_SYNC_SCHEDULER_MISSING` | MCP `sync_accounts` when shared scheduler not installed (refuse raw authority fallback / unverified parity) |
+| `ACCOUNT_SYNC_STALE` | publication SLA miss or fail-closed capacity zero |
 
 Full list: see `API_CONTRACT.md` §6.
+
+### Deterministic `STALE_REVISION` retry (sync_accounts)
+
+Clients **must** treat `STALE_REVISION` as a recoverable CAS fence, not a fatal capacity error.
+
+**Contract:**
+
+1. `sync_accounts` runs **idempotency begin before board/entity CAS**. Exact replay of a completed key returns the prior body with `replayed: true` and does **not** re-CAS (even if `boardRev` advanced externally).
+2. On entity mismatch the error is typed:
+   - `code: "STALE_REVISION"`
+   - `message` includes entity/board mismatch
+   - `details.currentEntityRev` — live snapshot revision to pin next attempt
+   - `details.currentBoardRev` — when board fence failed (board path)
+3. **Retry algorithm (deterministic):**
+   1. Read `details.currentEntityRev` (and `currentBoardRev` if present).
+   2. Issue a **new** `idempotencyKey` for the retry attempt (do not reuse the failed incomplete key).
+   3. Set `entityExpectedRev = details.currentEntityRev` and `expectedBoardRev` to the live board rev.
+   4. Re-send the same masked account payload (or the newest intended authority state).
+   5. Cap retries (recommended ≤6); if still stale, re-list authority / wait for fail-closed recovery publish.
+4. Concurrent fail-closed evaluation only bumps `entityRev` on **material** transitions (non-stale→stale or usableCapacity change). Already `stale=true` + `usableCapacity=0` with only reason compound does **not** thrash `entityRev`. Multi-surface readback coalesces to **at most +1** entityRev per publish (not +4).
+5. Concurrent authority `sync_accounts` vs fail-close is **lock-serialized** on the account store (`withBoardLock`). Fail-close re-reads the live snapshot inside the lock so it cannot overwrite a newer authority snapshot with a pre-authority get→put (last-write-wins without CAS predicate).
+
+**Anti-patterns:**
+
+- Replaying the **same** incomplete idempotency key after a failed CAS without completion.
+- Hard-coding `entityExpectedRev: 0` on updates.
+- Treating `STALE_REVISION` as proof of vault overwrite (usually concurrent material write or fail-close).
+- Calling raw `syncAccounts` from MCP when the shared scheduler is missing (unverified parity / null readbacks) — must surface `ACCOUNT_SYNC_SCHEDULER_MISSING` instead.
 
 
 ## 6. Rate limits

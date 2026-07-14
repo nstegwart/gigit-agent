@@ -3354,6 +3354,58 @@ describe('submit_stage_evidence MCP tool + WAVE_CLOSE + add_comment real MCP', (
     expect(ACCOUNT_SYNC_EXTERNAL_ADAPTER_TRIGGERS).toEqual([])
   })
 
+  it('MCP sync_accounts fails closed with ACCOUNT_SYNC_SCHEDULER_MISSING when scheduler absent', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const pin = 'b'.repeat(64)
+    const sql = (ctx.controlData as { sql?: Parameters<typeof seedBoardRevision>[0] }).sql
+    expect(sql).toBeTruthy()
+    await seedBoardRevision(sql!, {
+      boardId: BOARD,
+      boardRev: 0,
+      lifecycleRev: 1,
+      subjectHash: pin,
+      canonicalSnapshotId: 'snap-sched-missing',
+      canonicalHash: pin,
+    })
+    // Null scheduler on live context → peekAccountSyncScheduler() === null
+    ;(ctx as unknown as { accountSyncScheduler: null }).accountSyncScheduler = null
+    expect(
+      (await import('#/server/control-plane-runtime-context')).peekAccountSyncScheduler(),
+    ).toBeNull()
+
+    const before = await ctx.runtime.accounts.get(BOARD)
+    const board = await ctx.atomic.getBoardState(BOARD)
+    const server = new McpServer({ name: 'sync-sched-missing', version: '0.0.0' })
+    registerBoardTools(server, authRoot())
+    const res = await callToolJson(server, 'sync_accounts', {
+      boardId: BOARD,
+      sourceRevision: 7,
+      generatedAt: ctx.clock.nowISO(),
+      accounts: [
+        {
+          maskedAccountId: 'mask-no-sched',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+      ],
+      entityExpectedRev: before?.entityRev ?? 0,
+      expectedBoardRev: board.boardRev,
+      canonicalHash: pin,
+      idempotencyKey: 'idem-sched-missing-1',
+      trigger: 'ORCHESTRATOR_LAUNCH',
+    })
+    expect(res.ok).toBe(false)
+    expect(res.code).toBe('ACCOUNT_SYNC_SCHEDULER_MISSING')
+    // No unverified raw authority publish
+    const after = await ctx.runtime.accounts.get(BOARD)
+    expect(after?.sourceRevision ?? null).toBe(before?.sourceRevision ?? null)
+    expect(mcpTypedErrorForTests(new McpMutationError('ACCOUNT_SYNC_SCHEDULER_MISSING', 'x')).code).toBe(
+      'ACCOUNT_SYNC_SCHEDULER_MISSING',
+    )
+  })
+
   it('add_comment REAL MCP: spoof authorType=human/author=owner → principal agent + persisted readback', async () => {
     const { createBoard, upsertFeature, boardExists, deleteBoard, boardHash } =
       await import('#/server/board-store')

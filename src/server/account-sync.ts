@@ -663,16 +663,41 @@ export function syncAccountsIdempotencyBody(
 }
 
 /**
- * Record multi-surface readback parity. All four surfaces must match
- * sourceRevision+generatedAt or stale fail-closed remains.
+ * True when snapshot is already fail-closed (stale + usableCapacity 0).
+ * Reason-only / compound-reason re-evals must not bump entityRev.
  */
-export async function recordAccountReadback(
+export function isFailClosedStable(snap: {
+  stale: boolean
+  usableCapacity: number
+}): boolean {
+  return snap.stale === true && snap.usableCapacity === 0
+}
+
+/**
+ * Material capacity/freshness transition: stale flag or usableCapacity change.
+ * staleReason-only compounds are NOT material (avoids thrash amplifier).
+ */
+export function isMaterialAccountSyncTransition(
+  prev: { stale: boolean; usableCapacity: number },
+  next: { stale: boolean; usableCapacity: number },
+): boolean {
+  return prev.stale !== next.stale || prev.usableCapacity !== next.usableCapacity
+}
+
+export type AccountReadbackSurfaceMap = Partial<
+  Record<'mcp' | 'api' | 'ui' | 'ops', { sourceRevision: number; generatedAt: string }>
+>
+
+/**
+ * Coalesce multi-surface readback into a single CAS put (at most +1 entityRev).
+ * Preserves exact sourceRevision+generatedAt per surface for parity audit.
+ * No-op (no entityRev bump) when surfaces already match and fail-closed is stable.
+ */
+export async function recordAccountReadbacks(
   deps: AccountSyncDeps,
   opts: {
     boardId: string
-    surface: 'mcp' | 'api' | 'ui' | 'ops'
-    sourceRevision: number
-    generatedAt: string
+    surfaces: AccountReadbackSurfaceMap
   },
 ): Promise<AccountSyncSnapshot> {
   return deps.accounts.withBoardLock(opts.boardId, async () => {
@@ -680,13 +705,27 @@ export async function recordAccountReadback(
     if (!snap) {
       throw new AccountSyncError('INVALID_INPUT', 'no account snapshot to read back')
     }
-    const nextSurfaces = {
-      ...snap.readbackSurfaces,
-      [opts.surface]: {
-        sourceRevision: opts.sourceRevision,
-        generatedAt: opts.generatedAt,
-      },
+
+    const nextSurfaces = { ...snap.readbackSurfaces }
+    let surfacesChanged = false
+    for (const surface of ACCOUNT_SYNC_READBACK_SURFACES) {
+      const incoming = opts.surfaces[surface]
+      if (!incoming) continue
+      const prev = nextSurfaces[surface]
+      if (
+        prev &&
+        prev.sourceRevision === incoming.sourceRevision &&
+        prev.generatedAt === incoming.generatedAt
+      ) {
+        continue
+      }
+      nextSurfaces[surface] = {
+        sourceRevision: incoming.sourceRevision,
+        generatedAt: incoming.generatedAt,
+      }
+      surfacesChanged = true
     }
+
     const parity = surfacesHaveParity(nextSurfaces, snap.sourceRevision, snap.generatedAt)
     const now = deps.clock.nowMs()
     // Fail-closed only after SLA window without full multi-surface parity (AC-ACCOUNT-07).
@@ -705,6 +744,25 @@ export async function recordAccountReadback(
       forceZero: stale,
     })
 
+    const material = isMaterialAccountSyncTransition(
+      { stale: snap.stale, usableCapacity: snap.usableCapacity },
+      { stale, usableCapacity: capacity.usableCapacity },
+    )
+
+    // No surface delta and no material transition → exact no-op (incl. already-stale).
+    if (!surfacesChanged && !material) {
+      return snap
+    }
+
+    // Already fail-closed with only non-material churn → still no entityRev put.
+    if (
+      !surfacesChanged &&
+      isFailClosedStable(snap) &&
+      isFailClosedStable({ stale, usableCapacity: capacity.usableCapacity })
+    ) {
+      return snap
+    }
+
     const next: AccountSyncSnapshot = {
       ...snap,
       readbackSurfaces: nextSurfaces,
@@ -717,6 +775,30 @@ export async function recordAccountReadback(
     await deps.accounts.put(next)
     await applyDispatchBlock(deps, opts.boardId, next)
     return next
+  })
+}
+
+/**
+ * Record one surface readback. Prefer recordAccountReadbacks for fan-out of all four
+ * so entityRev churn is bounded to +1 per publish, not +4.
+ */
+export async function recordAccountReadback(
+  deps: AccountSyncDeps,
+  opts: {
+    boardId: string
+    surface: 'mcp' | 'api' | 'ui' | 'ops'
+    sourceRevision: number
+    generatedAt: string
+  },
+): Promise<AccountSyncSnapshot> {
+  return recordAccountReadbacks(deps, {
+    boardId: opts.boardId,
+    surfaces: {
+      [opts.surface]: {
+        sourceRevision: opts.sourceRevision,
+        generatedAt: opts.generatedAt,
+      },
+    },
   })
 }
 
@@ -1024,44 +1106,47 @@ export async function evaluateAccountSyncFreshness(
       forceZero: stale,
     })
 
-    if (
-      stale !== snap.stale ||
-      capacity.usableCapacity !== snap.usableCapacity ||
-      staleReason !== snap.staleReason
-    ) {
-      const next: AccountSyncSnapshot = {
-        ...snap,
-        stale,
-        staleReason,
-        usableCapacity: capacity.usableCapacity,
-        capacity,
-        entityRev: snap.entityRev + 1,
-      }
-      await deps.accounts.put(next)
-      if (stale) {
-        await deps.atomic.appendAudit({
-          boardId,
-          kind: 'ACCOUNT_SYNC_STALE',
-          atMs: now,
-          atISO: deps.clock.nowISO(),
-          actorId: null,
-          subjectType: 'account_sync',
-          subjectId: String(snap.sourceRevision),
-          detail: { staleReason, usableCapacity: 0 },
-          material: true,
-        })
-        const board = await deps.atomic.getBoardState(boardId)
-        await deps.atomic.setBoardState({
-          ...board,
-          dispatchBlocked: true,
-          dispatchBlockedReason: `ACCOUNT_SYNC_STALE: ${staleReason}`,
-        })
-      } else {
-        await applyDispatchBlock(deps, boardId, next)
-      }
-      return next
+    // Material transition only (stale flag / usableCapacity). Already stale+usable0
+    // with only staleReason compound/repeat → no entityRev put (thrash amplifier fix).
+    const material = isMaterialAccountSyncTransition(
+      { stale: snap.stale, usableCapacity: snap.usableCapacity },
+      { stale, usableCapacity: capacity.usableCapacity },
+    )
+    if (!material) {
+      return snap
     }
-    return snap
+
+    const next: AccountSyncSnapshot = {
+      ...snap,
+      stale,
+      staleReason,
+      usableCapacity: capacity.usableCapacity,
+      capacity,
+      entityRev: snap.entityRev + 1,
+    }
+    await deps.accounts.put(next)
+    if (stale) {
+      await deps.atomic.appendAudit({
+        boardId,
+        kind: 'ACCOUNT_SYNC_STALE',
+        atMs: now,
+        atISO: deps.clock.nowISO(),
+        actorId: null,
+        subjectType: 'account_sync',
+        subjectId: String(snap.sourceRevision),
+        detail: { staleReason, usableCapacity: 0 },
+        material: true,
+      })
+      const board = await deps.atomic.getBoardState(boardId)
+      await deps.atomic.setBoardState({
+        ...board,
+        dispatchBlocked: true,
+        dispatchBlockedReason: `ACCOUNT_SYNC_STALE: ${staleReason}`,
+      })
+    } else {
+      await applyDispatchBlock(deps, boardId, next)
+    }
+    return next
   })
 }
 

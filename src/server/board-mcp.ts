@@ -602,6 +602,7 @@ const SAFE_TYPED_ERROR_CODES = new Set([
   'AUTHOR_VERIFIER_CONFLICT',
   'LOCK_NOT_FOUND',
   'ACCOUNT_SYNC_STALE',
+  'ACCOUNT_SYNC_SCHEDULER_MISSING',
   // idempotency
   'IDEMPOTENCY_CONFLICT',
   'IDEMPOTENCY_IN_PROGRESS',
@@ -6447,27 +6448,30 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           callerRole: 'ROOT_ORCHESTRATOR' as const,
           actorId: actorIdOf(),
         }
-        // Prefer shared scheduler when installed (surfaces + SLA); else direct authority.
-        // Errors are NOT swallowed — typed failure only.
-        let result: Awaited<ReturnType<typeof syncAccounts>>
+        // Shared scheduler is required for multi-surface publication + SLA parity.
+        // Never fall back to raw syncAccounts (that resets readbackSurfaces to null
+        // and publishes unverified parity as if surfaces had caught up).
         const { peekAccountSyncScheduler } = await import('#/server/control-plane-runtime-context')
         const sched = peekAccountSyncScheduler()
-        if (sched) {
-          const out = await sched.enqueue({
-            ...baseReq,
-            accounts: sanitized as never,
-          })
-          if (!out.result) {
-            throw new McpMutationError(
-              'ACCOUNT_SYNC_STALE',
-              `scheduler enqueue did not publish (${out.kind})`,
-              { kind: out.kind, trigger, boardId: id },
-            )
-          }
-          result = out.result
-        } else {
-          result = await syncAccounts(accountSyncDeps(), baseReq)
+        if (!sched) {
+          throw new McpMutationError(
+            'ACCOUNT_SYNC_SCHEDULER_MISSING',
+            'account sync scheduler not installed on runtime context — refuse unverified parity publish',
+            { boardId: id, trigger, failClosed: true },
+          )
         }
+        const out = await sched.enqueue({
+          ...baseReq,
+          accounts: sanitized as never,
+        })
+        if (!out.result) {
+          throw new McpMutationError(
+            'ACCOUNT_SYNC_STALE',
+            `scheduler enqueue did not publish (${out.kind})`,
+            { kind: out.kind, trigger, boardId: id },
+          )
+        }
+        const result = out.result
         return jsonText({
           ok: true,
           boardId: id,
