@@ -5,6 +5,8 @@ import { PriorityG5Panel } from './PriorityG5Panel'
 import { PriorityMembershipPanel } from './PriorityMembershipPanel'
 import { PriorityReadinessPanel } from './PriorityReadinessPanel'
 import { PriorityStateShell } from './PriorityStateShell'
+import { humanPortfolioLabel } from './display'
+import { PRIORITY_PORTFOLIO_ID } from './constants'
 import type { PriorityScreenProps } from './types'
 import styles from './priority.module.css'
 
@@ -56,44 +58,61 @@ export function PriorityScreen({
         <div className={styles.body} data-testid="priority-body">
           <header className={styles.pageHead}>
             <div>
-              <p className={styles.eyebrow}>Mission Q7</p>
-              <h1 className={styles.pageTitle}>Priority portfolio</h1>
+              <p className={styles.eyebrow}>Misi Q7</p>
+              <h1 className={styles.pageTitle}>Portofolio prioritas</h1>
               <p className={styles.pageSub}>
-                SALES_WEB_RELATED_BACKEND — server envelope only (no client recompute)
+                {humanPortfolioLabel(PRIORITY_PORTFOLIO_ID)} — hanya envelope server (tanpa
+                hitung ulang di klien)
               </p>
             </div>
             {pin ? (
               <dl className={styles.pinStrip} data-testid="priority-pin">
                 <div>
-                  <dt>Board</dt>
+                  <dt title="boardId">Board</dt>
                   <dd>
                     <code>{pin.boardId}</code>
                   </dd>
                 </div>
                 <div>
-                  <dt>Snapshot</dt>
+                  <dt title="canonicalSnapshotId">Snapshot</dt>
                   <dd>
                     <code title={pin.canonicalHash}>{pin.canonicalSnapshotId}</code>
                   </dd>
                 </div>
                 <div>
-                  <dt>boardRev</dt>
+                  <dt title="boardRev">Revisi board</dt>
                   <dd data-testid="priority-board-rev">{pin.boardRev}</dd>
                 </div>
                 <div>
-                  <dt>lifecycleRev</dt>
+                  <dt title="lifecycleRev">Revisi lifecycle</dt>
                   <dd data-testid="priority-lifecycle-rev">{pin.lifecycleRev}</dd>
                 </div>
                 {pin.stale ? (
                   <div>
-                    <dt>Stale</dt>
+                    <dt title="stale">Data basi</dt>
                     <dd className={styles.semanticWarn} data-testid="priority-pin-stale">
-                      true
+                      ya
                       {pin.staleReason ? ` · ${pin.staleReason}` : ''}
                     </dd>
                   </div>
                 ) : null}
               </dl>
+            ) : null}
+            {pin ? (
+              <details className={styles.details}>
+                <summary className={styles.detailsSummary}>Detail teknis — pin envelope</summary>
+                <ul className={styles.idList}>
+                  <li>
+                    portfolioId: <code>{PRIORITY_PORTFOLIO_ID}</code>
+                  </li>
+                  <li>
+                    canonicalHash: <code>{pin.canonicalHash}</code>
+                  </li>
+                  <li>
+                    boardRev={pin.boardRev}; lifecycleRev={pin.lifecycleRev}
+                  </li>
+                </ul>
+              </details>
             ) : null}
           </header>
 

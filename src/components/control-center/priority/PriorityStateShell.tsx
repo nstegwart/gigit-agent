@@ -24,48 +24,48 @@ const STATE_COPY: Record<
 > = {
   populated: { title: '', body: '' },
   loading: {
-    title: 'Loading priority portfolio',
-    body: 'Fetching server envelope… numbers stay hidden until data arrives.',
+    title: 'Memuat portofolio prioritas',
+    body: 'Mengambil envelope server… angka disembunyikan sampai data tiba.',
     role: 'status',
   },
   empty: {
-    title: 'No priority portfolio data',
-    body: 'Server returned an empty priority envelope for this board pin.',
+    title: 'Belum ada data portofolio prioritas',
+    body: 'Server mengembalikan envelope prioritas kosong untuk pin board ini.',
     role: 'status',
   },
   'zero-results': {
-    title: 'No matching priority items',
-    body: 'Filters matched nothing. This is distinct from an empty board envelope.',
+    title: 'Tidak ada item prioritas yang cocok',
+    body: 'Filter tidak menemukan apa pun. Ini berbeda dari envelope board yang kosong.',
     role: 'status',
   },
   partial: {
-    title: 'Partial priority data',
-    body: 'Some Priority sections failed. Showing available server fields only.',
+    title: 'Data prioritas sebagian',
+    body: 'Beberapa bagian Priority gagal dimuat. Hanya menampilkan field server yang tersedia.',
     role: 'alert',
   },
   stale: {
-    title: 'Stale priority envelope',
-    body: 'Pinned data is stale. Refresh for a current board/lifecycle revision.',
+    title: 'Envelope prioritas sudah basi',
+    body: 'Data pin sudah usang. Muat ulang untuk revisi board/lifecycle terkini.',
     role: 'status',
   },
   disconnected: {
-    title: 'Disconnected',
-    body: 'Transport is down. Reconnect to load SALES_WEB_RELATED_BACKEND truth.',
+    title: 'Terputus',
+    body: 'Koneksi transport mati. Sambungkan kembali untuk memuat kebenaran portofolio prioritas.',
     role: 'alert',
   },
   error: {
-    title: 'Priority load failed',
-    body: 'Hard failure loading priority portfolio. Retry when ready.',
+    title: 'Gagal memuat prioritas',
+    body: 'Kegagalan keras saat memuat portofolio prioritas. Coba lagi bila siap.',
     role: 'alert',
   },
   forbidden: {
-    title: 'Forbidden',
-    body: 'You do not have authorization to read the priority portfolio.',
+    title: 'Akses ditolak',
+    body: 'Anda tidak punya wewenang membaca portofolio prioritas.',
     role: 'alert',
   },
   'needs-human': {
-    title: 'Needs human decision',
-    body: 'A blocking decision must be resolved before priority dispatch can proceed.',
+    title: 'Memerlukan keputusan manusia (needs human)',
+    body: 'Keputusan pemblokir harus diselesaikan sebelum penjadwalan prioritas dapat dilanjutkan.',
     role: 'alert',
   },
 }
@@ -124,14 +124,18 @@ export function PriorityStateShell({
             {uiState === 'stale' && staleReason ? (
               <>
                 {' '}
-                Reason: <code data-testid="priority-stale-reason">{staleReason}</code>
+                Alasan:{' '}
+                <code data-testid="priority-stale-reason">{staleReason}</code>
               </>
             ) : null}
           </p>
           {errorCode ? (
-            <p className={styles.errorCode}>
-              Code: <code data-testid="priority-error-code">{errorCode}</code>
-            </p>
+            <details className={styles.details}>
+              <summary className={styles.detailsSummary}>Detail teknis</summary>
+              <p className={styles.errorCode}>
+                Code: <code data-testid="priority-error-code">{errorCode}</code>
+              </p>
+            </details>
           ) : null}
           {(uiState === 'error' || uiState === 'disconnected') && onRetry ? (
             <button
@@ -140,7 +144,7 @@ export function PriorityStateShell({
               onClick={onRetry}
               data-testid="priority-retry"
             >
-              Retry
+              Coba lagi
             </button>
           ) : null}
         </div>
@@ -152,7 +156,7 @@ export function PriorityStateShell({
           data-testid="priority-skeleton"
           role="status"
           aria-busy="true"
-          aria-label="Loading priority portfolio"
+          aria-label="Memuat portofolio prioritas"
         >
           <div className={styles.skeletonBlock} />
           <div className={styles.skeletonBlock} />

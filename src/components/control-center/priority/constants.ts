@@ -15,11 +15,19 @@ export const NON_PRIORITY_REASON_ALLOWLIST = [
 
 export type NonPriorityReasonCode = (typeof NON_PRIORITY_REASON_ALLOWLIST)[number]
 
+/**
+ * Owner-facing id-ID sentences for allowlisted non-priority dispatch reasons
+ * (UI_CONTRACT §8). Raw codes remain secondary (title / Detail teknis).
+ */
 export const NON_PRIORITY_REASON_LABELS: Readonly<Record<NonPriorityReasonCode, string>> = {
-  STRICT_DIRECT_DEPENDENCY: 'Strict direct dependency',
-  NON_DELAYING_SPARE_CAPACITY: 'Non-delaying spare capacity',
-  PRIORITY_FRONTIER_BLOCKED: 'Priority frontier blocked',
-  PRIORITY_FRONTIER_EXHAUSTED: 'Priority frontier exhausted',
+  STRICT_DIRECT_DEPENDENCY:
+    'Dikerjakan di luar prioritas karena ketergantungan langsung yang ketat ke tugas prioritas.',
+  NON_DELAYING_SPARE_CAPACITY:
+    'Dikerjakan dari kapasitas cadangan yang tidak menunda pekerjaan prioritas.',
+  PRIORITY_FRONTIER_BLOCKED:
+    'Dikerjakan di luar prioritas karena frontier prioritas sedang terhambat.',
+  PRIORITY_FRONTIER_EXHAUSTED:
+    'Dikerjakan di luar prioritas karena frontier prioritas sudah habis.',
 }
 
 /** UI_CONTRACT §5 required screen states. */

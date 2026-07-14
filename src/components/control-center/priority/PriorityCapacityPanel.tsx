@@ -5,6 +5,10 @@ import {
   formatBoolean,
   formatCapacityShare,
   formatMajorityAllocationPass,
+  humanCapacityReason,
+  humanFrontierState,
+  humanMajorityAllocation,
+  humanPortfolioLabel,
   majoritySemanticClass,
   NA_TOKEN,
 } from './display'
@@ -33,6 +37,10 @@ export function PriorityCapacityPanel(props: PriorityCapacityProps) {
   const emptyFrontier =
     frontierState === 'PRIORITY_FRONTIER_EMPTY' ||
     frontierState === 'PRIORITY_FRONTIER_EXHAUSTED'
+  const portfolioRaw = portfolioId || PRIORITY_PORTFOLIO_ID
+  const reasonRaw = reason == null || reason === '' ? NA_TOKEN : reason
+  const reasonTechnical =
+    reason == null || reason === '' ? NA_TOKEN : formatOperationalLabel(reason)
 
   return (
     <section
@@ -46,36 +54,37 @@ export function PriorityCapacityPanel(props: PriorityCapacityProps) {
     >
       <header className={styles.panelHead}>
         <h2 id="priority-capacity-heading" className={styles.panelTitle}>
-          Capacity &amp; majority allocation
+          Kapasitas &amp; alokasi mayoritas
         </h2>
         <span
           className={styles.portfolioBadge}
-          title={portfolioId || PRIORITY_PORTFOLIO_ID}
-          data-portfolio-raw={portfolioId || PRIORITY_PORTFOLIO_ID}
+          title={humanPortfolioLabel(portfolioRaw)}
+          data-portfolio-raw={portfolioRaw}
         >
-          {formatOperationalLabel(portfolioId || PRIORITY_PORTFOLIO_ID)}
+          {portfolioRaw}
         </span>
       </header>
 
       {(zeroCapacity || emptyFrontier || majorityAllocationPass === null) && (
         <p className={styles.warnLine} role="status" data-testid="priority-fail-closed-notice">
-          Fail-closed: zero capacity / empty frontier / null majority never renders as majority
-          PASS. Displayed majority is <strong>{majorityLabel}</strong>
+          Fail-closed: kapasitas nol / frontier kosong / mayoritas null tidak pernah ditampilkan
+          sebagai mayoritas PASS. Mayoritas yang ditampilkan:{' '}
+          <strong>{majorityLabel}</strong>
           {majorityLabel === NA_TOKEN ? ' (N-A)' : ''}.
         </p>
       )}
 
       <dl className={styles.statGrid}>
         <div className={styles.stat}>
-          <dt>Priority closure capacity</dt>
+          <dt title="priorityClosureCapacity">Kapasitas penutupan prioritas</dt>
           <dd data-testid="priority-closure-capacity">{priorityClosureCapacity}</dd>
         </div>
         <div className={styles.stat}>
-          <dt>All-role closure capacity</dt>
+          <dt title="allClosureCapacity">Kapasitas penutupan semua peran</dt>
           <dd data-testid="priority-all-closure-capacity">{allClosureCapacity}</dd>
         </div>
         <div className={styles.stat}>
-          <dt>Priority capacity share</dt>
+          <dt title="priorityCapacityShare">Porsi kapasitas prioritas</dt>
           <dd
             data-testid="priority-capacity-share"
             className={shareLabel === NA_TOKEN ? styles.semanticNa : styles.mono}
@@ -84,7 +93,7 @@ export function PriorityCapacityPanel(props: PriorityCapacityProps) {
           </dd>
         </div>
         <div className={styles.stat}>
-          <dt>Majority allocation</dt>
+          <dt title="majorityAllocationPass">Alokasi mayoritas</dt>
           <dd
             data-testid="priority-majority-pass"
             className={
@@ -105,32 +114,43 @@ export function PriorityCapacityPanel(props: PriorityCapacityProps) {
             <span className={styles.semanticIcon} aria-hidden="true">
               {majorityClass === 'pass' ? '✓' : majorityClass === 'fail' ? '✗' : '–'}
             </span>
-            {majorityLabel}
+            {humanMajorityAllocation(majorityAllocationPass)}{' '}
+            <strong>{majorityLabel}</strong>
             <span className={styles.srOnly}>
               raw boolean {formatBoolean(majorityAllocationPass)}
             </span>
           </dd>
         </div>
         <div className={styles.stat}>
-          <dt>Frontier state</dt>
-          <dd
-            data-testid="priority-frontier-state"
-            className={styles.mono}
-            title={frontierState}
-            data-frontier-raw={frontierState}
-          >
-            {formatOperationalLabel(frontierState)}
+          <dt title="frontierState">Status frontier prioritas</dt>
+          <dd>
+            <span>{humanFrontierState(frontierState)}</span>
+            <div>
+              <code
+                data-testid="priority-frontier-state"
+                className={styles.mono}
+                title={frontierState}
+                data-frontier-raw={frontierState}
+              >
+                {formatOperationalLabel(frontierState)}
+              </code>
+            </div>
           </dd>
         </div>
         <div className={styles.stat}>
-          <dt>Reason</dt>
-          <dd
-            data-testid="priority-capacity-reason"
-            className={styles.mono}
-            title={reason ?? NA_TOKEN}
-            data-reason-raw={reason ?? NA_TOKEN}
-          >
-            {reason == null || reason === '' ? NA_TOKEN : formatOperationalLabel(reason)}
+          <dt title="reason">Alasan kapasitas</dt>
+          <dd>
+            <span>{humanCapacityReason(reason)}</span>
+            <div>
+              <code
+                data-testid="priority-capacity-reason"
+                className={styles.mono}
+                title={reasonRaw}
+                data-reason-raw={reasonRaw}
+              >
+                {reasonTechnical}
+              </code>
+            </div>
           </dd>
         </div>
       </dl>

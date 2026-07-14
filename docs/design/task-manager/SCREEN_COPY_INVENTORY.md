@@ -73,8 +73,28 @@ Every owner-visible entity: `locale`, `title`, `outcome`, `whyItMatters`, `curre
 | Stale | “Data mungkin usang” + last valid time + refresh |
 | Permission | “Anda tidak punya akses…” not blank page |
 
-## 7. Residual (this task)
+## 7. Priority surface copy map (id-ID primary)
 
-- No mass content backfill.
-- Chrome remains English nine-IA until i18n task.
-- Inventory is the alias + required-field contract only.
+Route: `/b/$boardId/priority` · component tree under `src/components/control-center/priority/`.
+
+| Panel / chrome | Primary owner copy (id-ID) | Technical secondary |
+|---|---|---|
+| Page title | Portofolio prioritas | portfolioId `SALES_WEB_RELATED_BACKEND` |
+| Portfolio human name | Prioritas Utama — Panel Sales, Website, dan Backend Terkait | ART HUMAN TAXONOMY |
+| Membership | Keanggotaan portofolio; penyebut; receipt valid/invalid | task IDs under Detail teknis |
+| Denominators | Penyebut terpisah (DISTINCT); label field id-ID | raw field names on `title`; task ID lists in Detail teknis |
+| Readiness | Kesiapan board/tugas; complete; dibatasi oleh (cappedBy sentence) | raw `cappedBy` enum + policy versions in Detail teknis |
+| Capacity | Kapasitas & alokasi mayoritas; frontier/reason sentences | PASS/FAIL/N-A tokens + raw frontier/reason codes |
+| G5 | Domain G5 (sembilan gerbang); status Lolos/Gagal/… | domainId slug; g5Pass boolean |
+| Non-priority | Alasan di luar prioritas (4 allowlist sentences) | raw reason codes; allowlist codes in Detail teknis |
+| UI states | Memuat / kosong / partial / basi / terputus / gagal / akses ditolak / keputusan manusia | errorCode under Detail teknis |
+
+**Invariant:** numeric denominators, share, readiness %, majority boolean, and G5 pass are server envelope only — copy layer never recomputes them.
+
+**Known residual:** empty-product warning block on denominators is owned by a separate root fix (`productDenominator=0` → human sentence + Detail teknis); do not fork that block in this pass.
+
+## 8. Residual (this task)
+
+- No mass content backfill of task humanDisplay rows.
+- AppShell chrome remains English nine-IA until i18n task.
+- Inventory is the alias + required-field contract plus Priority label map above.

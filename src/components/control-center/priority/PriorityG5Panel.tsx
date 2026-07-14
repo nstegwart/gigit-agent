@@ -1,6 +1,6 @@
-import { G5_DOMAIN_LABELS, G5_REQUIRED_DOMAINS } from '#/lib/control-plane-types'
+import { G5_REQUIRED_DOMAINS } from '#/lib/control-plane-types'
 import type { G5DomainId } from '#/lib/control-plane-types'
-import { formatBoolean } from './display'
+import { formatBoolean, humanBoolean, humanG5DomainLabel, humanG5Status } from './display'
 import type { PriorityG5Props } from './types'
 import styles from './priority.module.css'
 
@@ -33,10 +33,12 @@ export function PriorityG5Panel(props: PriorityG5Props) {
     if (row) return row
     return {
       domainId,
-      label: G5_DOMAIN_LABELS[domainId],
+      label: humanG5DomainLabel(domainId),
       status: 'NOT_STARTED' as const,
       pass: false,
-      reason: missingDomains.includes(domainId) ? 'missing from server envelope' : 'not provided',
+      reason: missingDomains.includes(domainId)
+        ? 'tidak ada di envelope server'
+        : 'tidak disediakan',
       evidenceReceiptIds: [],
       blocker: null,
     }
@@ -51,7 +53,7 @@ export function PriorityG5Panel(props: PriorityG5Props) {
     >
       <header className={styles.panelHead}>
         <h2 id="priority-g5-heading" className={styles.panelTitle}>
-          G5 domains
+          Domain G5 (sembilan gerbang kesiapan)
         </h2>
         <span
           className={`${styles.statusPill} ${g5Pass ? styles.semanticOk : styles.semanticFail}`}
@@ -60,7 +62,8 @@ export function PriorityG5Panel(props: PriorityG5Props) {
           <span className={styles.semanticIcon} aria-hidden="true">
             {g5Pass ? '✓' : '✗'}
           </span>
-          g5Pass={formatBoolean(g5Pass)}
+          {humanBoolean(g5Pass, 'G5 lolos', 'G5 belum lolos')} · g5Pass=
+          {formatBoolean(g5Pass)}
         </span>
       </header>
 
@@ -78,14 +81,14 @@ export function PriorityG5Panel(props: PriorityG5Props) {
             <tr>
               <th scope="col">Domain</th>
               <th scope="col">Status</th>
-              <th scope="col">Pass</th>
-              <th scope="col">Reason / blocker</th>
-              <th scope="col">Evidence</th>
+              <th scope="col">Lolos</th>
+              <th scope="col">Alasan / pemblokir</th>
+              <th scope="col">Bukti</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
-              const label = row.label ?? G5_DOMAIN_LABELS[row.domainId] ?? row.domainId
+              const label = humanG5DomainLabel(row.domainId, row.label)
               const reason = row.blocker || row.reason || '—'
               const evidenceCount = row.evidenceReceiptIds?.length ?? 0
               return (
@@ -100,12 +103,16 @@ export function PriorityG5Panel(props: PriorityG5Props) {
                     <code className={styles.domainId}>{row.domainId}</code>
                   </th>
                   <td>
-                    <span className={`${styles.statusPill} ${statusClass(row.status)}`}>
-                      {row.status}
+                    <span
+                      className={`${styles.statusPill} ${statusClass(row.status)}`}
+                      title={row.status}
+                    >
+                      {humanG5Status(row.status)}
                     </span>
                   </td>
                   <td className={row.pass ? styles.semanticOk : styles.semanticFail}>
-                    {formatBoolean(row.pass)}
+                    {humanBoolean(row.pass, 'Ya', 'Tidak')}{' '}
+                    <code className={styles.mono}>{formatBoolean(row.pass)}</code>
                   </td>
                   <td className={styles.reasonCell}>{reason}</td>
                   <td data-testid={`priority-g5-evidence-${row.domainId}`}>{evidenceCount}</td>
@@ -117,7 +124,7 @@ export function PriorityG5Panel(props: PriorityG5Props) {
 
         <ul className={styles.g5Cards} data-testid="priority-g5-cards">
           {rows.map((row) => {
-            const label = row.label ?? G5_DOMAIN_LABELS[row.domainId] ?? row.domainId
+            const label = humanG5DomainLabel(row.domainId, row.label)
             const reason = row.blocker || row.reason || '—'
             return (
               <li
@@ -127,23 +134,27 @@ export function PriorityG5Panel(props: PriorityG5Props) {
               >
                 <div className={styles.g5CardHead}>
                   <span className={styles.domainLabel}>{label}</span>
-                  <span className={`${styles.statusPill} ${statusClass(row.status)}`}>
-                    {row.status}
+                  <span
+                    className={`${styles.statusPill} ${statusClass(row.status)}`}
+                    title={row.status}
+                  >
+                    {humanG5Status(row.status)}
                   </span>
                 </div>
                 <dl className={styles.g5CardMeta}>
                   <div>
-                    <dt>Pass</dt>
+                    <dt>Lolos</dt>
                     <dd className={row.pass ? styles.semanticOk : styles.semanticFail}>
-                      {formatBoolean(row.pass)}
+                      {humanBoolean(row.pass, 'Ya', 'Tidak')}{' '}
+                      <code className={styles.mono}>{formatBoolean(row.pass)}</code>
                     </dd>
                   </div>
                   <div>
-                    <dt>Reason</dt>
+                    <dt>Alasan</dt>
                     <dd>{reason}</dd>
                   </div>
                   <div>
-                    <dt>Evidence</dt>
+                    <dt>Bukti</dt>
                     <dd>{row.evidenceReceiptIds?.length ?? 0}</dd>
                   </div>
                 </dl>
@@ -155,7 +166,7 @@ export function PriorityG5Panel(props: PriorityG5Props) {
 
       {missingDomains.length > 0 ? (
         <p className={styles.warnLine} data-testid="priority-g5-missing">
-          Missing domains from envelope:{' '}
+          Domain yang hilang dari envelope server:{' '}
           {missingDomains.map((id) => (
             <code key={id}>{id} </code>
           ))}

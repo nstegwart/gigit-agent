@@ -15,7 +15,16 @@ export {
   isAllowlistedNonPriorityReason,
   filterAllowlistedReasons,
   majoritySemanticClass,
+  humanPortfolioLabel,
+  humanFrontierState,
+  humanCappedBy,
+  humanCapacityReason,
+  humanMajorityAllocation,
+  humanG5Status,
+  humanG5DomainLabel,
   NA_TOKEN,
+  PORTFOLIO_HUMAN_LABEL,
+  G5_DOMAIN_HUMAN_LABELS,
 } from './display'
 
 export type {
