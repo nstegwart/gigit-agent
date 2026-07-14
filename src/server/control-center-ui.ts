@@ -379,10 +379,18 @@ export interface ProjectUiSummary {
  */
 export interface FeatureProgressNodeUi {
   taskId: string
+  /** Owner-facing primary title (reviewed HD or CONTENT_REVIEW shell — never silent technical). */
   title: string
   lifecycleStage: string | null
   status: string | null
   blockedReason: string | null
+  /**
+   * Source/technical title kept for progressive disclosure when owner primary is
+   * a content-review shell. Null when title already is the reviewed owner copy.
+   */
+  technicalTitle?: string | null
+  /** True when humanDisplay is missing/stale/unreviewed — owner primary is fail-closed shell. */
+  contentReviewRequired?: boolean
 }
 
 export interface FeatureUiSummary {
@@ -1571,8 +1579,9 @@ export function projectProjects(
 
 /**
  * Prefer reviewed owner humanDisplay title on feature progress nodes.
- * When content review is still required, keep technical source title (honest residual)
- * rather than inventing copy — full humanDisplay backfill remains a separate gate.
+ * Fail-closed (01A): never leave cryptic technical title as the sole owner primary.
+ * When content review is still required, surface blockedShell title + contentReviewRequired
+ * and keep the source title as technicalTitle for progressive disclosure.
  */
 export function withOwnerFacingProgressNodeTitles(
   agg: ControlCenterAggregation,
@@ -1584,11 +1593,27 @@ export function withOwnerFacingProgressNodeTitles(
     return {
       ...f,
       progressNodes: nodes.map((n) => {
+        const technicalTitle =
+          typeof n.title === 'string' && n.title.trim().length > 0 ? n.title.trim() : n.taskId
         const hd = resolveTaskOwnerHumanDisplay(agg, n.taskId)
-        if (!hd.contentReviewRequired && hd.ownerPrimaryTitle.trim()) {
-          return { ...n, title: hd.ownerPrimaryTitle }
+        const ownerTitle =
+          typeof hd.ownerPrimaryTitle === 'string' && hd.ownerPrimaryTitle.trim().length > 0
+            ? hd.ownerPrimaryTitle.trim()
+            : 'Konten pemilik memerlukan peninjauan'
+        if (!hd.contentReviewRequired) {
+          return {
+            ...n,
+            title: ownerTitle,
+            technicalTitle: ownerTitle === technicalTitle ? null : technicalTitle,
+            contentReviewRequired: false,
+          }
         }
-        return { ...n }
+        return {
+          ...n,
+          title: ownerTitle,
+          technicalTitle,
+          contentReviewRequired: true,
+        }
       }),
     }
   })

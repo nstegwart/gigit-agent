@@ -38,6 +38,10 @@ export interface FeatureProgressNodeView {
   blockedReason: string | null
   /** Deep link to work detail when boardId known. */
   detailHref: string
+  /** Source/technical title when owner primary is content-review shell. */
+  technicalTitle?: string | null
+  /** True when humanDisplay is missing/stale/unreviewed. */
+  contentReviewRequired?: boolean
 }
 
 export interface FeatureRowView {

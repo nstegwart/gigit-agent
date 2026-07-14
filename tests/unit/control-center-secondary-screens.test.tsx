@@ -359,6 +359,7 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
               lifecycleStage: 'MAP_VERIFIED',
               status: 'blocked',
               blockedReason: 'Menunggu quote API',
+              contentReviewRequired: false,
             },
             {
               taskId: 'T-NODE-2',
@@ -366,6 +367,7 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
               lifecycleStage: 'MAPPED',
               status: 'queued',
               blockedReason: null,
+              contentReviewRequired: false,
             },
           ],
           stageCounts: { MAP_VERIFIED: 1, MAPPED: 1 },
@@ -393,6 +395,48 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
       /Peta terverifikasi|Terpetakan|MAP/,
     )
     expect(found.feature?.progressNodes[0]?.detailHref).toContain('/work/T-NODE-1')
+  })
+
+  it('FeatureDetailScreen shows content-review chip when progress node needs review', () => {
+    const withReview: FeaturesData = {
+      ...data,
+      features: [
+        {
+          ...data.items[0]!,
+          taskCount: 1,
+          progressNodes: [
+            {
+              taskId: 'T-NODE-TECH',
+              title: 'Konten pemilik memerlukan peninjauan',
+              technicalTitle: 'Integration closure FC-AFF-MEMBER-REFERRAL',
+              contentReviewRequired: true,
+              lifecycleStage: 'MAPPED',
+              status: 'queued',
+              blockedReason: null,
+            },
+          ],
+          stageCounts: { MAPPED: 1 },
+        },
+      ],
+      items: data.items,
+    } as FeaturesData
+    const found = featureDetailFromEnvelope(basePin(withReview), 'f-1')
+    render(
+      <FeatureDetailScreen
+        surfaceState="populated"
+        boardId="mfs-rebuild"
+        feature={found.feature}
+        pin={found.pin}
+        error={null}
+        listHref={found.listHref}
+      />,
+    )
+    expect(screen.getByTestId('feature-progress-content-review').textContent).toMatch(
+      /Perlu peninjauan konten/,
+    )
+    expect(screen.getByTestId('feature-progress-technical').textContent).toMatch(
+      /Integration closure/,
+    )
   })
 
   it('renders flow branch + context chips + responsive structure', () => {

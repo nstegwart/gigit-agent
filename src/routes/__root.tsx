@@ -45,11 +45,11 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
       // Document title for shell a11y (WCAG 2.4.2); keep meaningful, product-facing.
-      { title: 'Cairn — agent work board' },
+      { title: 'Cairn — papan kerja agen' },
       {
         name: 'description',
         content:
-          'Lightweight, agent-native work board: projects → features → tasks, with live agent runtime.',
+          'Papan kerja agen: proyek → fitur → tugas, dengan runtime agen langsung.',
       },
     ],
     links: [{ rel: 'stylesheet', href: appCss }],
@@ -59,8 +59,9 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   // Root lang required for html-has-lang / screen-reader language announcement.
+  // Owner-facing default is id-ID (01A); technical IDs remain progressive disclosure.
   return (
-    <html lang="en">
+    <html lang="id">
       <head>
         <HeadContent />
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />

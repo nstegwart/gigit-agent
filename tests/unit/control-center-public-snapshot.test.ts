@@ -825,17 +825,22 @@ describe('control-center-public-snapshot mapper', () => {
     expect(feat?.taskCount).toBe(2)
     expect(feat?.stageCounts).toEqual({ MAP_VERIFIED: 1, MAPPED: 1 })
     expect(feat?.progressNodes).toHaveLength(2)
+    // Fail-closed owner primary when humanDisplay not REVIEWED (01A).
     expect(feat?.progressNodes?.[0]).toMatchObject({
       taskId: 't-a',
-      title: 'Menampilkan harga checkout',
       lifecycleStage: 'MAP_VERIFIED',
       status: 'active',
+      contentReviewRequired: true,
+      technicalTitle: 'Menampilkan harga checkout',
     })
+    expect(feat?.progressNodes?.[0]?.title).toMatch(/peninjauan|CONTENT_REVIEW/i)
 
     const mat = materializePublicSnapshotFromControlCenter(withProgress)
     const pub = mat.payload.features.find((f) => f.id === 'feat-1')
     expect(pub?.progressNodes).toHaveLength(2)
     expect(pub?.progressNodes?.[0]?.taskId).toBe('t-a')
+    expect(pub?.progressNodes?.[0]?.contentReviewRequired).toBe(true)
+    expect(pub?.progressNodes?.[0]?.technicalTitle).toBe('Menampilkan harga checkout')
     expect(pub?.stageCounts?.MAP_VERIFIED).toBe(1)
   })
 
@@ -899,5 +904,7 @@ describe('control-center-public-snapshot mapper', () => {
     expect((feat?.progressNodes?.length ?? 0) >= 1).toBe(true)
     expect(feat?.progressNodes?.[0]?.taskId).toBeTruthy()
     expect(feat?.progressNodes?.[0]?.title).toBeTruthy()
+    expect(feat?.progressNodes?.[0]?.contentReviewRequired).toBe(true)
+    expect(feat?.progressNodes?.[0]?.technicalTitle).toBeTruthy()
   })
 })

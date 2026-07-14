@@ -86,9 +86,14 @@ export interface PublicProjectSummary {
 /** Linked task progress for a public feature (sanitized; never invents nodes). */
 export interface PublicFeatureProgressNode {
   taskId: string
+  /** Owner-facing primary title (reviewed or CONTENT_REVIEW shell). */
   title: string
   lifecycleStage?: string | null
   status?: string | null
+  /** Source/technical title when owner primary is content-review shell. */
+  technicalTitle?: string | null
+  /** True when humanDisplay is missing/stale/unreviewed. */
+  contentReviewRequired?: boolean
 }
 
 export interface PublicFeatureSummary {
@@ -608,6 +613,11 @@ export function materializePublicSnapshot(input: PublicAggregationInput): Materi
                   : null,
               status:
                 typeof n.status === 'string' && n.status.length > 0 ? n.status : null,
+              technicalTitle:
+                typeof n.technicalTitle === 'string' && n.technicalTitle.trim()
+                  ? n.technicalTitle.trim()
+                  : null,
+              contentReviewRequired: n.contentReviewRequired === true,
             }))
           : null
         const stageCounts =

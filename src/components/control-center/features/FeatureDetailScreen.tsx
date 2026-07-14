@@ -260,12 +260,29 @@ export function FeatureDetailScreen({
                   <span className={styles.chip} data-testid="feature-progress-status">
                     {statusLabel(n.status)}
                   </span>
+                  {n.contentReviewRequired ? (
+                    <span
+                      className={styles.progressContentReview}
+                      data-testid="feature-progress-content-review"
+                      title={n.technicalTitle ?? undefined}
+                    >
+                      Perlu peninjauan konten
+                    </span>
+                  ) : null}
                   {n.blockedReason ? (
                     <span className={styles.progressBlocker} data-testid="feature-progress-blocker">
                       Hambatan: {n.blockedReason}
                     </span>
                   ) : null}
                 </div>
+                {n.contentReviewRequired && n.technicalTitle ? (
+                  <details className={styles.gapDisclosure} data-testid="feature-progress-technical">
+                    <summary className={styles.gapDisclosureSummary}>Detail teknis</summary>
+                    <p className={styles.pageSub} style={{ margin: '8px 0 0' }}>
+                      Judul sumber: <code>{n.technicalTitle}</code>
+                    </p>
+                  </details>
+                ) : null}
               </li>
             ))}
           </ol>

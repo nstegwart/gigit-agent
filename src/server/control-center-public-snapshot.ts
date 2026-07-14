@@ -9,7 +9,11 @@
  */
 
 import type { ControlCenterAggregation, ControlCenterPin } from '#/server/control-center-ui'
-import { assertPinComplete, pinToTuple } from '#/server/control-center-ui'
+import {
+  assertPinComplete,
+  pinToTuple,
+  withOwnerFacingProgressNodeTitles,
+} from '#/server/control-center-ui'
 import type { PinnedRevisionTuple } from '#/lib/control-plane-types'
 import { G5_REQUIRED_DOMAINS } from '#/lib/control-plane-types'
 import {
@@ -220,9 +224,11 @@ function mapProjects(agg: ControlCenterAggregation): Array<PublicProjectSummary>
  * Public feature rows with real progress nodes when the aggregation carries them
  * (featureContractId join on FeatureUiSummary) or when workRows link by featureId.
  * Never invents task ids/titles/stages — empty progressNodes when join has none.
+ * Applies the same fail-closed owner title projection as authenticated features UI.
  */
 function mapFeatures(agg: ControlCenterAggregation): Array<PublicFeatureSummary> {
-  return agg.features.map((f) => {
+  const features = withOwnerFacingProgressNodeTitles(agg, agg.features)
+  return features.map((f) => {
     const fromFeature = Array.isArray(f.progressNodes)
       ? f.progressNodes.map((n) => ({
           taskId: n.taskId,
@@ -233,22 +239,33 @@ function mapFeatures(agg: ControlCenterAggregation): Array<PublicFeatureSummary>
               ? n.lifecycleStage
               : null,
           status: typeof n.status === 'string' && n.status.length > 0 ? n.status : null,
+          technicalTitle:
+            typeof n.technicalTitle === 'string' && n.technicalTitle.trim().length > 0
+              ? n.technicalTitle.trim()
+              : null,
+          contentReviewRequired: n.contentReviewRequired === true,
         }))
       : null
 
     const linkedRows = agg.workRows.filter((r) => r.featureId === f.id)
     const progressNodes =
       fromFeature ??
-      linkedRows.map((r) => ({
-        taskId: r.taskId,
-        title:
-          typeof r.title === 'string' && r.title.trim().length > 0 ? r.title : r.taskId,
-        lifecycleStage:
-          typeof r.lifecycleStage === 'string' && r.lifecycleStage.length > 0
-            ? r.lifecycleStage
-            : null,
-        status: null as string | null,
-      }))
+      linkedRows.map((r) => {
+        const technicalTitle =
+          typeof r.title === 'string' && r.title.trim().length > 0 ? r.title.trim() : r.taskId
+        // Fail-closed: work-row fallback has no reviewed HD on this path.
+        return {
+          taskId: r.taskId,
+          title: 'Konten pemilik memerlukan peninjauan',
+          technicalTitle,
+          contentReviewRequired: true,
+          lifecycleStage:
+            typeof r.lifecycleStage === 'string' && r.lifecycleStage.length > 0
+              ? r.lifecycleStage
+              : null,
+          status: null as string | null,
+        }
+      })
 
     const stageCounts: Record<string, number> = {}
     if (f.stageCounts && typeof f.stageCounts === 'object') {

@@ -3,7 +3,7 @@ export function PageLoading() {
   return (
     <div className="page-loading" role="status" aria-live="polite">
       <span className="spinner" />
-      <span className="page-loading-txt">Loading…</span>
+      <span className="page-loading-txt">Memuat…</span>
     </div>
   )
 }

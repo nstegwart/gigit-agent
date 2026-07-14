@@ -203,6 +203,8 @@ export function featureUiSummaryToRowView(
       lifecycleStage?: string | null
       status?: string | null
       blockedReason?: string | null
+      technicalTitle?: string | null
+      contentReviewRequired?: boolean | null
     }> | null
     stageCounts?: Record<string, number> | null
     pageRoutes?: string[] | null
@@ -234,6 +236,11 @@ export function featureUiSummaryToRowView(
               typeof n.blockedReason === 'string' && n.blockedReason.trim()
                 ? n.blockedReason
                 : null,
+            technicalTitle:
+              typeof n.technicalTitle === 'string' && n.technicalTitle.trim()
+                ? n.technicalTitle.trim()
+                : null,
+            contentReviewRequired: n.contentReviewRequired === true,
             detailHref: boardId
               ? `/b/${encodeURIComponent(boardId)}/work/${encodeURIComponent(taskId)}`
               : `/work/${encodeURIComponent(taskId)}`,
