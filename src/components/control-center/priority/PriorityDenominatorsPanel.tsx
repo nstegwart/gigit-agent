@@ -33,8 +33,16 @@ export function PriorityDenominatorsPanel(props: PriorityRollupDenominatorsProps
 
       {emptyProduct ? (
         <p className={styles.warnLine} role="status" data-testid="priority-empty-product-scope">
-          productDenominator=0 — readiness must stay null / N-A; complete must stay false (never
-          100% / PASS from empty scope).
+          Belum ada tugas produk pada cakupan ini, jadi kesiapan belum dapat dihitung dan
+          ditampilkan sebagai <strong>N/A</strong> — tidak pernah dibulatkan menjadi 100% atau
+          lolos dari cakupan kosong.
+          <details className={styles.details}>
+            <summary className={styles.detailsSummary}>Detail teknis</summary>
+            <code>
+              productDenominator=0 — readiness must stay null / N-A; complete must stay false
+              (never 100% / PASS from empty scope).
+            </code>
+          </details>
         </p>
       ) : null}
 

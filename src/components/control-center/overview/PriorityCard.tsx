@@ -113,14 +113,32 @@ export function PriorityCard({ data }: { data: OverviewPriorityCard | null }) {
         </p>
       ) : null}
       {data.blockers?.length ? (
-        <ul className={styles.blockers} aria-label="Priority blockers">
-          {data.blockers.map((b) => (
-            <li key={b} className={styles.blockerItem}>
-              <SemanticIcon kind="stop" />
-              <span>{b}</span>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className={styles.blockers} aria-label="Priority blockers">
+            {data.blockers.map((b, i) => (
+              <li key={`${i}:${b}`} className={styles.blockerItem}>
+                <SemanticIcon kind="stop" />
+                <span>{b}</span>
+              </li>
+            ))}
+          </ul>
+          {data.blockersDetail?.length ? (
+            <details className={styles.bannerDetails}>
+              <summary>
+                Detail teknis ({data.blockersDetail.length} kode)
+              </summary>
+              <ul className={styles.blockers}>
+                {data.blockersDetail.map((e) => (
+                  <li key={`${e.code}:${e.message}`} className={styles.blockerItem}>
+                    <span>
+                      <strong>{e.code}</strong>: {e.message}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+        </>
       ) : null}
     </section>
   )

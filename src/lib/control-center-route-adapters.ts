@@ -36,6 +36,7 @@ import type {
 } from '#/components/control-center/decisions'
 import { G5_DOMAIN_LABELS, G5_REQUIRED_DOMAINS } from '#/lib/control-plane-types'
 import type { G5DomainId } from '#/lib/control-plane-types'
+import { sectionErrorHumanSentence } from '#/lib/section-error-copy'
 
 const SEVERITIES = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
 
@@ -387,7 +388,9 @@ export function overviewEnvelopeToProps(
       capacityShareDisplay,
       majorityDisplay,
       dispatchReason: d.dispatchNext.blockedReason,
-      blockers: d.sectionErrors.map((e) => `${e.code}: ${e.message}`),
+      // Primary copy is a plain-language sentence; raw code/message moves to blockersDetail.
+      blockers: d.sectionErrors.map((e) => sectionErrorHumanSentence(e.code)),
+      blockersDetail: d.sectionErrors.map((e) => ({ code: e.code, message: e.message })),
     },
     global: {
       trackedWorkDenominator: d.trackedWorkDenominator,

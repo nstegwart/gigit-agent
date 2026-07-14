@@ -115,7 +115,10 @@ export interface OverviewPriorityCard {
   majorityDisplay: string
   dispatchReason?: string | null
   nonPriorityReason?: PriorityNonPriorityReason | null
+  /** Plain-language (id-ID) sentences — never a raw `CODE: message` string. */
   blockers?: string[]
+  /** Raw code/message pairs backing `blockers`, for technical disclosure only. */
+  blockersDetail?: TypedErrorShape[]
 }
 
 export interface OverviewGlobalCard {
