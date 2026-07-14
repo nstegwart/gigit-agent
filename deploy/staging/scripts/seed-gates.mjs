@@ -6,24 +6,37 @@
  * Emits deterministic JSON manifests + cleanup plans for the reversible
  * synthetic gate pack under qa/fixtures/staging/gates/**.
  *
- * Live apply is hard-gated and intentionally refuses unless BOTH:
+ * Live apply is hard-gated and intentionally refuses unless ALL of:
  *   CAIRN_ENV=staging
  *   CAIRN_DB_NAME=cairn_tm_v3_staging
  *   CAIRN_STAGING_SEED_APPROVED=1
  *   CAIRN_GATES_APPLY=1
- * Even then, this build only documents the apply path; it does not implement
- * destructive SQL — operators re-use seed-synthetic / import APIs.
+ *   CAIRN_GATES_BIND_LIVE_PIN=1
+ *
+ * Even with dual gates + live pin bind, default --apply is PLAN-ONLY (no network
+ * mutation). Execute path requires CAIRN_GATES_EXECUTE=1 and delegates to
+ * qa/e2e/flows/staging-gates-apply.mjs which uses authenticated product MCP only.
+ *
+ * Execute rails (driver-enforced, fail-closed):
+ *   - healthz pin-shape validation before any mutation (boardRev/lifecycleRev)
+ *   - register_run must send MCP-required targetGate
+ *   - advance_task must send byRunId bound to the registered author run
+ *   - no fabricated stage/G5 receipt hashes; additive synth-gate- prefix only
+ *
+ * NEVER uses seed-synthetic board wipe / raw SQL receipt inserts.
  *
  * Usage (repo root):
  *   node deploy/staging/scripts/seed-gates.mjs
  *   node deploy/staging/scripts/seed-gates.mjs --self-test
  *   node deploy/staging/scripts/seed-gates.mjs --manifest
  *   node deploy/staging/scripts/seed-gates.mjs --cleanup
- *   node deploy/staging/scripts/seed-gates.mjs --apply   # refuses without dual env gates
+ *   node deploy/staging/scripts/seed-gates.mjs --apply   # plan after dual gates; no mutate default
+ *   node deploy/staging/scripts/seed-gates.mjs --apply-adapter-self-test
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -36,6 +49,8 @@ function resolveRepoRoot() {
 
 const ROOT = resolveRepoRoot()
 const CONTRACT = path.join(ROOT, 'qa/fixtures/staging/gates/contract.mjs')
+const APPLY_ADAPTER = path.join(ROOT, 'qa/fixtures/staging/gates/apply-adapter.mjs')
+const APPLY_DRIVER = path.join(ROOT, 'qa/e2e/flows/staging-gates-apply.mjs')
 const POLICY = path.join(ROOT, 'qa/fixtures/staging/gates/seed-policy.json')
 
 function argFlag(name) {
@@ -59,7 +74,19 @@ async function loadContract() {
   return import(pathToFileURL(CONTRACT).href)
 }
 
-function refuseLiveApply(policy) {
+async function loadApplyAdapter() {
+  if (!fs.existsSync(APPLY_ADAPTER)) {
+    throw Object.assign(new Error(`apply adapter missing: ${APPLY_ADAPTER}`), {
+      code: 'GATES_APPLY_ADAPTER_MISSING',
+    })
+  }
+  return import(pathToFileURL(APPLY_ADAPTER).href)
+}
+
+/**
+ * Dual staging env + policy gates (without live pin — pin checked separately).
+ */
+function refuseLiveApplyBase(policy) {
   const env = process.env
   const missing = []
   const required = policy.requiredEnvForLiveApply ?? {
@@ -114,8 +141,25 @@ async function main() {
     process.exit(0)
   }
 
+  if (argFlag('--apply-adapter-self-test')) {
+    const adapter = await loadApplyAdapter()
+    const self = adapter.runApplyAdapterSelfTests()
+    console.log(
+      JSON.stringify(
+        {
+          mode: 'apply-adapter-self-test',
+          stagingMutation: false,
+          ...self,
+        },
+        null,
+        2,
+      ),
+    )
+    process.exit(self.ok ? 0 : 1)
+  }
+
   if (argFlag('--apply')) {
-    const gate = refuseLiveApply(policy)
+    const gate = refuseLiveApplyBase(policy)
     if (!gate.ok) {
       console.error(
         JSON.stringify({
@@ -129,23 +173,94 @@ async function main() {
       )
       process.exit(3)
     }
-    // Dual gates present — still do not mutate in this script; point to reuse APIs.
-    console.log(
-      JSON.stringify({
-        ok: false,
-        mode: 'apply-not-implemented',
-        code: 'GATES_APPLY_DELEGATED',
-        message:
-          'Live gate apply is delegated to existing seed/import APIs (seed-synthetic.mjs + canonical import). This script remains plan/self-test only to avoid accidental staging mutation.',
-        reuse: {
-          seedSynthetic: 'deploy/staging/scripts/seed-synthetic.mjs',
-          importApi: 'src/server/canonical-import.ts',
-          fixtures: 'qa/fixtures/staging/gates/**',
-        },
-        cleanupPlan: contract.buildCleanupPlan(),
-      }, null, 2),
+
+    // Dual env gates OK — require live pin bind (never use fixture boardRev=7 as CAS).
+    if (process.env.CAIRN_GATES_BIND_LIVE_PIN !== '1') {
+      console.error(
+        JSON.stringify({
+          ok: false,
+          mode: 'apply-refused',
+          code: 'CAIRN_GATES_LIVE_PIN_REQUIRED',
+          message:
+            'CAIRN_GATES_BIND_LIVE_PIN=1 required for apply. Fixture pin.json boardRev is self-test only; live CAS must re-read boardRev/lifecycleRev/canonicalHash before each mutation.',
+          missing: ['CAIRN_GATES_BIND_LIVE_PIN=1'],
+          forbiddenBypass: [
+            'deploy/staging/scripts/seed-synthetic.mjs',
+            'raw-sql-board-wipe',
+            'fixture-pin-boardRev-7-as-live-cas',
+          ],
+        }),
+      )
+      process.exit(3)
+    }
+
+    const adapter = await loadApplyAdapter()
+    const packManifest = contract.buildDeterministicPackManifest()
+    const applyPlan = adapter.buildApplyStepPlan({
+      expectedSha: process.env.EXPECTED_SHA || undefined,
+      packHash: packManifest.packHash,
+      boardId: policy.boardId || packManifest.boardId,
+    })
+
+    const wantExecute = process.env.CAIRN_GATES_EXECUTE === '1'
+    if (!wantExecute) {
+      // Default: non-mutating plan emission (safe for CI / operator dry review).
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            mode: 'apply-plan',
+            code: 'GATES_APPLY_PLAN',
+            stagingMutation: false,
+            message:
+              'Dual gates + live-pin bind satisfied. Default --apply is plan-only (no staging mutation). Set CAIRN_GATES_EXECUTE=1 and run via staging-gates-apply.mjs with STAGING_URL + dual bearers to execute authenticated MCP steps.',
+            refuse: {
+              seedSynthetic: true,
+              rawSqlWipe: true,
+              fabricateStageReceipts: true,
+              fabricateG5Pass: true,
+            },
+            adapterId: adapter.ADAPTER_ID,
+            plan: applyPlan,
+            residual_gaps: applyPlan.residual_gaps,
+            driver: 'qa/e2e/flows/staging-gates-apply.mjs',
+            cleanupPlan: adapter.buildPrefixCleanupPlan({
+              boardId: policy.boardId || packManifest.boardId,
+            }),
+          },
+          null,
+          2,
+        ),
+      )
+      process.exit(0)
+    }
+
+    // Execute path: delegate to promoted driver (never seed-synthetic).
+    if (!fs.existsSync(APPLY_DRIVER)) {
+      console.error(
+        JSON.stringify({
+          ok: false,
+          mode: 'apply-execute-missing-driver',
+          code: 'GATES_APPLY_DRIVER_MISSING',
+          message: `Apply driver missing: ${APPLY_DRIVER}`,
+        }),
+      )
+      process.exit(2)
+    }
+
+    const child = spawnSync(
+      process.execPath,
+      [APPLY_DRIVER, '--apply', '--from-seed-gates'],
+      {
+        cwd: ROOT,
+        env: process.env,
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+      },
     )
-    process.exit(4)
+    if (child.stdout) process.stdout.write(child.stdout)
+    if (child.stderr) process.stderr.write(child.stderr)
+    process.exit(child.status == null ? 2 : child.status)
   }
 
   // default: --self-test

@@ -30,69 +30,119 @@ node qa/fixtures/staging/gates/contract.mjs --self-test
 node deploy/staging/scripts/seed-gates.mjs --self-test
 node qa/e2e/flows/staging-gates.mjs --self-test
 
+# Apply adapter pure self-test / plan (no mutation)
+node qa/fixtures/staging/gates/apply-adapter.mjs --self-test
+node deploy/staging/scripts/seed-gates.mjs --apply-adapter-self-test
+node qa/e2e/flows/staging-gates-apply.mjs --self-test
+node qa/e2e/flows/staging-gates-apply.mjs --plan
+
 # Deterministic pack JSON + cleanup plan (no mutation)
 node deploy/staging/scripts/seed-gates.mjs --manifest
 node deploy/staging/scripts/seed-gates.mjs --cleanup
 
-# Unit (product pure engines + fixtures)
+# Unit (product pure engines + fixtures + apply adapter)
 pnpm exec vitest run tests/unit/staging-gates-contract.test.ts \
-  tests/unit/staging-gates-lifecycle-reconciler.test.ts
+  tests/unit/staging-gates-lifecycle-reconciler.test.ts \
+  tests/unit/staging-gates-apply-adapter.test.ts
 ```
 
 ## Live apply (operator only)
 
-`seed-gates.mjs --apply` **refuses** unless:
+**Default is always non-mutating.** `seed-gates.mjs --apply` / `staging-gates-apply.mjs --apply` refuse unless:
 
-- `CAIRN_ENV=staging`
-- `CAIRN_DB_NAME=cairn_tm_v3_staging`
-- `CAIRN_STAGING_SEED_APPROVED=1`
-- `CAIRN_GATES_APPLY=1`
+| Env | Value |
+|---|---|
+| `CAIRN_ENV` | `staging` |
+| `CAIRN_DB_NAME` | `cairn_tm_v3_staging` |
+| `CAIRN_STAGING_SEED_APPROVED` | `1` |
+| `CAIRN_GATES_APPLY` | `1` |
+| `CAIRN_GATES_BIND_LIVE_PIN` | `1` |
 
-Even with dual gates, this pack **delegates** mutation to existing seed/import APIs:
+With those gates set, **default remains plan-only** (`mode: apply-plan`, `stagingMutation: false`): pure step plan from `qa/fixtures/staging/gates/apply-adapter.mjs`.
 
-- `deploy/staging/scripts/seed-synthetic.mjs`
-- `src/server/canonical-import.ts` / `canonical-snapshot.ts`
+### Execute (authenticated product MCP only)
 
-It never `DROP DATABASE` and never prints bearer/token secrets.
+Additionally require:
+
+- `CAIRN_GATES_EXECUTE=1`
+- `STAGING_URL` (e.g. tunnel `http://127.0.0.1:33211`)
+- `STAGING_ROOT_BEARER_TOKEN` + `STAGING_AGENT_BEARER_TOKEN` + `STAGING_AGENT_ID`
+- Optional `EXPECTED_SHA` (fail-closed vs healthz `deployedSha`)
+
+```bash
+export CAIRN_ENV=staging CAIRN_DB_NAME=cairn_tm_v3_staging
+export CAIRN_STAGING_SEED_APPROVED=1 CAIRN_GATES_APPLY=1 CAIRN_GATES_BIND_LIVE_PIN=1
+export CAIRN_GATES_EXECUTE=1
+export STAGING_URL=http://127.0.0.1:33211 BOARD_ID=mfs-rebuild
+# bearers via env — never commit/print
+node deploy/staging/scripts/seed-gates.mjs --apply
+# or
+node qa/e2e/flows/staging-gates-apply.mjs --apply
+```
+
+### Apply rails (acceptance)
+
+1. **Live pin rebind + healthz pin-shape fail-closed** — probe `/api/healthz` and validate pin shape (`boardRev:number`, `lifecycleRev:number`, `deployedSha|release.sha`) **before any mutation**. Incomplete shape → `HEALTHZ_PIN_SHAPE_INVALID` (no plan/execute side effects). Re-read pin before **each** mutation. If healthz omits `canonicalHash`, fill via `get_overview` then require non-empty subject hash for CAS (`validateLivePinForMutation`). Fixture `pin.json` `boardRev=7` is self-test only — never live CAS.
+2. **Definition** — `replace_board_snapshot` **dryRun** first; apply only if **additive `synth-gate-` prefix proof** shows all existing non-prefix tasks/projects/features unchanged.
+3. **Lifecycle (MCP schema-exact)** — `register_run` **must** send required `targetGate` (plus `runId`/`taskId`/`agentId`/`model`) → `submit_stage_evidence` (server hash; `byRunId` = registered run) → `advance_task` **must** send required `byRunId` bound to that registered author run + server `receiptId+receiptHash` only. Never hand-insert schema006 receipts. Unit tests assert domain keys against `src/server/board-mcp.ts` so drift fails the suite.
+4. **Unique idempotency keys** — `gates-apply:${sha}:${packHash}:${step}:${salt}` per step.
+5. **Reconciler** — dry-run hash → apply bind; wrong-hash / not-leader as expected rejects.
+6. **G5** — **fail closed**. No public MCP write for domain PASS; `get_g5` read only. Never fabricate PASS.
+7. **Cleanup** — prefix-scoped only; before/after/audit readback must preserve non-prefix content. Never `DROP DATABASE`.
+
+### Hard ban (bypass)
+
+| Path | Why banned for gate apply |
+|---|---|
+| `deploy/staging/scripts/seed-synthetic.mjs` | Board-scoped raw SQL wipe; resets rev; not planImport/lifecycle rails |
+| Raw SQL into `control_plane_stage_evidence_receipts` | Fabricates non-programmatic receipts |
+| Fixture receipt hashes as PASS proof | Not source-grounded |
+| Claiming G5 PASS without independent verifier runs | False-DONE |
 
 ## Cleanup
 
-`cleanup-rules.json` + `buildCleanupPlan()` emit a **plan-only** JSON:
+`cleanup-rules.json` + `buildCleanupPlan()` / adapter `buildPrefixCleanupPlan()` emit a **plan-only** JSON:
 
-1. runs `synth-gate-*`
-2. stage evidence receipts
-3. G5 domain evidence
-4. classification rows
-5. tasks
-6. reconciler dry-run/apply hashes (packet-scoped)
+1. READBACK_BEFORE
+2. runs `synth-gate-*`
+3. stage evidence receipts
+4. G5 domain evidence
+5. classification rows
+6. tasks
+7. reconciler dry-run/apply hashes (packet-scoped)
+8. READBACK_AFTER + AUDIT_NON_PREFIX_PRESERVED
 
 ## Reuse map
 
 | Concern | Product API |
 |---|---|
 | Classification | `evaluateClassification` (`src/server/classification.ts`) |
-| Distinct joins | `produceCanonicalSnapshot` / `validateCanonicalSnapshot` |
-| Lifecycle | `submitStageEvidence` / `advanceTaskV3` |
-| G5 | `evaluateG5` / `makePassingDomain` |
-| Capacity | `evaluateCapacityPolicy` |
+| Distinct joins | `produceCanonicalSnapshot` / `validateCanonicalSnapshot` / MCP `replace_board_snapshot` |
+| Lifecycle | MCP `register_run` + `submit_stage_evidence` + `advance_task` |
+| G5 | MCP `get_g5` read-only / pure `evaluateG5` (write unsupported) |
+| Capacity | MCP `sync_accounts` / pure `evaluateCapacityPolicy` |
 | Priority | `computePriorityAllocation` |
-| Reconciler | `dryRunReconcile` / `applyReconcile` |
+| Reconciler | MCP `reconcile_dry_run` / `reconcile_apply` |
+| Apply adapter | `qa/fixtures/staging/gates/apply-adapter.mjs` (pure transforms) |
+| Apply driver | `qa/e2e/flows/staging-gates-apply.mjs` |
 
 ## Status grading
 
 | Evidence | Max status |
 |---|---|
-| Contract self-test + unit | **LOCAL ONLY** |
-| Staging MCP/API readback of seeded pack | FUNCTIONAL |
-| Full ordered rail + g5Pass live + agent flow | DONE (orchestrator, not this pack alone) |
+| Contract / apply-adapter self-test + unit | **LOCAL ONLY** |
+| Staging MCP/API readback of seeded pack (EXECUTE path) | FUNCTIONAL |
+| Full ordered rail + g5Pass live + agent flow | DONE only with programmatic G5 write surface + independent verifier (currently residual) |
 
-**Hard ban:** do not claim G5 PASS / g5Pass=true on staging without programmatic independent-verifier receipts emitted by a real run.
+**Hard ban:** do not claim G5 PASS / g5Pass=true on staging without programmatic independent-verifier receipts emitted by a real run. Unsupported G5 write must remain explicit (`G5_WRITE_UNSUPPORTED`) — never fabricate PASS.
 
 ## Files
 
 - `qa/fixtures/staging/gates/**` — manifests + packets + `contract.mjs`
+- `qa/fixtures/staging/gates/apply-adapter.mjs` — pure apply transforms + additive proof + fail-closed G5
 - `qa/fixtures/staging/gates/expected/**` — deterministic expected outputs
-- `deploy/staging/scripts/seed-gates.mjs` — seed CLI (self-test default)
-- `qa/e2e/flows/staging-gates.mjs` — promoted flow (indexed in `qa/e2e/README.md`)
-- `tests/unit/staging-gates*.test.ts` — engine binding (incl. lifecycle stale_lifecycle/entity/missing_fields + reconciler hash/leader negatives)
+- `deploy/staging/scripts/seed-gates.mjs` — seed CLI (self-test default; `--apply` plan / execute delegate)
+- `qa/e2e/flows/staging-gates.mjs` — promoted pack contract flow
+- `qa/e2e/flows/staging-gates-apply.mjs` — promoted apply driver (MCP only)
+- `tests/unit/staging-gates*.test.ts` — engine + apply-adapter binding
 - `docs/control-center/STAGING_GATE_FIXTURES.md` — this doc

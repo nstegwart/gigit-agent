@@ -35,19 +35,40 @@ Iso DB names must match `cairn_tm_e2e_|c3_|iso_|synth_*` — ambient `cairn_task
 
 | Project            | Role                                                                       |
 | ------------------ | -------------------------------------------------------------------------- |
-| `setup-auth`       | Login with `CAIRN_E2E_*` → `qa/e2e/fixtures/storage/admin.json`            |
-| `chromium`         | Existing 21 specs (unchanged; no forced storageState)                      |
+| `setup-auth`       | Login/bootstrap with process-local `CAIRN_E2E_*` → gitignored `admin.json` |
+| `chromium`         | Authoritative 21 IBILS specs — **storageState + MCP Bearer** (depends setup-auth) |
 | `harness-contract` | No-auth foundation + deterministic contract (`*.contract.harness.spec.ts`) |
 | `chromium-1440`    | 1440×900 + storageState (`*.auth.harness.spec.ts`)                         |
 | `chromium-1024`    | 1024×768 + storageState                                                    |
 | `chromium-390`     | 390×844 + storageState                                                     |
 | `chromium-360`     | 360×800 + storageState                                                     |
 
+### Auth fixture green path (AC-IBILS-01)
+
+Default Playwright run (no hand-exported passwords):
+
+1. **Config load** — `ensureAuthSecretsInEnv()` generates process-local `CAIRN_E2E_USERNAME` / `CAIRN_E2E_PASSWORD` + `CAIRN_MCP_BEARER` + `CAIRN_BEARER_PRINCIPALS_JSON` (never committed).
+2. **globalSetup** — clones local ambient board tables into disposable `cairn_tm_e2e_authfix_*` iso DB with **zero users** (skips `users`/`sessions`/`user_boards` data). Sets `CAIRN_DB_NAME` to the iso name.
+3. **webServer** — `vite preview` inherits iso DB + bearer principals JSON.
+4. **setup-auth** — product `/login` first-admin bootstrap → `qa/e2e/fixtures/storage/admin.json` (gitignored).
+5. **chromium** — `storageState` for UI; `extraHTTPHeaders.Authorization` for `/mcp` request fixtures.
+6. **globalTeardown** — drop iso DB, erase `admin.json`, scrub secret env keys.
+
+| Variable | Notes |
+| --- | --- |
+| `CAIRN_E2E_SKIP_ISO_AUTH=1` | Skip iso clone (requires pre-existing user + credentials) |
+| `CAIRN_E2E_KEEP_ISO_DB=1` | Leave iso DB after teardown (debug) |
+| `CAIRN_E2E_KEEP_STORAGE=1` | Keep `admin.json` after teardown |
+| `CAIRN_E2E_FORCE_FRESH_SERVER=1` | Do not reuseExistingServer on preview |
+| `CAIRN_MCP_BEARER` | Process-local; also used as project `extraHTTPHeaders` |
+
+Helpers: `qa/e2e/lib/auth-fixture.mjs`, `tests/e2e/fixtures/mcp-auth.ts`, `tests/e2e/fixtures/global-setup.ts`.
+
 ```bash
 pnpm build
-# optional: export CAIRN_E2E_USERNAME=… CAIRN_E2E_PASSWORD=…
+# optional: export CAIRN_E2E_USERNAME=… CAIRN_E2E_PASSWORD=…  (else auto-synth)
 pnpm test:e2e -- --list
-pnpm test:e2e -- --project=chromium
+pnpm test:e2e -- --project=chromium   # setup-auth + storageState + MCP bearer
 CAIRN_E2E_SKIP_WEBSERVER=1 pnpm test:e2e -- --project=harness-contract
 pnpm test:e2e -- --project=chromium-1440   # needs setup-auth + credentials + *.auth.harness.spec.ts
 ```
@@ -142,8 +163,9 @@ node qa/e2e/flows/staging-agent-smoke.mjs --real
 | **Deterministic harness** | `flows/deterministic-control-center-harness.mjs` | bootstrap synth      | Full isolated lifecycle (C3-R2D)                                     |
 | **Staging agent MCP smoke** | `flows/staging-agent-smoke.mjs`                | bearer env ref       | Real staging MCP lifecycle + `--self-test` contract                  |
 | **Staging gate fixtures** | `flows/staging-gates.mjs`                        | n/a (self-test)      | Pure gate pack contract: classification 3×4, distinct, lifecycle±, G5, capacity/priority, reconciler; dual-gate refuse; cleanup plan-only |
+| **Staging gate apply**    | `flows/staging-gates-apply.mjs`                  | dual bearer env refs | Safe apply adapter driver: plan-only default; EXECUTE uses MCP `replace_board_snapshot` + lifecycle receipts; G5 fail-closed; never seed-synthetic |
 | Staging fixtures          | `qa/fixtures/staging/**`                         | n/a                  | Synthetic MANIFEST/pin/seeds/cleanup (no prod data)                  |
-| Staging gate packets      | `qa/fixtures/staging/gates/**`                   | n/a                  | Reversible gate packets + `expected/*` deterministic outputs         |
+| Staging gate packets      | `qa/fixtures/staging/gates/**`                   | n/a                  | Reversible gate packets + `apply-adapter.mjs` + `expected/*`         |
 | Isolated seed             | `fixtures/seed/seed-isolated.mjs`                | n/a                  | Unique MySQL + pins                                                  |
 | Fixture contract (pure)   | `fixtures/seed/control-center-fixture.mjs`       | n/a                  | Overlays/receipts/taskHash/scenarios                                 |
 | Control-plane bootstrap   | `lib/control-plane-bootstrap.mjs`                | MCP + synthetic ROOT | Authorized dispatch + account-sync; pin fail-close; bearer redaction |
@@ -211,8 +233,11 @@ node qa/e2e/flows/perf-budgets.mjs --self-test
 node qa/e2e/flows/staging-gates.mjs --self-test
 node qa/e2e/flows/staging-gates.mjs --cleanup   # plan-only JSON
 node deploy/staging/scripts/seed-gates.mjs --self-test
-# Live apply refuses without dual gates; even with gates, this pack does not mutate
-# (GATES_APPLY_DELEGATED → seed-synthetic / canonical-import)
+node qa/e2e/flows/staging-gates-apply.mjs --self-test
+node qa/e2e/flows/staging-gates-apply.mjs --plan
+# Apply: dual gates + CAIRN_GATES_BIND_LIVE_PIN=1 → plan-only by default
+# Execute: + CAIRN_GATES_EXECUTE=1 + STAGING_URL + dual bearers (MCP only; never seed-synthetic)
+# Docs: docs/control-center/STAGING_GATE_FIXTURES.md
 ```
 
 ## Layout
