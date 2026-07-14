@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "idPrefix": "synth-gate-",
+  "boardId": "mfs-rebuild",
+  "mode": "reversible",
+  "rules": [
+    {
+      "id": "prefix-only",
+      "action": "REQUIRE",
+      "detail": "All synthetic gate task/run/receipt/plan/domain evidence ids MUST start with synth-gate-"
+    },
+    {
+      "id": "no-prod-ids",
+      "action": "FORBID",
+      "detail": "Never reuse production plan/run/account/task ids"
+    },
+    {
+      "id": "no-credential-persist",
+      "action": "FORBID",
+      "detail": "Never write bearer/token/secret to receipts, logs, or fixtures"
+    },
+    {
+      "id": "no-drop-database",
+      "action": "FORBID",
+      "detail": "Never DROP DATABASE; board-scoped delete of synth-gate-* rows or reseed only"
+    },
+    {
+      "id": "cleanup-order",
+      "action": "PREFER",
+      "detail": "cleanup plan: runs → stage_evidence → g5 domain rows → classification receipts → tasks → reconciler dryrun hashes for board"
+    },
+    {
+      "id": "operator-snapshot",
+      "action": "OPERATOR",
+      "detail": "Board-wide restore is operator disposable-snapshot — not default for gate pack"
+    }
+  ],
+  "cleanupPlanTemplate": {
+    "idPrefix": "synth-gate-",
+    "steps": [
+      "DELETE runs WHERE run_id LIKE 'synth-gate-%' AND board_id = :boardId",
+      "DELETE stage_evidence WHERE receipt_id LIKE 'synth-gate-%' AND board_id = :boardId",
+      "DELETE g5_domains WHERE domain_scope LIKE 'synth-gate-%' OR evidence_receipt_id LIKE 'synth-gate-%'",
+      "DELETE classification WHERE task_id LIKE 'synth-gate-%' AND board_id = :boardId",
+      "DELETE tasks WHERE task_id LIKE 'synth-gate-%' AND board_id = :boardId",
+      "CLEAR reconciler dry_run/apply hashes for board if packet-only"
+    ],
+    "sqlLiteral": false,
+    "note": "Template only — seed-gates.mjs emits deterministic cleanup JSON; live SQL apply is operator-gated"
+  }
+}

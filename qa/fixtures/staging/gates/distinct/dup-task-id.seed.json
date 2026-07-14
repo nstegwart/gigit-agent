@@ -1,0 +1,30 @@
+{
+  "packetId": "distinct-dup-task-id-v1",
+  "ac": ["AC-COUNT-02"],
+  "expect": { "ok": false, "rejectCode": "DUPLICATE_ID" },
+  "input": {
+    "boardId": "mfs-rebuild",
+    "snapshotId": "synth-gate-snap-dup-task",
+    "sourceRepoId": "repo/gigit-gate",
+    "sourceCommitSha": "e04b7e62b38c57bf216412f9dfc0d34cb98d1d11",
+    "generatedAt": "2026-07-13T08:00:00.000Z",
+    "projects": [{ "id": "synth-gate-p-a", "name": "Gate A" }],
+    "flows": [{ "id": "synth-gate-f-1", "projectId": "synth-gate-p-a" }],
+    "nodes": [{ "id": "synth-gate-n-1", "flowId": "synth-gate-f-1" }],
+    "tasks": [
+      { "id": "synth-gate-t-1", "projectId": "synth-gate-p-a", "title": "One" },
+      { "id": "synth-gate-t-1", "projectId": "synth-gate-p-a", "title": "One-dup" }
+    ],
+    "dependencies": [],
+    "featureContractJoins": [
+      { "featureContractId": "synth-gate-fc-1", "taskId": "synth-gate-t-1" }
+    ],
+    "nodeJoins": [{ "nodeId": "synth-gate-n-1", "taskId": "synth-gate-t-1" }],
+    "primaryOwnerships": [{ "taskId": "synth-gate-t-1", "ownerId": "owner-a" }],
+    "classifications": [
+      { "taskId": "synth-gate-t-1", "taskClass": "PRODUCT", "disposition": "ACTIVE" }
+    ],
+    "anchors": [],
+    "acceptancePaths": []
+  }
+}

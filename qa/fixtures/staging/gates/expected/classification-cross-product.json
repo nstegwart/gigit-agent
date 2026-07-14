@@ -1,0 +1,136 @@
+{
+  "packetId": "expected-classification-cross-product-v1",
+  "description": "Deterministic expected outputs for AC-CLASS full 3×4 class×disposition grid. UNCLASSIFIED cells and invalid receipts are once-only BLOCKED:DATA_INTEGRITY repair.",
+  "requiredCells": [
+    "PRODUCT×ACTIVE",
+    "PRODUCT×HOLD",
+    "PRODUCT×EXCLUDE",
+    "PRODUCT×UNCLASSIFIED",
+    "CONTROL_PLANE×ACTIVE",
+    "CONTROL_PLANE×HOLD",
+    "CONTROL_PLANE×EXCLUDE",
+    "CONTROL_PLANE×UNCLASSIFIED",
+    "UNCLASSIFIED×ACTIVE",
+    "UNCLASSIFIED×HOLD",
+    "UNCLASSIFIED×EXCLUDE",
+    "UNCLASSIFIED×UNCLASSIFIED"
+  ],
+  "cellExpectations": {
+    "PRODUCT×ACTIVE": {
+      "isFullyClassifiedValid": true,
+      "isClassificationRepair": false,
+      "isOutsideTrackedWork": false,
+      "isTrackedWork": true,
+      "isProductDenominatorMember": true,
+      "blockReason": null,
+      "contributesToProductReadiness": true
+    },
+    "PRODUCT×HOLD": {
+      "isFullyClassifiedValid": true,
+      "isClassificationRepair": false,
+      "isOutsideTrackedWork": true,
+      "isTrackedWork": false,
+      "isProductDenominatorMember": false,
+      "blockReason": null,
+      "contributesToProductReadiness": false
+    },
+    "PRODUCT×EXCLUDE": {
+      "isFullyClassifiedValid": true,
+      "isClassificationRepair": false,
+      "isOutsideTrackedWork": true,
+      "isTrackedWork": false,
+      "isProductDenominatorMember": false,
+      "blockReason": null,
+      "contributesToProductReadiness": false,
+      "note": "Valid current receipt may be represented by CONTROL_PLANE×EXCLUDE sample; PRODUCT×EXCLUDE also covered via stale/missing repair modes"
+    },
+    "PRODUCT×UNCLASSIFIED": {
+      "isFullyClassifiedValid": false,
+      "isClassificationRepair": true,
+      "isOutsideTrackedWork": false,
+      "isTrackedWork": true,
+      "isProductDenominatorMember": false,
+      "blockReason": "DATA_INTEGRITY",
+      "contributesToProductReadiness": false
+    },
+    "CONTROL_PLANE×ACTIVE": {
+      "isFullyClassifiedValid": true,
+      "isClassificationRepair": false,
+      "isOutsideTrackedWork": false,
+      "isTrackedWork": true,
+      "isProductDenominatorMember": false,
+      "blockReason": null,
+      "contributesToProductReadiness": false
+    },
+    "CONTROL_PLANE×HOLD": {
+      "isFullyClassifiedValid": true,
+      "isClassificationRepair": false,
+      "isOutsideTrackedWork": true,
+      "isTrackedWork": false,
+      "isProductDenominatorMember": false,
+      "blockReason": null,
+      "contributesToProductReadiness": false
+    },
+    "CONTROL_PLANE×EXCLUDE": {
+      "isFullyClassifiedValid": true,
+      "isClassificationRepair": false,
+      "isOutsideTrackedWork": true,
+      "isTrackedWork": false,
+      "isProductDenominatorMember": false,
+      "blockReason": null,
+      "contributesToProductReadiness": false
+    },
+    "CONTROL_PLANE×UNCLASSIFIED": {
+      "isFullyClassifiedValid": false,
+      "isClassificationRepair": true,
+      "isOutsideTrackedWork": false,
+      "isTrackedWork": true,
+      "isProductDenominatorMember": false,
+      "blockReason": "DATA_INTEGRITY",
+      "contributesToProductReadiness": false
+    },
+    "UNCLASSIFIED×ACTIVE": {
+      "isFullyClassifiedValid": false,
+      "isClassificationRepair": true,
+      "isOutsideTrackedWork": false,
+      "isTrackedWork": true,
+      "isProductDenominatorMember": false,
+      "blockReason": "DATA_INTEGRITY",
+      "contributesToProductReadiness": false
+    },
+    "UNCLASSIFIED×HOLD": {
+      "isFullyClassifiedValid": false,
+      "isClassificationRepair": true,
+      "isOutsideTrackedWork": false,
+      "isTrackedWork": true,
+      "isProductDenominatorMember": false,
+      "blockReason": "DATA_INTEGRITY",
+      "contributesToProductReadiness": false
+    },
+    "UNCLASSIFIED×EXCLUDE": {
+      "isFullyClassifiedValid": false,
+      "isClassificationRepair": true,
+      "isOutsideTrackedWork": false,
+      "isTrackedWork": true,
+      "isProductDenominatorMember": false,
+      "blockReason": "DATA_INTEGRITY",
+      "contributesToProductReadiness": false
+    },
+    "UNCLASSIFIED×UNCLASSIFIED": {
+      "isFullyClassifiedValid": false,
+      "isClassificationRepair": true,
+      "isOutsideTrackedWork": false,
+      "isTrackedWork": true,
+      "isProductDenominatorMember": false,
+      "blockReason": "DATA_INTEGRITY",
+      "contributesToProductReadiness": false,
+      "reasonsIncludes": ["UNCLASSIFIED_TASK_CLASS", "UNCLASSIFIED_DISPOSITION"]
+    }
+  },
+  "onceOnlyRepairSemantics": {
+    "blockReason": "DATA_INTEGRITY",
+    "appliesWhen": "isClassificationRepair === true",
+    "trackedOnce": true,
+    "description": "Invalid/UNCLASSIFIED classification is tracked once as BLOCKED:DATA_INTEGRITY repair; valid HOLD/EXCLUDE is outside tracked work"
+  }
+}

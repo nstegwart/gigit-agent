@@ -1,0 +1,272 @@
+{
+  "packetId": "capacity-matrix-v1",
+  "ac": ["AC-CAP-01", "AC-CAP-02", "AC-CAP-03", "AC-ACCOUNT-07"],
+  "scenarios": [
+    {
+      "id": "zero_capacity_stale",
+      "description": "forceZero/stale account-sync → usableCapacity=0 fail-closed",
+      "input": {
+        "accounts": [
+          {
+            "maskedAccountId": "synth-gate-acc-g1",
+            "status": "OK",
+            "providerKind": "GROK",
+            "effectiveInUse": 0,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          }
+        ],
+        "forceZero": true
+      },
+      "expect": {
+        "usableCapacity": 0,
+        "dispatchMode": "BLOCKED",
+        "limitingReasonsIncludes": ["ACCOUNT_SYNC_STALE"]
+      }
+    },
+    {
+      "id": "below_floor",
+      "description": "genuineReadyPacketCount < 60 → BELOW_FLOOR",
+      "input": {
+        "accounts": [
+          {
+            "maskedAccountId": "synth-gate-acc-g1",
+            "status": "OK",
+            "providerKind": "GROK",
+            "effectiveInUse": 0,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          }
+        ],
+        "genuineReadyPacketCount": 10,
+        "health": { "cpuPercent": 20 }
+      },
+      "expect": {
+        "belowFloor": true,
+        "floorMet": false,
+        "belowFloorReasonMatch": "BELOW_FLOOR"
+      }
+    },
+    {
+      "id": "majority_open",
+      "description": "Grok majority with spare capacity → OPEN",
+      "input": {
+        "accounts": [
+          {
+            "maskedAccountId": "synth-gate-acc-g1",
+            "status": "OK",
+            "providerKind": "GROK",
+            "effectiveInUse": 5,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-g2",
+            "status": "OK",
+            "providerKind": "GROK",
+            "effectiveInUse": 5,
+            "effectiveCap": 8,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-g3",
+            "status": "OK",
+            "providerKind": "GROK",
+            "effectiveInUse": 5,
+            "effectiveCap": 10,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-g4",
+            "status": "OK",
+            "providerKind": "GROK",
+            "effectiveInUse": 5,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-g5",
+            "status": "OK",
+            "providerKind": "GROK",
+            "effectiveInUse": 5,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-s1",
+            "status": "OK",
+            "providerKind": "SPARK",
+            "effectiveInUse": 10,
+            "effectiveCap": 12,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-sol1",
+            "status": "OK",
+            "providerKind": "SOL",
+            "effectiveInUse": 10,
+            "effectiveCap": 15,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          }
+        ]
+      },
+      "expect": {
+        "sparkLive": 10,
+        "solLive": 10,
+        "grokLive": 25,
+        "grokMajority": true,
+        "dispatchMode": "OPEN",
+        "combinedLiveMax": 200
+      }
+    },
+    {
+      "id": "fail_safe",
+      "description": "LIMIT/BAN/AUTH_EXPIRED/quarantine/tombstone + filler/accountsAll → usableCapacity 0",
+      "input": {
+        "accounts": [
+          {
+            "maskedAccountId": "synth-gate-acc-ok",
+            "status": "OK",
+            "providerKind": "GROK",
+            "effectiveInUse": 1,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-lim",
+            "status": "LIMIT",
+            "providerKind": "GROK",
+            "effectiveInUse": 3,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-ban",
+            "status": "BAN",
+            "providerKind": "GROK",
+            "effectiveInUse": 2,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-auth",
+            "status": "AUTH_EXPIRED",
+            "providerKind": "GROK",
+            "effectiveInUse": 1,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-q",
+            "status": "quarantine",
+            "providerKind": "GROK",
+            "effectiveInUse": 1,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          },
+          {
+            "maskedAccountId": "synth-gate-acc-rm",
+            "status": "REMOVED",
+            "providerKind": "GROK",
+            "effectiveInUse": 1,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": true
+          }
+        ],
+        "fillerDetected": true
+      },
+      "expect": {
+        "usableCapacity": 0,
+        "dispatchMode": "BLOCKED",
+        "limitingReasonsIncludes": ["FILLER_FORBIDDEN"]
+      }
+    },
+    {
+      "id": "cpu_fail_safe",
+      "description": "CPU>=90 with otherwise healthy floor → usableCapacity=0",
+      "input": {
+        "accounts": [
+          {
+            "maskedAccountId": "synth-gate-acc-g0",
+            "status": "OK",
+            "providerKind": "GROK",
+            "effectiveInUse": 5,
+            "effectiveCap": 5,
+            "physicalSlotsDisplay": null,
+            "adaptiveQuotaState": null,
+            "reason": null,
+            "statusChangedAt": null,
+            "tombstone": false
+          }
+        ],
+        "genuineReadyPacketCount": 60,
+        "health": { "cpuPercent": 95 }
+      },
+      "expect": {
+        "usableCapacity": 0,
+        "dispatchMode": "BLOCKED",
+        "limitingReasonsIncludes": ["CPU_GTE_90"]
+      }
+    }
+  ]
+}

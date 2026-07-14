@@ -1,0 +1,36 @@
+{
+  "packetId": "lifecycle-mapping-valid-v1",
+  "ac": ["AC-LIFE-04"],
+  "case": "valid_MAPPING_evidence",
+  "expect": { "ok": true, "toStage": "MAPPING", "errorCode": null },
+  "task": {
+    "taskId": "synth-gate-life-map-1",
+    "stage": null,
+    "entityRev": 0,
+    "boardRev": 7,
+    "lifecycleRev": 3,
+    "taskHash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "canonicalSnapshotId": "synth-gate-snap-001",
+    "canonicalHash": "a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890ab"
+  },
+  "authorRun": {
+    "runId": "synth-gate-run-author-map",
+    "agentId": "synth-gate-agent-author",
+    "model": "grok-4.5",
+    "role": "IMPLEMENTER",
+    "threadId": "synth-gate-thread-author-map",
+    "expiresAt": "2099-01-01T00:00:00.000Z",
+    "fenced": false,
+    "registered": true
+  },
+  "evidence": {
+    "toStage": "MAPPING",
+    "fields": {
+      "mappingReceiptId": "synth-gate-map-rcpt-1",
+      "sourceEnum": "MAPPING",
+      "targetEnum": "MAPPING",
+      "mappingType": "IDENTITY"
+    },
+    "programmatic": true
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "packetId": "reconciler-dry-run-apply-v1",
+  "ac": ["AC-OPS-05", "AC-BUCKET-07"],
+  "boardId": "mfs-rebuild",
+  "boardRev": 7,
+  "leader": {
+    "leaderId": "synth-gate-reconciler-leader",
+    "fencingToken": "synth-gate-fence-1",
+    "leaseExpiresAtMs": 4102444800000
+  },
+  "scenarios": [
+    {
+      "id": "dry_run_apply_idempotent",
+      "description": "dry-run produces hash; apply same hash once; re-apply is idempotent replay",
+      "maxActions": 100,
+      "timeBudgetMs": 5000,
+      "runs": [
+        {
+          "runId": "synth-gate-run-orphan-1",
+          "taskId": "synth-gate-recon-task-1",
+          "state": "running",
+          "classificationHint": "ORPHAN",
+          "leaseExpired": true,
+          "taskCompleted": false
+        },
+        {
+          "runId": "synth-gate-run-stale-1",
+          "taskId": "synth-gate-recon-task-2",
+          "state": "running",
+          "classificationHint": "STALE",
+          "leaseExpired": true,
+          "taskCompleted": false
+        },
+        {
+          "runId": "synth-gate-run-done-stale",
+          "taskId": "synth-gate-recon-task-done",
+          "state": "running",
+          "classificationHint": "STALE",
+          "leaseExpired": true,
+          "taskCompleted": true
+        }
+      ],
+      "expect": {
+        "dryRunProducesHash": true,
+        "applyFirstIdempotentReplay": false,
+        "applySecondIdempotentReplay": true,
+        "wrongHashCode": "DRY_RUN_HASH_MISMATCH",
+        "notLeaderCode": "NOT_LEADER",
+        "maxActions": 100
+      }
+    },
+    {
+      "id": "cleanup_plan",
+      "description": "Cleanup only synth-gate-* run/task flags for board; never DROP DATABASE",
+      "cleanup": {
+        "idPrefix": "synth-gate-",
+        "clearDryRunHashes": true,
+        "clearApplyHashes": true,
+        "deleteRunIdsLike": "synth-gate-%"
+      }
+    }
+  ]
+}

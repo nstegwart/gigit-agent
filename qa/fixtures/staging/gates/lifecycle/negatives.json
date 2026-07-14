@@ -1,0 +1,106 @@
+{
+  "packetId": "lifecycle-negatives-v1",
+  "ac": ["AC-LIFE-03"],
+  "taskBase": {
+    "taskId": "synth-gate-life-neg-1",
+    "stage": "MAPPING",
+    "entityRev": 1,
+    "boardRev": 7,
+    "lifecycleRev": 3,
+    "taskHash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "canonicalSnapshotId": "synth-gate-snap-001",
+    "canonicalHash": "a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890ab"
+  },
+  "cases": [
+    {
+      "id": "skip_stage",
+      "kind": "skip",
+      "description": "Advance from MAPPING directly to BUILT (skips MAPPED/MAP_VERIFIED)",
+      "toStage": "BUILT",
+      "expectErrorCode": "INVALID_TRANSITION"
+    },
+    {
+      "id": "stale_board_rev",
+      "kind": "stale",
+      "description": "expectedBoardRev mismatch vs pin",
+      "toStage": "MAPPED",
+      "expectedBoardRev": 1,
+      "expectErrorCode": "STALE_REVISION"
+    },
+    {
+      "id": "stale_lifecycle_rev",
+      "kind": "stale",
+      "description": "expectedLifecycleRev mismatch",
+      "toStage": "MAPPED",
+      "expectedLifecycleRev": 1,
+      "expectErrorCode": "STALE_REVISION"
+    },
+    {
+      "id": "stale_entity_rev",
+      "kind": "stale",
+      "description": "entityExpectedRev mismatch",
+      "toStage": "MAPPED",
+      "entityExpectedRev": 99,
+      "expectErrorCode": "STALE_REVISION"
+    },
+    {
+      "id": "self_verify",
+      "kind": "self-verify",
+      "description": "verifierRunId equals authorRunId",
+      "toStage": "MAPPED",
+      "authorRunId": "synth-gate-run-same",
+      "verifierRunId": "synth-gate-run-same",
+      "expectErrorCode": "SELF_VERIFICATION"
+    },
+    {
+      "id": "fenced_run",
+      "kind": "fence",
+      "description": "author run is fenced",
+      "toStage": "MAPPED",
+      "authorRun": {
+        "runId": "synth-gate-run-fenced",
+        "agentId": "synth-gate-agent-fenced",
+        "model": "grok-4.5",
+        "role": "IMPLEMENTER",
+        "threadId": "synth-gate-thread-fenced",
+        "expiresAt": "2099-01-01T00:00:00.000Z",
+        "fenced": true,
+        "registered": true
+      },
+      "expectErrorCode": "FENCED"
+    },
+    {
+      "id": "unregistered_run",
+      "kind": "unregistered",
+      "description": "author run not registered",
+      "toStage": "MAPPED",
+      "authorRun": {
+        "runId": "synth-gate-run-unreg",
+        "agentId": "synth-gate-agent-unreg",
+        "model": "grok-4.5",
+        "role": "IMPLEMENTER",
+        "threadId": "synth-gate-thread-unreg",
+        "expiresAt": "2099-01-01T00:00:00.000Z",
+        "fenced": false,
+        "registered": false
+      },
+      "expectErrorCode": "RUN_NOT_REGISTERED"
+    },
+    {
+      "id": "handtyped_non_programmatic",
+      "kind": "handtyped",
+      "description": "receipt.programmatic=false rejected",
+      "toStage": "MAPPED",
+      "programmatic": false,
+      "expectErrorCode": "MISSING_EVIDENCE"
+    },
+    {
+      "id": "missing_evidence_fields",
+      "kind": "missing-fields",
+      "description": "MAPPED missing required evidence fields",
+      "toStage": "MAPPED",
+      "fields": {},
+      "expectErrorCode": "MISSING_EVIDENCE"
+    }
+  ]
+}

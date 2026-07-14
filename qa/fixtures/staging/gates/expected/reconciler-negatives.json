@@ -1,0 +1,30 @@
+{
+  "packetId": "expected-reconciler-negatives-v1",
+  "description": "Deterministic expected error codes for reconciler dry-run/apply negatives bound to dryRunReconcile/applyReconcile/claimReconcilerLeadership",
+  "scenarioId": "dry_run_apply_idempotent",
+  "happyPath": {
+    "dryRunProducesHash": true,
+    "applyFirstIdempotentReplay": false,
+    "applySecondIdempotentReplay": true,
+    "maxActions": 100
+  },
+  "wrongHashCode": "DRY_RUN_HASH_MISMATCH",
+  "notLeaderCode": "NOT_LEADER",
+  "probes": [
+    {
+      "id": "wrong_dry_run_hash",
+      "action": "applyReconcile with mutated dryRunHash",
+      "expectErrorCode": "DRY_RUN_HASH_MISMATCH"
+    },
+    {
+      "id": "wrong_fencing_token",
+      "action": "dryRunReconcile with wrong fencingToken",
+      "expectErrorCode": "NOT_LEADER"
+    },
+    {
+      "id": "second_leader_while_lease_holds",
+      "action": "claimReconcilerLeadership with different leaderId while lease holds",
+      "expectErrorCode": "NOT_LEADER"
+    }
+  ]
+}

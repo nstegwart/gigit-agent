@@ -1,0 +1,20 @@
+{
+  "packetId": "expected-lifecycle-negatives-v1",
+  "description": "Deterministic expected error codes for lifecycle negative cases bound to submitStageEvidence/advanceTaskV3",
+  "validMapping": {
+    "toStage": "MAPPING",
+    "ok": true,
+    "errorCode": null
+  },
+  "cases": [
+    { "id": "skip_stage", "expectErrorCode": "INVALID_TRANSITION" },
+    { "id": "stale_board_rev", "expectErrorCode": "STALE_REVISION" },
+    { "id": "stale_lifecycle_rev", "expectErrorCode": "STALE_REVISION" },
+    { "id": "stale_entity_rev", "expectErrorCode": "STALE_REVISION" },
+    { "id": "self_verify", "expectErrorCode": "SELF_VERIFICATION" },
+    { "id": "fenced_run", "expectErrorCode": "FENCED" },
+    { "id": "unregistered_run", "expectErrorCode": "RUN_NOT_REGISTERED" },
+    { "id": "handtyped_non_programmatic", "expectErrorCode": "MISSING_EVIDENCE" },
+    { "id": "missing_evidence_fields", "expectErrorCode": "MISSING_EVIDENCE" }
+  ]
+}

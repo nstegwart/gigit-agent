@@ -1,0 +1,163 @@
+{
+  "packetId": "priority-matrix-v1",
+  "ac": ["AC-PRIORITY-01", "AC-PRIORITY-02"],
+  "scenarios": [
+    {
+      "id": "no_frontier",
+      "description": "No ACTIVE PRODUCT membership → majorityAllocationPass null, frontier empty",
+      "input": {
+        "membershipTaskIds": [],
+        "packets": []
+      },
+      "expect": {
+        "membershipDenominator": 0,
+        "priorityCapacityShare": null,
+        "majorityAllocationPass": null,
+        "frontierState": "PRIORITY_FRONTIER_EMPTY",
+        "allClosureCapacity": 0
+      }
+    },
+    {
+      "id": "zero_capacity",
+      "description": "Membership exists but zero schedulable packets → share null, majority false",
+      "input": {
+        "membershipTaskIds": ["synth-gate-pri-t1"],
+        "packets": [
+          {
+            "packetId": "synth-gate-pkt-blocked",
+            "taskId": "synth-gate-pri-t1",
+            "isPriorityPortfolio": true,
+            "excluded": true,
+            "liveOrReserved": false,
+            "genuine": true,
+            "unique": true,
+            "currentHash": true,
+            "dependencyReady": true,
+            "collisionSafe": true,
+            "advancesOpenClosureGate": true
+          }
+        ]
+      },
+      "expect": {
+        "membershipDenominator": 1,
+        "priorityCapacityShare": null,
+        "majorityAllocationPass": false,
+        "frontierState": "PRIORITY_FRONTIER_ACTIVE",
+        "reason": "ZERO_SCHEDULABLE_CAPACITY",
+        "allClosureCapacity": 0
+      }
+    },
+    {
+      "id": "majority",
+      "description": "Priority packets majority of schedulable → majorityAllocationPass true",
+      "input": {
+        "membershipTaskIds": ["synth-gate-pri-t1", "synth-gate-pri-t2"],
+        "packets": [
+          {
+            "packetId": "synth-gate-pkt-p1",
+            "taskId": "synth-gate-pri-t1",
+            "isPriorityPortfolio": true,
+            "excluded": false,
+            "liveOrReserved": true,
+            "genuine": true,
+            "unique": true,
+            "currentHash": true,
+            "dependencyReady": true,
+            "collisionSafe": true,
+            "advancesOpenClosureGate": true
+          },
+          {
+            "packetId": "synth-gate-pkt-p2",
+            "taskId": "synth-gate-pri-t2",
+            "isPriorityPortfolio": true,
+            "excluded": false,
+            "liveOrReserved": true,
+            "genuine": true,
+            "unique": true,
+            "currentHash": true,
+            "dependencyReady": true,
+            "collisionSafe": true,
+            "advancesOpenClosureGate": true
+          },
+          {
+            "packetId": "synth-gate-pkt-other",
+            "taskId": "synth-gate-other-t",
+            "isPriorityPortfolio": false,
+            "excluded": false,
+            "liveOrReserved": true,
+            "genuine": true,
+            "unique": true,
+            "currentHash": true,
+            "dependencyReady": true,
+            "collisionSafe": true,
+            "advancesOpenClosureGate": true
+          }
+        ]
+      },
+      "expect": {
+        "membershipDenominator": 2,
+        "priorityClosureCapacity": 2,
+        "allClosureCapacity": 3,
+        "priorityCapacityShare": 0.6666666666666666,
+        "majorityAllocationPass": true,
+        "frontierState": "PRIORITY_FRONTIER_ACTIVE"
+      }
+    },
+    {
+      "id": "fail_safe_non_majority",
+      "description": "Priority share ≤0.5 → majorityAllocationPass false",
+      "input": {
+        "membershipTaskIds": ["synth-gate-pri-t1"],
+        "packets": [
+          {
+            "packetId": "synth-gate-pkt-p1",
+            "taskId": "synth-gate-pri-t1",
+            "isPriorityPortfolio": true,
+            "excluded": false,
+            "liveOrReserved": true,
+            "genuine": true,
+            "unique": true,
+            "currentHash": true,
+            "dependencyReady": true,
+            "collisionSafe": true,
+            "advancesOpenClosureGate": true
+          },
+          {
+            "packetId": "synth-gate-pkt-o1",
+            "taskId": "synth-gate-other-1",
+            "isPriorityPortfolio": false,
+            "excluded": false,
+            "liveOrReserved": true,
+            "genuine": true,
+            "unique": true,
+            "currentHash": true,
+            "dependencyReady": true,
+            "collisionSafe": true,
+            "advancesOpenClosureGate": true
+          },
+          {
+            "packetId": "synth-gate-pkt-o2",
+            "taskId": "synth-gate-other-2",
+            "isPriorityPortfolio": false,
+            "excluded": false,
+            "liveOrReserved": true,
+            "genuine": true,
+            "unique": true,
+            "currentHash": true,
+            "dependencyReady": true,
+            "collisionSafe": true,
+            "advancesOpenClosureGate": true
+          }
+        ]
+      },
+      "expect": {
+        "membershipDenominator": 1,
+        "priorityClosureCapacity": 1,
+        "allClosureCapacity": 3,
+        "priorityCapacityShare": 0.3333333333333333,
+        "majorityAllocationPass": false,
+        "frontierState": "PRIORITY_FRONTIER_ACTIVE"
+      }
+    }
+  ]
+}

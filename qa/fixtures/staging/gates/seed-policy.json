@@ -1,0 +1,48 @@
+{
+  "policyId": "staging-gate-fixtures-seed-v1",
+  "version": 1,
+  "purpose": "Reversible board-scoped synthetic gate fixture seed for cairn_tm_v3_staging — pure self-test by default; live apply requires dual gates",
+  "syntheticOnly": true,
+  "productionDerived": false,
+  "dropDatabase": false,
+  "defaultMode": "self-test",
+  "requiredEnvForLiveApply": {
+    "CAIRN_ENV": "staging",
+    "CAIRN_DB_NAME": "cairn_tm_v3_staging",
+    "CAIRN_STAGING_SEED_APPROVED": "1",
+    "CAIRN_GATES_APPLY": "1"
+  },
+  "databaseName": "cairn_tm_v3_staging",
+  "boardId": "mfs-rebuild",
+  "fixtureRoot": "qa/fixtures/staging/gates",
+  "seederEntry": "deploy/staging/scripts/seed-gates.mjs",
+  "allowedHosts": {
+    "composeServiceDns": ["cairn-tm-v3-mysql"],
+    "knownLabels": ["cairn_tm_v3_staging", "tm-v3-staging"],
+    "envCsv": "CAIRN_STAGING_DB_HOSTS",
+    "localLoopbackRequires": "CAIRN_STAGING_SEED_ALLOW_LOCAL=1"
+  },
+  "refused": [
+    "PRODUCTION hosts",
+    "UNKNOWN_REMOTE hosts not in allowlist",
+    "any CAIRN_DB_NAME other than cairn_tm_v3_staging",
+    "CAIRN_ENV other than staging on live apply",
+    "missing CAIRN_STAGING_SEED_APPROVED=1 or CAIRN_GATES_APPLY=1",
+    "DROP DATABASE",
+    "live apply when productionDerived=true without dual approvals"
+  ],
+  "scope": {
+    "replaceBoardScoped": false,
+    "idPrefixScoped": "synth-gate-",
+    "tablesTouchedWhenApplied": [
+      "tasks (synth-gate-* only)",
+      "control_plane_classification (synth-gate-*)",
+      "control_plane_stage_evidence_receipts (synth-gate-*)",
+      "control_plane_g5 (synth-gate scope)",
+      "runs (synth-gate-*)",
+      "control_plane_reconciler_* (board dryrun hashes)"
+    ],
+    "tablesPreserved": ["schema_migrations", "other boards", "non synth-gate rows"]
+  },
+  "provenance": "synthetic-only; never print secrets/passwords/tokens"
+}

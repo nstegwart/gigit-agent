@@ -1,0 +1,88 @@
+{
+  "packetId": "g5-domains-honest-v1",
+  "ac": ["AC-LIFE-05", "AC-READY-04"],
+  "requiredDomains": [
+    "security",
+    "performance_capacity",
+    "migration_data_integrity",
+    "rollback_restore",
+    "backup_dr",
+    "monitoring_alerts_runbooks",
+    "config_secrets",
+    "cutover_rehearsal",
+    "dependency_provider_readiness"
+  ],
+  "allowedStatusesFromFixtures": ["NOT_STARTED", "IN_PROGRESS", "PASS"],
+  "note": "PASS only when programmaticEvidence=true AND independentVerifier=true AND current pin/hash. Hand-typed PASS must not yield g5Pass. Fixtures never invent live staging PASS.",
+  "scenarios": [
+    {
+      "id": "all_not_started",
+      "description": "Nine domains NOT_STARTED with no programmatic evidence → g5Pass=false, missing none but all fail status",
+      "statusForAll": "NOT_STARTED",
+      "programmaticEvidence": false,
+      "independentVerifier": false,
+      "expect": { "g5Pass": false, "allDomainPass": false }
+    },
+    {
+      "id": "all_in_progress",
+      "description": "Nine domains IN_PROGRESS → g5Pass=false",
+      "statusForAll": "IN_PROGRESS",
+      "programmaticEvidence": true,
+      "independentVerifier": true,
+      "expect": { "g5Pass": false, "allDomainPass": false }
+    },
+    {
+      "id": "nine_pass_programmatic",
+      "description": "Nine PASS with programmatic independent verifier + current pin → g5Pass=true",
+      "statusForAll": "PASS",
+      "programmaticEvidence": true,
+      "independentVerifier": true,
+      "expect": { "g5Pass": true, "allDomainPass": true }
+    },
+    {
+      "id": "nine_pass_handtyped",
+      "description": "Nine PASS but programmaticEvidence=false → g5Pass=false (honest)",
+      "statusForAll": "PASS",
+      "programmaticEvidence": false,
+      "independentVerifier": true,
+      "expect": { "g5Pass": false, "allDomainPass": false, "reasonIncludes": "non_programmatic_evidence" }
+    },
+    {
+      "id": "self_verify_pass",
+      "description": "Nine PASS but verifierRunId==authorRunId → g5Pass=false",
+      "statusForAll": "PASS",
+      "programmaticEvidence": true,
+      "independentVerifier": true,
+      "selfVerify": true,
+      "expect": { "g5Pass": false, "allDomainPass": false, "reasonIncludes": "self_verification" }
+    },
+    {
+      "id": "stale_board_rev_pass",
+      "description": "Nine PASS but boardRev stale → g5Pass=false",
+      "statusForAll": "PASS",
+      "programmaticEvidence": true,
+      "independentVerifier": true,
+      "staleBoardRev": true,
+      "expect": { "g5Pass": false, "allDomainPass": false, "reasonIncludes": "stale_board_rev" }
+    },
+    {
+      "id": "empty_store",
+      "description": "No domain rows → missingDomains=9, g5Pass=false",
+      "empty": true,
+      "expect": { "g5Pass": false, "missingDomainsCount": 9 }
+    },
+    {
+      "id": "mixed_eight_pass_one_in_progress",
+      "description": "8 PASS + 1 IN_PROGRESS → g5Pass=false",
+      "mixed": {
+        "defaultStatus": "PASS",
+        "overrides": {
+          "security": "IN_PROGRESS"
+        }
+      },
+      "programmaticEvidence": true,
+      "independentVerifier": true,
+      "expect": { "g5Pass": false, "allDomainPass": false }
+    }
+  ]
+}

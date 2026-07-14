@@ -1,0 +1,226 @@
+{
+  "packetId": "classification-matrix-v1",
+  "ac": ["AC-CLASS-01", "AC-CLASS-02", "AC-CLASS-03", "AC-CLASS-04", "AC-CLASS-05"],
+  "pinRef": "../pin.json",
+  "issuedAt": "2026-07-13T00:00:00.000Z",
+  "rows": [
+    {
+      "taskId": "synth-gate-cls-prod-active",
+      "taskClass": "PRODUCT",
+      "disposition": "ACTIVE",
+      "receiptMode": "current",
+      "expect": {
+        "contributesToProductReadiness": true,
+        "isFullyClassifiedValid": true,
+        "isClassificationRepair": false,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": true,
+        "blockReason": null
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-cp-active",
+      "taskClass": "CONTROL_PLANE",
+      "disposition": "ACTIVE",
+      "receiptMode": "current",
+      "controlPlaneTargetGate": "TASK_MANAGER_STAGING_VERIFIED",
+      "controlPlaneGateVerifiedPass": true,
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": true,
+        "isClassificationRepair": false,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": null
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-hold-valid",
+      "taskClass": "PRODUCT",
+      "disposition": "HOLD",
+      "receiptMode": "current",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": true,
+        "isClassificationRepair": false,
+        "isOutsideTrackedWork": true,
+        "isTrackedWork": false,
+        "isProductDenominatorMember": false,
+        "blockReason": null
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-cp-hold",
+      "taskClass": "CONTROL_PLANE",
+      "disposition": "HOLD",
+      "receiptMode": "current",
+      "controlPlaneTargetGate": "TASK_MANAGER_STAGING_VERIFIED",
+      "controlPlaneGateVerifiedPass": true,
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": true,
+        "isClassificationRepair": false,
+        "isOutsideTrackedWork": true,
+        "isTrackedWork": false,
+        "isProductDenominatorMember": false,
+        "blockReason": null
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-excl-valid",
+      "taskClass": "CONTROL_PLANE",
+      "disposition": "EXCLUDE",
+      "receiptMode": "current",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": true,
+        "isClassificationRepair": false,
+        "isOutsideTrackedWork": true,
+        "isTrackedWork": false,
+        "isProductDenominatorMember": false,
+        "blockReason": null
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-uc-hold",
+      "taskClass": "UNCLASSIFIED",
+      "disposition": "HOLD",
+      "receiptMode": "current",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": false,
+        "isClassificationRepair": true,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": "DATA_INTEGRITY"
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-uc-uc",
+      "taskClass": "UNCLASSIFIED",
+      "disposition": "UNCLASSIFIED",
+      "receiptMode": "current",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": false,
+        "isClassificationRepair": true,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": "DATA_INTEGRITY",
+        "reasonsIncludes": ["UNCLASSIFIED_TASK_CLASS", "UNCLASSIFIED_DISPOSITION"]
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-uc-excl",
+      "taskClass": "UNCLASSIFIED",
+      "disposition": "EXCLUDE",
+      "receiptMode": "current",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": false,
+        "isClassificationRepair": true,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": "DATA_INTEGRITY"
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-prod-uc-disp",
+      "taskClass": "PRODUCT",
+      "disposition": "UNCLASSIFIED",
+      "receiptMode": "current",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": false,
+        "isClassificationRepair": true,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": "DATA_INTEGRITY"
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-cp-uc-disp",
+      "taskClass": "CONTROL_PLANE",
+      "disposition": "UNCLASSIFIED",
+      "receiptMode": "current",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": false,
+        "isClassificationRepair": true,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": "DATA_INTEGRITY"
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-hold-stale",
+      "taskClass": "PRODUCT",
+      "disposition": "HOLD",
+      "receiptMode": "stale_board_rev",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": false,
+        "isClassificationRepair": true,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": "DATA_INTEGRITY",
+        "reasonsIncludes": ["STALE_BOARD_REV"]
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-excl-missing",
+      "taskClass": "PRODUCT",
+      "disposition": "EXCLUDE",
+      "receiptMode": "missing",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": false,
+        "isClassificationRepair": true,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": "DATA_INTEGRITY",
+        "reasonsIncludes": ["MISSING_RECEIPT"]
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-uc-active",
+      "taskClass": "UNCLASSIFIED",
+      "disposition": "ACTIVE",
+      "receiptMode": "current",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": false,
+        "isClassificationRepair": true,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": "DATA_INTEGRITY"
+      }
+    },
+    {
+      "taskId": "synth-gate-cls-expired",
+      "taskClass": "PRODUCT",
+      "disposition": "ACTIVE",
+      "receiptMode": "expired",
+      "expect": {
+        "contributesToProductReadiness": false,
+        "isFullyClassifiedValid": false,
+        "isClassificationRepair": true,
+        "isOutsideTrackedWork": false,
+        "isTrackedWork": true,
+        "isProductDenominatorMember": false,
+        "blockReason": "DATA_INTEGRITY",
+        "reasonsIncludes": ["STALE_RECEIPT_EXPIRED"]
+      }
+    }
+  ]
+}

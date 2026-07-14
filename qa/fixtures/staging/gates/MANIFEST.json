@@ -1,0 +1,57 @@
+{
+  "fixtureId": "staging-gate-fixtures-v1",
+  "version": 1,
+  "purpose": "Reversible synthetic staging gate fixture pack for classification matrix, DISTINCT join rejection, lifecycle rail ±, nine G5 honest statuses, capacity/priority fail-closed, reconciler dry-run/apply. No production-derived data. No staging mutation by default.",
+  "boardId": "mfs-rebuild",
+  "schemaVersionExpected": "006",
+  "healthzSchema": "MFS_HEALTHZ_V1",
+  "syntheticOnly": true,
+  "productionDerived": false,
+  "idPrefix": "synth-gate-",
+  "packets": [
+    "classification",
+    "distinct",
+    "lifecycle",
+    "g5",
+    "capacity",
+    "priority",
+    "reconciler"
+  ],
+  "pin": {
+    "canonicalSnapshotId": "synth-gate-snap-001",
+    "canonicalHash": "a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890ab",
+    "boardRev": 7,
+    "lifecycleRev": 3
+  },
+  "cleanup": {
+    "idPrefix": "synth-gate-",
+    "mode": "board-scoped-delete-or-reseed",
+    "rulesFile": "cleanup-rules.json",
+    "never": ["DROP DATABASE", "production hosts", "print bearer/token secrets"]
+  },
+  "entrypoints": {
+    "contract": "qa/fixtures/staging/gates/contract.mjs",
+    "seed": "deploy/staging/scripts/seed-gates.mjs",
+    "flow": "qa/e2e/flows/staging-gates.mjs",
+    "docs": "docs/control-center/STAGING_GATE_FIXTURES.md",
+    "unit": "tests/unit/staging-gates*.test.ts"
+  },
+  "reuse": {
+    "seedSynthetic": "deploy/staging/scripts/seed-synthetic.mjs",
+    "seedIsolated": "qa/e2e/fixtures/seed/seed-isolated.mjs",
+    "canonicalImport": "src/server/canonical-import.ts",
+    "canonicalSnapshot": "src/server/canonical-snapshot.ts",
+    "classification": "src/server/classification.ts",
+    "g5": "src/server/g5.ts",
+    "lifecycle": "src/server/lifecycle-store.ts",
+    "capacity": "src/server/account-sync.ts",
+    "priority": "src/server/rollup-v3.ts#computePriorityAllocation",
+    "reconciler": "src/server/reconciler.ts"
+  },
+  "failClosed": [
+    "productionDerived=true without dual approvals",
+    "CAIRN_DB_NAME other than cairn_tm_v3_staging on live seed",
+    "fabricated G5 PASS without programmaticEvidence",
+    "staging mutation without CAIRN_STAGING_SEED_APPROVED=1 and CAIRN_GATES_APPLY=1"
+  ]
+}
