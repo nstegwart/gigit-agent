@@ -2258,28 +2258,18 @@ export async function backfillDurableLifecycleV3Records(
  * advance_task / submit_stage_evidence always hit STALE_REVISION with boardRev
  * stable. Fix: lazy insert-if-absent durable V3 record on first touch; V3
  * entityRev starts at 0 (independent of legacy tasks.rev).
+ *
+ * CRITICAL (pin dual-authority): getBoardPin CAS boardRev/lifecycleRev MUST
+ * match get_board_hash / resolveBoardPin (board_revisions atomic). Preferring
+ * lifecycle_v3_pin overlay for CAS stuck the pin at the last advance watermark
+ * while upsert_run kept bumping atomic boardRev → permanent STALE_REVISION
+ * (expected N, current 43). Overlay is still written on saveTask as a watermark
+ * only — not CAS authority.
  */
 export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Storage {
-  type PinOverlay = { boardRev: number; lifecycleRev: number }
   type TasksDoc = { tasks: Record<string, TaskLifecycleV3State> }
   type EvidenceDoc = { byReceiptId: Record<string, RegisteredStageEvidence> }
   const EVIDENCE_DOC = 'lifecycle_v3_stage_evidence'
-
-  async function loadPinOverlay(): Promise<PinOverlay | null> {
-    try {
-      const doc = await readDoc<PinOverlay | null>(boardId, LIFECYCLE_V3_PIN_DOC, null)
-      if (
-        doc &&
-        typeof doc.boardRev === 'number' &&
-        typeof doc.lifecycleRev === 'number'
-      ) {
-        return { boardRev: doc.boardRev, lifecycleRev: doc.lifecycleRev }
-      }
-    } catch {
-      /* no db / missing */
-    }
-    return null
-  }
 
   async function loadTasksDoc(): Promise<TasksDoc> {
     try {
@@ -2384,12 +2374,14 @@ export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Sto
   return {
     async getBoardPin(bid) {
       if (bid !== boardId) return null
+      // Single authority with get_board_hash: board_revisions via resolveBoardPin.
+      // Do NOT prefer lifecycle_v3_pin overlay for CAS — it lags every non-lifecycle
+      // board write (upsert_run etc.) and creates dual-authority STALE forever.
       const base = await resolveBoardPin(boardId)
-      const overlay = await loadPinOverlay()
       return {
         boardId,
-        boardRev: overlay?.boardRev ?? base.boardRev,
-        lifecycleRev: overlay?.lifecycleRev ?? base.lifecycleRev,
+        boardRev: base.boardRev,
+        lifecycleRev: base.lifecycleRev,
         canonicalSnapshotId: base.canonicalSnapshotId,
         canonicalHash: base.canonicalHash,
       }
