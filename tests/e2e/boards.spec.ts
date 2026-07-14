@@ -1,5 +1,7 @@
-// E2E for the multi-board surface added in the multi-board migration:
-//   - the site root `/` is now the BOARDS HOME (a list of boards + a create form),
+// E2E for the multi-board surface after ART control-center default:
+//   - bare `/` redirects authenticated users to the selected mfs-rebuild Overview
+//     (DEFAULT_CONTROL_CENTER_BOARD_ID), not the board picker,
+//   - board picker + create form live at `/?boards=1` (bare home chrome, no sidebar),
 //   - `/b/<id>/` is a board's own scope (sidebar chrome + all sections),
 //   - the sidebar `.switcher-btn` opens a `.switcher-menu` to hop between boards.
 //
@@ -8,6 +10,11 @@
 // so this spec performs no manual cleanup. A per-run unique slug keeps the create
 // test idempotent across Playwright retries (a retried attempt gets a fresh slug
 // instead of colliding with the board the first attempt already wrote).
+//
+// CSRF / create failures must surface as hard test failures. Do not soft-assert
+// success, catch mutation errors, or treat a stuck picker as a pass — a failed
+// create (including CSRF_TOKEN_UNAVAILABLE / missing CAIRN_CSRF_SECRET under
+// production-like preview) must remain red and visible in the report.
 import { expect, test } from '@playwright/test'
 
 // Mirror of slugify() in src/routes/index.tsx.
@@ -15,9 +22,28 @@ function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
+test.describe('root redirect', () => {
+  test('bare / redirects to selected mfs Overview', async ({ page }) => {
+    await page.goto('/')
+
+    // ART default: control-center overview for mfs-rebuild (not Boards home).
+    await expect(page).toHaveURL(/\/b\/mfs-rebuild(\/|$|\?)/)
+    await expect(page.locator('.sidebar')).toBeVisible()
+    await expect(page.locator('.switcher-name')).toHaveText('Myfitsociety Rebuild')
+    // Bilingual page title is allowed (EN · id-ID); assert Overview is present.
+    await expect(page.locator('#page-title')).toContainText('Overview')
+    await expect(page.locator('[data-testid="control-center-overview"]')).toBeVisible({
+      timeout: 30_000,
+    })
+    // Boards picker chrome must NOT be the root default.
+    await expect(page.locator('.home-title')).toHaveCount(0)
+  })
+})
+
 test.describe('boards home', () => {
   test('lists the seeded "Ibils Roadmap" board and opens it on click', async ({ page }) => {
-    await page.goto('/')
+    // Explicit board picker — bare `/` no longer renders this surface.
+    await page.goto('/?boards=1')
 
     // Boards home renders bare (no sidebar) with the board grid.
     await expect(page.locator('.home-title')).toHaveText('Boards')
@@ -37,7 +63,7 @@ test.describe('boards home', () => {
   })
 
   test('creates a new board and enters its scope', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?boards=1')
 
     // Unique name -> unique slug so retries never collide on an already-created board.
     const name = `E2E Board ${Date.now()}`
@@ -56,10 +82,44 @@ test.describe('boards home', () => {
 
     const create = page.getByRole('button', { name: 'Create' })
     await expect(create).toBeEnabled()
+
+    // Capture the create mutation response so CSRF/server failures stay in the
+    // failure message instead of collapsing into a generic navigation timeout.
+    const createPost = page.waitForResponse(
+      (res) =>
+        res.request().method() === 'POST' &&
+        (res.url().includes('_serverFn') || res.url().includes('createBoard')),
+      { timeout: 20_000 },
+    )
+
     await create.click()
 
-    // Lands in the freshly-created board's scope, fully rendered.
-    await expect(page).toHaveURL(new RegExp(`/b/${slug}(/|$)`))
+    // Hard success bar: must leave the picker and enter the new board scope.
+    // Do not soft-pass if still on /?boards=1 — that hides real create failures.
+    try {
+      await expect(page).toHaveURL(new RegExp(`/b/${slug}(/|$)`), { timeout: 20_000 })
+    } catch (navErr) {
+      let postDetail = 'no POST captured'
+      try {
+        const res = await createPost
+        const body = (await res.text()).slice(0, 800)
+        postDetail = `status=${res.status()} body=${body}`
+      } catch (postErr) {
+        postDetail = `POST wait failed: ${postErr instanceof Error ? postErr.message : String(postErr)}`
+      }
+      const stillOnPicker = /[?&]boards=1(?:&|$)/.test(new URL(page.url()).search) || page.url().endsWith('/?boards=1')
+      throw new Error(
+        [
+          `Board create did not navigate to /b/${slug}.`,
+          `stillOnPicker=${stillOnPicker}`,
+          `finalUrl=${page.url()}`,
+          postDetail,
+          'CSRF/create failures must remain visible (no soft-pass).',
+          `navError=${navErr instanceof Error ? navErr.message : String(navErr)}`,
+        ].join(' '),
+      )
+    }
+
     await expect(page.locator('.sidebar')).toBeVisible()
     await expect(page.locator('.brand-name')).toHaveText('Cairn')
 

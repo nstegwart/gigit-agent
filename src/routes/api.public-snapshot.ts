@@ -249,17 +249,22 @@ function publicSnapshotBoardId(request: Request): string | null {
   }
 }
 
-/** Best-effort pin revs from 200 body only — never log payload content. */
+/** Best-effort pin revs + freshness signals from 200 body only — never log payload content. */
 function publicSnapshotRevisions(result: PublicSnapshotHandlerResult): {
   boardRev: number | null
   lifecycleRev: number | null
+  ageMs: number | null
+  publicationIntervalMs: number | null
 } {
-  if (result.kind !== 'ok') return { boardRev: null, lifecycleRev: null }
+  if (result.kind !== 'ok') {
+    return { boardRev: null, lifecycleRev: null, ageMs: null, publicationIntervalMs: null }
+  }
   try {
     const parsed = JSON.parse(result.body) as {
       pin?: { boardRev?: number; lifecycleRev?: number }
       boardRev?: number
       lifecycleRev?: number
+      freshness?: { ageMs?: number; publicationIntervalMs?: number }
     }
     const boardRev =
       typeof parsed.pin?.boardRev === 'number'
@@ -273,9 +278,19 @@ function publicSnapshotRevisions(result: PublicSnapshotHandlerResult): {
         : typeof parsed.lifecycleRev === 'number'
           ? parsed.lifecycleRev
           : null
-    return { boardRev, lifecycleRev }
+    const ageMs =
+      typeof parsed.freshness?.ageMs === 'number' && Number.isFinite(parsed.freshness.ageMs)
+        ? parsed.freshness.ageMs
+        : null
+    const publicationIntervalMs =
+      typeof parsed.freshness?.publicationIntervalMs === 'number' &&
+      Number.isFinite(parsed.freshness.publicationIntervalMs) &&
+      parsed.freshness.publicationIntervalMs > 0
+        ? parsed.freshness.publicationIntervalMs
+        : null
+    return { boardRev, lifecycleRev, ageMs, publicationIntervalMs }
   } catch {
-    return { boardRev: null, lifecycleRev: null }
+    return { boardRev: null, lifecycleRev: null, ageMs: null, publicationIntervalMs: null }
   }
 }
 
@@ -289,6 +304,19 @@ export async function publicSnapshotGetHandler(request: Request): Promise<Respon
     const latencyMs = Math.max(0, Date.now() - startedAt)
     const revs = publicSnapshotRevisions(result)
     const obsResult = observationResultFromHttpStatus(result.status)
+    // Safe public-freshness alert evaluation when age + interval are proven on the body.
+    // Never throws into the response path; never invents thresholds from missing fields.
+    if (revs.ageMs != null && revs.publicationIntervalMs != null) {
+      try {
+        obs.evaluateAlerts({
+          nowIso: new Date().toISOString(),
+          publicSnapshotAgeMs: revs.ageMs,
+          publicationIntervalMs: revs.publicationIntervalMs,
+        })
+      } catch {
+        /* alert path must never fail public-snapshot */
+      }
+    }
     obs
       .beginRequest({
         requestId,
@@ -306,6 +334,7 @@ export async function publicSnapshotGetHandler(request: Request): Promise<Respon
           kind: result.kind,
           // never log body / etag full payload — only presence flags
           hasEtag: result.kind === 'ok' || result.kind === 'not_modified',
+          hasFreshnessSignal: revs.ageMs != null && revs.publicationIntervalMs != null,
         },
       })
       .end({

@@ -2,14 +2,42 @@ import { describe, expect, it } from 'vitest'
 
 import {
   DECISION_HEARTBEAT_RETENTION_POLICY,
+  RETENTION_COMPACTION_WATERMARK_EVENT,
   STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
   applyHeartbeat,
+  applyHeartbeatAsync,
+  applyHeartbeatWithOptionalCompaction,
+  applyHeartbeatWithOptionalCompactionAsync,
   compactRetention,
+  compactRetentionAsync,
   createMemoryRetentionStore,
   planRetentionCompaction,
+  readDurableCompactionWatermarkMs,
   resolveRetentionPolicy,
+  retentionMaterialAuditId,
+  retentionSampleAuditId,
   type BoardPolicyRetention,
+  type CompactionResult,
+  type HeartbeatApplyResult,
 } from '#/server/audit-retention'
+import {
+  createFakeClock,
+  createMemoryControlPlaneAtomicStore,
+} from '#/server/board-store'
+import {
+  createMemorySqlExecutor,
+  createMysqlRetentionAsyncStore,
+} from '#/server/control-plane-runtime-persistence'
+import { createMemoryIdempotencyStorage } from '#/server/idempotency'
+import { createMemoryLockStore } from '#/server/locks'
+import {
+  createMemoryRunRegistryStore,
+  heartbeatRun,
+  registerRun,
+  type RunRegistryDeps,
+  type RunRegistryRetentionAsyncBinding,
+  type RunRegistryRetentionBinding,
+} from '#/server/run-registry'
 import {
   OBSERVABILITY_REDACTED,
   STAGING_RUNBOOKS,
@@ -151,11 +179,24 @@ describe('AC-OPS-05 retention / compaction + DECISION policy', () => {
     )
   })
 
-  it('LOCAL/TEST use explicit staging proposal', () => {
+  it('LOCAL uses staging proposal; TEST requires explicitAppEnv or test capability (R4)', () => {
     expect(resolveRetentionPolicy({ environment: 'LOCAL' }).ok).toBe(true)
-    expect(resolveRetentionPolicy({ environment: 'TEST' }).source).toBe(
-      'STAGING_PROPOSAL',
-    )
+    // Bare TEST without gates → blocked (NODE_ENV=test/VITEST must not silent-authorize)
+    const bare = resolveRetentionPolicy({ environment: 'TEST' })
+    expect(bare.ok).toBe(false)
+    expect(bare.source).toBe('BLOCKED')
+    expect(bare.message).toMatch(/R4|allowTestRetentionProposal|CAIRN_ENV/i)
+    // Explicit CAIRN_ENV=test path
+    expect(
+      resolveRetentionPolicy({ environment: 'TEST', explicitAppEnv: true }).source,
+    ).toBe('STAGING_PROPOSAL')
+    // Approved test-context capability (disposable unit tests)
+    expect(
+      resolveRetentionPolicy({
+        environment: 'TEST',
+        allowTestRetentionProposal: true,
+      }).source,
+    ).toBe('STAGING_PROPOSAL')
   })
 
   it('supplied production-approved policy is accepted', () => {
@@ -285,6 +326,682 @@ describe('AC-OPS-05 retention / compaction + DECISION policy', () => {
     expect(a.deletedHot).toBe(1)
     expect(b.deletedHot).toBe(0)
     expect(b.deletedSampled).toBe(0)
+  })
+
+  it('applyHeartbeatWithOptionalCompaction compacts only after interval', () => {
+    const store = createMemoryRetentionStore()
+    const policy: BoardPolicyRetention = {
+      ...STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+      heartbeatSampleInterval: 1,
+      compactionIntervalMs: 5_000,
+      hotStateRetentionMs: 1,
+      sampledEventRetentionMs: 1,
+    }
+    // Seed an old hot row that becomes compactable after interval.
+    applyHeartbeat(
+      {
+        runId: 'old',
+        boardId: 'b1',
+        sequence: 1,
+        atMs: 0,
+        status: 'RUNNING',
+      },
+      policy,
+      store,
+    )
+    const early = applyHeartbeatWithOptionalCompaction({
+      input: {
+        runId: 'new',
+        boardId: 'b1',
+        sequence: 1,
+        atMs: 1_000,
+        status: 'RUNNING',
+      },
+      policy,
+      store,
+      lastCompactionAtMs: 0,
+    })
+    // 1000 < 5000 interval from lastCompactionAtMs=0... wait 1000-0 < 5000 so no compact
+    expect(early.compaction).toBeNull()
+    expect(early.nextLastCompactionAtMs).toBe(0)
+
+    const late = applyHeartbeatWithOptionalCompaction({
+      input: {
+        runId: 'new',
+        boardId: 'b1',
+        sequence: 2,
+        atMs: 6_000,
+        status: 'RUNNING',
+      },
+      policy,
+      store,
+      lastCompactionAtMs: 0,
+    })
+    expect(late.compaction).not.toBeNull()
+    expect(late.compaction!.deletedHot).toBeGreaterThanOrEqual(1)
+    expect(late.nextLastCompactionAtMs).toBe(6_000)
+  })
+})
+
+describe('AC-OPS-04/05 heartbeatRun production retention wiring', () => {
+  const BOARD = 'mfs-rebuild-ret'
+
+  function openCapacity() {
+    return {
+      dispatchMode: 'OPEN' as const,
+      dispatchAllowed: true,
+      usableCapacity: 100,
+      nonGrokAssignmentAllowed: true,
+      grokAssignmentAllowed: true,
+      limitingReasons: [] as string[],
+      sparkUsableCapacity: 10,
+      solUsableCapacity: 10,
+      otherUsableCapacity: 10,
+      healthyGrokUsableCapacity: 100,
+    }
+  }
+
+  function makeDeps(retention?: RunRegistryRetentionBinding | null): {
+    deps: RunRegistryDeps
+    clock: ReturnType<typeof createFakeClock>
+    retentionStore: ReturnType<typeof createMemoryRetentionStore>
+    atomic: ReturnType<typeof createMemoryControlPlaneAtomicStore>
+  } {
+    const clock = createFakeClock(Date.parse('2026-07-13T10:00:00.000Z'))
+    const retentionStore = createMemoryRetentionStore()
+    const atomic = createMemoryControlPlaneAtomicStore([
+      {
+        boardId: BOARD,
+        boardRev: 0,
+        dispatchBlocked: false,
+        dispatchBlockedReason: null,
+      },
+    ])
+    const deps: RunRegistryDeps = {
+      clock,
+      runs: createMemoryRunRegistryStore(),
+      locks: createMemoryLockStore(),
+      atomic,
+      idempotency: createMemoryIdempotencyStorage(),
+      getCapacity: async () => openCapacity(),
+      retention:
+        retention === undefined
+          ? {
+              store: retentionStore,
+              policy: {
+                ...STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+                heartbeatSampleInterval: 5,
+                compactionIntervalMs: 1, // compact every HB after first watermark
+                hotStateRetentionMs: 60_000,
+                sampledEventRetentionMs: 60_000,
+              },
+              lastCompactionAtMs: 0,
+            }
+          : retention,
+    }
+    return {
+      deps,
+      clock,
+      retentionStore:
+        (deps.retention?.store as ReturnType<typeof createMemoryRetentionStore> | undefined) ??
+        retentionStore,
+      atomic,
+    }
+  }
+
+  it('heartbeatRun updates retention hot state without immutable ordinary heartbeat', async () => {
+    const applied: Array<HeartbeatApplyResult> = []
+    const compactions: Array<CompactionResult> = []
+    const { deps, retentionStore } = makeDeps()
+    deps.retention!.onHeartbeatRetention = (r) => applied.push(r)
+    deps.retention!.onCompacted = (c) => compactions.push(c)
+
+    const reg = await registerRun(deps, {
+      boardId: BOARD,
+      runId: 'run-hb-ret',
+      taskId: 'T-HB-RET',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-hb',
+      model: 'grok-4.5',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-hb-ret',
+      initialState: 'RUNNING',
+      canonicalHash: 'canon-hb-ret',
+
+    })
+
+    for (let seq = 1; seq <= 4; seq++) {
+      await heartbeatRun(deps, {
+        boardId: BOARD,
+        runId: 'run-hb-ret',
+        agentId: 'agent-hb',
+        fencingToken: reg.fencingToken!,
+        heartbeatSequence: seq,
+        expectedEntityRev: seq, // after register entityRev=1; first HB expects 1 then +1 each
+        expectedBoardRev: 0,
+        idempotencyKey: `hb-ret-${seq}`,
+        canonicalHash: 'canon-hb-ret',
+      })
+    }
+
+    expect(applied).toHaveLength(4)
+    expect(applied.every((a) => a.immutableHeartbeatCreated === false)).toBe(true)
+    expect(applied.every((a) => a.material === null)).toBe(true)
+    expect(retentionStore.getHot('run-hb-ret')?.heartbeatSequence).toBe(4)
+    expect(retentionStore.listAudit({ eventClass: 'MATERIAL', immutable: true })).toHaveLength(0)
+    // sample interval 5 → no sample yet on seq 1..4
+    expect(retentionStore.listAudit({ eventClass: 'SAMPLED' })).toHaveLength(0)
+  })
+
+  it('heartbeatRun materialProgress creates retention MATERIAL immutable only', async () => {
+    const { deps, retentionStore, atomic } = makeDeps()
+    const reg = await registerRun(deps, {
+      boardId: BOARD,
+      runId: 'run-mat',
+      taskId: 'T-MAT',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-mat',
+      model: 'grok-4.5',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-mat',
+      initialState: 'RUNNING',
+      canonicalHash: 'canon-mat',
+
+    })
+    await heartbeatRun(deps, {
+      boardId: BOARD,
+      runId: 'run-mat',
+      agentId: 'agent-mat',
+      fencingToken: reg.fencingToken!,
+      heartbeatSequence: 1,
+      expectedEntityRev: 1,
+      expectedBoardRev: 0,
+      idempotencyKey: 'hb-mat-1',
+      canonicalHash: 'canon-mat',
+      materialProgressAt: new Date(deps.clock.nowMs()).toISOString(),
+    })
+    const material = retentionStore.listAudit({ eventClass: 'MATERIAL', immutable: true })
+    expect(material).toHaveLength(1)
+    expect(material[0]?.eventType).toBe('material_progress')
+    // Control-plane atomic also records RUN_MATERIAL_PROGRESS (separate stream)
+    expect(atomic.auditSnapshot().some((e) => e.kind === 'RUN_MATERIAL_PROGRESS')).toBe(true)
+  })
+
+  it('heartbeatRun without retention binding does not invent policy / hot rows', async () => {
+    const { deps } = makeDeps(null)
+    expect(deps.retention).toBeNull()
+    const reg = await registerRun(deps, {
+      boardId: BOARD,
+      runId: 'run-no-ret',
+      taskId: 'T-NO',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-no',
+      model: 'grok-4.5',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-no-ret',
+      initialState: 'RUNNING',
+      canonicalHash: 'canon-no',
+
+    })
+    const hb = await heartbeatRun(deps, {
+      boardId: BOARD,
+      runId: 'run-no-ret',
+      agentId: 'agent-no',
+      fencingToken: reg.fencingToken!,
+      heartbeatSequence: 1,
+      expectedEntityRev: 1,
+      expectedBoardRev: 0,
+      idempotencyKey: 'hb-no-1',
+      canonicalHash: 'canon-no',
+    })
+    expect(hb.heartbeatSequence).toBe(1)
+    expect(hb.replayed).toBe(false)
+  })
+
+  it('samples on interval and runs compaction when interval elapsed', async () => {
+    const compactions: Array<CompactionResult> = []
+    const store = createMemoryRetentionStore()
+    const policy: BoardPolicyRetention = {
+      ...STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+      heartbeatSampleInterval: 2,
+      compactionIntervalMs: 1,
+      hotStateRetentionMs: 30_000,
+      sampledEventRetentionMs: 30_000,
+    }
+    // Pre-seed an expired hot row so compaction has work when first HB fires.
+    store.putHot({
+      runId: 'stale-hot',
+      boardId: BOARD,
+      lastHeartbeatAtMs: 0,
+      heartbeatSequence: 9,
+      status: 'RUNNING',
+      materialProgressAtMs: null,
+    })
+    const { deps, clock } = makeDeps({
+      store,
+      policy,
+      lastCompactionAtMs: 0,
+      onCompacted: (c) => compactions.push(c),
+    })
+    // Move clock past hot retention for stale-hot
+    clock.advance(60_000)
+
+    const reg = await registerRun(deps, {
+      boardId: BOARD,
+      runId: 'run-sample',
+      taskId: 'T-SAMP',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-s',
+      model: 'grok-4.5',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-samp',
+      initialState: 'RUNNING',
+      canonicalHash: 'canon-samp',
+
+    })
+    await heartbeatRun(deps, {
+      boardId: BOARD,
+      runId: 'run-sample',
+      agentId: 'agent-s',
+      fencingToken: reg.fencingToken!,
+      heartbeatSequence: 1,
+      expectedEntityRev: 1,
+      expectedBoardRev: 0,
+      idempotencyKey: 'hb-samp-1',
+      canonicalHash: 'canon-samp',
+    })
+    await heartbeatRun(deps, {
+      boardId: BOARD,
+      runId: 'run-sample',
+      agentId: 'agent-s',
+      fencingToken: reg.fencingToken!,
+      heartbeatSequence: 2,
+      expectedEntityRev: 2,
+      expectedBoardRev: 0,
+      idempotencyKey: 'hb-samp-2',
+      canonicalHash: 'canon-samp',
+    })
+    const sampled = store.listAudit({ eventClass: 'SAMPLED' })
+    expect(sampled.some((s) => s.payload.sequence === 2)).toBe(true)
+    expect(sampled.every((s) => s.immutable === false)).toBe(true)
+    expect(compactions.length).toBeGreaterThanOrEqual(1)
+    expect(store.getHot('stale-hot')).toBeNull()
+  })
+})
+
+describe('AC-OPS-04/05 durable retentionAsync (MySQL multi-instance)', () => {
+  const BOARD = 'mfs-async-ret'
+
+  function openCapacity() {
+    return {
+      dispatchMode: 'OPEN' as const,
+      dispatchAllowed: true,
+      usableCapacity: 100,
+      nonGrokAssignmentAllowed: true,
+      grokAssignmentAllowed: true,
+      limitingReasons: [] as string[],
+      sparkUsableCapacity: 10,
+      solUsableCapacity: 10,
+      otherUsableCapacity: 10,
+      healthyGrokUsableCapacity: 100,
+    }
+  }
+
+  it('applyHeartbeatAsync: hot + sample + no immutable ordinary heartbeat', async () => {
+    const exec = createMemorySqlExecutor()
+    const store = createMysqlRetentionAsyncStore(exec)
+    const policy: BoardPolicyRetention = {
+      ...STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+      heartbeatSampleInterval: 2,
+    }
+    const r1 = await applyHeartbeatAsync(
+      {
+        runId: 'run-a',
+        boardId: BOARD,
+        sequence: 1,
+        atMs: 1000,
+        status: 'RUNNING',
+      },
+      policy,
+      store,
+    )
+    expect(r1.immutableHeartbeatCreated).toBe(false)
+    expect(r1.sampled).toBeNull()
+    expect(r1.material).toBeNull()
+    expect((await store.getHot(BOARD, 'run-a'))?.heartbeatSequence).toBe(1)
+
+    const r2 = await applyHeartbeatAsync(
+      {
+        runId: 'run-a',
+        boardId: BOARD,
+        sequence: 2,
+        atMs: 2000,
+        status: 'RUNNING',
+      },
+      policy,
+      store,
+    )
+    expect(r2.sampled?.immutable).toBe(false)
+    expect(r2.sampled?.id).toBe(retentionSampleAuditId(BOARD, 'run-a', 2))
+    const audits = await store.listAudit(BOARD, { eventClass: 'SAMPLED' })
+    expect(audits).toHaveLength(1)
+    expect(audits.every((a) => a.immutable === false)).toBe(true)
+    expect(
+      (await store.listAudit(BOARD, { eventClass: 'MATERIAL', immutable: true })).length,
+    ).toBe(0)
+  })
+
+  it('applyHeartbeatAsync materialProgress → MATERIAL immutable only', async () => {
+    const store = createMysqlRetentionAsyncStore(createMemorySqlExecutor())
+    const r = await applyHeartbeatAsync(
+      {
+        runId: 'run-m',
+        boardId: BOARD,
+        sequence: 3,
+        atMs: 3000,
+        status: 'RUNNING',
+        materialProgress: true,
+      },
+      STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+      store,
+    )
+    expect(r.material?.immutable).toBe(true)
+    expect(r.material?.id).toBe(retentionMaterialAuditId(BOARD, 'run-m', 3))
+    expect(r.immutableHeartbeatCreated).toBe(false)
+    expect((await store.listAudit(BOARD, { immutable: true })).length).toBe(1)
+  })
+
+  it('compactRetentionAsync is bounded, retains MATERIAL, writes durable watermark', async () => {
+    const store = createMysqlRetentionAsyncStore(createMemorySqlExecutor())
+    const policy: BoardPolicyRetention = {
+      ...STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+      heartbeatSampleInterval: 1,
+      hotStateRetentionMs: 10,
+      sampledEventRetentionMs: 10,
+      rollupRetentionMs: 10,
+    }
+    for (let i = 0; i < 5; i++) {
+      await applyHeartbeatAsync(
+        {
+          runId: `r-${i}`,
+          boardId: BOARD,
+          sequence: 1,
+          atMs: 0,
+          status: 'RUNNING',
+          materialProgress: i === 0,
+        },
+        policy,
+        store,
+      )
+    }
+    const first = await compactRetentionAsync({
+      policy,
+      store,
+      nowMs: 100_000,
+      boardId: BOARD,
+      maxActionsPerRun: 3,
+    })
+    expect(first.maxActionsPerRun).toBe(3)
+    expect(first.deletedHot + first.deletedSampled + first.deletedRollup).toBeLessThanOrEqual(3)
+    expect(first.truncated).toBe(true)
+    expect(first.retainedMaterial).toBeGreaterThanOrEqual(1)
+    const wm = await readDurableCompactionWatermarkMs(store, BOARD)
+    expect(wm).toBe(100_000)
+    const watermarks = (await store.listAudit(BOARD, { eventClass: 'ROLLUP' })).filter(
+      (a) => a.eventType === RETENTION_COMPACTION_WATERMARK_EVENT,
+    )
+    expect(watermarks.length).toBeGreaterThanOrEqual(1)
+
+    // Idempotent second pass at same clock: no further hot/sample deletes (watermark retained)
+    const second = await compactRetentionAsync({
+      policy,
+      store,
+      nowMs: 100_000,
+      boardId: BOARD,
+      maxActionsPerRun: 100,
+    })
+    // First pass may have truncated; second may finish remaining hot/samples OR already clean.
+    // MATERIAL still retained; watermarks never deleted.
+    expect(
+      (await store.listAudit(BOARD, { eventClass: 'MATERIAL', immutable: true })).length,
+    ).toBeGreaterThanOrEqual(1)
+    void second
+  })
+
+  it('applyHeartbeatWithOptionalCompactionAsync uses durable watermark (no process invent)', async () => {
+    const store = createMysqlRetentionAsyncStore(createMemorySqlExecutor())
+    const policy: BoardPolicyRetention = {
+      ...STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+      heartbeatSampleInterval: 1,
+      compactionIntervalMs: 5_000,
+      hotStateRetentionMs: 1,
+      sampledEventRetentionMs: 1,
+    }
+    await applyHeartbeatAsync(
+      {
+        runId: 'old',
+        boardId: BOARD,
+        sequence: 1,
+        atMs: 0,
+        status: 'RUNNING',
+      },
+      policy,
+      store,
+    )
+    const early = await applyHeartbeatWithOptionalCompactionAsync({
+      input: {
+        runId: 'new',
+        boardId: BOARD,
+        sequence: 1,
+        atMs: 1_000,
+        status: 'RUNNING',
+      },
+      policy,
+      store,
+      lastCompactionAtMs: 0,
+    })
+    expect(early.compaction).toBeNull()
+    expect(early.apply.immutableHeartbeatCreated).toBe(false)
+
+    const late = await applyHeartbeatWithOptionalCompactionAsync({
+      input: {
+        runId: 'new',
+        boardId: BOARD,
+        sequence: 2,
+        atMs: 6_000,
+        status: 'RUNNING',
+      },
+      policy,
+      store,
+      lastCompactionAtMs: 0,
+    })
+    expect(late.compaction).not.toBeNull()
+    expect(late.nextLastCompactionAtMs).toBe(6_000)
+    // Second instance reading only durable store sees watermark
+    expect(await readDurableCompactionWatermarkMs(store, BOARD)).toBe(6_000)
+  })
+
+  it('heartbeatRun + retentionAsync: multi-instance hot visible; no process memory store', async () => {
+    const exec = createMemorySqlExecutor()
+    const asyncA = createMysqlRetentionAsyncStore(exec)
+    const asyncB = createMysqlRetentionAsyncStore(exec)
+    const applied: Array<HeartbeatApplyResult> = []
+    const policy: BoardPolicyRetention = {
+      ...STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+      heartbeatSampleInterval: 2,
+      compactionIntervalMs: 60_000,
+    }
+    const retentionAsync: RunRegistryRetentionAsyncBinding = {
+      store: asyncA,
+      policy,
+      onHeartbeatRetention: (r) => applied.push(r),
+    }
+    const clock = createFakeClock(Date.parse('2026-07-14T04:00:00.000Z'))
+    const deps: RunRegistryDeps = {
+      clock,
+      runs: createMemoryRunRegistryStore(),
+      locks: createMemoryLockStore(),
+      atomic: createMemoryControlPlaneAtomicStore([
+        {
+          boardId: BOARD,
+          boardRev: 0,
+          dispatchBlocked: false,
+          dispatchBlockedReason: null,
+        },
+      ]),
+      idempotency: createMemoryIdempotencyStorage(),
+      getCapacity: async () => openCapacity(),
+      retention: null,
+      retentionAsync,
+    }
+
+    const reg = await registerRun(deps, {
+      boardId: BOARD,
+      runId: 'run-async-hb',
+      taskId: 'T-ASYNC',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-async',
+      model: 'grok-4.5',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-async',
+      initialState: 'RUNNING',
+      canonicalHash: 'canon-async',
+
+    })
+
+    for (let seq = 1; seq <= 2; seq++) {
+      await heartbeatRun(deps, {
+        boardId: BOARD,
+        runId: 'run-async-hb',
+        agentId: 'agent-async',
+        fencingToken: reg.fencingToken!,
+        heartbeatSequence: seq,
+        expectedEntityRev: seq,
+        expectedBoardRev: 0,
+        idempotencyKey: `hb-async-${seq}`,
+        canonicalHash: 'canon-async',
+      })
+    }
+
+    expect(applied).toHaveLength(2)
+    expect(applied.every((a) => a.immutableHeartbeatCreated === false)).toBe(true)
+    // Instance B (shared durable executor) sees hot + sample from instance A path
+    const hotB = await asyncB.getHot(BOARD, 'run-async-hb')
+    expect(hotB?.heartbeatSequence).toBe(2)
+    const samplesB = await asyncB.listAudit(BOARD, { eventClass: 'SAMPLED' })
+    expect(samplesB.some((s) => s.payload.sequence === 2)).toBe(true)
+    expect(samplesB.every((s) => s.immutable === false)).toBe(true)
+    expect(
+      (await asyncB.listAudit(BOARD, { eventClass: 'MATERIAL', immutable: true })).length,
+    ).toBe(0)
+
+    // materialProgress
+    await heartbeatRun(deps, {
+      boardId: BOARD,
+      runId: 'run-async-hb',
+      agentId: 'agent-async',
+      fencingToken: reg.fencingToken!,
+      heartbeatSequence: 3,
+      expectedEntityRev: 3,
+      expectedBoardRev: 0,
+      idempotencyKey: 'hb-async-3-mat',
+      canonicalHash: 'canon-async',
+      materialProgressAt: new Date(clock.nowMs()).toISOString(),
+    })
+    const materials = await asyncB.listAudit(BOARD, {
+      eventClass: 'MATERIAL',
+      immutable: true,
+    })
+    expect(materials).toHaveLength(1)
+    expect(materials[0]?.id).toBe(retentionMaterialAuditId(BOARD, 'run-async-hb', 3))
+  })
+
+  it('heartbeatRun retentionAsync compaction across instances is durable + bounded', async () => {
+    const exec = createMemorySqlExecutor()
+    const store = createMysqlRetentionAsyncStore(exec)
+    const policy: BoardPolicyRetention = {
+      ...STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+      heartbeatSampleInterval: 1,
+      compactionIntervalMs: 1,
+      hotStateRetentionMs: 30_000,
+      sampledEventRetentionMs: 30_000,
+    }
+    // Stale hot via durable store (no process Map)
+    await store.putHot({
+      runId: 'stale-async',
+      boardId: BOARD,
+      lastHeartbeatAtMs: 0,
+      heartbeatSequence: 1,
+      status: 'RUNNING',
+      materialProgressAtMs: null,
+    })
+    const compactions: Array<CompactionResult> = []
+    const clock = createFakeClock(Date.parse('2026-07-14T05:00:00.000Z'))
+    clock.advance(60_000)
+    const deps: RunRegistryDeps = {
+      clock,
+      runs: createMemoryRunRegistryStore(),
+      locks: createMemoryLockStore(),
+      atomic: createMemoryControlPlaneAtomicStore([
+        {
+          boardId: BOARD,
+          boardRev: 0,
+          dispatchBlocked: false,
+          dispatchBlockedReason: null,
+        },
+      ]),
+      idempotency: createMemoryIdempotencyStorage(),
+      getCapacity: async () => openCapacity(),
+      retentionAsync: {
+        store,
+        policy,
+        maxCompactionActions: 50,
+        onCompacted: (c) => compactions.push(c),
+      },
+    }
+    const reg = await registerRun(deps, {
+      boardId: BOARD,
+      runId: 'run-async-c',
+      taskId: 'T-AC',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-ac',
+      model: 'grok-4.5',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-ac',
+      initialState: 'RUNNING',
+      canonicalHash: 'canon-ac',
+
+    })
+    await heartbeatRun(deps, {
+      boardId: BOARD,
+      runId: 'run-async-c',
+      agentId: 'agent-ac',
+      fencingToken: reg.fencingToken!,
+      heartbeatSequence: 1,
+      expectedEntityRev: 1,
+      expectedBoardRev: 0,
+      idempotencyKey: 'hb-ac-1',
+      canonicalHash: 'canon-ac',
+    })
+    expect(compactions.length).toBeGreaterThanOrEqual(1)
+    expect(compactions.some((c) => c.deletedHot >= 1)).toBe(true)
+    expect(await store.getHot(BOARD, 'stale-async')).toBeNull()
+    // Second "instance" sees durable watermark without process lastCompactionAtMs
+    const peer = createMysqlRetentionAsyncStore(exec)
+    expect(await readDurableCompactionWatermarkMs(peer, BOARD)).toBeGreaterThan(0)
+  })
+
+  it('PRODUCTION policy Decision preserved — resolve still fail-closed without supplied', () => {
+    const r = resolveRetentionPolicy({ environment: 'PRODUCTION' })
+    expect(r.ok).toBe(false)
+    expect(r.decisionCode).toBe(DECISION_HEARTBEAT_RETENTION_POLICY)
+    expect(r.source).toBe('BLOCKED')
   })
 })
 

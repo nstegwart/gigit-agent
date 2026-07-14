@@ -21,7 +21,12 @@ import {
   type RunRegistryStore,
   type RunState,
 } from './run-registry'
-import { markExpiredLocks, type LockStore } from './locks'
+import {
+  markExpiredLocks,
+  releaseCollisionLocks,
+  LockError,
+  type LockStore,
+} from './locks'
 
 export const DEFAULT_MAX_ACTIONS_PER_RUN = 100
 export const DEFAULT_TIME_BUDGET_MS = 5_000
@@ -151,6 +156,22 @@ export function classifyRunForReconcile(
   taskCompleted: boolean,
 ): ReconcileItemDiff {
   if (isTerminal(rec.state)) {
+    // Terminal runs that still advertise collision scopes need RELEASE_LOCKS
+    // so apply can fence-release any residual HELD rows and clear scope IDs
+    // (history preserved; state unchanged).
+    if (rec.collisionScopeLockIds.length > 0 && rec.fencingToken) {
+      return {
+        runId: rec.runId,
+        taskId: rec.taskId,
+        classification: 'TERMINAL',
+        beforeState: rec.state,
+        afterState: rec.state,
+        action: 'RELEASE_LOCKS',
+        reason: 'terminal_held_locks_release',
+        reconciliationPending: false,
+        doneWithReconciliationOverlay: taskCompleted && rec.state === 'SUCCEEDED',
+      }
+    }
     return {
       runId: rec.runId,
       taskId: rec.taskId,
@@ -267,6 +288,32 @@ export function classifyRunForReconcile(
     reason: 'live_healthy',
     reconciliationPending: false,
     doneWithReconciliationOverlay: false,
+  }
+}
+
+/**
+ * Fence-checked collision release used by apply actions (RELEASE_LOCKS / MARK_STALE / REQUEUE).
+ * Maps lock fencing errors to ReconcilerError so apply fails closed (no half-applied state).
+ */
+async function releaseRunCollisionLocksForReconcile(
+  deps: ReconcilerDeps,
+  opts: { boardId: string; runId: string; fencingToken: string },
+): Promise<void> {
+  try {
+    await releaseCollisionLocks(deps.locks, deps.clock, {
+      boardId: opts.boardId,
+      runId: opts.runId,
+      fencingToken: opts.fencingToken,
+    })
+  } catch (e) {
+    if (e instanceof LockError) {
+      throw new ReconcilerError(
+        e.code === 'FENCED' || e.code === 'LEASE_EXPIRED' ? 'STALE_REVISION' : 'INVALID_INPUT',
+        e.message,
+        { ...(e.details as Record<string, unknown>), lockCode: e.code, runId: opts.runId },
+      )
+    }
+    throw e
   }
 }
 
@@ -693,6 +740,14 @@ export async function applyReconcile(
         continue
       }
       if (it.action === 'MARK_STALE' && it.afterState) {
+        // Stale ownership must free collision holds (fence-checked) so scopes reopen.
+        if (rec.collisionScopeLockIds.length && rec.fencingToken) {
+          await releaseRunCollisionLocksForReconcile(deps, {
+            boardId: opts.boardId,
+            runId: rec.runId,
+            fencingToken: rec.fencingToken,
+          })
+        }
         const history = [
           ...rec.history,
           {
@@ -708,6 +763,7 @@ export async function applyReconcile(
           ...rec,
           state: it.afterState,
           leaseExpiresAtMs: null,
+          collisionScopeLockIds: [],
           entityRev: rec.entityRev + 1,
           history,
         })
@@ -716,6 +772,13 @@ export async function applyReconcile(
         continue
       }
       if (it.action === 'REQUEUE' && it.afterState) {
+        if (rec.collisionScopeLockIds.length && rec.fencingToken) {
+          await releaseRunCollisionLocksForReconcile(deps, {
+            boardId: opts.boardId,
+            runId: rec.runId,
+            fencingToken: rec.fencingToken,
+          })
+        }
         const history = [
           ...rec.history,
           {
@@ -731,6 +794,7 @@ export async function applyReconcile(
           ...rec,
           state: it.afterState,
           leaseExpiresAtMs: null,
+          collisionScopeLockIds: [],
           entityRev: rec.entityRev + 1,
           history,
         })
@@ -739,6 +803,50 @@ export async function applyReconcile(
         continue
       }
       if (it.action === 'RELEASE_LOCKS') {
+        // Fence/revision release + history (AC-LOCK-02 reconciler path). Idempotent when
+        // no HELD rows remain — still clears collisionScopeLockIds and bumps entityRev.
+        if (rec.fencingToken) {
+          await releaseRunCollisionLocksForReconcile(deps, {
+            boardId: opts.boardId,
+            runId: rec.runId,
+            fencingToken: rec.fencingToken,
+          })
+        }
+        const history = [
+          ...rec.history,
+          {
+            atMs: now,
+            atISO: deps.clock.nowISO(),
+            fromState: rec.state,
+            toState: it.afterState ?? rec.state,
+            reason: `reconcile_release_locks:${it.reason}`,
+            actorId: opts.leaderId,
+          },
+        ]
+        await deps.runs.put({
+          ...rec,
+          // State preserved for terminal RELEASE_LOCKS; afterState may equal before.
+          state: it.afterState ?? rec.state,
+          collisionScopeLockIds: [],
+          entityRev: rec.entityRev + 1,
+          history,
+        })
+        await deps.atomic.appendAudit({
+          boardId: opts.boardId,
+          kind: 'LOCK_RELEASED',
+          atMs: now,
+          atISO: deps.clock.nowISO(),
+          actorId: opts.leaderId,
+          subjectType: 'run',
+          subjectId: rec.runId,
+          detail: {
+            via: 'reconciler_RELEASE_LOCKS',
+            reason: it.reason,
+            dryRunHash: opts.dryRunHash,
+            priorCollisionScopeLockIds: rec.collisionScopeLockIds,
+          },
+          material: true,
+        })
         appliedCount++
         itemIds.push(it.runId)
       }

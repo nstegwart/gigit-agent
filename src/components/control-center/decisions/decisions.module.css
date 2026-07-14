@@ -111,9 +111,11 @@
 }
 
 .summaryChipBlocking {
+  /* Soft tint composites to ~#f1dfe1 on light surface.
+     #c62828 on #f1dfe1 = 4.38 < 4.5 AA. Local darker FG only — keep --dec-blocked. */
   border-color: color-mix(in srgb, var(--dec-blocked) 45%, var(--dec-border));
   background: var(--dec-blocked-bg);
-  color: var(--dec-blocked);
+  color: #b71c1c;
 }
 
 .summaryChipOpen {

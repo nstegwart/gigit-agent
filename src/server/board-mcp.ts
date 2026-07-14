@@ -69,6 +69,7 @@ import {
   authErrorEnvelope,
   authorizeToolCall,
   isToolListable,
+  RbacError,
   type AuthMechanismState,
   type Principal,
 } from '#/server/rbac'
@@ -82,6 +83,7 @@ import {
   resetControlPlaneRuntimeContextForTests,
   setTestControlPlaneRuntimeContext,
   createMemoryControlPlaneRuntimeContext,
+  hasTestControlPlaneRuntimeContext,
   type ControlPlaneRuntimeContext,
 } from '#/server/control-plane-runtime-context'
 import {
@@ -107,9 +109,19 @@ import {
   AGENT_TERMINATE_TO_STATES,
   ROOT_TERMINATE_TO_STATES,
   type RunRegistryDeps,
+  type RunRegistryRetentionAsyncBinding,
+  type RunRegistryRetentionBinding,
   type RunRegistryStore,
   type TerminateToState,
 } from '#/server/run-registry'
+import {
+  DECISION_HEARTBEAT_RETENTION_POLICY,
+  resolveRetentionEnvironmentDetails,
+  resolveRetentionPolicy,
+  type BoardPolicyRetention,
+  type RetentionPolicyResolveResult,
+  type RetentionStore,
+} from '#/server/audit-retention'
 import {
   createSystemClock,
   type ControlPlaneAtomicStore,
@@ -178,6 +190,10 @@ import {
 } from '#/server/canonical-read-model'
 import { computeRollupV3, type RollupTaskInput } from '#/server/rollup-v3'
 import type { RollupV3Result, TaskClassificationRecord } from '#/lib/control-plane-types'
+import {
+  sanitizeClassificationRecordForPersistence,
+  stripSelfAssertedMembershipFields,
+} from '#/server/classification'
 import { createHash } from 'node:crypto'
 import type { OpsData, WorkTask } from '#/lib/types'
 
@@ -225,6 +241,8 @@ function featureSummary(f: Feature) {
  * Missing capacity always fail-closed (BLOCKED/zero).
  */
 let mcpRunDeps: RunRegistryDeps | null = null
+/** True when mcpRunDeps was installed via setMcpRunRegistryDeps (not default cache). */
+let mcpRunDepsInjected = false
 /** Explicit test injectors — take precedence over durable context when set. */
 let mcpRunStore: RunRegistryStore | null = null
 let mcpDecisionStore: DecisionV3Store | null = null
@@ -232,6 +250,27 @@ let mcpReconcilerStore: ReconcilerStore | null = null
 let mcpAtomic: ControlPlaneAtomicStore | null = null
 let mcpLocks: LockStore | null = null
 let mcpIdempotency: IdempotencyStorage | null = null
+/**
+ * Long-lived MCP sync retention binding (memory/test only; mutable compaction watermark).
+ * Built only when resolveRetentionPolicy succeeds from an approved/versioned
+ * BoardPolicy (or explicit LOCAL/TEST staging-proposal) AND a memory/test
+ * domain RetentionStore can be bound. PRODUCTION without supplied policy stays
+ * null (fail-closed — never invent production retention).
+ * MySQL mode never binds this (M3/R1) — uses mcpRetentionAsyncBinding instead.
+ */
+let mcpRetentionBinding: RunRegistryRetentionBinding | null = null
+/**
+ * Long-lived MCP durable async retention binding (MySQL multi-instance).
+ * Bound from ctx.runtime.retentionAsync after resolveRetentionPolicy ok.
+ * Cluster-durable sample/material/compaction; no process-local Maps.
+ */
+let mcpRetentionAsyncBinding: RunRegistryRetentionAsyncBinding | null = null
+/** Last resolveRetentionPolicy result for Decision-path / diagnostics. */
+let mcpRetentionResolve: RetentionPolicyResolveResult | null = null
+/** Explicit approved BoardPolicy (versioned) — required for PRODUCTION bind. */
+let mcpSuppliedRetentionPolicy: BoardPolicyRetention | null = null
+/** STAGING may use STAGING_PROPOSED only when explicitly allowed. */
+let mcpAllowStagingProposal = false
 /** Test override for advance_task V3 storage (null → durable board_docs path). */
 let productLifecycleV3StorageFactory: ((boardId: string) => LifecycleV3Storage) | null = null
 /** True when setMcpPlanStore / setMcpAccountStore installed an explicit override. */
@@ -256,7 +295,171 @@ export function resolveMcpRuntimeContext(): ControlPlaneRuntimeContext {
 
 export function setMcpRunRegistryDeps(deps: RunRegistryDeps | null): void {
   mcpRunDeps = deps
+  mcpRunDepsInjected = deps != null
 }
+
+/**
+ * Configure approved/versioned BoardPolicy for MCP default retention bind.
+ * PRODUCTION requires a non-null supplied policy approved for PRODUCTION.
+ * Clears defaultRunDeps cache so the next default path rebuilds binding.
+ */
+export function setMcpRetentionPolicyConfig(
+  opts: {
+    supplied?: BoardPolicyRetention | null
+    allowStagingProposal?: boolean
+  } | null,
+): void {
+  if (opts === null) {
+    mcpSuppliedRetentionPolicy = null
+    mcpAllowStagingProposal = false
+  } else {
+    if ('supplied' in opts) mcpSuppliedRetentionPolicy = opts.supplied ?? null
+    if ('allowStagingProposal' in opts) {
+      mcpAllowStagingProposal = !!opts.allowStagingProposal
+    }
+  }
+  // Rebuild binding on next defaultRunDeps (preserve injection via setMcpRunRegistryDeps).
+  if (mcpRunDeps && !isInjectedRunDeps(mcpRunDeps)) {
+    mcpRunDeps = null
+  }
+  mcpRetentionBinding = null
+  mcpRetentionAsyncBinding = null
+  mcpRetentionResolve = null
+}
+
+/** Last resolveRetentionPolicy outcome from defaultRunDeps (null until first resolve). */
+export function getMcpRetentionPolicyResolve(): RetentionPolicyResolveResult | null {
+  return mcpRetentionResolve
+}
+
+/** Process-wide long-lived sync retention binding (memory/test; null when fail-closed). */
+export function getMcpRetentionBinding(): RunRegistryRetentionBinding | null {
+  return mcpRetentionBinding
+}
+
+/** Process-wide long-lived durable async retention binding (MySQL; null when fail-closed). */
+export function getMcpRetentionAsyncBinding(): RunRegistryRetentionAsyncBinding | null {
+  return mcpRetentionAsyncBinding
+}
+
+/**
+ * Load durable retentionPolicy row for boardId and bind if resolveRetentionPolicy ok.
+ * Does not invent: absent store row + PRODUCTION → fail-closed Decision path.
+ */
+export async function bindMcpRetentionPolicyFromStore(
+  boardId: string,
+): Promise<RetentionPolicyResolveResult> {
+  const ctx = resolveMcpRuntimeContext()
+  const stored = await ctx.runtime.retentionPolicy.get(boardId)
+  setMcpRetentionPolicyConfig({
+    supplied: stored,
+    allowStagingProposal: mcpAllowStagingProposal,
+  })
+  // Force resolve + cache via default path (unless full deps were injected).
+  defaultRunDeps(boardId, 0)
+  return (
+    mcpRetentionResolve ?? {
+      ok: false,
+      policy: null,
+      decisionCode: DECISION_HEARTBEAT_RETENTION_POLICY,
+      source: 'BLOCKED',
+      message: 'retention policy resolve not yet run',
+    }
+  )
+}
+
+/**
+ * Fail-closed Decision path when heartbeat retention policy is absent/unapproved.
+ * Opens exact DECISION_HEARTBEAT_RETENTION_POLICY — never invents production retention.
+ * Returns opened=null when policy already resolved ok.
+ */
+export async function openMcpHeartbeatRetentionPolicyDecision(opts: {
+  boardId: string
+  actorId: string
+  expectedBoardRev: number
+  entityExpectedRev: number
+  canonicalHash: string
+  idempotencyKey: string
+}): Promise<{
+  opened: Awaited<ReturnType<typeof openDecisionV3>> | null
+  resolve: RetentionPolicyResolveResult
+}> {
+  // Ensure resolve is current on default path.
+  defaultRunDeps(opts.boardId, opts.expectedBoardRev)
+  const details = resolveRetentionEnvironmentDetails()
+  const ctx = peekControlPlaneRuntimeContext()
+  const resolve =
+    mcpRetentionResolve ??
+    resolveRetentionPolicy({
+      environment: details.environment,
+      supplied: mcpSuppliedRetentionPolicy,
+      allowStagingProposal: mcpAllowStagingProposal,
+      explicitAppEnv: details.explicitAppEnv,
+      allowTestRetentionProposal: ctx
+        ? mcpAllowTestRetentionProposal(ctx, details)
+        : false,
+    })
+  mcpRetentionResolve = resolve
+  if (resolve.ok && resolve.policy) {
+    return { opened: null, resolve }
+  }
+  const opened = await openDecisionV3(decisionDeps(), {
+    boardId: opts.boardId,
+    type: DECISION_HEARTBEAT_RETENTION_POLICY,
+    severity: 'HIGH',
+    title: 'Approve heartbeat retention BoardPolicy',
+    question: resolve.message,
+    evidence: [
+      resolve.decisionCode ?? DECISION_HEARTBEAT_RETENTION_POLICY,
+      `source=${resolve.source}`,
+      `environment=${details.environment}`,
+      `envSource=${details.source}`,
+      `explicitAppEnv=${details.explicitAppEnv}`,
+      `weakTestSignal=${details.weakTestSignal}`,
+      `productionLike=${details.productionLike}`,
+    ],
+    options: [
+      {
+        optionId: 'supply-approved-policy',
+        label:
+          'Supply approved versioned BoardPolicy via retentionPolicy.put + setMcpRetentionPolicyConfig',
+        declining: false,
+        requestsProductionAuthority: false,
+        requestsHoldAuthority: false,
+        requestsProviderAuthority: false,
+      },
+      {
+        optionId: 'validate-on-staging',
+        label: 'Validate staging-proposed policy on STAGING first (allowStagingProposal)',
+        declining: false,
+        requestsProductionAuthority: false,
+        requestsHoldAuthority: false,
+        requestsProviderAuthority: false,
+      },
+      {
+        optionId: 'defer-fail-closed',
+        label: 'Defer — keep retention unbound (fail closed)',
+        declining: true,
+        requestsProductionAuthority: false,
+        requestsHoldAuthority: false,
+        requestsProviderAuthority: false,
+      },
+    ],
+    blocking: false,
+    actorId: opts.actorId,
+    expectedBoardRev: opts.expectedBoardRev,
+    entityExpectedRev: opts.entityExpectedRev,
+    canonicalHash: opts.canonicalHash,
+    idempotencyKey: opts.idempotencyKey,
+  })
+  return { opened, resolve }
+}
+
+/** True when deps object was installed via setMcpRunRegistryDeps (not default cache rebuild). */
+function isInjectedRunDeps(_deps: RunRegistryDeps): boolean {
+  return mcpRunDepsInjected
+}
+
 /** Wire MCP publish/get_next to an explicit plan store (tests) or clear override. */
 export function setMcpPlanStore(store: DispatchPlanStore | null): void {
   setSharedDispatchPlanStore(store)
@@ -280,7 +483,13 @@ export function setMcpAtomic(store: ControlPlaneAtomicStore | null): void {
 }
 export function resetMcpControlPlaneDeps(): void {
   mcpRunDeps = null
+  mcpRunDepsInjected = false
   mcpRunStore = null
+  mcpRetentionBinding = null
+  mcpRetentionAsyncBinding = null
+  mcpRetentionResolve = null
+  mcpSuppliedRetentionPolicy = null
+  mcpAllowStagingProposal = false
   setSharedDispatchPlanStore(null)
   setSharedAccountSyncStore(null)
   mcpPlanStoreExplicit = false
@@ -380,8 +589,163 @@ async function loadCapacityForBoard(boardId: string) {
 }
 
 /**
+ * Domain RetentionStore for heartbeat apply/compaction (memory/test only).
+ * - memory/test: bind in-process sync runtime.retention (same process authority).
+ * - mysql / non-memory: never invent process-local memory (multi-instance diverge).
+ *   Durable path is runtime.retentionAsync via RunRegistryDeps.retentionAsync.
+ */
+function sharedDomainRetentionStore(
+  ctx: ControlPlaneRuntimeContext,
+): RetentionStore | null {
+  if (ctx.mode === 'memory' || ctx.mode === 'test') {
+    return ctx.runtime.retention
+  }
+  // MySQL (and any other non-memory mode): refuse process-local memory.
+  return null
+}
+
+function hasDurableRetentionAsyncStore(ctx: ControlPlaneRuntimeContext): boolean {
+  const asyncStore = ctx.runtime.retentionAsync
+  return (
+    asyncStore != null &&
+    typeof asyncStore.putHot === 'function' &&
+    typeof asyncStore.appendAudit === 'function' &&
+    typeof asyncStore.listAudit === 'function' &&
+    typeof asyncStore.deleteHot === 'function'
+  )
+}
+
+/**
+ * Explicit R1/M3 blocker when policy resolved but durable retention unavailable.
+ * Surfaces on Decision/diagnostics path — never silently skip with process-local invent.
+ */
+export const RETENTION_DURABLE_STORE_UNBOUND =
+  'RETENTION_DURABLE_STORE_UNBOUND' as const
+
+/**
+ * R4: approved disposable test context may authorize TEST staging-proposal when
+ * identity came from weak NODE_ENV=test/VITEST signals. Never true for production-like
+ * runtimes or mysql serve mode without explicit CAIRN_ENV.
+ */
+function mcpAllowTestRetentionProposal(
+  ctx: ControlPlaneRuntimeContext,
+  details: ReturnType<typeof resolveRetentionEnvironmentDetails>,
+): boolean {
+  if (details.productionLike) return false
+  if (details.explicitAppEnv) return false // explicit path uses explicitAppEnv gate instead
+  if (ctx.mode !== 'memory' && ctx.mode !== 'test') return false
+  return hasTestControlPlaneRuntimeContext()
+}
+
+/**
+ * Resolve long-lived retention bindings via resolveRetentionPolicy only.
+ * Never invents PRODUCTION policy — absent/unapproved → both null + Decision path.
+ * - memory/test: sync `retention` from runtime.retention (process authority OK).
+ * - mysql: durable `retentionAsync` from runtime.retentionAsync (cluster-durable);
+ *   sync retention always null (no process-memory fallback).
+ * - mysql without retentionAsync → fail-closed RETENTION_DURABLE_STORE_UNBOUND.
+ * R4: passes explicitAppEnv + allowTestRetentionProposal — never silent TEST proposal.
+ */
+function resolveMcpRetentionBindings(ctx: ControlPlaneRuntimeContext): {
+  retention: RunRegistryRetentionBinding | null
+  retentionAsync: RunRegistryRetentionAsyncBinding | null
+} {
+  const details = resolveRetentionEnvironmentDetails()
+  const resolved = resolveRetentionPolicy({
+    environment: details.environment,
+    supplied: mcpSuppliedRetentionPolicy,
+    allowStagingProposal: mcpAllowStagingProposal,
+    explicitAppEnv: details.explicitAppEnv,
+    allowTestRetentionProposal: mcpAllowTestRetentionProposal(ctx, details),
+  })
+  if (!resolved.ok || !resolved.policy) {
+    mcpRetentionResolve = resolved
+    mcpRetentionBinding = null
+    mcpRetentionAsyncBinding = null
+    return { retention: null, retentionAsync: null }
+  }
+
+  // MySQL / non-memory: durable async only (R1/M3 — close process-memory dual-model).
+  if (ctx.mode !== 'memory' && ctx.mode !== 'test') {
+    mcpRetentionBinding = null
+    if (!hasDurableRetentionAsyncStore(ctx)) {
+      mcpRetentionResolve = {
+        ok: false,
+        policy: null,
+        decisionCode: DECISION_HEARTBEAT_RETENTION_POLICY,
+        source: 'BLOCKED',
+        message:
+          `${RETENTION_DURABLE_STORE_UNBOUND}: mode=${ctx.mode} durable ` +
+          `retentionAsync unavailable — fail closed (no process-local invent; ` +
+          `heartbeat domain sample/material/compaction refused)`,
+      }
+      mcpRetentionAsyncBinding = null
+      return { retention: null, retentionAsync: null }
+    }
+    mcpRetentionResolve = resolved
+    // Reuse long-lived binding when policy identity unchanged.
+    // Prefer durable compaction watermark in store (omit process lastCompactionAtMs authority).
+    if (
+      mcpRetentionAsyncBinding &&
+      mcpRetentionAsyncBinding.policy.policyId === resolved.policy.policyId &&
+      mcpRetentionAsyncBinding.policy.policyVersion === resolved.policy.policyVersion &&
+      mcpRetentionAsyncBinding.store === ctx.runtime.retentionAsync
+    ) {
+      mcpRetentionAsyncBinding.policy = resolved.policy
+      return { retention: null, retentionAsync: mcpRetentionAsyncBinding }
+    }
+    mcpRetentionAsyncBinding = {
+      store: ctx.runtime.retentionAsync,
+      policy: resolved.policy,
+      // No process-local lastCompactionAtMs — durable watermark in store wins (multi-instance).
+    }
+    return { retention: null, retentionAsync: mcpRetentionAsyncBinding }
+  }
+
+  // memory/test: sync domain RetentionStore only.
+  mcpRetentionAsyncBinding = null
+  const store = sharedDomainRetentionStore(ctx)
+  if (!store) {
+    mcpRetentionResolve = {
+      ok: false,
+      policy: null,
+      decisionCode: DECISION_HEARTBEAT_RETENTION_POLICY,
+      source: 'BLOCKED',
+      message:
+        `${RETENTION_DURABLE_STORE_UNBOUND}: mode=${ctx.mode} memory/test ` +
+        `runtime.retention unavailable — fail closed`,
+    }
+    mcpRetentionBinding = null
+    return { retention: null, retentionAsync: null }
+  }
+  mcpRetentionResolve = resolved
+  // Reuse long-lived mutable binding when policy identity unchanged (compaction watermark).
+  if (
+    mcpRetentionBinding &&
+    mcpRetentionBinding.policy.policyId === resolved.policy.policyId &&
+    mcpRetentionBinding.policy.policyVersion === resolved.policy.policyVersion
+  ) {
+    mcpRetentionBinding.policy = resolved.policy
+    return { retention: mcpRetentionBinding, retentionAsync: null }
+  }
+  mcpRetentionBinding = {
+    store,
+    policy: resolved.policy,
+    lastCompactionAtMs: 0,
+  }
+  return { retention: mcpRetentionBinding, retentionAsync: null }
+}
+
+/**
  * Default MCP run-registry deps from durable context (one clock + atomic + runs +
- * locks + idempotency). Cached process-wide when resolved; setMcpRunRegistryDeps wins.
+ * locks + idempotency + optional retention / retentionAsync binding). Cached
+ * process-wide when resolved; setMcpRunRegistryDeps wins.
+ * Retention binds only after resolveRetentionPolicy succeeds (approved BoardPolicy
+ * or explicit LOCAL/TEST staging-proposal):
+ * - memory/test → sync `retention`
+ * - mysql → durable `retentionAsync` (cluster-durable sample/material/compaction)
+ * UNRESOLVED env or MySQL durable-store unbound → both null (H3/R1 fail-closed).
+ * PRODUCTION without supplied policy → both null.
  * Exported for unit tests of the non-injected path.
  */
 export function defaultRunDeps(boardId?: string, boardRev = 0): RunRegistryDeps {
@@ -389,6 +753,9 @@ export function defaultRunDeps(boardId?: string, boardRev = 0): RunRegistryDeps 
   void boardRev
   if (mcpRunDeps) return mcpRunDeps
   const ctx = resolveMcpRuntimeContext()
+  const { retention, retentionAsync } = resolveMcpRetentionBindings(ctx)
+  mcpRunDepsInjected = false
+  // R3: production MCP deps never carry testCapacityInjection. Capacity only via getCapacity.
   mcpRunDeps = {
     clock: ctx.clock,
     runs: sharedRunStore(),
@@ -396,6 +763,10 @@ export function defaultRunDeps(boardId?: string, boardRev = 0): RunRegistryDeps 
     atomic: sharedAtomic(),
     idempotency: sharedIdempotency(),
     getCapacity: (id) => loadCapacityForBoard(id),
+    retention,
+    retentionAsync,
+    // Explicit omit — do not accept request-forwarded inject capability.
+    testCapacityInjection: undefined,
   }
   return mcpRunDeps
 }
@@ -1227,12 +1598,37 @@ export function attributionFromPrincipal(principal: Principal | null | undefined
 /**
  * Enforce INTEGRATOR checkpoint/pathspec bounds (principal binding).
  * ROOT and other roles: no-op. Throws RbacError → typed INTEGRATOR_PATH_BOUNDED.
+ * INTEGRATOR: request checkpoint + non-empty pathspecs required (fail closed; empty pathspecs
+ * used to soft-pass via assertIntegratorBounds with pathspec=null).
  */
 export function enforceIntegratorLockBounds(
   principal: Principal | null | undefined,
   opts: { checkpointId?: string | null; pathspecs: ReadonlyArray<string> },
 ): void {
   if (!principal) return
+  if (principal.role === 'INTEGRATOR') {
+    const pathspecs = (opts.pathspecs ?? [])
+      .map((p) => String(p ?? '').trim())
+      .filter((p) => p.length > 0)
+    const checkpointId =
+      typeof opts.checkpointId === 'string' && opts.checkpointId.trim()
+        ? opts.checkpointId.trim()
+        : null
+    if (!checkpointId || pathspecs.length === 0) {
+      throw new RbacError(
+        'INTEGRATOR_PATH_BOUNDED',
+        'integrator lock requires checkpointId and non-empty pathspec(s) — fail closed',
+        403,
+        { checkpointId, pathspecCount: pathspecs.length },
+      )
+    }
+    // Principal binding presence + each request pathspec must be inside binding.
+    for (const ps of pathspecs) {
+      assertIntegratorBounds(principal, { checkpointId, pathspec: ps })
+    }
+    return
+  }
+  // Non-INTEGRATOR (ROOT etc.): still validate provided pathspecs against no-op bounds helper.
   assertIntegratorBounds(principal, {
     checkpointId: opts.checkpointId ?? null,
     pathspec: opts.pathspecs[0] ?? null,
@@ -2626,9 +3022,46 @@ export function boardPinFromDefinitionPin(
 }
 
 /**
+ * Pin-table probe failures that must degrade to the same legacy path as a missing row
+ * (PIN_MISSING + PIN_AUTHORITY_INCOMPLETE), not MCP_HANDLER_ERROR / DATA_INTEGRITY.
+ * Strict allowlist — other MySQL / programming errors rethrow.
+ */
+export function isPinProbeUnreadable(err: unknown): boolean {
+  const e = err as { code?: string | number; errno?: number; sqlState?: string; message?: string }
+  const code = e?.code != null ? String(e.code) : ''
+  const errno = typeof e.errno === 'number' ? e.errno : typeof e.code === 'number' ? e.code : NaN
+  // MySQL ER_NO_SUCH_TABLE (1146) / sqlState 42S02 — board_revisions (or pin probe table) absent.
+  if (code === 'ER_NO_SUCH_TABLE' || errno === 1146) return true
+  if (e.sqlState === '42S02' && /board_revisions/i.test(String(e.message ?? ''))) return true
+  return false
+}
+
+/** Pool/connection death on pin probe → RUNTIME_UNAVAILABLE (honest incomplete, not invent pin). */
+function isPinProbeRuntimeUnavailable(err: unknown): boolean {
+  const e = err as { code?: string; errno?: number; message?: string }
+  const code = e?.code != null ? String(e.code) : ''
+  if (
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'ETIMEDOUT' ||
+    code === 'PROTOCOL_CONNECTION_LOST' ||
+    code === 'ER_ACCESS_DENIED_ERROR' ||
+    code === 'DB_UNAVAILABLE'
+  ) {
+    return true
+  }
+  // mysql2 pool closed / no connection
+  if (/Pool is closed|Cannot enqueue Query after|server closed the connection/i.test(String(e.message ?? ''))) {
+    return true
+  }
+  return false
+}
+
+/**
  * Resolve definition authority for list/get projects/features/tasks/work/overview.
  * Fail-closed when pin complete but snapshot/hash invalid (throws CanonicalReadModelError).
  * Legacy only when pin genuinely incomplete/missing — pin marked stale honestly.
+ * Missing board_revisions table (ER_NO_SUCH_TABLE) ≡ missing row (PIN_MISSING), not uncaught throw.
  */
 export async function resolveBoardDefinitionAuthority(
   boardId: string,
@@ -2648,7 +3081,31 @@ export async function resolveBoardDefinitionAuthority(
     }
   }
 
-  const boardState = await imports.getBoardState(boardId)
+  let boardState: Awaited<ReturnType<typeof imports.getBoardState>>
+  try {
+    boardState = await imports.getBoardState(boardId)
+  } catch (e) {
+    // Probe only — do not wrap loadPinnedDefinitionReadModel (pin-complete stays fail-closed).
+    if (isPinProbeUnreadable(e)) {
+      const pin = await resolveBoardPin(boardId)
+      return {
+        mode: 'legacy',
+        pin: { ...pin, stale: true, staleReason: 'PIN_AUTHORITY_INCOMPLETE' },
+        authorityIncomplete: true,
+        incompleteCode: 'PIN_MISSING',
+      }
+    }
+    if (isPinProbeRuntimeUnavailable(e)) {
+      const pin = await resolveBoardPin(boardId)
+      return {
+        mode: 'legacy',
+        pin: { ...pin, stale: true, staleReason: 'PIN_AUTHORITY_INCOMPLETE' },
+        authorityIncomplete: true,
+        incompleteCode: 'RUNTIME_UNAVAILABLE',
+      }
+    }
+    throw e
+  }
   if (!boardState) {
     const pin = await resolveBoardPin(boardId)
     return {
@@ -4004,7 +4461,31 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           },
           async () => {
             const env = parseMutationEnvelope({ ...args, boardId: id })
-            return await upsertTask(id, args.task as never, env.entityExpectedRev)
+            // Security R2: strip self-asserted sales/mfs membership on MCP upsert_task.
+            // Membership is server-derived from project/repo/feature allowlist at pin.
+            const taskIn = args.task as WorkTask & {
+              classification?: TaskClassificationRecord | null
+              classificationReceipt?: import('#/lib/control-plane-types').ClassificationReceipt | null
+            }
+            const task = { ...taskIn } as typeof taskIn
+            if (task.classification && typeof task.classification === 'object') {
+              task.classification = sanitizeClassificationRecordForPersistence({
+                taskId: String(task.id ?? ''),
+                taskClass: (task.classification.taskClass ?? 'UNCLASSIFIED') as TaskClassificationRecord['taskClass'],
+                disposition: (task.classification.disposition ??
+                  'UNCLASSIFIED') as TaskClassificationRecord['disposition'],
+                receipt: task.classification.receipt ?? null,
+                controlPlaneTargetGate: task.classification.controlPlaneTargetGate,
+                controlPlaneGateVerifiedPass: task.classification.controlPlaneGateVerifiedPass,
+                controlPlaneRootAccepted: task.classification.controlPlaneRootAccepted,
+              })
+            }
+            if (task.classificationReceipt && typeof task.classificationReceipt === 'object') {
+              task.classificationReceipt = stripSelfAssertedMembershipFields(
+                task.classificationReceipt,
+              )
+            }
+            return await upsertTask(id, task as never, env.entityExpectedRev)
           },
         )
         return jsonText(result)

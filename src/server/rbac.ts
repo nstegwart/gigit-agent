@@ -369,6 +369,95 @@ export function assertAgentOwnRun(
   }
 }
 
+/**
+ * Normalize a repo-relative path body for INTEGRATOR bound/request matching (H1).
+ * - Rejects absolute paths, NUL, empty, `..` segments.
+ * - Collapses `.` segments and backslashes.
+ * - Rejects glob segments (`*`, `**`) mid-path (globs only allowed as trailing markers via parse).
+ * - Returns null when the path is not a safe non-empty repo-relative form.
+ */
+export function normalizeRepoRelativePath(raw: string): string | null {
+  if (typeof raw !== 'string') return null
+  if (raw.includes('\0')) return null
+  let s = raw.trim().replace(/\\/g, '/')
+  if (!s) return null
+  // Absolute: POSIX root, Windows drive, UNC
+  if (s.startsWith('/') || /^[A-Za-z]:\//.test(s) || s.startsWith('//')) return null
+  const segs = s.split('/')
+  const out: string[] = []
+  for (const seg of segs) {
+    if (seg === '' || seg === '.') continue // collapse empty (//) and .
+    if (seg === '..') return null
+    // Glob markers are not path segments (must be stripped by parse before normalize).
+    if (seg === '*' || seg === '**') return null
+    out.push(seg)
+  }
+  if (out.length === 0) return null
+  return out.join('/')
+}
+
+export type IntegratorBoundPathspec =
+  | { mode: 'exact'; base: string }
+  | { mode: 'prefix'; base: string }
+
+/**
+ * Parse an INTEGRATOR bound/request pathspec into exact or prefix form.
+ * - `src/server` → exact (no over-match of `src/server-evil`)
+ * - `src/server/` → prefix under `src/server` (segment boundary)
+ * - `src/server/**` / `src/server/*` → prefix under `src/server`
+ * - bare `**` / `/*` / empty → null (never match-all)
+ */
+export function parseIntegratorBoundPathspec(raw: string): IntegratorBoundPathspec | null {
+  if (typeof raw !== 'string') return null
+  if (raw.includes('\0')) return null
+  let s = raw.trim().replace(/\\/g, '/')
+  if (!s) return null
+  if (s.startsWith('/') || /^[A-Za-z]:\//.test(s) || s.startsWith('//')) return null
+
+  // Bare match-all globs never grant access.
+  if (s === '**' || s === '*' || s === '/**' || s === '/*') return null
+
+  let mode: 'exact' | 'prefix' = 'exact'
+  if (s.endsWith('/**')) {
+    mode = 'prefix'
+    s = s.slice(0, -3)
+  } else if (s.endsWith('/*')) {
+    mode = 'prefix'
+    s = s.slice(0, -2)
+  } else if (s.endsWith('/')) {
+    mode = 'prefix'
+    s = s.replace(/\/+$/, '')
+  }
+
+  // After stripping globs, base must be a non-empty relative path (bare ** / /* rejected).
+  const base = normalizeRepoRelativePath(s)
+  if (!base) return null
+  return { mode, base }
+}
+
+/**
+ * True when requestPath is allowed by a single bound pathspec.
+ * Segment-boundary only for prefix mode: `src/server` never matches `src/server-evil/...`.
+ * Request may itself be a pathspec glob (`src/server/**`); it must still lie inside the bound.
+ * Invalid request or bound → false (fail closed).
+ */
+export function integratorPathspecMatches(requestPath: string, bound: string): boolean {
+  const boundParsed = parseIntegratorBoundPathspec(bound)
+  const reqParsed = parseIntegratorBoundPathspec(requestPath)
+  if (!boundParsed || !reqParsed) return false
+
+  if (boundParsed.mode === 'exact') {
+    // Exact bound: only the exact path (request must not widen via prefix/glob).
+    return reqParsed.mode === 'exact' && reqParsed.base === boundParsed.base
+  }
+  // Bound is a tree prefix: request base must equal bound base or be a descendant.
+  // Segment boundary: `src/server` does not contain `src/server-evil`.
+  return (
+    reqParsed.base === boundParsed.base ||
+    reqParsed.base.startsWith(boundParsed.base + '/')
+  )
+}
+
 /** INTEGRATOR pathspec/checkpoint bounded. */
 export function assertIntegratorBounds(
   principal: Principal,
@@ -383,7 +472,13 @@ export function assertIntegratorBounds(
       403,
     )
   }
-  if (!principal.pathspecs || principal.pathspecs.length === 0) {
+  // Empty / whitespace-only pathspec bindings are unbound — deny (never match-all via startsWith('')).
+  // Also drop bound entries that fail normalize/parse (absolute, .., bare **).
+  const boundPathspecs = (principal.pathspecs ?? [])
+    .map((p) => String(p ?? '').trim())
+    .filter((p) => p.length > 0)
+  const validBoundPathspecs = boundPathspecs.filter((p) => parseIntegratorBoundPathspec(p) != null)
+  if (boundPathspecs.length === 0 || validBoundPathspecs.length === 0) {
     throw new RbacError(
       'INTEGRATOR_PATH_BOUNDED',
       'integrator missing pathspec bindings',
@@ -393,10 +488,15 @@ export function assertIntegratorBounds(
   if (opts.checkpointId && opts.checkpointId !== principal.checkpointId) {
     throw new RbacError('INTEGRATOR_PATH_BOUNDED', 'checkpoint outside integrator binding', 403)
   }
-  if (opts.pathspec) {
-    const ok = principal.pathspecs.some(
-      (p) => opts.pathspec === p || opts.pathspec!.startsWith(p.replace(/\*\*$/, '')),
-    )
+  if (opts.pathspec != null && String(opts.pathspec).trim() !== '') {
+    const requestPath = String(opts.pathspec).trim()
+    // Fail closed on unsafe request paths (absolute, .., bare **, empty after parse).
+    if (!parseIntegratorBoundPathspec(requestPath)) {
+      throw new RbacError('INTEGRATOR_PATH_BOUNDED', 'pathspec outside integrator binding', 403, {
+        pathspec: opts.pathspec,
+      })
+    }
+    const ok = validBoundPathspecs.some((p) => integratorPathspecMatches(requestPath, p))
     if (!ok) {
       throw new RbacError('INTEGRATOR_PATH_BOUNDED', 'pathspec outside integrator binding', 403, {
         pathspec: opts.pathspec,

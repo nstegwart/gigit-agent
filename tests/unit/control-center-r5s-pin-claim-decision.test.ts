@@ -65,7 +65,8 @@ function makeReceipt(
     taskClass: 'PRODUCT',
     disposition: 'ACTIVE',
     membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
-    membershipProofHash: 'proofhash_ccccdddd',
+    membershipProofHash: 'abcdef0123456789ccccdddd',
+    membershipProductLine: 'sales-rebuild',
     canonicalSnapshotId: pin.canonicalSnapshotId,
     canonicalHash: pin.canonicalHash,
     taskHash: pin.taskHash,
@@ -148,6 +149,9 @@ const nonStaleAccountSync = {
     grokPerAccount: [] as never[],
     grokMajority: false,
     healthyGrokUsableCapacity: 1,
+    sparkUsableCapacity: 0,
+    solUsableCapacity: 0,
+    otherUsableCapacity: 0,
     combinedLive: 1,
     combinedCap: 200,
     floorTarget: 60,
@@ -161,6 +165,7 @@ const nonStaleAccountSync = {
     nonGrokAssignmentAllowed: true,
     grokAssignmentAllowed: true,
     limitingReasons: [] as string[],
+    failSafeActions: [],
     policy: {
       sparkMax: 10,
       solMax: 10,
@@ -171,6 +176,7 @@ const nonStaleAccountSync = {
       physicalSlotsDisplayOnly: true,
       neverAccountsAll: true,
       neverFiller: true,
+      cpuBoundedDrainMaxReduceSlots: 10,
     },
   },
   entityRev: 1,
@@ -470,13 +476,16 @@ describe('C3-R5S Acceptance B — claim / stale control-plane projection', () =>
       'VALID_CURRENT',
     )
 
-    // RECONCILIATION_PENDING from ORPHAN claim
+    // RECONCILIATION_PENDING from ORPHAN claim — still STALE chip family via STALE_CLAIM
     const reconA = agg.assignmentsByTaskId.get('task-recon-1')
     expect(reconA?.primary).toBe('RECONCILIATION_PENDING')
+    expect(reconA?.overlays).toContain('STALE_CLAIM')
+    expect(reconA?.overlays).toContain('RECONCILIATION_DRILLDOWN')
 
-    // STALE overlay (incomplete + STALE claim) → RECON + staleDataSource overlay
+    // STALE overlay (incomplete + STALE claim) → RECON + STALE_CLAIM + staleDataSource
     const staleA = agg.assignmentsByTaskId.get('task-stale-1')
     expect(staleA?.primary).toBe('RECONCILIATION_PENDING')
+    expect(staleA?.overlays).toContain('STALE_CLAIM')
     expect(staleA?.overlays).toContain('STALE_DATA_SOURCE')
     expect(staleA?.overlays).toContain('RECONCILIATION_DRILLDOWN')
 

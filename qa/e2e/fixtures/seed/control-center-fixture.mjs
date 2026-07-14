@@ -2,18 +2,16 @@
  * Pure synthetic fixture data for control-center browser harness (C3-R4F).
  * No production-derived data. Importable without MySQL for self-tests.
  *
- * Pin authority (seed / board_revisions / control_plane_snapshots / receipts):
- *   - boardRev, lifecycleRev, canonicalSnapshotId, canonicalHash from HARNESS_PIN
+ * Pin identity (pre-materialization):
+ *   - boardRev, lifecycleRev, canonicalSnapshotId from HARNESS_PIN_BASE
  *   - taskHash = sha256(sorted canonical task ids joined by '|') — same as
  *     src/server/control-center-ui-adapter.ts buildControlCenterAggregationFromSources
+ *   - canonicalHash is NOT a fixed placeholder. Authority hash is produced after
+ *     board materialization by seed-isolated.produceSyntheticCanonicalSnapshot /
+ *     materializeAuthorityPin (server canonicalSubjectHash algorithm).
  *
- * Live residual (server adapter concurrent scope — not edited here):
- *   - adapter pin.canonicalHash currently derives from boardHash(content), which
- *     includes classification receipts → self-referential vs authority pin.
- *   - claimState is not yet mapped from WorkTask into rollup inputs (hardcoded
- *     undefined) → ONGOING / RECON primary buckets need that server map.
- * Fixture still plants claimState + full receipts so pin-authority + claim mapping
- * land without a second seed rewrite.
+ * claimState + full receipts are still planted so pin-authority + claim mapping
+ * land without a second seed rewrite once materializeAuthorityPin rebinds the pin.
  */
 
 import { createHash } from 'node:crypto'
@@ -21,14 +19,21 @@ import { REDACTION_CANARIES } from '../../lib/probe-fail-close.mjs'
 
 export const DEFAULT_BOARD_ID = 'mfs-rebuild'
 
+/**
+ * Former hard-coded placeholder — MUST NOT be used as authority pin after materialization.
+ * Kept only so self-tests can reject cross-pin / stale-placeholder authority.
+ */
+export const FORBIDDEN_PLACEHOLDER_CANONICAL_HASH =
+  'a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890ab'
+
 /** Fixed board/lifecycle revs + snapshot id (board_revisions / control_plane_snapshots). */
 export const HARNESS_PIN_BASE = Object.freeze({
   canonicalSnapshotId: 'synth-c3-r2d-snap-001',
   /**
-   * Authority content hash for seed pin (64 hex). Distinct from live boardHash
-   * residual — see module header. Manifest/seed pin PRESENT uses this.
+   * Pre-materialization: null. Authority 64-hex is written by materializeAuthorityPin
+   * after synthetic MFS_CANONICAL_TASK_SNAPSHOT_V1 production (canonicalSubjectHash).
    */
-  canonicalHash: 'a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890ab',
+  canonicalHash: null,
   boardRev: 7,
   lifecycleRev: 3,
 })
@@ -109,14 +114,50 @@ export function computeLegacyAdHocPlanHash(planId, planVersion, items, taskHash)
   )
 }
 
-export function buildHarnessPin(taskIds = CANONICAL_TASK_IDS) {
+/**
+ * Pre-materialization pin identity (taskHash + revs + snapshot id).
+ * @param {string[]|object} taskIdsOrOverrides - task id list, or overrides bag
+ * @param {object} [maybeOverrides] - when first arg is task id list
+ */
+export function buildHarnessPin(taskIdsOrOverrides = CANONICAL_TASK_IDS, maybeOverrides = {}) {
+  const overrides =
+    taskIdsOrOverrides &&
+    !Array.isArray(taskIdsOrOverrides) &&
+    typeof taskIdsOrOverrides === 'object'
+      ? taskIdsOrOverrides
+      : maybeOverrides
+  const taskIds = Array.isArray(taskIdsOrOverrides)
+    ? taskIdsOrOverrides
+    : overrides.taskIds ?? CANONICAL_TASK_IDS
+  const { taskIds: _drop, ...rest } = overrides
   return {
     ...HARNESS_PIN_BASE,
     taskHash: computeTaskHash(taskIds),
+    ...rest,
   }
 }
 
-/** Lazy HARNESS_PIN so importers always get computed taskHash. */
+/**
+ * Bind a computed authority hash onto a pin. Rejects the former fixed placeholder.
+ * @param {object} pin
+ * @param {string} canonicalHash 64-hex from produceSyntheticCanonicalSnapshot
+ */
+export function bindAuthorityCanonicalHash(pin, canonicalHash) {
+  const h = String(canonicalHash ?? '').trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(h)) {
+    throw new Error(
+      `bindAuthorityCanonicalHash: expected 64-hex canonicalHash, got ${String(canonicalHash).slice(0, 24)}`,
+    )
+  }
+  if (h === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH) {
+    throw new Error(
+      'bindAuthorityCanonicalHash: refusing FORBIDDEN_PLACEHOLDER_CANONICAL_HASH as authority',
+    )
+  }
+  return { ...pin, canonicalHash: h }
+}
+
+/** Lazy HARNESS_PIN so importers always get computed taskHash (canonicalHash still null). */
 export const HARNESS_PIN = buildHarnessPin()
 
 /** Re-export for seeders / harness public redaction probe. */
@@ -756,13 +797,27 @@ export function buildDispatchPlanSeed(
     canonicalHash: pin.canonicalHash,
     items,
   })
+  // Top-level mutation envelope field for publish_dispatch_plan.
+  // Create semantics = explicit 0 (honest zero). Item expectedEntityRev mirrors it.
+  // Bootstrap maps this (or items[0].expectedEntityRev) — never invents a silent default.
+  const entityExpectedRev = 0
+  // subjectHash alias mirrors product parseMutationEnvelope (canonicalHash|subjectHash).
+  const authorityHash =
+    typeof pin.canonicalHash === 'string' && pin.canonicalHash.trim()
+      ? pin.canonicalHash.trim()
+      : typeof pin.subjectHash === 'string' && pin.subjectHash.trim()
+        ? pin.subjectHash.trim()
+        : pin.canonicalHash
   return {
     boardId,
     planId,
     planVersion,
     planHash,
     canonicalSnapshotId: pin.canonicalSnapshotId,
-    canonicalHash: pin.canonicalHash,
+    canonicalHash: authorityHash,
+    subjectHash: authorityHash,
+    entityExpectedRev,
+    expectedEntityRev: entityExpectedRev,
     expectedBoardRev: pin.boardRev,
     issuedAt,
     expiresAt,
@@ -780,9 +835,25 @@ export function buildDispatchPlanSeed(
 export function buildAccountSyncSeed(now = new Date().toISOString(), pin = buildHarnessPin()) {
   const generatedAt = now
   const sourceRevision = pin.boardRev
+  // Create/first sync: explicit entityExpectedRev 0 (honest zero — no silent default).
+  const entityExpectedRev = 0
+  // Authority subject/canonical hash for mutation envelope (product requires one).
+  // May be null pre-materialization; bootstrap fail-closes if still missing on wire.
+  const authorityHash =
+    typeof pin.canonicalHash === 'string' && pin.canonicalHash.trim()
+      ? pin.canonicalHash.trim()
+      : typeof pin.subjectHash === 'string' && pin.subjectHash.trim()
+        ? pin.subjectHash.trim()
+        : null
   return {
     sourceRevision,
+    entityExpectedRev,
+    expectedEntityRev: entityExpectedRev,
     expectedBoardRev: pin.boardRev,
+    // Product parseMutationEnvelope aliases — both when authority is known.
+    ...(authorityHash
+      ? { canonicalHash: authorityHash, subjectHash: authorityHash }
+      : {}),
     generatedAt,
     trigger: 'ORCHESTRATOR_LAUNCH',
     idempotencyKey: `idem-accsync-${sourceRevision}-${pin.taskHash.slice(0, 12)}`,
@@ -940,9 +1011,20 @@ export function buildScenarioMatrix(pin = buildHarnessPin()) {
   ].map((row) => ({ ...row, pinTaskHash: pin.taskHash, pinBoardRev: pin.boardRev }))
 }
 
-/** Contract validation without DB. */
-export function validateFixtureContract(tasks = buildSyntheticTasks(), docs = buildBoardDocs()) {
-  const pin = buildHarnessPin(tasks.map((t) => t.id))
+/**
+ * Contract validation without DB.
+ * @param {object[]} [tasks]
+ * @param {object} [docs]
+ * @param {object} [pinOverride] — pass materialized pin so receipt/dispatch pin fields match
+ */
+export function validateFixtureContract(
+  tasks = buildSyntheticTasks(),
+  docs = buildBoardDocs(),
+  pinOverride = null,
+) {
+  const pin = pinOverride
+    ? { ...buildHarnessPin(tasks.map((t) => t.id)), ...pinOverride }
+    : buildHarnessPin(tasks.map((t) => t.id))
   const ids = new Set(tasks.map((t) => t.id))
   const missing = listRequiredOverlayTaskIds().filter((id) => !ids.has(id))
   const decisions = docs.plan?.decisions ?? []
@@ -1054,13 +1136,24 @@ export function validateFixtureContract(tasks = buildSyntheticTasks(), docs = bu
     errors.push('account fixture may contain real credential material')
   }
 
-  const pinOk =
+  const pinIdentityOk =
     pin.boardRev > 0 &&
     pin.lifecycleRev >= 0 &&
     pin.canonicalSnapshotId &&
-    pin.canonicalHash?.length >= 32 &&
     pin.taskHash?.length === 64
-  if (!pinOk) errors.push('HARNESS_PIN incomplete')
+  if (!pinIdentityOk) errors.push('HARNESS_PIN incomplete (identity)')
+  // Authority hash is optional pre-materialization; when set it must be real 64-hex
+  // and must never be the former fixed placeholder.
+  if (pin.canonicalHash != null && pin.canonicalHash !== '') {
+    if (!/^[0-9a-f]{64}$/i.test(String(pin.canonicalHash))) {
+      errors.push('HARNESS_PIN.canonicalHash not 64-hex after materialization')
+    }
+    if (
+      String(pin.canonicalHash).toLowerCase() === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH
+    ) {
+      errors.push('HARNESS_PIN.canonicalHash must not be FORBIDDEN_PLACEHOLDER')
+    }
+  }
 
   // Dispatch + account sync seed shapes
   const dispatch = buildDispatchPlanSeed(undefined, pin)

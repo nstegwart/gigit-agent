@@ -21,8 +21,25 @@ import {
 } from './idempotency'
 import {
   authorizeProviderAssignment,
+  evaluateFailSafeAssignmentGate,
+  hasCompleteFamilyRemainings,
+  planCapacityFailSafeIntents,
+  type CapacityFailSafeAction,
+  type CapacityFailSafeIntent,
   type CapacityPolicyResult,
+  CAP_REASON_FAMILY_REMAINING_REQUIRED,
+  CAP_REASON_FAIL_SAFE_STOP_DISPATCH,
+  CAP_REASON_FAIL_SAFE_STOP_LIMIT,
 } from './account-sync'
+import {
+  applyHeartbeatWithOptionalCompaction,
+  applyHeartbeatWithOptionalCompactionAsync,
+  type BoardPolicyRetention,
+  type CompactionResult,
+  type HeartbeatApplyResult,
+  type RetentionAsyncStore,
+  type RetentionStore,
+} from './audit-retention'
 
 // ---- constants (V3 defaults) ----
 
@@ -135,6 +152,89 @@ export interface RunRegistryStore {
   withBoardLock<T>(boardId: string, fn: () => Promise<T> | T): Promise<T>
 }
 
+/**
+ * Capacity snapshot shape used by provider-assignment authorization.
+ * Production loads this exclusively via RunRegistryDeps.getCapacity (M2).
+ * Unit tests may supply a fixed snapshot only through
+ * {@link createTestCapacityInjection} on RunRegistryDeps — never via request body.
+ */
+export type RegisterRunCapacity =
+  | (Pick<
+      CapacityPolicyResult,
+      | 'dispatchMode'
+      | 'dispatchAllowed'
+      | 'usableCapacity'
+      | 'nonGrokAssignmentAllowed'
+      | 'grokAssignmentAllowed'
+      | 'limitingReasons'
+    > &
+      Partial<
+        Pick<
+          CapacityPolicyResult,
+          | 'sparkUsableCapacity'
+          | 'solUsableCapacity'
+          | 'otherUsableCapacity'
+          | 'healthyGrokUsableCapacity'
+          | 'failSafeActions'
+        >
+      >)
+  | null
+
+/**
+ * Symbol brand for test-only capacity injection (R3).
+ * Symbol keys do not survive JSON/MCP serialization, so untrusted request
+ * bodies cannot forge this capability even if they nest a look-alike object.
+ */
+export const TEST_CAPACITY_INJECTION = Symbol.for(
+  'cairn.runRegistry.testCapacityInjection',
+)
+
+/**
+ * Explicit internal test capability. Construct only via
+ * {@link createTestCapacityInjection} / {@link withTestCapacityInjection}.
+ * Must never be populated from HTTP/MCP/serialized request deserialization.
+ */
+export type TestCapacityInjectionCapability = {
+  readonly [TEST_CAPACITY_INJECTION]: true
+  readonly capacity: RegisterRunCapacity
+}
+
+export function createTestCapacityInjection(
+  capacity: RegisterRunCapacity,
+): TestCapacityInjectionCapability {
+  return {
+    [TEST_CAPACITY_INJECTION]: true,
+    capacity,
+  }
+}
+
+export function isTestCapacityInjectionCapability(
+  value: unknown,
+): value is TestCapacityInjectionCapability {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<PropertyKey, unknown>)[TEST_CAPACITY_INJECTION] === true &&
+    'capacity' in value
+  )
+}
+
+/** Clone deps with a Symbol-branded test capacity inject (unit tests only). */
+export function withTestCapacityInjection(
+  deps: RunRegistryDeps,
+  capacity: RegisterRunCapacity,
+): RunRegistryDeps {
+  return {
+    ...deps,
+    testCapacityInjection: createTestCapacityInjection(capacity),
+  }
+}
+
+/**
+ * Public register_run request. Intentionally omits capacity / inject flags:
+ * those must never be forwarded from runtime API/MCP/serialized untrusted input (R3).
+ * Capacity source = deps.getCapacity, or deps.testCapacityInjection in unit tests.
+ */
 export interface RegisterRunRequest {
   boardId: string
   runId: string
@@ -159,21 +259,6 @@ export interface RegisterRunRequest {
   /** Initial state: QUEUED (no lease) or RESERVED/STARTING (with lease). Default STARTING. */
   initialState?: 'QUEUED' | 'RESERVED' | 'STARTING' | 'RUNNING'
   actorRole?: 'AGENT' | 'ROOT_ORCHESTRATOR' | string
-  /**
-   * Capacity snapshot for provider assignment authorization.
-   * Always evaluated before any lock/claim mutation (no optional bypass).
-   * Prefer deps.getCapacity; explicit req.capacity overrides for tests.
-   * Missing/null/stale capacity → BLOCKED / zero usable (AUTHORIZATION_REQUIRED).
-   */
-  capacity?: Pick<
-    CapacityPolicyResult,
-    | 'dispatchMode'
-    | 'dispatchAllowed'
-    | 'usableCapacity'
-    | 'nonGrokAssignmentAllowed'
-    | 'grokAssignmentAllowed'
-    | 'limitingReasons'
-  > | null
 }
 
 export interface RegisterRunResult {
@@ -217,6 +302,46 @@ export interface HeartbeatRunResult {
   boardRev: number
 }
 
+/**
+ * Optional BoardPolicy retention binding for live heartbeat path (AC-OPS-04/05).
+ * Absent/null → skip domain retention (never invent production policy here).
+ * Ordinary heartbeats update hot/sampled state only; materialProgress → immutable
+ * MATERIAL in RetentionStore. Compaction runs on policy.compactionIntervalMs.
+ * Memory/test only — MySQL must use retentionAsync (no process-local invent).
+ */
+export interface RunRegistryRetentionBinding {
+  store: RetentionStore
+  policy: BoardPolicyRetention
+  /** Mutable compaction watermark (ms). Updated after successful compaction. */
+  lastCompactionAtMs?: number
+  /** Optional observer for compaction results (metrics/tests). */
+  onCompacted?: (result: CompactionResult) => void
+  /** Optional observer for domain applyHeartbeat results (tests). */
+  onHeartbeatRetention?: (result: HeartbeatApplyResult) => void
+}
+
+/**
+ * Durable MySQL retention binding for heartbeatRun (async).
+ * Uses RetentionAsyncStore (runtime.retentionAsync) — no process-local Maps.
+ * Compaction watermark is durable (multi-instance); deletions are bounded + idempotent.
+ * Never invents policy — caller supplies already-resolved BoardPolicy.
+ */
+export interface RunRegistryRetentionAsyncBinding {
+  store: RetentionAsyncStore
+  policy: BoardPolicyRetention
+  /**
+   * Optional process hint only; durable watermark in store wins when higher.
+   * Prefer omitting so multi-instance does not diverge on process memory.
+   */
+  lastCompactionAtMs?: number
+  /** Cap deletions per compaction pass (default 100). */
+  maxCompactionActions?: number
+  onCompacted?: (
+    result: CompactionResult & { truncated: boolean; maxActionsPerRun: number },
+  ) => void
+  onHeartbeatRetention?: (result: HeartbeatApplyResult) => void
+}
+
 export interface RunRegistryDeps {
   clock: ControlPlaneClock
   runs: RunRegistryStore
@@ -224,12 +349,28 @@ export interface RunRegistryDeps {
   atomic: ControlPlaneAtomicStore
   idempotency: IdempotencyStorage
   /**
-   * Capacity loader for provider assignment gate. Always consulted when
-   * req.capacity is undefined. Missing loader + missing req.capacity = fail closed.
+   * Capacity loader for provider assignment gate. Production ALWAYS uses this (M2).
+   * Missing loader without test inject = fail closed.
    */
   getCapacity?: (
     boardId: string,
-  ) => Promise<RegisterRunRequest['capacity']> | RegisterRunRequest['capacity']
+  ) => Promise<RegisterRunCapacity> | RegisterRunCapacity
+  /**
+   * Test-only capacity inject. Must be a Symbol-branded capability from
+   * {@link createTestCapacityInjection}. Never deserialize from request JSON/MCP.
+   * Production defaultRunDeps / MCP wire MUST leave this undefined.
+   */
+  testCapacityInjection?: TestCapacityInjectionCapability
+  /**
+   * Sync domain retention (memory/test). Not for MySQL multi-instance.
+   * PRODUCTION without DECISION_HEARTBEAT_RETENTION_POLICY stays fail-closed.
+   */
+  retention?: RunRegistryRetentionBinding | null
+  /**
+   * Durable async retention (MySQL retentionAsync path). Preferred for mysql mode.
+   * When both retention and retentionAsync are set, retentionAsync wins.
+   */
+  retentionAsync?: RunRegistryRetentionAsyncBinding | null
 }
 
 function isTerminal(s: RunState): boolean {
@@ -260,6 +401,9 @@ function requestHash(body: unknown): string {
  * IDEMPOTENCY_CONFLICT; exact same → replay / no board-rev bump.
  */
 export function canonicalRegisterRunRequestBody(req: RegisterRunRequest): Record<string, unknown> {
+  // R3: capacity / allowTestCapacityInjection are intentionally excluded — they are
+  // not part of the public request surface and must not affect idempotency hashes
+  // from untrusted serialized bodies.
   return {
     boardId: req.boardId,
     runId: req.runId,
@@ -279,8 +423,6 @@ export function canonicalRegisterRunRequestBody(req: RegisterRunRequest): Record
     expectedBoardRev: req.expectedBoardRev,
     initialState: req.initialState ?? 'STARTING',
     actorRole: req.actorRole ?? null,
-    // Capacity snapshot is material: different usable/mode with same key must conflict.
-    capacity: req.capacity ?? null,
   }
 }
 
@@ -292,17 +434,36 @@ export function isFiniteNonNegativeCapacity(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }
 
-async function resolveCapacitySource(
+/**
+ * M2 + R3: production always uses deps.getCapacity.
+ * Request-body capacity / allowTestCapacityInjection are NEVER honored (not on type).
+ * Test inject is ONLY via Symbol-branded deps.testCapacityInjection from
+ * createTestCapacityInjection — JSON/MCP cannot forge the brand.
+ */
+export async function resolveCapacitySource(
   deps: RunRegistryDeps,
   req: RegisterRunRequest,
-): Promise<RegisterRunRequest['capacity']> {
-  if (Object.prototype.hasOwnProperty.call(req, 'capacity')) {
-    return req.capacity
+): Promise<RegisterRunCapacity> {
+  if (isTestCapacityInjectionCapability(deps.testCapacityInjection)) {
+    return deps.testCapacityInjection.capacity
   }
   if (deps.getCapacity) {
     return deps.getCapacity(req.boardId)
   }
   return null
+}
+
+/**
+ * M4: plan fail-safe intents from capacity (pure; no external side effects).
+ * Exposed for register/scheduler tests and ops inspection.
+ */
+export function planRegisterFailSafeIntents(
+  capacity: RegisterRunCapacity | null | undefined,
+): Array<CapacityFailSafeIntent> {
+  const actions = (capacity as { failSafeActions?: Array<CapacityFailSafeAction> } | null | undefined)
+    ?.failSafeActions
+  if (!actions || actions.length === 0) return []
+  return planCapacityFailSafeIntents(actions)
 }
 
 /**
@@ -312,7 +473,7 @@ async function resolveCapacitySource(
 async function authorizeRegisterCapacity(
   deps: RunRegistryDeps,
   req: RegisterRunRequest,
-): Promise<NonNullable<RegisterRunRequest['capacity']>> {
+): Promise<NonNullable<RegisterRunCapacity>> {
   const capacitySource = await resolveCapacitySource(deps, req)
 
   if (!capacitySource) {
@@ -341,6 +502,30 @@ async function authorizeRegisterCapacity(
     )
   }
 
+  // M4: honor STOP_NEW_DISPATCH / BOUNDED_DRAIN / STOP_LIMIT_ASSIGNMENT at boundary.
+  const failSafeActions = (capacitySource as { failSafeActions?: Array<CapacityFailSafeAction> })
+    .failSafeActions
+  const failSafeGate = evaluateFailSafeAssignmentGate(failSafeActions, {
+    maskedAccountRef: req.maskedAccountRef,
+  })
+  if (failSafeGate.blocked) {
+    throw new RunRegistryError(
+      'AUTHORIZATION_REQUIRED',
+      `provider assignment denied: ${failSafeGate.reason ?? CAP_REASON_FAIL_SAFE_STOP_DISPATCH}`,
+      {
+        reason:
+          failSafeGate.action === 'STOP_LIMIT_ASSIGNMENT'
+            ? CAP_REASON_FAIL_SAFE_STOP_LIMIT
+            : failSafeGate.reason ?? CAP_REASON_FAIL_SAFE_STOP_DISPATCH,
+        action: failSafeGate.action,
+        maskedAccountId: failSafeGate.maskedAccountId,
+        dispatchMode: capacitySource.dispatchMode ?? 'BLOCKED',
+        usableCapacity: usable,
+        failSafeIntents: planRegisterFailSafeIntents(capacitySource),
+      },
+    )
+  }
+
   // Stale / zero usable / blocked mode is fail-closed even if flags look OPEN.
   if (
     usable <= 0 ||
@@ -349,7 +534,7 @@ async function authorizeRegisterCapacity(
   ) {
     const decision = authorizeProviderAssignment(
       { ...capacitySource, usableCapacity: usable },
-      { model: req.model },
+      { model: req.model, maskedAccountRef: req.maskedAccountRef },
     )
     throw new RunRegistryError(
       'AUTHORIZATION_REQUIRED',
@@ -363,9 +548,22 @@ async function authorizeRegisterCapacity(
     )
   }
 
+  // M2: dispatchAllowed requires complete family remainings (fail closed).
+  if (!hasCompleteFamilyRemainings(capacitySource)) {
+    throw new RunRegistryError(
+      'AUTHORIZATION_REQUIRED',
+      'provider assignment denied: family remainings required',
+      {
+        reason: CAP_REASON_FAMILY_REMAINING_REQUIRED,
+        dispatchMode: capacitySource.dispatchMode ?? 'BLOCKED',
+        usableCapacity: usable,
+      },
+    )
+  }
+
   const decision = authorizeProviderAssignment(
     { ...capacitySource, usableCapacity: usable },
-    { model: req.model },
+    { model: req.model, maskedAccountRef: req.maskedAccountRef },
   )
   if (!decision.allowed) {
     throw new RunRegistryError(
@@ -874,6 +1072,55 @@ export async function heartbeatRun(
       })
     }
     // NOTE: no immutable audit for ordinary heartbeat (coalesced hot state only)
+
+    // Domain retention (optional): hot + sampled + material MATERIAL only.
+    // Never invent a policy here — binding must supply already-resolved BoardPolicy.
+    // Prefer durable retentionAsync (MySQL multi-instance); sync retention is memory/test only.
+    if (deps.retentionAsync?.store && deps.retentionAsync.policy) {
+      const binding = deps.retentionAsync
+      const retentionResult = await applyHeartbeatWithOptionalCompactionAsync({
+        input: {
+          runId: req.runId,
+          boardId: req.boardId,
+          sequence: req.heartbeatSequence,
+          atMs: now,
+          status: nextState,
+          materialProgress: materialEvent,
+        },
+        policy: binding.policy,
+        store: binding.store,
+        lastCompactionAtMs: binding.lastCompactionAtMs,
+        maxCompactionActions: binding.maxCompactionActions,
+      })
+      binding.onHeartbeatRetention?.(retentionResult.apply)
+      binding.lastCompactionAtMs = retentionResult.nextLastCompactionAtMs
+      if (retentionResult.compaction) {
+        binding.onCompacted?.(retentionResult.compaction)
+      }
+    } else if (deps.retention?.store && deps.retention.policy) {
+      const binding = deps.retention
+      const lastCompactionAtMs = binding.lastCompactionAtMs ?? 0
+      const retentionResult = applyHeartbeatWithOptionalCompaction({
+        input: {
+          runId: req.runId,
+          boardId: req.boardId,
+          sequence: req.heartbeatSequence,
+          atMs: now,
+          status: nextState,
+          materialProgress: materialEvent,
+        },
+        policy: binding.policy,
+        store: binding.store,
+        lastCompactionAtMs,
+      })
+      binding.onHeartbeatRetention?.(retentionResult.apply)
+      if (retentionResult.compaction) {
+        binding.lastCompactionAtMs = retentionResult.nextLastCompactionAtMs
+        binding.onCompacted?.(retentionResult.compaction)
+      } else {
+        binding.lastCompactionAtMs = retentionResult.nextLastCompactionAtMs
+      }
+    }
 
     const response: HeartbeatRunResult = {
       runId: rec.runId,

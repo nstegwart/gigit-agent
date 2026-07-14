@@ -34,7 +34,7 @@ import {
   createMemoryRunRegistryStore,
   registerRun,
   type RunRegistryDeps,
-  type RegisterRunRequest,
+  type RegisterRunCapacity,
 } from '#/server/run-registry'
 import type { LifecycleStageKey } from '#/lib/control-plane-types'
 
@@ -476,7 +476,7 @@ describe('lifecycle mapping valid + negatives from gate fixtures', () => {
 })
 
 describe('reconciler dry-run/apply idempotency from gate fixture', () => {
-  function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
+  function openCapacity(): NonNullable<RegisterRunCapacity> {
     return {
       dispatchMode: 'OPEN',
       dispatchAllowed: true,
@@ -484,6 +484,12 @@ describe('reconciler dry-run/apply idempotency from gate fixture', () => {
       nonGrokAssignmentAllowed: true,
       grokAssignmentAllowed: true,
       limitingReasons: [],
+      // M2: dispatchAllowed requires complete family remainings (fail closed without these).
+      sparkUsableCapacity: 10,
+      solUsableCapacity: 10,
+      otherUsableCapacity: 10,
+      healthyGrokUsableCapacity: 70,
+      failSafeActions: [],
     }
   }
 

@@ -2,6 +2,11 @@
  * Regression: default (non-injected) MCP run deps must use a process-wide
  * shared run registry store so register_run then heartbeat_run see the same
  * record. Per-call createMemoryRunRegistryStore() caused RUN_NOT_REGISTERED.
+ *
+ * Capacity authorization: production uses deps.getCapacity only. Disposable
+ * unit paths that hit defaultRunDeps (missing account-sync → ACCOUNT_SYNC_STALE)
+ * must use Symbol-branded withTestCapacityInjection — never request-body inject
+ * (R3: JSON/MCP cannot forge the brand).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -19,6 +24,8 @@ import {
   heartbeatRun,
   registerRun,
   RunRegistryError,
+  withTestCapacityInjection,
+  type RegisterRunCapacity,
   type RegisterRunRequest,
   type RunRegistryDeps,
 } from '#/server/run-registry'
@@ -32,7 +39,8 @@ import { createMemoryLockStore } from '#/server/locks'
 const BOARD_A = 'board-default-a'
 const BOARD_B = 'board-default-b'
 
-function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
+/** OPEN capacity with complete M2 family remainings (fail-closed without these). */
+function openCapacity(): NonNullable<RegisterRunCapacity> {
   return {
     dispatchMode: 'OPEN',
     dispatchAllowed: true,
@@ -40,6 +48,11 @@ function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
     nonGrokAssignmentAllowed: true,
     grokAssignmentAllowed: true,
     limitingReasons: [],
+    sparkUsableCapacity: 10,
+    solUsableCapacity: 10,
+    otherUsableCapacity: 10,
+    healthyGrokUsableCapacity: 70,
+    failSafeActions: [],
   }
 }
 
@@ -63,7 +76,8 @@ describe('MCP default run registry (no injection)', () => {
     expect(depsRegister).toBe(depsHeartbeat)
     expect(depsRegister.runs).toBe(depsHeartbeat.runs)
 
-    const reg = await registerRun(depsRegister, {
+    // Symbol-branded inject: defaultRunDeps getCapacity is forceZero STALE without account-sync.
+    const reg = await registerRun(withTestCapacityInjection(depsRegister, openCapacity()), {
       boardId: BOARD_A,
       runId: 'run-shared-1',
       taskId: 'task-1',
@@ -75,7 +89,6 @@ describe('MCP default run registry (no injection)', () => {
       expectedBoardRev: 0,
       idempotencyKey: 'idem-shared-1',
       initialState: 'STARTING',
-      capacity: openCapacity(),
     })
     expect(reg.replayed).toBe(false)
     expect(reg.fencingToken).toBeTruthy()
@@ -99,7 +112,7 @@ describe('MCP default run registry (no injection)', () => {
 
   it('resetMcpControlPlaneDeps clears default deps so a new store is used', async () => {
     const deps1 = defaultRunDeps(BOARD_A, 0)
-    const reg = await registerRun(deps1, {
+    const reg = await registerRun(withTestCapacityInjection(deps1, openCapacity()), {
       boardId: BOARD_A,
       runId: 'run-pre-reset',
       taskId: 'task-pre',
@@ -111,7 +124,6 @@ describe('MCP default run registry (no injection)', () => {
       expectedBoardRev: 0,
       idempotencyKey: 'idem-pre-reset',
       initialState: 'STARTING',
-      capacity: openCapacity(),
     })
     expect(reg.fencingToken).toBeTruthy()
 
@@ -147,7 +159,7 @@ describe('MCP default run registry (no injection)', () => {
     expect(depsB).toBe(deps)
     expect(depsB.runs).toBe(deps.runs)
 
-    const regA = await registerRun(deps, {
+    const regA = await registerRun(withTestCapacityInjection(deps, openCapacity()), {
       boardId: BOARD_A,
       runId: 'run-iso-a',
       taskId: 'task-a',
@@ -159,7 +171,6 @@ describe('MCP default run registry (no injection)', () => {
       expectedBoardRev: 0,
       idempotencyKey: 'idem-iso-a',
       initialState: 'STARTING',
-      capacity: openCapacity(),
     })
 
     const listedA = await deps.runs.list(BOARD_A)
@@ -168,7 +179,7 @@ describe('MCP default run registry (no injection)', () => {
     expect(listedB.some((r) => r.runId === 'run-iso-a')).toBe(false)
 
     // Same runId on board B is a separate key in the shared store.
-    const regB = await registerRun(depsB, {
+    const regB = await registerRun(withTestCapacityInjection(depsB, openCapacity()), {
       boardId: BOARD_B,
       runId: 'run-iso-a',
       taskId: 'task-b',
@@ -180,7 +191,6 @@ describe('MCP default run registry (no injection)', () => {
       expectedBoardRev: 0,
       idempotencyKey: 'idem-iso-b',
       initialState: 'STARTING',
-      capacity: openCapacity(),
     })
     expect(regB.fencingToken).not.toBe(regA.fencingToken)
 
@@ -239,7 +249,6 @@ describe('register_run idempotency hash matrix (material fields)', () => {
       idempotencyKey: 'reg-matrix-key',
       initialState: 'STARTING',
       actorRole: 'AGENT',
-      capacity: openCapacity(),
       ...over,
     }
   }
@@ -259,6 +268,7 @@ describe('register_run idempotency hash matrix (material fields)', () => {
         },
       ]),
       idempotency: createMemoryIdempotencyStorage(),
+      // Explicit getCapacity with complete family remainings (not request-body inject).
       getCapacity: async () => openCapacity(),
     }
   }
@@ -288,7 +298,8 @@ describe('register_run idempotency hash matrix (material fields)', () => {
     const boardAfter = (await deps.atomic.getBoardState(BOARD_A)).boardRev
     const baseHash = hashRegisterBody(base)
 
-    // Independent verifier found these omitted from the old register hash.
+    // R3: capacity / allowTestCapacityInjection are intentionally excluded from
+    // canonicalRegisterRunRequestBody — not material for idempotency.
     const fieldCases: Array<{ field: string; patch: Partial<RegisterRunRequest> }> = [
       { field: 'initialState', patch: { initialState: 'QUEUED' } },
       { field: 'role', patch: { role: 'INTEGRATOR' } },
@@ -303,15 +314,6 @@ describe('register_run idempotency hash matrix (material fields)', () => {
       { field: 'planId', patch: { planId: 'plan-OTHER' } },
       { field: 'planItemRank', patch: { planItemRank: 2 } },
       { field: 'actorRole', patch: { actorRole: 'ROOT_ORCHESTRATOR' } },
-      {
-        field: 'capacity.usableCapacity',
-        patch: {
-          capacity: {
-            ...openCapacity(),
-            usableCapacity: 1,
-          },
-        },
-      },
     ]
 
     for (const c of fieldCases) {

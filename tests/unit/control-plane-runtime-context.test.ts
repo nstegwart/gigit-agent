@@ -26,6 +26,7 @@ import {
   getAccountSyncScheduler,
   getControlPlaneRuntimeContext,
   hasTestControlPlaneRuntimeContext,
+  isApprovedTestRetentionContext,
   isProductionOrServerEnv,
   peekAccountSyncScheduler,
   peekControlPlaneRuntimeContext,
@@ -106,6 +107,95 @@ describe('control-plane-runtime-context', () => {
       expect((e as ControlPlaneRuntimeContextError).message).toMatch(/refusing silent memory fallback/)
     }
     expect(peekControlPlaneRuntimeContext()).toBeNull()
+  })
+
+  it('boot refuses serve when retention env UNRESOLVED (no invent LOCAL)', () => {
+    const env = {
+      // bare development / empty app env → retention UNRESOLVED
+      NODE_ENV: 'development',
+      CAIRN_SERVER: '1',
+      CAIRN_DB_HOST: '127.0.0.1',
+      CAIRN_DB_USER: 'u',
+      CAIRN_DB_NAME: 'db',
+    } as NodeJS.ProcessEnv
+    expect(() => getControlPlaneRuntimeContext(env)).toThrow(ControlPlaneRuntimeContextError)
+    try {
+      getControlPlaneRuntimeContext(env)
+    } catch (e) {
+      expect(e).toBeInstanceOf(ControlPlaneRuntimeContextError)
+      expect((e as ControlPlaneRuntimeContextError).code).toBe('NOT_CONFIGURED')
+      expect((e as ControlPlaneRuntimeContextError).message).toMatch(/UNRESOLVED|retention environment/i)
+      expect((e as ControlPlaneRuntimeContextError).message).toMatch(/refused|boot/i)
+    }
+    expect(peekControlPlaneRuntimeContext()).toBeNull()
+  })
+
+  it('buildMysqlControlPlaneRuntimeContext asserts retention env before build', () => {
+    expect(() =>
+      buildMysqlControlPlaneRuntimeContext({
+        env: {
+          NODE_ENV: 'development',
+          // no CAIRN_ENV / APP_ENV / VITEST
+        } as NodeJS.ProcessEnv,
+        controlDataClient: createMemoryControlDataSql(),
+        sqlExecutor: createMemoryAtomicSqlExecutor(),
+        requireDbConfig: false,
+      }),
+    ).toThrow(/UNRESOLVED|retention environment/i)
+  })
+
+  it('R4: production-like + NODE_ENV=test/VITEST refuses boot (no silent TEST proposal)', () => {
+    const env = {
+      NODE_ENV: 'test',
+      VITEST: 'true',
+      CAIRN_SERVER: '1',
+      CAIRN_DB_HOST: '127.0.0.1',
+      CAIRN_DB_USER: 'u',
+      CAIRN_DB_NAME: 'db',
+    } as NodeJS.ProcessEnv
+    expect(() => getControlPlaneRuntimeContext(env)).toThrow(
+      ControlPlaneRuntimeContextError,
+    )
+    try {
+      getControlPlaneRuntimeContext(env)
+    } catch (e) {
+      expect(e).toBeInstanceOf(ControlPlaneRuntimeContextError)
+      expect((e as ControlPlaneRuntimeContextError).code).toBe('NOT_CONFIGURED')
+      expect((e as ControlPlaneRuntimeContextError).message).toMatch(
+        /UNRESOLVED|R4|retention environment/i,
+      )
+    }
+    expect(() =>
+      buildMysqlControlPlaneRuntimeContext({
+        env,
+        controlDataClient: createMemoryControlDataSql(),
+        sqlExecutor: createMemoryAtomicSqlExecutor(),
+        requireDbConfig: false,
+      }),
+    ).toThrow(/UNRESOLVED|R4|retention environment/i)
+  })
+
+  it('R4: isApprovedTestRetentionContext only for memory/test override, never production-like', () => {
+    expect(isApprovedTestRetentionContext(null)).toBe(false)
+    const mem = createMemoryControlPlaneRuntimeContext()
+    setTestControlPlaneRuntimeContext(mem)
+    expect(
+      isApprovedTestRetentionContext(mem, {
+        NODE_ENV: 'test',
+      } as NodeJS.ProcessEnv),
+    ).toBe(true)
+    expect(
+      isApprovedTestRetentionContext(mem, {
+        NODE_ENV: 'test',
+        CAIRN_SERVER: '1',
+      } as NodeJS.ProcessEnv),
+    ).toBe(false)
+    expect(
+      isApprovedTestRetentionContext(
+        { mode: 'mysql' },
+        { NODE_ENV: 'test' } as NodeJS.ProcessEnv,
+      ),
+    ).toBe(false)
   })
 
   it('without test override and without instance, peek is null', () => {

@@ -10,7 +10,201 @@
 export const DECISION_HEARTBEAT_RETENTION_POLICY =
   'DECISION_HEARTBEAT_RETENTION_POLICY' as const
 
-export type RetentionEnvironment = 'LOCAL' | 'STAGING' | 'PRODUCTION' | 'TEST'
+/**
+ * Known retention environments. UNRESOLVED = missing/unknown identity (H3 fail-closed).
+ * Never treat UNRESOLVED as LOCAL — that would invent staging-proposed policy.
+ */
+export type RetentionEnvironment =
+  | 'LOCAL'
+  | 'STAGING'
+  | 'PRODUCTION'
+  | 'TEST'
+  | 'UNRESOLVED'
+
+/** Explicit app-env tokens accepted on CAIRN_ENV / APP_ENV. */
+const EXPLICIT_APP_ENV: Readonly<Record<string, Exclude<RetentionEnvironment, 'UNRESOLVED'>>> =
+  {
+    local: 'LOCAL',
+    test: 'TEST',
+    staging: 'STAGING',
+    production: 'PRODUCTION',
+    prod: 'PRODUCTION',
+  }
+
+/** How retention environment identity was derived (R4 source tracking). */
+export type RetentionEnvSource =
+  | 'CAIRN_ENV'
+  | 'APP_ENV'
+  | 'NODE_ENV_PRODUCTION'
+  | 'NODE_ENV_TEST'
+  | 'VITEST'
+  | 'NONE'
+  | 'UNKNOWN_APP_ENV'
+
+/**
+ * Full retention-env resolution (H3 + R4).
+ * Prefer this when deciding whether staging-proposal is authorized.
+ */
+export interface RetentionEnvironmentDetails {
+  environment: RetentionEnvironment
+  source: RetentionEnvSource
+  /** True when CAIRN_ENV/APP_ENV was an explicit known token. */
+  explicitAppEnv: boolean
+  /**
+   * True when identity rests only on weak runner signals (NODE_ENV=test / VITEST)
+   * without CAIRN_ENV/APP_ENV. Weak signals alone must not authorize staging proposal
+   * in production-like runtimes (R4).
+   */
+  weakTestSignal: boolean
+  /**
+   * Production-like process: NODE_ENV=production, CAIRN_SERVER=1, or
+   * CAIRN_ENV/APP_ENV ∈ {production,prod,staging}.
+   */
+  productionLike: boolean
+}
+
+/**
+ * Production-like runtime for retention authorization (aligned with
+ * isProductionOrServerEnv — kept here to avoid import cycles).
+ */
+export function isProductionLikeRetentionRuntime(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const nodeEnv = (env.NODE_ENV || '').toLowerCase().trim()
+  if (nodeEnv === 'production') return true
+  if ((env.CAIRN_SERVER || '').trim() === '1') return true
+  const appEnv = (env.CAIRN_ENV || env.APP_ENV || '').toLowerCase().trim()
+  return appEnv === 'production' || appEnv === 'prod' || appEnv === 'staging'
+}
+
+function isWeakTestRunnerSignal(env: NodeJS.ProcessEnv): boolean {
+  const node = (env.NODE_ENV || '').toLowerCase().trim()
+  if (node === 'test') return true
+  const vitest = env.VITEST
+  return vitest === 'true' || vitest === '1'
+}
+
+/**
+ * Map process env → detailed RetentionEnvironment (H3 + R4 fail-closed).
+ *
+ * Prefer explicit CAIRN_ENV / APP_ENV ∈ {local,test,staging,production|prod}.
+ * Fallbacks without inventing LOCAL:
+ * - NODE_ENV=production → PRODUCTION
+ * - NODE_ENV=test or VITEST → TEST only when NOT production-like (R4);
+ *   production-like + weak test signals → UNRESOLVED (no silent TEST proposal)
+ * - missing / unknown / bare development → UNRESOLVED
+ *
+ * Does NOT map bare NODE_ENV=development or empty env to LOCAL.
+ */
+export function resolveRetentionEnvironmentDetails(
+  env: NodeJS.ProcessEnv = process.env,
+): RetentionEnvironmentDetails {
+  const productionLike = isProductionLikeRetentionRuntime(env)
+  const hasCairn = !!(env.CAIRN_ENV || '').trim()
+  const appRaw = (env.CAIRN_ENV || env.APP_ENV || '').toLowerCase().trim()
+  if (appRaw) {
+    const mapped = EXPLICIT_APP_ENV[appRaw]
+    if (mapped) {
+      return {
+        environment: mapped,
+        source: hasCairn ? 'CAIRN_ENV' : 'APP_ENV',
+        explicitAppEnv: true,
+        weakTestSignal: false,
+        productionLike,
+      }
+    }
+    // Unknown CAIRN_ENV/APP_ENV value — never invent LOCAL.
+    return {
+      environment: 'UNRESOLVED',
+      source: 'UNKNOWN_APP_ENV',
+      explicitAppEnv: false,
+      weakTestSignal: false,
+      productionLike,
+    }
+  }
+
+  const node = (env.NODE_ENV || '').toLowerCase().trim()
+  if (node === 'production') {
+    return {
+      environment: 'PRODUCTION',
+      source: 'NODE_ENV_PRODUCTION',
+      explicitAppEnv: false,
+      weakTestSignal: false,
+      productionLike: true,
+    }
+  }
+
+  if (isWeakTestRunnerSignal(env)) {
+    const source: RetentionEnvSource =
+      node === 'test' ? 'NODE_ENV_TEST' : 'VITEST'
+    // R4: production-like runtime must not treat NODE_ENV=test/VITEST as TEST
+    // (TEST previously auto-authorized staging-proposed retention).
+    if (productionLike) {
+      return {
+        environment: 'UNRESOLVED',
+        source,
+        explicitAppEnv: false,
+        weakTestSignal: true,
+        productionLike: true,
+      }
+    }
+    return {
+      environment: 'TEST',
+      source,
+      explicitAppEnv: false,
+      weakTestSignal: true,
+      productionLike: false,
+    }
+  }
+
+  // Missing or non-test/non-production (e.g. development, empty) → fail-closed.
+  return {
+    environment: 'UNRESOLVED',
+    source: 'NONE',
+    explicitAppEnv: false,
+    weakTestSignal: false,
+    productionLike,
+  }
+}
+
+/**
+ * Map process env → RetentionEnvironment (H3 + R4 fail-closed).
+ * Convenience wrapper over resolveRetentionEnvironmentDetails.
+ */
+export function resolveRetentionEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): RetentionEnvironment {
+  return resolveRetentionEnvironmentDetails(env).environment
+}
+
+/**
+ * Startup / Decision status helper: retention env must be explicit known identity.
+ * Throws when UNRESOLVED so misconfigured processes do not boot with invented policy.
+ * R4: production-like + bare NODE_ENV=test/VITEST also throws (UNRESOLVED).
+ */
+export function assertRetentionEnvironmentConfigured(
+  env: NodeJS.ProcessEnv = process.env,
+): Exclude<RetentionEnvironment, 'UNRESOLVED'> {
+  const details = resolveRetentionEnvironmentDetails(env)
+  if (details.environment === 'UNRESOLVED') {
+    const cairn = (env.CAIRN_ENV || '').trim()
+    const app = (env.APP_ENV || '').trim()
+    const node = (env.NODE_ENV || '').trim()
+    const vitest = (env.VITEST || '').trim()
+    const weakHint = details.weakTestSignal
+      ? ` R4: NODE_ENV=test/VITEST alone cannot authorize retention under production-like runtime (productionLike=true, source=${details.source}); set CAIRN_ENV=local|test|staging|production.`
+      : ''
+    throw new Error(
+      `retention environment UNRESOLVED (fail-closed): set CAIRN_ENV or APP_ENV to ` +
+        `local|test|staging|production (got CAIRN_ENV=${JSON.stringify(cairn)} ` +
+        `APP_ENV=${JSON.stringify(app)} NODE_ENV=${JSON.stringify(node)} ` +
+        `VITEST=${JSON.stringify(vitest)}). ` +
+        `Missing/unknown non-test env must not invent LOCAL staging-proposal policy.` +
+        weakHint,
+    )
+  }
+  return details.environment
+}
 
 export type AuditEventClass = 'HEARTBEAT' | 'MATERIAL' | 'SAMPLED' | 'ROLLUP'
 
@@ -27,8 +221,8 @@ export interface BoardPolicyRetention {
   rollupRetentionMs: number
   /** Compaction interval (ms). */
   compactionIntervalMs: number
-  /** Explicit environment this policy is approved for. */
-  approvedFor: ReadonlyArray<RetentionEnvironment>
+  /** Explicit environment this policy is approved for (never UNRESOLVED). */
+  approvedFor: ReadonlyArray<Exclude<RetentionEnvironment, 'UNRESOLVED'>>
 }
 
 /** Explicit staging proposal — never auto-promoted to production. */
@@ -55,13 +249,46 @@ export interface RetentionPolicyResolveResult {
  * Resolve retention policy for environment.
  * Production without explicit approved policy → DECISION_HEARTBEAT_RETENTION_POLICY.
  * Staging without policy may use STAGING_PROPOSED only when allowStagingProposal=true.
+ * UNRESOLVED (missing/unknown non-test env) → BLOCKED — never invent LOCAL proposal (H3).
+ *
+ * R4 proposal gate for LOCAL/TEST without supplied policy:
+ * - LOCAL: auto staging-proposal (LOCAL identity only exists via CAIRN_ENV=local or
+ *   disposable unit tests that pass environment:'LOCAL' as the designed local path).
+ * - TEST: auto staging-proposal ONLY when explicitAppEnv=true (CAIRN_ENV/APP_ENV=test)
+ *   OR allowTestRetentionProposal=true (approved test-context capability) OR
+ *   allowStagingProposal=true. Bare NODE_ENV=test / VITEST → environment TEST with
+ *   weakTestSignal must NOT silently authorize proposal without one of those gates.
  */
 export function resolveRetentionPolicy(opts: {
   environment: RetentionEnvironment
   supplied?: BoardPolicyRetention | null
   allowStagingProposal?: boolean
+  /**
+   * R4: approved test-context capability (internal harness / setTestControlPlaneRuntimeContext).
+   * Required for TEST staging-proposal when identity is not from explicit CAIRN_ENV/APP_ENV=test.
+   * Production MCP/HTTP paths must never set this from untrusted input.
+   */
+  allowTestRetentionProposal?: boolean
+  /**
+   * True when environment was resolved from explicit CAIRN_ENV/APP_ENV known token.
+   * Enables TEST auto staging-proposal without a separate capability flag.
+   */
+  explicitAppEnv?: boolean
 }): RetentionPolicyResolveResult {
   const env = opts.environment
+
+  // H3: unresolved identity cannot auto-apply LOCAL staging-proposal (or any policy invent).
+  if (env === 'UNRESOLVED') {
+    return {
+      ok: false,
+      policy: null,
+      decisionCode: DECISION_HEARTBEAT_RETENTION_POLICY,
+      source: 'BLOCKED',
+      message:
+        'retention environment UNRESOLVED: set CAIRN_ENV or APP_ENV to local|test|staging|production — missing/unknown non-test env cannot invent LOCAL staging-proposal; open DECISION_HEARTBEAT_RETENTION_POLICY',
+    }
+  }
+
   if (opts.supplied) {
     if (!opts.supplied.approvedFor.includes(env) && env === 'PRODUCTION') {
       return {
@@ -102,8 +329,34 @@ export function resolveRetentionPolicy(opts: {
     }
   }
 
-  // LOCAL/TEST may use the explicit staging proposal by default.
-  if (env === 'LOCAL' || env === 'TEST') {
+  // LOCAL: designed disposable/local path — staging proposal allowed (never UNRESOLVED).
+  if (env === 'LOCAL') {
+    return {
+      ok: true,
+      policy: STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
+      decisionCode: null,
+      source: 'STAGING_PROPOSAL',
+      message: 'using explicit staging-proposed heartbeat retention policy',
+    }
+  }
+
+  // R4: TEST must not silently authorize staging proposal from NODE_ENV=test/VITEST alone.
+  // Require explicit CAIRN_ENV/APP_ENV=test (explicitAppEnv) or approved test capability.
+  if (env === 'TEST') {
+    const authorized =
+      opts.explicitAppEnv === true ||
+      opts.allowTestRetentionProposal === true ||
+      opts.allowStagingProposal === true
+    if (!authorized) {
+      return {
+        ok: false,
+        policy: null,
+        decisionCode: DECISION_HEARTBEAT_RETENTION_POLICY,
+        source: 'BLOCKED',
+        message:
+          'TEST retention staging-proposal blocked (R4): NODE_ENV=test/VITEST alone must not authorize staging-proposed retention — set CAIRN_ENV=test|local, pass explicitAppEnv from resolveRetentionEnvironmentDetails, or allowTestRetentionProposal from approved test context; open DECISION_HEARTBEAT_RETENTION_POLICY',
+      }
+    }
     return {
       ok: true,
       policy: STAGING_PROPOSED_HEARTBEAT_RETENTION_POLICY,
@@ -363,6 +616,44 @@ export function compactRetention(opts: {
 }
 
 /**
+ * Production wiring helper for run-registry heartbeat path (AC-OPS-04/05).
+ * Always applies hot/sample/material domain update; runs compaction only when
+ * the policy compactionInterval has elapsed since lastCompactionAtMs.
+ * Does NOT invent a policy — caller must supply an already-resolved BoardPolicy.
+ */
+export function applyHeartbeatWithOptionalCompaction(opts: {
+  input: HeartbeatInput
+  policy: BoardPolicyRetention
+  store: RetentionStore
+  lastCompactionAtMs: number
+}): {
+  apply: HeartbeatApplyResult
+  compaction: CompactionResult | null
+  nextLastCompactionAtMs: number
+} {
+  const apply = applyHeartbeat(opts.input, opts.policy, opts.store)
+  const interval = Math.max(1, opts.policy.compactionIntervalMs)
+  if (opts.input.atMs - opts.lastCompactionAtMs < interval) {
+    return {
+      apply,
+      compaction: null,
+      nextLastCompactionAtMs: opts.lastCompactionAtMs,
+    }
+  }
+  const compaction = compactRetention({
+    policy: opts.policy,
+    store: opts.store,
+    nowMs: opts.input.atMs,
+    boardId: opts.input.boardId,
+  })
+  return {
+    apply,
+    compaction,
+    nextLastCompactionAtMs: opts.input.atMs,
+  }
+}
+
+/**
  * Bounded reconciler-style dry-run for retention compaction (AC-OPS-05 partial).
  * maxActions caps deletions considered; idempotent when re-run with same clock.
  */
@@ -415,5 +706,295 @@ export function planRetentionCompaction(opts: {
     wouldRetainMaterial,
     truncated,
     maxActionsPerRun: max,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Durable async retention (MySQL retentionAsync / multi-instance)
+// ---------------------------------------------------------------------------
+
+/**
+ * Async store shape matching createMysqlRetentionAsyncStore.
+ * boardId is explicit on every call (MySQL tables are board-scoped).
+ * No process-local Maps — callers must bind a durable executor.
+ */
+export interface RetentionAsyncStore {
+  getHot(boardId: string, runId: string): Promise<HotRunState | null>
+  putHot(state: HotRunState): Promise<void>
+  listHot(boardId: string): Promise<Array<HotRunState>>
+  deleteHot(boardId: string, runId: string): Promise<void>
+  appendAudit(record: AuditRecord): Promise<void>
+  listAudit(
+    boardId: string,
+    filter?: { eventClass?: AuditEventClass; immutable?: boolean },
+  ): Promise<Array<AuditRecord>>
+  deleteAudit(boardId: string, auditId: string): Promise<void>
+}
+
+/** Durable compaction watermark eventType (ROLLUP, never MATERIAL-immutable ordinary HB). */
+export const RETENTION_COMPACTION_WATERMARK_EVENT = 'retention_compaction' as const
+
+/** Deterministic sample audit id — multi-instance / retry safe. */
+export function retentionSampleAuditId(
+  boardId: string,
+  runId: string,
+  sequence: number,
+): string {
+  return `sample:${boardId}:${runId}:${sequence}`
+}
+
+/** Deterministic material audit id — multi-instance / retry safe. */
+export function retentionMaterialAuditId(
+  boardId: string,
+  runId: string,
+  sequence: number,
+): string {
+  return `material:${boardId}:${runId}:${sequence}`
+}
+
+function isCompactionWatermark(record: AuditRecord): boolean {
+  return (
+    record.eventClass === 'ROLLUP' &&
+    record.eventType === RETENTION_COMPACTION_WATERMARK_EVENT
+  )
+}
+
+/**
+ * Read durable last-compaction watermark for a board (max atMs of watermark rows).
+ * Prefer this over process-local lastCompactionAtMs for multi-instance MySQL.
+ */
+export async function readDurableCompactionWatermarkMs(
+  store: RetentionAsyncStore,
+  boardId: string,
+): Promise<number> {
+  const rows = await store.listAudit(boardId, { eventClass: 'ROLLUP' })
+  let max = 0
+  for (const r of rows) {
+    if (isCompactionWatermark(r) && r.atMs > max) max = r.atMs
+  }
+  return max
+}
+
+/**
+ * Async heartbeat apply against durable RetentionAsyncStore (AC-OPS-04).
+ * Always updates hot; samples on interval (immutable:false); MATERIAL only when
+ * materialProgress; NEVER immutable ordinary heartbeat.
+ * Uses deterministic audit ids for multi-instance/idempotent safety.
+ */
+export async function applyHeartbeatAsync(
+  input: HeartbeatInput,
+  policy: BoardPolicyRetention,
+  store: RetentionAsyncStore,
+): Promise<HeartbeatApplyResult> {
+  const prev = await store.getHot(input.boardId, input.runId)
+  const hot: HotRunState = {
+    runId: input.runId,
+    boardId: input.boardId,
+    lastHeartbeatAtMs: input.atMs,
+    heartbeatSequence: input.sequence,
+    status: input.status,
+    materialProgressAtMs: input.materialProgress
+      ? input.atMs
+      : (prev?.materialProgressAtMs ?? null),
+  }
+  await store.putHot(hot)
+
+  let sampled: AuditRecord | null = null
+  const sampleEvery = Math.max(1, policy.heartbeatSampleInterval)
+  if (input.sequence % sampleEvery === 0) {
+    sampled = {
+      id: retentionSampleAuditId(input.boardId, input.runId, input.sequence),
+      boardId: input.boardId,
+      runId: input.runId,
+      eventClass: 'SAMPLED',
+      eventType: 'heartbeat_sample',
+      atMs: input.atMs,
+      immutable: false,
+      payload: {
+        sequence: input.sequence,
+        status: input.status,
+      },
+    }
+    try {
+      await store.appendAudit(sampled)
+    } catch (e) {
+      // Idempotent retry: same deterministic id may already exist.
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!/Duplicate|ER_DUP_ENTRY|1062/i.test(msg)) throw e
+    }
+  }
+
+  let material: AuditRecord | null = null
+  if (input.materialProgress) {
+    material = {
+      id: retentionMaterialAuditId(input.boardId, input.runId, input.sequence),
+      boardId: input.boardId,
+      runId: input.runId,
+      eventClass: 'MATERIAL',
+      eventType: 'material_progress',
+      atMs: input.atMs,
+      immutable: true,
+      payload: {
+        sequence: input.sequence,
+        status: input.status,
+      },
+    }
+    try {
+      await store.appendAudit(material)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (!/Duplicate|ER_DUP_ENTRY|1062/i.test(msg)) throw e
+    }
+  }
+
+  return {
+    hot,
+    sampled,
+    material,
+    immutableHeartbeatCreated: false,
+  }
+}
+
+/**
+ * Async compact: durable hot/sampled/rollup windows; never deletes MATERIAL immutable
+ * or compaction watermarks. Bounded by maxActionsPerRun (default 100).
+ * Idempotent when re-run at same nowMs after work is done.
+ */
+export async function compactRetentionAsync(opts: {
+  policy: BoardPolicyRetention
+  store: RetentionAsyncStore
+  nowMs: number
+  boardId: string
+  maxActionsPerRun?: number
+}): Promise<CompactionResult & { truncated: boolean; maxActionsPerRun: number }> {
+  const { policy, store, nowMs, boardId } = opts
+  const max = opts.maxActionsPerRun ?? 100
+  let deletedHot = 0
+  let deletedSampled = 0
+  let deletedRollup = 0
+  let actions = 0
+  let truncated = false
+
+  for (const h of await store.listHot(boardId)) {
+    if (actions >= max) {
+      truncated = true
+      break
+    }
+    if (nowMs - h.lastHeartbeatAtMs > policy.hotStateRetentionMs) {
+      await store.deleteHot(boardId, h.runId)
+      deletedHot += 1
+      actions += 1
+    }
+  }
+
+  const audits = await store.listAudit(boardId)
+  // Always count material retainers (even when action budget truncates deletes).
+  let retainedMaterial = 0
+  for (const a of audits) {
+    if (a.immutable && a.eventClass === 'MATERIAL') retainedMaterial += 1
+  }
+  for (const a of audits) {
+    if (a.immutable && a.eventClass === 'MATERIAL') continue
+    if (isCompactionWatermark(a)) {
+      // Durable multi-instance watermark — never compact away.
+      continue
+    }
+    if (actions >= max) {
+      truncated = true
+      break
+    }
+    if (a.eventClass === 'SAMPLED' || a.eventClass === 'HEARTBEAT') {
+      if (nowMs - a.atMs > policy.sampledEventRetentionMs) {
+        await store.deleteAudit(boardId, a.id)
+        deletedSampled += 1
+        actions += 1
+      }
+    } else if (a.eventClass === 'ROLLUP') {
+      if (nowMs - a.atMs > policy.rollupRetentionMs) {
+        await store.deleteAudit(boardId, a.id)
+        deletedRollup += 1
+        actions += 1
+      }
+    }
+  }
+
+  // Persist durable watermark so other instances observe compaction time.
+  const watermark: AuditRecord = {
+    id: `compaction-wm:${boardId}:${nowMs}`,
+    boardId,
+    runId: null,
+    eventClass: 'ROLLUP',
+    eventType: RETENTION_COMPACTION_WATERMARK_EVENT,
+    atMs: nowMs,
+    immutable: false,
+    payload: {
+      deletedHot,
+      deletedSampled,
+      deletedRollup,
+      retainedMaterial,
+      truncated,
+      maxActionsPerRun: max,
+    },
+  }
+  try {
+    await store.appendAudit(watermark)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (!/Duplicate|ER_DUP_ENTRY|1062/i.test(msg)) throw e
+  }
+
+  return {
+    deletedHot,
+    deletedSampled,
+    deletedRollup,
+    retainedMaterial,
+    atMs: nowMs,
+    truncated,
+    maxActionsPerRun: max,
+  }
+}
+
+/**
+ * Durable async apply + optional bounded compaction for heartbeatRun MySQL path.
+ * Compaction interval uses durable watermark (not process memory) so multi-instance
+ * is safe; compaction itself is idempotent.
+ */
+export async function applyHeartbeatWithOptionalCompactionAsync(opts: {
+  input: HeartbeatInput
+  policy: BoardPolicyRetention
+  store: RetentionAsyncStore
+  /** Optional process hint; durable watermark wins when higher. */
+  lastCompactionAtMs?: number
+  maxCompactionActions?: number
+}): Promise<{
+  apply: HeartbeatApplyResult
+  compaction: (CompactionResult & { truncated: boolean; maxActionsPerRun: number }) | null
+  nextLastCompactionAtMs: number
+}> {
+  const apply = await applyHeartbeatAsync(opts.input, opts.policy, opts.store)
+  const durableWm = await readDurableCompactionWatermarkMs(
+    opts.store,
+    opts.input.boardId,
+  )
+  const lastCompactionAtMs = Math.max(opts.lastCompactionAtMs ?? 0, durableWm)
+  const interval = Math.max(1, opts.policy.compactionIntervalMs)
+  if (opts.input.atMs - lastCompactionAtMs < interval) {
+    return {
+      apply,
+      compaction: null,
+      nextLastCompactionAtMs: lastCompactionAtMs,
+    }
+  }
+  const compaction = await compactRetentionAsync({
+    policy: opts.policy,
+    store: opts.store,
+    nowMs: opts.input.atMs,
+    boardId: opts.input.boardId,
+    maxActionsPerRun: opts.maxCompactionActions,
+  })
+  return {
+    apply,
+    compaction,
+    nextLastCompactionAtMs: opts.input.atMs,
   }
 }

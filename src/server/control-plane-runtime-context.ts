@@ -63,6 +63,12 @@ import {
   createMemoryMetricsRegistry,
   type MetricsRegistry,
 } from './observability'
+import {
+  assertRetentionEnvironmentConfigured,
+  isProductionLikeRetentionRuntime,
+  type RetentionEnvironmentDetails,
+  resolveRetentionEnvironmentDetails,
+} from './audit-retention'
 
 // ---------------------------------------------------------------------------
 // Global symbol holder (survives HMR / multi-import identity)
@@ -385,6 +391,9 @@ export function buildMysqlControlPlaneRuntimeContext(
   opts: BuildMysqlContextOptions = {},
 ): ControlPlaneRuntimeContext {
   const env = opts.env ?? process.env
+  // Boot assert (H3): explicit retention env before any serve/build of MySQL context.
+  // UNRESOLVED must not invent LOCAL staging-proposal policy.
+  assertRetentionEnvironmentConfigured(env)
   const requireDbConfig = opts.requireDbConfig ?? isProductionOrServerEnv(env)
 
   if (requireDbConfig) {
@@ -631,6 +640,19 @@ export function getControlPlaneRuntimeContext(
   if (holder.testOverride) return holder.testOverride
   if (holder.instance) return holder.instance
 
+  // Boot assert before serving: retention env must be explicit (local|test|staging|production).
+  // Fail-closed — never invent LOCAL from bare development / empty env.
+  try {
+    assertRetentionEnvironmentConfigured(env)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    throw new ControlPlaneRuntimeContextError(
+      'NOT_CONFIGURED',
+      `Control-plane boot refused: ${msg}`,
+      { retentionEnvironment: 'UNRESOLVED' },
+    )
+  }
+
   // Production/server: always require DB config before touching pool.
   if (isProductionOrServerEnv(env)) {
     const cfgErr = checkDbConfigForContext(env)
@@ -648,6 +670,7 @@ export function getControlPlaneRuntimeContext(
     }
   }
 
+  // buildMysql also re-asserts retention env (defense in depth at MySQL serve path).
   holder.instance = buildMysqlControlPlaneRuntimeContext({
     env,
     requireDbConfig: true,
@@ -691,6 +714,34 @@ export function resetControlPlaneRuntimeContextForTests(): void {
 /** True when a test override is installed. */
 export function hasTestControlPlaneRuntimeContext(): boolean {
   return getHolder().testOverride != null
+}
+
+/**
+ * R4: approved disposable test context may authorize TEST staging-proposed retention.
+ * Requires installed test override + memory|test mode + NOT production-like runtime.
+ * Production-like (CAIRN_SERVER=1 / NODE_ENV=production / CAIRN_ENV prod|staging)
+ * never grants this capability even if NODE_ENV=test or VITEST is set.
+ */
+export function isApprovedTestRetentionContext(
+  ctx: Pick<ControlPlaneRuntimeContext, 'mode'> | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!ctx) return false
+  if (isProductionLikeRetentionRuntime(env) || isProductionOrServerEnv(env)) {
+    return false
+  }
+  if (ctx.mode !== 'memory' && ctx.mode !== 'test') return false
+  return hasTestControlPlaneRuntimeContext()
+}
+
+/**
+ * R4 diagnostic: retention env details for the given process env.
+ * Exported so server boot / Decision paths share one source of truth.
+ */
+export function getRetentionEnvironmentDetails(
+  env: NodeJS.ProcessEnv = process.env,
+): RetentionEnvironmentDetails {
+  return resolveRetentionEnvironmentDetails(env)
 }
 
 /** Peek without lazy-init (returns null if neither override nor instance exists). */

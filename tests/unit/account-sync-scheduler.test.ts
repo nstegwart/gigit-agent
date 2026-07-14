@@ -165,6 +165,123 @@ describe('account-sync-scheduler foundation (AC-ACCOUNT SLA)', () => {
     expect(snap?.readbackSurfaces.ops).toEqual({ sourceRevision: 100, generatedAt: gen })
   })
 
+  it('M4: publish wires failSafeActions into pending requeue/rotate/drain intents (no external side effects)', async () => {
+    const d = makeDeps()
+    const surfaces = createMemoryAccountSyncSurfacePublisher()
+    const sched = createAccountSyncScheduler({
+      clock: d.clock,
+      accountSync: d.accountSync,
+      surfacePublisher: surfaces,
+    })
+
+    // LIMIT account → STOP_LIMIT + PRESERVE_REQUEUE + ROTATE intents
+    const limOut = await sched.enqueue(
+      await intent(d, {
+        trigger: 'LIMIT_TRANSITION',
+        sourceRevision: 200,
+        idempotencyKey: 'm4-limit-fs',
+        accounts: [
+          {
+            maskedAccountId: 'lim-1',
+            status: 'LIMIT',
+            providerKind: 'GROK',
+            effectiveInUse: 2,
+            effectiveCap: 5,
+          },
+          {
+            maskedAccountId: 'ok-1',
+            status: 'OK',
+            providerKind: 'GROK',
+            effectiveInUse: 1,
+            effectiveCap: 5,
+          },
+        ],
+      }),
+    )
+    expect(limOut.kind).toBe('PUBLISHED')
+    expect(limOut.failSafeIntents?.length).toBeGreaterThan(0)
+    expect(
+      limOut.failSafeIntents?.some(
+        (i) =>
+          i.action === 'STOP_LIMIT_ASSIGNMENT' &&
+          i.maskedAccountId === 'lim-1' &&
+          i.scheduleTrigger === 'LIMIT_TRANSITION' &&
+          i.blocksAssignment,
+      ),
+    ).toBe(true)
+    expect(
+      limOut.failSafeIntents?.some(
+        (i) =>
+          i.action === 'PRESERVE_REQUEUE_UNFINISHED' &&
+          i.scheduleTrigger === 'REQUEUE' &&
+          i.maskedAccountId === 'lim-1' &&
+          !i.blocksAssignment,
+      ),
+    ).toBe(true)
+    expect(
+      limOut.failSafeIntents?.some(
+        (i) =>
+          i.action === 'ROTATE_LIMIT_ACCOUNT' &&
+          i.scheduleTrigger === 'ROTATION' &&
+          i.maskedAccountId === 'lim-1',
+      ),
+    ).toBe(true)
+    // No runner-mutation fields on any intent
+    for (const i of limOut.failSafeIntents ?? []) {
+      expect('runnerMutation' in i).toBe(false)
+      expect('killRunners' in i).toBe(false)
+    }
+
+    const peeked = sched.peekFailSafeIntents(BOARD)
+    expect(peeked.length).toBe(limOut.failSafeIntents?.length)
+    expect(sched.getBoardState(BOARD).pendingFailSafeIntents.length).toBe(peeked.length)
+
+    const drained = sched.drainFailSafeIntents(BOARD)
+    expect(drained.length).toBe(peeked.length)
+    expect(sched.peekFailSafeIntents(BOARD)).toEqual([])
+    expect(sched.getBoardState(BOARD).pendingFailSafeIntents).toEqual([])
+
+    // CPU>=90 → STOP_NEW_DISPATCH + BOUNDED_DRAIN_REDUCE intents
+    const board = await d.atomic.getBoardState(BOARD)
+    const prev = await d.accounts.get(BOARD)
+    const cpuOut = await sched.enqueue({
+      boardId: BOARD,
+      sourceRevision: 201,
+      generatedAt: d.clock.nowISO(),
+      entityExpectedRev: prev!.entityRev,
+      expectedBoardRev: board.boardRev,
+      canonicalHash: 'canon-sched-pin',
+      accounts: [
+        {
+          maskedAccountId: 'g1',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 5,
+          effectiveCap: 5,
+        },
+      ],
+      trigger: 'PERIODIC_HEALTH',
+      idempotencyKey: 'm4-cpu-drain',
+      callerRole: 'ROOT_ORCHESTRATOR',
+      health: { cpuPercent: 95 },
+    })
+    expect(cpuOut.kind).toBe('PUBLISHED')
+    expect(cpuOut.usableCapacity).toBe(0)
+    expect(
+      cpuOut.failSafeIntents?.some(
+        (i) => i.action === 'STOP_NEW_DISPATCH' && i.blocksAssignment && i.scheduleTrigger === null,
+      ),
+    ).toBe(true)
+    const drain = cpuOut.failSafeIntents?.find((i) => i.action === 'BOUNDED_DRAIN_REDUCE')
+    expect(drain?.scheduleTrigger).toBe('PERIODIC_HEALTH')
+    expect(drain?.blocksAssignment).toBe(true)
+    expect(drain?.maxReduceSlots).toBeLessThanOrEqual(10)
+    expect(drain && 'runnerMutation' in drain).toBe(false)
+    expect(sched.peekFailSafeIntents(BOARD).some((i) => i.action === 'BOUNDED_DRAIN_REDUCE')).toBe(
+      true,
+    )
+  })
+
   it('AC-ACCOUNT-02: HEARTBEAT coalesces; newest publishes within 30s SLA', async () => {
     const d = makeDeps()
     const surfaces = createMemoryAccountSyncSurfacePublisher()

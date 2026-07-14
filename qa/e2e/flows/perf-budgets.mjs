@@ -15,6 +15,8 @@
  *   PERF_UI_FILTER_P95_MS    default 200 (UI filter feedback only)
  *   PERF_SAMPLE_N            default 20 (may be rate-capped downward)
  *   PERF_SAMPLE_GAP_MS       default auto (≥1000ms when multi-series under rate policy)
+ *   PERF_WARM_DISCARD        default 1 — discard 1 cold sample per series before p95
+ *                            (product "warmed" API p95). Set 0 to include cold sample.
  *   PERF_PROOF_BOUNDARY      on-host | tunnel | client | remote
  *                            default: loopback WEB_BASE → tunnel; else remote
  *   PERF_LOAD_RPS            default 20 (only with --load-10m)
@@ -22,6 +24,8 @@
  *   PERF_SCALE_FIXTURE_DIR   default qa/fixtures/staging/scale-1000
  *   PERF_RATE_BURST          default 20 (PUBLIC_SNAPSHOT_RATE_LIMIT_V1)
  *   PERF_RATE_SUSTAINED      default 60 / min
+ *   PERF_PAYLOAD_MAX_TASKS   default 200 (MCP MAX_PAGE_SIZE parity; fail-closed warn)
+ *   PERF_PAYLOAD_MAX_BYTES   default 524288 (512 KiB)
  *
  * Usage:
  *   WEB_BASE=http://127.0.0.1:33211 node qa/e2e/flows/perf-budgets.mjs
@@ -33,6 +37,8 @@
  *   node qa/e2e/flows/perf-budgets.mjs --scale-only
  *
  * Long 10m load is OPT-IN via --load-10m. Default run does counts + short p95 only.
+ * LCP / Overview-ready: qa/e2e/flows/perf-ui-overview-lcp.mjs
+ * Timed freshness SLAs: qa/e2e/flows/perf-freshness-sla.mjs
  *
  * Classification (root class when budgets fail):
  *   STACK   — transport / uncaught harness error
@@ -65,6 +71,14 @@ export const DEFAULT_PUBLIC_P95_MS = 500
 export const DEFAULT_UI_FILTER_P95_MS = 200
 /** Default unused query that does NOT change public-snapshot handler work. */
 export const DEFAULT_IDENTICAL_FILTER_QUERY = 'view=filter&bucket=ONGOING'
+/**
+ * Fail-closed public payload bounds (MCP list MAX_PAGE_SIZE parity).
+ * Public snapshot returns full tasks[] without pageSize — over-bound is PAYLOAD_UNBOUNDED.
+ */
+export const DEFAULT_PUBLIC_PAYLOAD_MAX_TASKS = 200
+export const DEFAULT_PUBLIC_PAYLOAD_MAX_BYTES = 512 * 1024
+/** Default: discard one cold sample per series so p95 is "warmed". */
+export const DEFAULT_WARM_DISCARD = true
 
 export function numEnv(name, fallback) {
   const raw = process.env[name]
@@ -151,6 +165,7 @@ export function resolveBudgets(opts = {}) {
 /**
  * Rate-limit-aware sampling plan so multi-series probes stay under policy.
  * Caps sampleN ≤ burst/2 when seriesCount≥2; enforces gapMs floor for sustained rate.
+ * When warmDiscard is true, each series issues +1 cold GET (discarded from p95).
  */
 export function resolveSamplePlan(opts = {}) {
   const burst = opts.burst ?? RATE_LIMIT_DEFAULTS.burst
@@ -159,6 +174,7 @@ export function resolveSamplePlan(opts = {}) {
   const requestedN = Math.max(1, Math.floor(opts.sampleN ?? 20))
   const gapRequested = opts.gapMs
   const gapExplicit = opts.gapExplicit === true
+  const warmDiscard = opts.warmDiscard !== false && opts.warmDiscard !== 0
 
   const reasons = []
   let sampleN = requestedN
@@ -168,10 +184,12 @@ export function resolveSamplePlan(opts = {}) {
     reasons.push(`sampleN_capped_burst_half:${requestedN}->${sampleN}`)
   }
 
-  // Min gap so seriesCount * sampleN requests over the wall fit sustained rate
+  // Min gap so seriesCount * sampleN (+ optional warm) requests fit sustained rate
   // with headroom: target ≤ sustainedPerMinute * 0.8 for safety.
   const safePerMin = Math.max(1, Math.floor(sustainedPerMinute * 0.8))
-  const totalRequests = seriesCount * sampleN
+  const warmExtra = warmDiscard ? seriesCount : 0
+  const totalRequests = seriesCount * sampleN + warmExtra
+  if (warmDiscard) reasons.push('warm_discard_extra_requests_per_series:1')
   const minGapForSustained =
     totalRequests > 0 ? Math.ceil((totalRequests / safePerMin) * 60_000) / totalRequests : 0
   // Also ensure refill between individual requests ≈ 1 token/s under 60/min.
@@ -206,10 +224,113 @@ export function resolveSamplePlan(opts = {}) {
     seriesCooldownMs,
     burst,
     sustainedPerMinute,
+    warmDiscard,
+    warmExtra,
     totalRequests,
     adjusted: reasons.length > 0,
     reasons,
     belowPolicy: !gapExplicit || gapMs >= minGapTokenRefill,
+  }
+}
+
+/**
+ * Fail-closed public-snapshot payload bound check.
+ * Full-board tasks[] without pageSize is O(n); over MAX_PAGE_SIZE parity → PAYLOAD_UNBOUNDED.
+ * Does not invent body sizes — caller must pass observed taskCount/bodyBytes.
+ */
+export function evaluatePublicPayloadBound(input = {}) {
+  const maxTasks = input.maxTasks ?? DEFAULT_PUBLIC_PAYLOAD_MAX_TASKS
+  const maxBytes = input.maxBytes ?? DEFAULT_PUBLIC_PAYLOAD_MAX_BYTES
+  const taskCount = input.taskCount
+  const bodyBytes = input.bodyBytes
+  const hasPagination = input.hasPagination === true
+  const reasons = []
+
+  if (taskCount != null && Number.isFinite(taskCount) && taskCount > maxTasks) {
+    reasons.push(`tasks>${maxTasks} (observed=${taskCount})`)
+  }
+  if (bodyBytes != null && Number.isFinite(bodyBytes) && bodyBytes > maxBytes) {
+    reasons.push(`bytes>${maxBytes} (observed=${bodyBytes})`)
+  }
+  // Structural unbounded: full tasks array present and no pagination contract.
+  if (
+    taskCount != null &&
+    Number.isFinite(taskCount) &&
+    taskCount > 0 &&
+    !hasPagination &&
+    taskCount > maxTasks
+  ) {
+    // already covered; keep single reason set
+  }
+
+  const failClosed = reasons.length > 0
+  return {
+    ok: !failClosed,
+    failClosed,
+    code: failClosed ? 'PAYLOAD_UNBOUNDED' : null,
+    warning: failClosed
+      ? `PAYLOAD_UNBOUNDED: public-snapshot full-board payload exceeds bound (${reasons.join('; ')})`
+      : null,
+    taskCount: taskCount ?? null,
+    bodyBytes: bodyBytes ?? null,
+    maxTasks,
+    maxBytes,
+    hasPagination: Boolean(hasPagination),
+    reasons,
+  }
+}
+
+/**
+ * Parse public-snapshot JSON body for payload bound probe. Never invents counts.
+ * @param {string|ArrayBuffer|Uint8Array|null} body
+ */
+export function inspectPublicSnapshotPayload(body) {
+  if (body == null) {
+    return { taskCount: null, runCount: null, bodyBytes: null, hasPagination: false, parseError: 'empty' }
+  }
+  let text
+  let bodyBytes
+  if (typeof body === 'string') {
+    text = body
+    bodyBytes = Buffer.byteLength(body, 'utf8')
+  } else if (body instanceof ArrayBuffer) {
+    const buf = Buffer.from(body)
+    bodyBytes = buf.length
+    text = buf.toString('utf8')
+  } else if (Buffer.isBuffer(body)) {
+    bodyBytes = body.length
+    text = body.toString('utf8')
+  } else if (body instanceof Uint8Array) {
+    bodyBytes = body.byteLength
+    text = Buffer.from(body).toString('utf8')
+  } else {
+    return { taskCount: null, runCount: null, bodyBytes: null, hasPagination: false, parseError: 'unsupported_type' }
+  }
+  try {
+    const json = JSON.parse(text)
+    const tasks = Array.isArray(json?.tasks) ? json.tasks : null
+    const runs = Array.isArray(json?.runs) ? json.runs : null
+    const hasPagination = Boolean(
+      json?.pageSize != null ||
+        json?.nextCursor != null ||
+        json?.cursor != null ||
+        json?.pagination != null,
+    )
+    return {
+      taskCount: tasks ? tasks.length : json?.taskCount ?? null,
+      runCount: runs ? runs.length : json?.runCount ?? null,
+      bodyBytes,
+      hasPagination,
+      parseError: null,
+    }
+  } catch (e) {
+    return {
+      taskCount: null,
+      runCount: null,
+      bodyBytes,
+      hasPagination: false,
+      parseError: String(e?.message || e),
+    }
   }
 }
 
@@ -380,17 +501,20 @@ export function summarizeSamples(samples, opts = {}) {
   }
 }
 
-export async function timedGet(url, headers = {}) {
+export async function timedGet(url, headers = {}, opts = {}) {
   const t0 = performance.now()
   let status = 0
   let ok = false
   let serverMs = null
+  let bodyBuffer = null
+  const captureBody = opts.captureBody === true
   try {
     const res = await fetch(url, { headers: { accept: 'application/json', ...headers } })
     status = res.status
     ok = res.ok || res.status === 304
     serverMs = parseServerLatencyMs(res.headers)
-    await res.arrayBuffer()
+    const buf = await res.arrayBuffer()
+    if (captureBody) bodyBuffer = buf
   } catch (e) {
     return {
       ms: performance.now() - t0,
@@ -399,6 +523,7 @@ export async function timedGet(url, headers = {}) {
       serverMs: null,
       error: String(e?.message || e),
       retries429: 0,
+      body: null,
     }
   }
   return {
@@ -408,6 +533,7 @@ export async function timedGet(url, headers = {}) {
     serverMs,
     error: null,
     retries429: 0,
+    body: bodyBuffer,
   }
 }
 
@@ -415,11 +541,24 @@ export async function timedGet(url, headers = {}) {
  * Sample latencies without folding 429-retry backoff into APP latency.
  * On 429: record the 429 sample (status 429, not ok) and optionally attempt
  * recovery samples that are tagged retries429>0 (excluded from APP p95).
+ *
+ * Warmed semantics (default): discard one cold sample before counting n samples
+ * toward p95. Cold sample is recorded under coldSample / coldDiscarded but never
+ * enters APP p95 via summarizeSamples.
  */
 export async function sampleLatencies(url, n, opts = {}) {
   const samples = []
   const gapMs = opts.gapMs ?? 0
   const max429Retries = opts.max429Retries ?? 0 // default: do not retry into APP stats
+  const discardCold = opts.discardCold !== false && opts.discardCold !== 0
+  let coldSample = null
+
+  if (discardCold) {
+    coldSample = await timedGet(url, {}, { captureBody: opts.captureColdBody === true })
+    coldSample = { ...coldSample, retries429: 0, cold: true }
+    if (gapMs > 0) await new Promise((r) => setTimeout(r, gapMs))
+  }
+
   for (let i = 0; i < n; i++) {
     let sample = await timedGet(url)
     let retries = 0
@@ -442,7 +581,26 @@ export async function sampleLatencies(url, n, opts = {}) {
     }
     if (gapMs > 0) await new Promise((r) => setTimeout(r, gapMs))
   }
-  return summarizeSamples(samples, opts)
+  const summary = summarizeSamples(samples, opts)
+  // Keep cold body only when caller asked (payload inspect); strip from default JSON surface.
+  const coldOut = coldSample
+    ? {
+        ms: coldSample.ms,
+        status: coldSample.status,
+        ok: coldSample.ok,
+        serverMs: coldSample.serverMs,
+        error: coldSample.error,
+        ...(opts.captureColdBody === true && coldSample.body
+          ? { body: coldSample.body }
+          : {}),
+      }
+    : null
+  return {
+    ...summary,
+    warm: discardCold,
+    coldDiscarded: discardCold ? 1 : 0,
+    coldSample: coldOut,
+  }
 }
 
 /**
@@ -588,7 +746,20 @@ export function selfTest() {
     uiFilterP95Ms: 200,
   })
 
-  const plan = resolveSamplePlan({ sampleN: 20, seriesCount: 2, burst: 20, sustainedPerMinute: 60 })
+  const plan = resolveSamplePlan({
+    sampleN: 20,
+    seriesCount: 2,
+    burst: 20,
+    sustainedPerMinute: 60,
+    warmDiscard: true,
+  })
+  const planNoWarm = resolveSamplePlan({
+    sampleN: 10,
+    seriesCount: 2,
+    burst: 20,
+    sustainedPerMinute: 60,
+    warmDiscard: false,
+  })
 
   const pub = 'http://127.0.0.1:33211/api/public-snapshot?boardId=mfs-rebuild'
   const fil = `${pub}&view=filter&bucket=ONGOING`
@@ -644,6 +815,34 @@ export function selfTest() {
   const boundaryLoop = resolveProofBoundary({ base: 'http://127.0.0.1:33211' })
   const boundaryHost = resolveProofBoundary({ explicit: 'on-host', base: 'http://127.0.0.1:33211' })
 
+  // Payload bound: within MCP pageSize parity → ok; over → fail-closed PAYLOAD_UNBOUNDED
+  const payloadOk = evaluatePublicPayloadBound({ taskCount: 8, bodyBytes: 6143, hasPagination: false })
+  const payloadFail = evaluatePublicPayloadBound({
+    taskCount: 1000,
+    bodyBytes: 900_000,
+    hasPagination: false,
+  })
+  const inspected = inspectPublicSnapshotPayload(
+    JSON.stringify({ tasks: new Array(5).fill({ id: 't' }), runs: [] }),
+  )
+  const inspectedBound = evaluatePublicPayloadBound({
+    taskCount: inspected.taskCount,
+    bodyBytes: inspected.bodyBytes,
+    hasPagination: inspected.hasPagination,
+  })
+
+  // Warm discard contract: cold sample must not enter p95 (simulate via summarize only on warm set)
+  const coldMs = 9000
+  const warmOnly = summarizeSamples([
+    { ms: 12, status: 200, ok: true, serverMs: null, retries429: 0 },
+    { ms: 18, status: 200, ok: true, serverMs: null, retries429: 0 },
+  ])
+  const withColdInSet = summarizeSamples([
+    { ms: coldMs, status: 200, ok: true, serverMs: null, retries429: 0 },
+    { ms: 12, status: 200, ok: true, serverMs: null, retries429: 0 },
+    { ms: 18, status: 200, ok: true, serverMs: null, retries429: 0 },
+  ])
+
   const checks = {
     scaleOk,
     p95Sample: p === 10,
@@ -654,6 +853,8 @@ export function selfTest() {
     uiBudgetDistinct: budgetsIdentical.uiFilterP95Ms === 200,
     samplePlanCap: plan.sampleN === 10,
     samplePlanGap: plan.gapMs >= 1000,
+    samplePlanWarm: plan.warmDiscard === true && plan.warmExtra === 2 && plan.totalRequests === 22,
+    samplePlanNoWarm: planNoWarm.warmDiscard === false && planNoWarm.totalRequests === 20,
     identicalPath: identical === true,
     notIdentical: notIdentical === false,
     serverTimingParse: serverMs === 12.5,
@@ -666,6 +867,10 @@ export function selfTest() {
     classOk: classOk === 'OK',
     boundaryLoop: boundaryLoop === 'tunnel',
     boundaryHost: boundaryHost === 'on-host',
+    payloadOkWithinBound: payloadOk.ok === true && payloadOk.code === null,
+    payloadFailClosed: payloadFail.ok === false && payloadFail.code === 'PAYLOAD_UNBOUNDED',
+    payloadInspect: inspected.taskCount === 5 && inspectedBound.ok === true,
+    warmDiscardSemantics: warmOnly.p95 === 18 && withColdInSet.p95 === coldMs,
   }
   const ok = Object.values(checks).every(Boolean)
   return {
@@ -680,6 +885,7 @@ export function selfTest() {
     p95Sample: p,
     budgetsIdentical,
     plan,
+    payloadFail,
   }
 }
 
@@ -710,6 +916,13 @@ async function main() {
   const uiFilterBudget = numEnv('PERF_UI_FILTER_P95_MS', DEFAULT_UI_FILTER_P95_MS)
   const filterEnvExplicit = envIsExplicitlySet('PERF_FILTER_P95_MS')
   const filterEnvValue = filterEnvExplicit ? numEnv('PERF_FILTER_P95_MS', p95Budget) : null
+  const warmDiscardEnv = process.env.PERF_WARM_DISCARD?.trim()
+  const warmDiscard =
+    warmDiscardEnv == null || warmDiscardEnv === ''
+      ? DEFAULT_WARM_DISCARD
+      : !(warmDiscardEnv === '0' || warmDiscardEnv.toLowerCase() === 'false' || warmDiscardEnv.toLowerCase() === 'no')
+  const payloadMaxTasks = numEnv('PERF_PAYLOAD_MAX_TASKS', DEFAULT_PUBLIC_PAYLOAD_MAX_TASKS)
+  const payloadMaxBytes = numEnv('PERF_PAYLOAD_MAX_BYTES', DEFAULT_PUBLIC_PAYLOAD_MAX_BYTES)
 
   const publicUrl = `${base}/api/public-snapshot?boardId=${encodeURIComponent(boardId)}`
   const filterUrl = buildFilterProbeUrl(publicUrl, {
@@ -743,6 +956,7 @@ async function main() {
     seriesCount: 2,
     burst: numEnv('PERF_RATE_BURST', RATE_LIMIT_DEFAULTS.burst),
     sustainedPerMinute: numEnv('PERF_RATE_SUSTAINED', RATE_LIMIT_DEFAULTS.sustainedPerMinute),
+    warmDiscard,
   })
 
   const loadOptIn = flags.has('--load-10m') || flags.has('--load')
@@ -760,6 +974,7 @@ async function main() {
     proofBoundary,
     sampleN: samplePlan.sampleN,
     gapMs: samplePlan.gapMs,
+    warmDiscard: samplePlan.warmDiscard,
   })
 
   let publicStats
@@ -767,16 +982,58 @@ async function main() {
   let uiFilterStats = null
   let loadStats = null
   let stackError = null
+  let payloadBound = null
+  let payloadInspect = null
 
   try {
     publicStats = await sampleLatencies(publicUrl, samplePlan.sampleN, {
       gapMs: samplePlan.gapMs,
       max429Retries: 0,
+      discardCold: warmDiscard,
+      captureColdBody: true,
     })
+    // Fail-closed payload bound: prefer cold-sample body (already discarded from p95).
+    let bodyBuf = publicStats?.coldSample?.body ?? null
+    if (!bodyBuf) {
+      const probe = await timedGet(publicUrl, {}, { captureBody: true })
+      if (probe.ok && probe.body) bodyBuf = probe.body
+      else {
+        payloadBound = {
+          ok: false,
+          failClosed: true,
+          code: 'PAYLOAD_UNBOUNDED',
+          warning: 'PAYLOAD_UNBOUNDED: could not inspect public-snapshot body (fail-closed)',
+          taskCount: null,
+          bodyBytes: null,
+          maxTasks: payloadMaxTasks,
+          maxBytes: payloadMaxBytes,
+          hasPagination: false,
+          reasons: ['body_uninspected'],
+          probeStatus: probe.status,
+          probeError: probe.error,
+        }
+      }
+    }
+    if (!payloadBound && bodyBuf) {
+      payloadInspect = inspectPublicSnapshotPayload(bodyBuf)
+      payloadBound = evaluatePublicPayloadBound({
+        taskCount: payloadInspect.taskCount,
+        bodyBytes: payloadInspect.bodyBytes,
+        hasPagination: payloadInspect.hasPagination,
+        maxTasks: payloadMaxTasks,
+        maxBytes: payloadMaxBytes,
+      })
+    }
+    // Never leak full response body into receipt JSON
+    if (publicStats?.coldSample) {
+      const { body: _drop, ...coldMeta } = publicStats.coldSample
+      publicStats = { ...publicStats, coldSample: coldMeta }
+    }
     await new Promise((r) => setTimeout(r, samplePlan.seriesCooldownMs))
     filterStats = await sampleLatencies(filterUrl, samplePlan.sampleN, {
       gapMs: samplePlan.gapMs,
       max429Retries: 0,
+      discardCold: warmDiscard,
     })
     // Distinct UI filter series only when configured AND we still want a separate public identical probe.
     // Current design: PERF_UI_FILTER_URL replaces filter probe URL; ui stats = filterStats when set.
@@ -855,10 +1112,16 @@ async function main() {
     usedServerLatency,
   })
 
+  const payloadPass = payloadBound ? payloadBound.ok === true : false
+
   const residualGaps = [
     ...(loadOptIn ? [] : ['10m load not run (opt-in --load-10m)']),
-    'LCP browser probe not included in default node flow',
+    'LCP / Overview-ready: use qa/e2e/flows/perf-ui-overview-lcp.mjs (not default node flow)',
+    'Timed freshness SLAs: use qa/e2e/flows/perf-freshness-sla.mjs (server-clock)',
     'p95 only meaningful when target returns 200/304 clean samples (no 429 retry path)',
+    ...(warmDiscard
+      ? ['warmed p95: 1 cold sample discarded per series (PERF_WARM_DISCARD=0 to include cold)']
+      : ['PERF_WARM_DISCARD disabled — p95 includes cold sample (not product "warmed" semantics)']),
     ...(identicalPath
       ? [
           'filterProbe uses identical public-snapshot path (view/bucket unread); budget aligned to public unless PERF_FILTER_P95_MS or PERF_UI_FILTER_URL set',
@@ -867,7 +1130,7 @@ async function main() {
     ...(uiFilterApplicable
       ? []
       : [
-          'UI filter feedback ≤200ms not gated (set PERF_UI_FILTER_URL for true UI surface)',
+          'UI filter feedback ≤200ms not gated (set PERF_UI_FILTER_URL for true UI surface, or run perf-ui-overview-lcp.mjs)',
         ]),
     ...(usedServerLatency
       ? []
@@ -877,11 +1140,21 @@ async function main() {
     ...(proofBoundary !== 'on-host'
       ? [`proofBoundary=${proofBoundary} (set PERF_PROOF_BOUNDARY=on-host for APP-class fail proof)`]
       : []),
+    ...(payloadBound?.failClosed
+      ? [payloadBound.warning || 'PAYLOAD_UNBOUNDED fail-closed']
+      : []),
   ]
 
   const out = {
     ok: Boolean(
-      scale.ok && publicPass && filterPass && uiFilterPass && loadPass && !stackError && rateLimitCount === 0,
+      scale.ok &&
+        publicPass &&
+        filterPass &&
+        uiFilterPass &&
+        loadPass &&
+        payloadPass &&
+        !stackError &&
+        rateLimitCount === 0,
     ),
     base,
     boardId,
@@ -897,6 +1170,9 @@ async function main() {
       identicalPath,
       loadRps: loadOptIn ? loadRps : null,
       loadDurationSec: loadOptIn ? loadDuration : null,
+      warmDiscard,
+      payloadMaxTasks,
+      payloadMaxBytes,
     },
     urls: {
       publicUrl,
@@ -906,6 +1182,16 @@ async function main() {
     publicSnapshot: publicStats,
     filterProbe: filterStats,
     uiFilterFeedback: uiFilterApplicable ? uiFilterStats : null,
+    publicPayload: payloadBound,
+    publicPayloadInspect: payloadInspect
+      ? {
+          taskCount: payloadInspect.taskCount,
+          runCount: payloadInspect.runCount,
+          bodyBytes: payloadInspect.bodyBytes,
+          hasPagination: payloadInspect.hasPagination,
+          parseError: payloadInspect.parseError,
+        }
+      : null,
     load: loadStats,
     loadOptIn,
     loadCommand:
@@ -916,6 +1202,8 @@ async function main() {
       uiFilterFeedback: uiFilterApplicable ? Boolean(uiFilterPass) : null,
       load: loadPass,
       scale: Boolean(scale.ok),
+      publicPayloadBound: payloadPass,
+      warmDiscardApplied: Boolean(publicStats?.warm),
     },
     rateLimitCount,
     usedServerLatency,

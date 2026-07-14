@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import mysql from 'mysql2/promise'
 
 import { redactSecretsDeep, SENSITIVE_ENV_KEYS } from './control-plane-bootstrap.mjs'
+import { ensureFpCControlPlaneOnIsoDb } from './control-plane-schema-seed.mjs'
 import {
   assertSafeIsoDbName,
   dropIsolatedDatabase,
@@ -315,10 +316,46 @@ export function eraseSecretsSidecar() {
 }
 
 /**
+ * Mint process-local CAIRN_CSRF_SECRET when unset (FP-A / HARNESS-csrf-preview).
+ *
+ * vite preview runs NODE_ENV=production → isProductionLikeCsrfEnv → secret required.
+ * Collab-comment, feature-toggle, boards create mutators need this under e2e preview.
+ *
+ * - Never weakens CSRF product guards.
+ * - Never logs or returns the secret value.
+ * - Never writes the secret to the secrets sidecar (ephemeral process env only).
+ * - Reuses existing env when set (no overwrite unless forceNew).
+ */
+export function ensureCsrfSecretInEnv(opts = {}) {
+  const existing = process.env.CAIRN_CSRF_SECRET?.trim()
+  if (existing && !opts.forceNew) {
+    return {
+      configured: true,
+      minted: false,
+      source: 'env',
+      // length only — never the value
+      secretCharLength: existing.length,
+    }
+  }
+  // 32 random bytes base64url (~43 chars) — meets common min-32 production floor
+  const secret = crypto.randomBytes(32).toString('base64url')
+  process.env.CAIRN_CSRF_SECRET = secret
+  return {
+    configured: true,
+    minted: true,
+    source: 'ephemeral',
+    secretByteLength: 32,
+    secretCharLength: secret.length,
+  }
+}
+
+/**
  * Sync: ensure process.env has synthetic credentials + MCP bearer/principals.
  * Prefer existing sidecar (shared across Playwright processes) before generating.
  * Safe to call from playwright.config.ts load time.
  * Does NOT seed DB — call prepareIsolatedAuthFixture / start-auth-preview for that.
+ * Does NOT mint CSRF here — start-auth-preview calls ensureCsrfSecretInEnv after
+ * writeSecretsSidecar so the secret is never persisted to the sidecar file.
  */
 export function ensureAuthSecretsInEnv(opts = {}) {
   // Pin run id + paths first so all sibling processes share one pair.
@@ -579,6 +616,25 @@ export async function prepareIsolatedAuthFixture(opts = {}) {
     sourceDbName: opts.sourceDbName,
   })
 
+  // FP-C: apply control-plane migrations 001/002/004/005 (+chain) + seed ≥1
+  // control_plane_run + masked account snapshot on disposable iso only.
+  // Skip with CAIRN_E2E_SKIP_FP_C=1 only for debug (default path always applies).
+  let fpC = null
+  const skipFpC =
+    process.env.CAIRN_E2E_SKIP_FP_C === '1' ||
+    process.env.CAIRN_E2E_SKIP_FP_C === 'true' ||
+    opts.skipFpC === true
+  if (!skipFpC) {
+    fpC = await ensureFpCControlPlaneOnIsoDb(clone.isoDb, {
+      // Prefer boards discovered from clone; helper falls back to ibils + mfs-rebuild
+    })
+    if (!fpC?.ok) {
+      throw new Error(
+        `FAIL-CLOSED auth-fixture: FP-C schema/seed failed on iso ${clone.isoDb}: ${JSON.stringify(fpC)}`,
+      )
+    }
+  }
+
   process.env.CAIRN_DB_NAME = clone.isoDb
   process.env.CAIRN_ISO_DB_NAME = clone.isoDb
   writeSecretsSidecar()
@@ -601,9 +657,27 @@ export async function prepareIsolatedAuthFixture(opts = {}) {
     userCount: clone.userCount,
     storageStatePath: resolveAuthStorageStatePath(opts),
     note: clone.note,
+    fpC: fpC
+      ? {
+          ok: true,
+          requiredVersions: fpC.requiredVersions,
+          applied: fpC.schema?.applied ?? [],
+          skipped: fpC.schema?.skipped ?? [],
+          finalApplied: fpC.schema?.finalApplied ?? [],
+          runsSeeded: fpC.seed?.runsSeeded ?? [],
+          accountsSeeded: (fpC.seed?.accountsSeeded ?? []).map((a) => ({
+            boardId: a.boardId,
+            sourceRevision: a.sourceRevision,
+            accountCount: a.accountCount,
+            usableCapacity: a.usableCapacity,
+            // masked ids only — never secrets
+            maskedIds: a.maskedIds,
+          })),
+        }
+      : { ok: false, skipped: true, reason: 'CAIRN_E2E_SKIP_FP_C' },
   }
   writeRuntimeMeta(meta)
-  return { ok: true, ...meta, secretsApplied: true, clone }
+  return { ok: true, ...meta, secretsApplied: true, clone, fpC }
 }
 
 /**
@@ -666,11 +740,14 @@ export async function cleanupIsolatedAuthFixture(opts = {}) {
     }
   }
 
-  // Scrub process-local secrets (names only in result)
+  // Scrub process-local secrets (names only in result).
+  // CAIRN_CSRF_SECRET is ephemeral preview-only (FP-A) — never persisted to sidecar;
+  // still scrub so post-teardown process cannot leak the mint.
   const scrubKeys = [
     'CAIRN_E2E_PASSWORD',
     'CAIRN_MCP_BEARER',
     'CAIRN_BEARER_PRINCIPALS_JSON',
+    'CAIRN_CSRF_SECRET',
     ...SENSITIVE_ENV_KEYS,
   ]
   for (const k of new Set(scrubKeys)) {

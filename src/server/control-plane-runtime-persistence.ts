@@ -867,6 +867,9 @@ export function decodeAccountSyncSnapshot(row: Record<string, unknown>): Account
       grokPerAccount: [],
       grokMajority: false,
       healthyGrokUsableCapacity: 0,
+      sparkUsableCapacity: 0,
+      solUsableCapacity: 0,
+      otherUsableCapacity: 0,
       combinedLive: 0,
       combinedCap: 0,
       floorTarget: 60,
@@ -879,6 +882,7 @@ export function decodeAccountSyncSnapshot(row: Record<string, unknown>): Account
       nonGrokAssignmentAllowed: false,
       grokAssignmentAllowed: false,
       limitingReasons: [],
+      failSafeActions: [],
       policy: {
         sparkMax: 10,
         solMax: 10,
@@ -889,6 +893,7 @@ export function decodeAccountSyncSnapshot(row: Record<string, unknown>): Account
         physicalSlotsDisplayOnly: true,
         neverAccountsAll: true,
         neverFiller: true,
+        cpuBoundedDrainMaxReduceSlots: 10,
       },
     }) as CapacityPolicyResult,
     entityRev: asNumber(row.entity_rev, 1),
@@ -1010,8 +1015,8 @@ export function decodeRetentionPolicy(row: Record<string, unknown>): BoardPolicy
     rollupRetentionMs: asNumber(row.rollup_retention_ms),
     compactionIntervalMs: asNumber(row.compaction_interval_ms),
     approvedFor: Array.isArray(approved)
-      ? (approved as Array<RetentionEnvironment>)
-      : (['LOCAL', 'TEST'] as Array<RetentionEnvironment>),
+      ? (approved as Array<Exclude<RetentionEnvironment, 'UNRESOLVED'>>)
+      : (['LOCAL', 'TEST'] as Array<Exclude<RetentionEnvironment, 'UNRESOLVED'>>),
   }
 }
 
@@ -1324,7 +1329,11 @@ export interface ControlPlaneRuntimePersistence {
    */
   retention: RetentionStore
   retentionPolicy: RetentionPolicyStore
-  /** Durable async hot/audit path (MySQL tables; memory SQL in tests). */
+  /**
+   * Durable async hot/audit path (MySQL tables; memory SQL in tests).
+   * heartbeatRun binds via RunRegistryDeps.retentionAsync + applyHeartbeatAsync
+   * (sample/material/compaction). No process-local dual-model invent.
+   */
   retentionAsync: ReturnType<typeof createMysqlRetentionAsyncStore>
   /** mysql = multi-process named-lock required; memory = explicit test factory. */
   mode: 'mysql' | 'memory'
@@ -2270,15 +2279,20 @@ export function createMysqlRetentionPolicyStore(
 
 /**
  * MySQL-backed RetentionStore is intentionally not provided as the domain
- * RetentionStore (sync) interface. Use createMysqlRetentionAsyncStore for DB
- * and keep an in-process memory RetentionStore for applyHeartbeat.
- * This factory documents the fail-closed sync surface.
+ * RetentionStore (sync) interface (M3).
+ *
+ * Live durable path: createMysqlRetentionAsyncStore / runtime.retentionAsync +
+ * applyHeartbeatWithOptionalCompactionAsync on heartbeatRun (RunRegistryDeps.retentionAsync).
+ * Sync RetentionStore is only safe for memory/test modes. Never invent process-local
+ * createMemoryRetentionStore() in mysql mode (multi-instance diverge).
+ *
+ * This factory is the fail-closed sync surface (throws on every method).
  */
 export function createMysqlRetentionStore(): RetentionStore {
   const fail = (method: string): never => {
     throw new RuntimePersistenceError(
       'INVALID_INPUT',
-      `createMysqlRetentionStore.${method} is sync-incompatible with MySQL; use createMysqlRetentionAsyncStore or memory RetentionStore`,
+      `createMysqlRetentionStore.${method} is sync-incompatible with MySQL; use createMysqlRetentionAsyncStore (retentionAsync) or memory-mode RetentionStore — do not invent process-local sync memory in mysql mode`,
     )
   }
   return {
@@ -2292,7 +2306,10 @@ export function createMysqlRetentionStore(): RetentionStore {
   }
 }
 
-/** Async MySQL retention accessors (preferred over sync RetentionStore for DB). */
+/**
+ * Async MySQL retention accessors (preferred over sync RetentionStore for DB).
+ * Satisfies audit-retention RetentionAsyncStore — bind on RunRegistryDeps.retentionAsync.
+ */
 export function createMysqlRetentionAsyncStore(exec: SqlExecutor) {
   return {
     async getHot(boardId: string, runId: string): Promise<HotRunState | null> {
@@ -2984,19 +3001,25 @@ export function createMemorySqlExecutor(): SqlExecutor & {
         table('control_plane_retention_hot_state').set(pk(params[0], params[1]), row)
         return { rows: [], affectedRows: 1 }
       }
-      if (s.includes('FROM control_plane_retention_hot_state') && s.includes('run_id=?')) {
+      // DELETE must be checked before SELECT: "DELETE FROM … WHERE run_id=?" also
+      // matches includes('FROM …') && includes('run_id=?') and would no-op as a get.
+      if (s.includes('DELETE FROM control_plane_retention_hot_state')) {
+        const ok = table('control_plane_retention_hot_state').delete(pk(params[0], params[1]))
+        return { rows: [], affectedRows: ok ? 1 : 0 }
+      }
+      if (
+        s.includes('FROM control_plane_retention_hot_state') &&
+        s.includes('run_id=?') &&
+        s.startsWith('SELECT')
+      ) {
         const row = table('control_plane_retention_hot_state').get(pk(params[0], params[1]))
         return { rows: row ? [row] : [], affectedRows: row ? 1 : 0 }
       }
-      if (s.includes('FROM control_plane_retention_hot_state')) {
+      if (s.includes('FROM control_plane_retention_hot_state') && s.startsWith('SELECT')) {
         const rows = [...table('control_plane_retention_hot_state').values()].filter(
           (r) => r.board_id === params[0],
         )
         return { rows, affectedRows: rows.length }
-      }
-      if (s.includes('DELETE FROM control_plane_retention_hot_state')) {
-        const ok = table('control_plane_retention_hot_state').delete(pk(params[0], params[1]))
-        return { rows: [], affectedRows: ok ? 1 : 0 }
       }
 
       // Audit sample
@@ -3014,15 +3037,15 @@ export function createMemorySqlExecutor(): SqlExecutor & {
         table('control_plane_retention_audit_sample').set(pk(params[0], params[1]), row)
         return { rows: [], affectedRows: 1 }
       }
-      if (s.includes('FROM control_plane_retention_audit_sample')) {
+      if (s.includes('DELETE FROM control_plane_retention_audit_sample')) {
+        const ok = table('control_plane_retention_audit_sample').delete(pk(params[0], params[1]))
+        return { rows: [], affectedRows: ok ? 1 : 0 }
+      }
+      if (s.includes('FROM control_plane_retention_audit_sample') && s.startsWith('SELECT')) {
         const rows = [...table('control_plane_retention_audit_sample').values()].filter(
           (r) => r.board_id === params[0],
         )
         return { rows, affectedRows: rows.length }
-      }
-      if (s.includes('DELETE FROM control_plane_retention_audit_sample')) {
-        const ok = table('control_plane_retention_audit_sample').delete(pk(params[0], params[1]))
-        return { rows: [], affectedRows: ok ? 1 : 0 }
       }
 
       throw new RuntimePersistenceError('INVALID_INPUT', `memory sql not handled: ${s.slice(0, 120)}`)
@@ -3105,8 +3128,10 @@ function buildControlPlaneRuntimePersistenceBundle(
   opts: { useNamedLock: boolean; mode: 'mysql' | 'memory' },
 ): ControlPlaneRuntimePersistence {
   const storeOpts = { useNamedLock: opts.useNamedLock }
-  // MySQL multi-process: never attach process-local sync retention (misleading "durable").
-  // Memory/test factory may keep in-process RetentionStore for applyHeartbeat unit tests.
+  // MySQL multi-process (M3): never attach process-local sync retention
+  // (misleading "durable" / dual-model diverge). Sync surface is fail-closed stub;
+  // live durable mutations use retentionAsync only. Memory/test factory may keep
+  // in-process RetentionStore for applyHeartbeat unit tests.
   const retention: RetentionStore =
     opts.mode === 'mysql' ? createMysqlRetentionStore() : createInProcessRetentionStore()
 

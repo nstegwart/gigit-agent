@@ -69,6 +69,30 @@ test.describe('staging synthetic DB seeder contract (no server)', () => {
     expect(r.ok, failed.map((f: { name: string }) => f.name).join(', ')).toBe(true)
     expect(r.failCount).toBe(0)
     expect(seed.STAGING_DB_NAME).toBe('cairn_tm_v3_staging')
+    const names = new Set(r.results.map((x: { name: string }) => x.name))
+    expect(names.has('replace-clears-control-plane-runs')).toBe(true)
+    expect(names.has('durable-ongoing-ids')).toBe(true)
+    expect(names.has('durable-ongoing-lease-fence-agent')).toBe(true)
+    expect(names.has('durable-ongoing-zero-click-fields')).toBe(true)
+  })
+
+  test('buildSeededOngoingDurableRunRecord is product-shaped RUNNING', async () => {
+    const seed = await loadSeed()
+    const rec = seed.buildSeededOngoingDurableRunRecord({
+      boardId: 'mfs-rebuild',
+      now: '2026-07-13T12:00:00.000Z',
+      pin: { boardRev: 1, canonicalHash: 'a'.repeat(64) },
+      dispatchSeed: { planId: 'plan-synth-r2d-001' },
+      actor: 'test',
+    })
+    expect(rec.runId).toBe('run-synth-ongoing')
+    expect(rec.taskId).toBe('task-ongoing-1')
+    expect(rec.state).toBe('RUNNING')
+    expect(rec.agentId).toBeTruthy()
+    expect(rec.fencingToken).toBeTruthy()
+    expect(rec.leaseExpiresAtMs).toBeGreaterThan(rec.registeredAtMs)
+    expect(rec.maskedAccountRef).toBeTruthy()
+    expect(rec.history?.[0]?.toState).toBe('RUNNING')
   })
 
   test('staging gate refuses production host and wrong DB name', async () => {

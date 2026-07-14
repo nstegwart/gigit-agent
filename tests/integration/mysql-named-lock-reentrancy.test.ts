@@ -159,6 +159,12 @@ describe('MySQL named lock reentrancy (register/heartbeat/terminate)', () => {
           nonGrokAssignmentAllowed: true,
           grokAssignmentAllowed: true,
           limitingReasons: [],
+          // M2: dispatchAllowed requires complete family remainings (fail closed without these).
+          sparkUsableCapacity: 2,
+          solUsableCapacity: 2,
+          otherUsableCapacity: 2,
+          healthyGrokUsableCapacity: 4,
+          failSafeActions: [],
         }),
       }
 

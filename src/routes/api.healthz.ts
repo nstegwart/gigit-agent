@@ -224,6 +224,94 @@ function versionOnlyMigrationStatus(
   return latest === expectedLatest ? 'READY' : 'PENDING'
 }
 
+/** Revision pin row as loaded from board_revisions (nullable fields explicit). */
+export type HealthzRevisionPinRow = {
+  boardRev: number | null
+  lifecycleRev: number | null
+  canonicalSnapshotId: string | null
+  subjectHash: string | null
+}
+
+/** Snapshot row candidate for pin fill (latest or id-scoped). */
+export type HealthzSnapshotPinRow = {
+  snapshotId: string
+  payloadSha256: string | null
+  boardRev: number | null
+  lifecycleRev: number | null
+}
+
+/**
+ * H2 security: resolve healthz pin after board_revisions + optional snapshot queries.
+ *
+ * Rules:
+ * - When revision has a non-null canonical_snapshot_id, never take "latest" snapshot;
+ *   hash may be filled only from the id-scoped snapshot row (pinnedSnapHash).
+ * - When revision lacks snapshot id but has finite board/lifecycle revs: only accept
+ *   latestSnap when snap.board_rev AND snap.lifecycle_rev exactly equal revision revs.
+ *   Otherwise leave id (and hash, unless already from subject_hash) null — fail-closed.
+ * - Never overwrite a non-null subject_hash with a different snapshot's payload_sha256.
+ * - When no finite revs on revision (or no revision): latest snap may supply id/hash/revs.
+ */
+export function resolveHealthzSnapshotPin(args: {
+  revision: HealthzRevisionPinRow | null
+  /** Latest control_plane_snapshots row for board (ORDER BY generated_at DESC LIMIT 1). */
+  latestSnap: HealthzSnapshotPinRow | null
+  /**
+   * payload_sha256 from id-scoped lookup when revision already has canonical_snapshot_id
+   * but null subject_hash. null = missing row / empty / not queried.
+   */
+  pinnedSnapHash?: string | null
+}): {
+  boardRev: number | null
+  lifecycleRev: number | null
+  canonicalSnapshotId: string | null
+  canonicalHash: string | null
+} {
+  const rev = args.revision
+  let boardRev = rev?.boardRev ?? null
+  let lifecycleRev = rev?.lifecycleRev ?? null
+  let canonicalSnapshotId = rev?.canonicalSnapshotId ?? null
+  let canonicalHash = rev?.subjectHash ?? null
+
+  // Id present: never mix with latest; only fill hash from the pinned snapshot row.
+  if (canonicalSnapshotId) {
+    if (canonicalHash == null && args.pinnedSnapHash) {
+      canonicalHash = args.pinnedSnapHash
+    }
+    return { boardRev, lifecycleRev, canonicalSnapshotId, canonicalHash }
+  }
+
+  // No snapshot id on revision — candidate is latest snap only.
+  const snap = args.latestSnap
+  if (!snap) {
+    // Missing row: leave id null; keep subject_hash/revs if any (fail-closed incomplete pin).
+    return { boardRev, lifecycleRev, canonicalSnapshotId: null, canonicalHash }
+  }
+
+  const hasFiniteRev = boardRev != null || lifecycleRev != null
+  if (hasFiniteRev) {
+    // Exact match required on both board_rev and lifecycle_rev — no partial mix.
+    const revsMatch = boardRev === snap.boardRev && lifecycleRev === snap.lifecycleRev
+    if (!revsMatch) {
+      // Old rev vs newer latest snap (or any mismatch) → do not emit mixed pin.
+      return { boardRev, lifecycleRev, canonicalSnapshotId: null, canonicalHash }
+    }
+  }
+
+  // Accept latest snap for id; never overwrite non-null subject_hash.
+  canonicalSnapshotId = snap.snapshotId
+  if (canonicalHash == null && snap.payloadSha256) {
+    canonicalHash = snap.payloadSha256
+  }
+  if (boardRev == null) {
+    boardRev = snap.boardRev
+  }
+  if (lifecycleRev == null) {
+    lifecycleRev = snap.lifecycleRev
+  }
+  return { boardRev, lifecycleRev, canonicalSnapshotId, canonicalHash }
+}
+
 /**
  * Observed local health.
  * Probes MySQL, schema_migrations, board_revisions / control_plane_snapshots when present.
@@ -337,6 +425,7 @@ async function loadObserved(): Promise<HealthObserved> {
     }
 
     if (boardId) {
+      let revisionPin: HealthzRevisionPinRow | null = null
       try {
         const [revRows] = await db().query(
           'SELECT board_rev, lifecycle_rev, canonical_snapshot_id, subject_hash FROM board_revisions WHERE board_id=? LIMIT 1',
@@ -351,26 +440,32 @@ async function loadObserved(): Promise<HealthObserved> {
         if (rev) {
           const br = Number(rev.board_rev)
           const lr = Number(rev.lifecycle_rev)
-          boardRev = Number.isFinite(br) ? br : null
-          lifecycleRev = Number.isFinite(lr) ? lr : null
-          canonicalSnapshotId = rev.canonical_snapshot_id ? String(rev.canonical_snapshot_id) : null
-          canonicalHash = rev.subject_hash ? String(rev.subject_hash) : null
+          revisionPin = {
+            boardRev: Number.isFinite(br) ? br : null,
+            lifecycleRev: Number.isFinite(lr) ? lr : null,
+            canonicalSnapshotId: rev.canonical_snapshot_id ? String(rev.canonical_snapshot_id) : null,
+            subjectHash: rev.subject_hash ? String(rev.subject_hash) : null,
+          }
           controlPlaneStatus = 'up'
         } else {
           // Control-plane revision table reachable but no pin for board — explicit unknown revs
-          boardRev = null
-          lifecycleRev = null
+          revisionPin = null
           controlPlaneStatus = 'degraded'
         }
       } catch {
         // board_revisions missing → control plane not proven
         controlPlaneStatus = 'unknown'
-        boardRev = null
-        lifecycleRev = null
+        revisionPin = null
       }
 
-      // Fill snapshot id from registry when revision row lacks it
-      if (!canonicalSnapshotId) {
+      // H2: fill snapshot id/hash without mixing revs across pins.
+      // - No canonical_snapshot_id → latest snap only when revs match (or revs unproven).
+      // - Has canonical_snapshot_id but empty subject_hash → id-scoped payload_sha256 only.
+      // - Never overwrite non-null subject_hash; mismatch / missing row → leave id/hash null.
+      let latestSnap: HealthzSnapshotPinRow | null = null
+      let pinnedSnapHash: string | null = null
+      const revSnapshotId = revisionPin?.canonicalSnapshotId ?? null
+      if (!revSnapshotId) {
         try {
           const [snapRows] = await db().query(
             `SELECT snapshot_id, payload_sha256, board_rev, lifecycle_rev
@@ -382,27 +477,52 @@ async function loadObserved(): Promise<HealthObserved> {
           )
           const snap = (snapRows as Array<{
             snapshot_id: string
-            payload_sha256: string
+            payload_sha256: string | null
             board_rev: number | string
             lifecycle_rev: number | string
           }>)[0]
           if (snap) {
-            canonicalSnapshotId = String(snap.snapshot_id)
-            canonicalHash = snap.payload_sha256 ? String(snap.payload_sha256) : canonicalHash
-            if (boardRev == null) {
-              const br = Number(snap.board_rev)
-              boardRev = Number.isFinite(br) ? br : null
-            }
-            if (lifecycleRev == null) {
-              const lr = Number(snap.lifecycle_rev)
-              lifecycleRev = Number.isFinite(lr) ? lr : null
+            const sbr = Number(snap.board_rev)
+            const slr = Number(snap.lifecycle_rev)
+            latestSnap = {
+              snapshotId: String(snap.snapshot_id),
+              payloadSha256: snap.payload_sha256 ? String(snap.payload_sha256) : null,
+              boardRev: Number.isFinite(sbr) ? sbr : null,
+              lifecycleRev: Number.isFinite(slr) ? slr : null,
             }
             if (controlPlaneStatus === 'unknown') controlPlaneStatus = 'up'
           }
         } catch {
           /* snapshot table absent — leave null/unknown */
         }
+      } else if (!(revisionPin?.subjectHash)) {
+        try {
+          const [snapRows] = await db().query(
+            `SELECT payload_sha256
+             FROM control_plane_snapshots
+             WHERE board_id=? AND snapshot_id=?
+             LIMIT 1`,
+            [boardId, revSnapshotId],
+          )
+          const snap = (snapRows as Array<{ payload_sha256: string | null }>)[0]
+          if (snap?.payload_sha256) {
+            pinnedSnapHash = String(snap.payload_sha256)
+          }
+          // no matching row / empty hash → leave null (fail-closed incomplete pin)
+        } catch {
+          /* snapshot table absent — leave hash null */
+        }
       }
+
+      const pin = resolveHealthzSnapshotPin({
+        revision: revisionPin,
+        latestSnap,
+        pinnedSnapHash,
+      })
+      boardRev = pin.boardRev
+      lifecycleRev = pin.lifecycleRev
+      canonicalSnapshotId = pin.canonicalSnapshotId
+      canonicalHash = pin.canonicalHash
     } else {
       // No board id — cannot assert control-plane pin identity
       controlPlaneStatus = 'unknown'
@@ -510,6 +630,19 @@ export async function healthzGetHandler(request: Request): Promise<Response> {
           : null
     const obsResult = observationResultFromHttpStatus(result.status)
     const latencyMs = Math.max(0, Date.now() - startedAt)
+    // Safe release/schema alert evaluation (AC-OPS-03). Never throws into response path.
+    // Only when authenticated health body is present — auth denials do not invent match signals.
+    if (healthPayload) {
+      try {
+        obs.evaluateAlerts({
+          nowIso: healthPayload.checkedAt || new Date().toISOString(),
+          releaseMatch: healthPayload.release.match,
+          schemaMatch: healthPayload.schema.match,
+        })
+      } catch {
+        /* alert path must never fail healthz */
+      }
+    }
     obs
       .beginRequest({
         requestId,
@@ -528,6 +661,8 @@ export async function healthzGetHandler(request: Request): Promise<Response> {
                 healthStatus: healthPayload.status,
                 releaseMatch: healthPayload.release.match,
                 schemaMatch: healthPayload.schema.match,
+                // Presence flag only — not the full hash (redaction defense)
+                hasCanonicalHash: Boolean(healthPayload.canonicalHash),
               }
             : {}),
         },

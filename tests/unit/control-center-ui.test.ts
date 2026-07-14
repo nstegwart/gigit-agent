@@ -823,13 +823,32 @@ describe('projectWork stale-family overlay filtering', () => {
           runLiveness: 'STALLED',
           createdAt: '2026-07-13T07:00:00.000Z',
         }),
+        // Completed linger → DONE + STALE_CLAIM (family)
         productTask('S_SC', 'PROD_READY', {
           claimState: 'STALE',
           createdAt: '2026-07-13T06:00:00.000Z',
         }),
-        productTask('NON_FAMILY', 'ONGOING', {
-          claimState: 'STALE',
+        // Incomplete ownership claim → RECONCILIATION_PENDING + STALE_CLAIM (family)
+        productTask('S_RECON_ORPHAN', 'BUILT', {
+          claimState: 'ORPHAN',
+          eligible: false,
+          createdAt: '2026-07-13T05:30:00.000Z',
+        }),
+        productTask('S_RECON_FENCED', 'FUNCTIONAL', {
+          claimState: 'FENCED',
+          eligible: false,
+          createdAt: '2026-07-13T05:20:00.000Z',
+        }),
+        // Non-family: beyond-stage incomplete has RECONCILIATION_DRILLDOWN + BEYOND_STAGE_ONGOING only
+        productTask('NON_FAMILY', 'BUILT', {
+          claimState: 'BEYOND_STAGE',
+          eligible: false,
           createdAt: '2026-07-13T05:00:00.000Z',
+        }),
+        // Clean queued row — no overlays
+        productTask('CLEAN_Q', 'MAPPED', {
+          eligible: true,
+          createdAt: '2026-07-13T04:00:00.000Z',
         }),
       ],
     })
@@ -842,9 +861,20 @@ describe('projectWork stale-family overlay filtering', () => {
     expect(ids).toContain('S_AS')
     expect(ids).toContain('S_ES')
     expect(ids).toContain('S_SC')
+    expect(ids).toContain('S_RECON_ORPHAN')
+    expect(ids).toContain('S_RECON_FENCED')
     expect(ids).not.toContain('NON_FAMILY')
+    expect(ids).not.toContain('CLEAN_Q')
     expect(env.data.filter.staleFamily).toBe(true)
     expect(env.data.filter.overlay).toBeNull()
+
+    // Incomplete recon remains primary RECONCILIATION_PENDING (not a 7th bucket)
+    const orphanRow = env.data.items.find((i) => i.taskId === 'S_RECON_ORPHAN')
+    expect(orphanRow?.bucket).toBe('RECONCILIATION_PENDING')
+    expect(orphanRow?.overlays).toContain('STALE_CLAIM')
+    const doneStale = env.data.items.find((i) => i.taskId === 'S_SC')
+    expect(doneStale?.bucket).toBe('DONE')
+    expect(doneStale?.overlays).toContain('STALE_CLAIM')
   })
 
   it('stale-family + exact overlay narrows family rows', () => {

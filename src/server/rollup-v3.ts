@@ -297,6 +297,9 @@ export function assignBucket(task: RollupTaskInput, pin: PinnedRevisionTuple, no
 
   // Rule 4: stale/orphan/expired/fenced ownership → RECONCILIATION_PENDING
   // (only when not already DONE — completed-task exception above)
+  // STALE chip family (ARCHITECTURE §9.1 "claim awaiting reconciliation") must
+  // include incomplete recon ownership via STALE_CLAIM so rows remain primary
+  // RECONCILIATION_PENDING while still matching staleFamily / STALE chip filter.
   if (
     task.claimState === 'STALE' ||
     task.claimState === 'ORPHAN' ||
@@ -304,12 +307,24 @@ export function assignBucket(task: RollupTaskInput, pin: PinnedRevisionTuple, no
     task.claimState === 'FENCED' ||
     task.claimState === 'BEYOND_STAGE'
   ) {
+    if (
+      task.claimState === 'STALE' ||
+      task.claimState === 'ORPHAN' ||
+      task.claimState === 'EXPIRED' ||
+      task.claimState === 'FENCED'
+    ) {
+      overlays.push('STALE_CLAIM')
+    }
+    if (task.claimState === 'BEYOND_STAGE') {
+      overlays.push('BEYOND_STAGE_ONGOING')
+    }
+    overlays.push('RECONCILIATION_DRILLDOWN')
     return {
       taskId: task.taskId,
       primary: 'RECONCILIATION_PENDING',
       outsideTracked: false,
       blockReason: null,
-      overlays: [...overlays, 'RECONCILIATION_DRILLDOWN'],
+      overlays,
       ruleIndex: 4,
     }
   }
@@ -601,6 +616,67 @@ export function computeRollupV3(input: RollupInput): RollupV3Result {
 
 // ---- priority / capacity pure calc (AC-PRIORITY-01/02; not scheduler) ----
 
+/** Stage-1/Stage-2 closure roles that count toward all/priority capacity. */
+export const PRIORITY_CLOSURE_ROLES = new Set([
+  // Stage 1
+  'INVENTORY',
+  'TASK_AUTHOR',
+  'FC_LINKER',
+  'MAPPING_VERIFY',
+  'REPAIR_FILL',
+  'MERGE_PUBLISH',
+  // Stage 2
+  'ANALYZE',
+  'PRODUCT',
+  'VERIFY',
+  'COMMIT_INTEGRATE',
+  'STAGING_PROOF',
+  'G5',
+  'G5_CLOSURE',
+  // Common agent aliases mapped in isAllowedClosureRole
+  'IMPLEMENTER',
+  'VERIFIER',
+  'ANALYZER',
+])
+
+/** Roles never counted as schedulable closure capacity. */
+export const PRIORITY_EXCLUDED_ROLES = new Set([
+  'ROOT',
+  'IDLE',
+  'IDLE_CONTROLLER',
+  'CONTROLLER',
+  'HEALTH',
+  'HEALTH_ONLY',
+  'FILLER',
+  'NON_RUNNABLE',
+  'DUPLICATE',
+  'EXPIRED',
+  'FENCED',
+])
+
+export function normalizeClosureRole(role: string | null | undefined): string {
+  return String(role ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_')
+}
+
+/**
+ * Fail-closed closure-role gate for all-role / priority capacity.
+ * Missing role → allowed (pure unit packets / reserved plan rows without role).
+ * Explicit excluded roles → false. Known Stage1/2 (+aliases) → true.
+ * Unknown non-empty role → false (do not invent capacity for arbitrary labels).
+ */
+export function isAllowedClosureRole(role: string | null | undefined): boolean {
+  if (role == null || String(role).trim() === '') return true
+  const n = normalizeClosureRole(role)
+  if (PRIORITY_EXCLUDED_ROLES.has(n)) return false
+  if (PRIORITY_CLOSURE_ROLES.has(n)) return true
+  // Partial aliases
+  if (n.includes('IDLE') || n.includes('HEALTH') || n === 'ROOT') return false
+  return false
+}
+
 export interface PriorityPacket {
   packetId: string
   taskId: string
@@ -616,6 +692,8 @@ export interface PriorityPacket {
   isPriorityPortfolio: boolean
   /** Filler/root/idle/health-only/non-runnable/expired → excluded. */
   excluded?: boolean
+  /** Optional Stage1/Stage2 role for closure-role filter. */
+  closureRole?: string | null
 }
 
 export interface PriorityAllocationInput {
@@ -641,15 +719,18 @@ export interface PriorityAllocationInput {
 export function computePriorityAllocation(
   input: PriorityAllocationInput,
 ): PriorityAllocationResult {
-  const membershipTaskIds: Array<string> = []
+  // DISTINCT membership by taskId (AC-PRIORITY-01) — never count duplicate rows.
+  const membershipSet = new Set<string>()
   for (const t of input.tasks) {
     if (!t.priorityMembership) continue
     const ev = evaluateClassification(t.classification, input.pin, { now: input.now })
     if (ev.contributesToProductReadiness) {
-      membershipTaskIds.push(t.taskId)
+      membershipSet.add(t.taskId)
     }
   }
-  membershipTaskIds.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  const membershipTaskIds = [...membershipSet].sort((a, b) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  )
 
   const schedulable = input.packets.filter(
     (p) =>
@@ -660,32 +741,41 @@ export function computePriorityAllocation(
       p.currentHash &&
       p.dependencyReady &&
       p.collisionSafe &&
-      p.advancesOpenClosureGate,
+      p.advancesOpenClosureGate &&
+      isAllowedClosureRole(p.closureRole),
   )
 
   // DISTINCT packet IDs
   const allIds = new Set(schedulable.map((p) => p.packetId))
+  // Priority capacity only for packets whose task is in DISTINCT membership
+  // (or explicitly flagged isPriorityPortfolio when membership already empty
+  // for pure unit fixtures). Prefer membership-grounded priority when membership
+  // is non-empty so plan-only tags cannot inflate priority under EMPTY frontier.
   const priorityIds = new Set(
-    schedulable.filter((p) => p.isPriorityPortfolio).map((p) => p.packetId),
+    schedulable
+      .filter((p) =>
+        membershipSet.size > 0
+          ? membershipSet.has(p.taskId) || p.isPriorityPortfolio
+          : p.isPriorityPortfolio,
+      )
+      .map((p) => p.packetId),
   )
+  // When no membership: fail-closed — do not report priority capacity > 0.
   const allClosureCapacity = allIds.size
-  const priorityClosureCapacity = priorityIds.size
+  const priorityClosureCapacity =
+    membershipSet.size === 0 ? 0 : priorityIds.size
 
-  // Genuine runnable priority frontier = membership exists AND at least one
-  // priority-eligible open task without being complete-only.
-  const genuineRunnableFrontier = membershipTaskIds.length > 0 && priorityClosureCapacity > 0
-    ? true
-    : membershipTaskIds.length > 0 && allClosureCapacity === 0
-      ? true // frontier exists but zero capacity
-      : membershipTaskIds.length > 0
+  // Genuine runnable priority frontier = DISTINCT membership exists.
+  // (Zero capacity still counts as frontier-for-N-A ZERO_SCHEDULABLE_CAPACITY.)
+  const genuineRunnableFrontier = membershipTaskIds.length > 0
 
   let priorityCapacityShare: number | null
   let majorityAllocationPass: boolean | null
   let frontierState: PriorityFrontierState
   let reason: string | null
 
-  if (membershipTaskIds.length === 0) {
-    // No genuine priority frontier
+  if (!genuineRunnableFrontier) {
+    // No genuine priority frontier — fail-closed N-A (never majority PASS).
     priorityCapacityShare = null
     majorityAllocationPass = null
     frontierState = input.frontierStateWhenEmpty ?? 'PRIORITY_FRONTIER_EMPTY'
@@ -696,11 +786,6 @@ export function computePriorityAllocation(
     majorityAllocationPass = false
     frontierState = 'PRIORITY_FRONTIER_ACTIVE'
     reason = 'ZERO_SCHEDULABLE_CAPACITY'
-  } else if (!genuineRunnableFrontier && priorityClosureCapacity === 0) {
-    priorityCapacityShare = null
-    majorityAllocationPass = null
-    frontierState = input.frontierStateWhenEmpty ?? 'PRIORITY_FRONTIER_BLOCKED'
-    reason = frontierState
   } else {
     priorityCapacityShare = priorityClosureCapacity / allClosureCapacity
     majorityAllocationPass = priorityCapacityShare > 0.5

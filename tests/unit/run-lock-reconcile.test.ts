@@ -39,12 +39,14 @@ import {
   type RunRegistryDeps,
   type RunRecord,
   type RegisterRunRequest,
+  type RegisterRunCapacity,
+  withTestCapacityInjection,
 } from '#/server/run-registry'
 
 const BOARD = 'mfs-rebuild'
 
-/** OPEN capacity — allows Grok + non-Grok (success-path default). */
-function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
+/** OPEN capacity — allows Grok + non-Grok (success-path default). Family remainings required when dispatchAllowed (M2). */
+function openCapacity(): NonNullable<RegisterRunCapacity> {
   return {
     dispatchMode: 'OPEN',
     dispatchAllowed: true,
@@ -52,10 +54,15 @@ function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
     nonGrokAssignmentAllowed: true,
     grokAssignmentAllowed: true,
     limitingReasons: [],
+    sparkUsableCapacity: 10,
+    solUsableCapacity: 10,
+    otherUsableCapacity: 10,
+    healthyGrokUsableCapacity: 70,
+    failSafeActions: [],
   }
 }
 
-function grokOnlyCapacity(): NonNullable<RegisterRunRequest['capacity']> {
+function grokOnlyCapacity(): NonNullable<RegisterRunCapacity> {
   return {
     dispatchMode: 'GROK_ONLY',
     dispatchAllowed: true,
@@ -63,10 +70,15 @@ function grokOnlyCapacity(): NonNullable<RegisterRunRequest['capacity']> {
     nonGrokAssignmentAllowed: false,
     grokAssignmentAllowed: true,
     limitingReasons: ['GROK_ONLY_RECOVERY'],
+    sparkUsableCapacity: 0,
+    solUsableCapacity: 0,
+    otherUsableCapacity: 0,
+    healthyGrokUsableCapacity: 5,
+    failSafeActions: [],
   }
 }
 
-function blockedCapacity(reason = 'ASSIGNMENT_BLOCKED'): NonNullable<RegisterRunRequest['capacity']> {
+function blockedCapacity(reason = 'ASSIGNMENT_BLOCKED'): NonNullable<RegisterRunCapacity> {
   return {
     dispatchMode: 'BLOCKED',
     dispatchAllowed: false,
@@ -74,10 +86,15 @@ function blockedCapacity(reason = 'ASSIGNMENT_BLOCKED'): NonNullable<RegisterRun
     nonGrokAssignmentAllowed: false,
     grokAssignmentAllowed: false,
     limitingReasons: [reason],
+    sparkUsableCapacity: 0,
+    solUsableCapacity: 0,
+    otherUsableCapacity: 0,
+    healthyGrokUsableCapacity: 0,
+    failSafeActions: [],
   }
 }
 
-function staleZeroCapacity(): NonNullable<RegisterRunRequest['capacity']> {
+function staleZeroCapacity(): NonNullable<RegisterRunCapacity> {
   return {
     dispatchMode: 'BLOCKED',
     dispatchAllowed: false,
@@ -85,6 +102,11 @@ function staleZeroCapacity(): NonNullable<RegisterRunRequest['capacity']> {
     nonGrokAssignmentAllowed: false,
     grokAssignmentAllowed: false,
     limitingReasons: ['ACCOUNT_SYNC_STALE'],
+    sparkUsableCapacity: 0,
+    solUsableCapacity: 0,
+    otherUsableCapacity: 0,
+    healthyGrokUsableCapacity: 0,
+    failSafeActions: [],
   }
 }
 
@@ -1072,15 +1094,13 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
 
     const runId = 'run-missing-cap'
     await expect(
-      registerRun(deps, {
+      registerRun(withTestCapacityInjection(deps, null), {
       canonicalHash: 'canon-run',
       ...baseReq,
         runId,
         model: 'grok-4.5',
         idempotencyKey: 'miss-1',
-        capacity: null,
-        collisionScopeLockIds: ['repo:ex:missing/**'],
-      }),
+        collisionScopeLockIds: ['repo:ex:missing/**']}),
     ).rejects.toMatchObject({
       code: 'AUTHORIZATION_REQUIRED',
       details: expect.objectContaining({
@@ -1142,20 +1162,19 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
       const runId = `run-bad-usable-${c.label}`
       const capacity =
         c.usable === 'MISSING_KEY'
-          ? ({ ...openish } as NonNullable<RegisterRunRequest['capacity']>)
+          ? ({ ...openish } as NonNullable<RegisterRunCapacity>)
           : ({
               ...openish,
               usableCapacity: c.usable as number,
-            } as NonNullable<RegisterRunRequest['capacity']>)
+            } as NonNullable<RegisterRunCapacity>)
 
       await expect(
-        registerRun(h.runDeps, {
-      canonicalHash: 'canon-run',
-      ...baseReq,
+        registerRun(withTestCapacityInjection(h.runDeps, capacity), {
+          canonicalHash: 'canon-run',
+          ...baseReq,
           runId,
           model: 'grok-4.5',
           idempotencyKey: `bad-usable-${c.label}`,
-          capacity,
           collisionScopeLockIds: [`repo:ex:${runId}/**`],
         }),
       ).rejects.toMatchObject({
@@ -1172,15 +1191,13 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
 
     // Zero usable still denied (CAPACITY path, not INVALID)
     await expect(
-      registerRun(h.runDeps, {
+      registerRun(withTestCapacityInjection(h.runDeps, { ...openish, usableCapacity: 0, dispatchAllowed: true }), {
       canonicalHash: 'canon-run',
       ...baseReq,
         runId: 'run-zero-usable',
         model: 'grok-4.5',
         idempotencyKey: 'zero-usable',
-        capacity: { ...openish, usableCapacity: 0, dispatchAllowed: true },
-        collisionScopeLockIds: ['repo:ex:zero-usable/**'],
-      }),
+        collisionScopeLockIds: ['repo:ex:zero-usable/**']}),
     ).rejects.toMatchObject({ code: 'AUTHORIZATION_REQUIRED' })
     await assertZeroMutation(h, 'run-zero-usable')
     await assertSurfaceUnchanged(h, before)
@@ -1209,15 +1226,13 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
       ['not-a-grok-model', 'run-stale-subgrok'],
     ] as const) {
       await expect(
-        registerRun(h.runDeps, {
+        registerRun(withTestCapacityInjection(h.runDeps, staleZeroCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
           runId,
           model,
           idempotencyKey: `stale-${runId}`,
-          capacity: staleZeroCapacity(),
-          collisionScopeLockIds: [`repo:ex:${runId}/**`],
-        }),
+          collisionScopeLockIds: [`repo:ex:${runId}/**`]}),
       ).rejects.toMatchObject({
         code: 'AUTHORIZATION_REQUIRED',
         details: expect.objectContaining({
@@ -1230,15 +1245,13 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     }
 
     await expect(
-      registerRun(h.runDeps, {
+      registerRun(withTestCapacityInjection(h.runDeps, blockedCapacity('CPU_GTE_90')), {
       canonicalHash: 'canon-run',
       ...baseReq,
         runId: 'run-blocked',
         model: 'grok-4.5',
         idempotencyKey: 'blocked-1',
-        capacity: blockedCapacity('CPU_GTE_90'),
-        collisionScopeLockIds: ['repo:ex:blocked/**'],
-      }),
+        collisionScopeLockIds: ['repo:ex:blocked/**']}),
     ).rejects.toMatchObject({
       code: 'AUTHORIZATION_REQUIRED',
       details: expect.objectContaining({
@@ -1261,15 +1274,13 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     const emptyBefore = await captureMutationSurface(h)
 
     // Success: GROK_ONLY + Grok MUST create run row + HELD collision lock
-    const allowed = await registerRun(h.runDeps, {
+    const allowed = await registerRun(withTestCapacityInjection(h.runDeps, grokOnlyCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-grok-ok',
       model: 'grok-4.5',
       idempotencyKey: 'grok-ok',
-      capacity: grokOnlyCapacity(),
-      collisionScopeLockIds: ['repo:ex:grok-ok/**'],
-    })
+      collisionScopeLockIds: ['repo:ex:grok-ok/**']})
     expect(allowed.state).toBe('STARTING')
     expect(allowed.replayed).toBe(false)
     expect(allowed.fencingToken).toBeTruthy()
@@ -1300,15 +1311,13 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
       ['spark-x', 'run-deny-spark-alias'],
     ] as const) {
       await expect(
-        registerRun(h.runDeps, {
+        registerRun(withTestCapacityInjection(h.runDeps, grokOnlyCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
           runId,
           model,
           idempotencyKey: `deny-${runId}`,
-          capacity: grokOnlyCapacity(),
-          collisionScopeLockIds: [`repo:ex:${runId}/**`],
-        }),
+          collisionScopeLockIds: [`repo:ex:${runId}/**`]}),
       ).rejects.toMatchObject({
         code: 'AUTHORIZATION_REQUIRED',
         details: expect.objectContaining({ dispatchMode: 'GROK_ONLY' }),
@@ -1322,38 +1331,32 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     const h = harness()
     const before = await captureMutationSurface(h)
 
-    const grok = await registerRun(h.runDeps, {
+    const grok = await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-open-grok',
       model: 'grok-4.5',
       idempotencyKey: 'open-g',
-      capacity: openCapacity(),
-      collisionScopeLockIds: ['repo:ex:open-g/**'],
-    })
+      collisionScopeLockIds: ['repo:ex:open-g/**']})
     expect(grok.state).toBe('STARTING')
     expect(grok.fencingToken).toBeTruthy()
 
-    const spark = await registerRun(h.runDeps, {
+    const spark = await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-open-spark',
       model: 'gpt-5.3-codex-spark',
       idempotencyKey: 'open-s',
-      capacity: openCapacity(),
-      collisionScopeLockIds: ['repo:ex:open-s/**'],
-    })
+      collisionScopeLockIds: ['repo:ex:open-s/**']})
     expect(spark.state).toBe('STARTING')
 
-    const sol = await registerRun(h.runDeps, {
+    const sol = await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-open-sol',
       model: 'gpt-5.6-sol',
       idempotencyKey: 'open-sol',
-      capacity: openCapacity(),
-      collisionScopeLockIds: ['repo:ex:open-sol/**'],
-    })
+      collisionScopeLockIds: ['repo:ex:open-sol/**']})
     expect(sol.state).toBe('STARTING')
 
     const afterSuccess = await captureMutationSurface(h)
@@ -1366,24 +1369,63 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     expect(afterSuccess).not.toEqual(before)
 
     // OPEN but nonGrokAssignmentAllowed false → deny spark, full surface freeze
-    const openGrokOnlySlots: NonNullable<RegisterRunRequest['capacity']> = {
+    const openGrokOnlySlots: NonNullable<RegisterRunCapacity> = {
       ...openCapacity(),
       nonGrokAssignmentAllowed: false,
     }
     const beforeDeny = await captureMutationSurface(h)
     await expect(
-      registerRun(h.runDeps, {
+      registerRun(withTestCapacityInjection(h.runDeps, openGrokOnlySlots), {
       canonicalHash: 'canon-run',
       ...baseReq,
         runId: 'run-open-deny-spark',
         model: 'gpt-5.3-codex-spark',
         idempotencyKey: 'open-deny-s',
-        capacity: openGrokOnlySlots,
-        collisionScopeLockIds: ['repo:ex:open-deny-s/**'],
-      }),
+        collisionScopeLockIds: ['repo:ex:open-deny-s/**']}),
     ).rejects.toMatchObject({ code: 'AUTHORIZATION_REQUIRED' })
     await assertZeroMutation(h, 'run-open-deny-spark')
     await assertSurfaceUnchanged(h, beforeDeny)
+
+    // OPEN + nonGrok allowed but SOL-only remaining → SPARK denied (provider-specific)
+    const solOnlyRemaining: NonNullable<RegisterRunCapacity> = {
+      ...openCapacity(),
+      usableCapacity: 8,
+      nonGrokAssignmentAllowed: true,
+      sparkUsableCapacity: 0,
+      solUsableCapacity: 8,
+      otherUsableCapacity: 0,
+      healthyGrokUsableCapacity: 0,
+      grokAssignmentAllowed: false,
+    }
+    const beforeSolOnly = await captureMutationSurface(h)
+    await expect(
+      registerRun(withTestCapacityInjection(h.runDeps, solOnlyRemaining), {
+        canonicalHash: 'canon-run',
+        ...baseReq,
+        runId: 'run-open-deny-spark-sol-only',
+        model: 'gpt-5.3-codex-spark',
+        idempotencyKey: 'open-deny-spark-sol-only',
+        collisionScopeLockIds: ['repo:ex:open-deny-spark-sol-only/**']}),
+    ).rejects.toMatchObject({
+      code: 'AUTHORIZATION_REQUIRED',
+      details: expect.objectContaining({
+        reason: 'SPARK_NO_REMAINING',
+        providerKind: 'SPARK',
+        dispatchMode: 'OPEN',
+      }),
+    })
+    await assertZeroMutation(h, 'run-open-deny-spark-sol-only')
+    await assertSurfaceUnchanged(h, beforeSolOnly)
+
+    // Same capacity still authorizes SOL register
+    const solOk = await registerRun(withTestCapacityInjection(h.runDeps, solOnlyRemaining), {
+      canonicalHash: 'canon-run',
+      ...baseReq,
+      runId: 'run-open-sol-only-ok',
+      model: 'gpt-5.6-sol',
+      idempotencyKey: 'open-sol-only-ok',
+      collisionScopeLockIds: ['repo:ex:open-sol-only-ok/**']})
+    expect(solOk.state).toBe('STARTING')
   })
 
   it('adversarial: capacity denial via getCapacity loader freezes boardRev/locks/audit/runs', async () => {
@@ -1393,15 +1435,13 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
       getCapacity: async () => blockedCapacity('ACCOUNT_SYNC_STALE'),
     }
     // Pre-existing unrelated run (OPEN path) to prove freeze of mixed surface
-    await registerRun(h.runDeps, {
+    await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-preexisting',
       model: 'grok-4.5',
       idempotencyKey: 'pre-exist',
-      capacity: openCapacity(),
-      collisionScopeLockIds: ['repo:ex:pre/**'],
-    })
+      collisionScopeLockIds: ['repo:ex:pre/**']})
     const before = await captureMutationSurface(h)
     expect(before.runs).toHaveLength(1)
     expect(before.boardRev).toBe(0)
@@ -1427,19 +1467,175 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
     await assertSurfaceUnchanged(h, before)
   })
 
+  it('M2/R3: request-body capacity/inject cannot override getCapacity; only deps test capability injects', async () => {
+    const h = harness()
+    // Forged request fields (if somehow present at runtime) are not on RegisterRunRequest and
+    // are ignored by resolveCapacitySource — getCapacity OPEN wins → register succeeds.
+    const forged = {
+      canonicalHash: 'canon-run',
+      ...baseReq,
+      runId: 'run-m2-strip-caller-cap',
+      model: 'grok-4.5',
+      idempotencyKey: 'm2-strip',
+      capacity: blockedCapacity('SHOULD_BE_IGNORED'),
+      allowTestCapacityInjection: true,
+      collisionScopeLockIds: ['repo:ex:m2-strip/**'],
+    } as RegisterRunRequest & {
+      capacity?: RegisterRunCapacity
+      allowTestCapacityInjection?: boolean
+    }
+    const ok = await registerRun(h.runDeps, forged)
+    expect(ok.state).toBe('STARTING')
+    expect(ok.replayed).toBe(false)
+
+    // Explicit deps capability inject of BLOCKED still denies
+    const before = await captureMutationSurface(h)
+    await expect(
+      registerRun(withTestCapacityInjection(h.runDeps, blockedCapacity('CPU_GTE_90')), {
+        canonicalHash: 'canon-run',
+        ...baseReq,
+        runId: 'run-m2-inject-blocked',
+        model: 'grok-4.5',
+        idempotencyKey: 'm2-inject-blocked',
+        collisionScopeLockIds: ['repo:ex:m2-inject/**'],
+      }),
+    ).rejects.toMatchObject({
+      code: 'AUTHORIZATION_REQUIRED',
+      details: expect.objectContaining({ reason: 'CPU_GTE_90' }),
+    })
+    await assertZeroMutation(h, 'run-m2-inject-blocked')
+    await assertSurfaceUnchanged(h, before)
+  })
+
+  it('M2: dispatchAllowed without family remainings fails closed (FAMILY_REMAINING_REQUIRED)', async () => {
+    const h = harness()
+    const before = await captureMutationSurface(h)
+    const partialNoFamily: NonNullable<RegisterRunCapacity> = {
+      dispatchMode: 'OPEN',
+      dispatchAllowed: true,
+      usableCapacity: 50,
+      nonGrokAssignmentAllowed: true,
+      grokAssignmentAllowed: true,
+      limitingReasons: [],
+      // family fields intentionally omitted
+    }
+    await expect(
+      registerRun(withTestCapacityInjection(h.runDeps, partialNoFamily), {
+        canonicalHash: 'canon-run',
+        ...baseReq,
+        runId: 'run-m2-no-family',
+        model: 'gpt-5.3-codex-spark',
+        idempotencyKey: 'm2-no-family',
+        collisionScopeLockIds: ['repo:ex:m2-no-family/**']}),
+    ).rejects.toMatchObject({
+      code: 'AUTHORIZATION_REQUIRED',
+      details: expect.objectContaining({ reason: 'FAMILY_REMAINING_REQUIRED' }),
+    })
+    await assertZeroMutation(h, 'run-m2-no-family')
+    await assertSurfaceUnchanged(h, before)
+  })
+
+  it('M4: failSafe STOP_NEW_DISPATCH / STOP_LIMIT_ASSIGNMENT honor at register boundary', async () => {
+    const h = harness()
+    const before = await captureMutationSurface(h)
+
+    const withStopDispatch: NonNullable<RegisterRunCapacity> = {
+      ...openCapacity(),
+      failSafeActions: [
+        { action: 'STOP_NEW_DISPATCH', reason: 'CPU_GTE_90', failClosed: true },
+        {
+          action: 'BOUNDED_DRAIN_REDUCE',
+          reason: 'CPU_GTE_90',
+          maxReduceSlots: 5,
+          targetLiveSlots: 10,
+          failClosed: true,
+        },
+      ],
+    }
+    await expect(
+      registerRun(withTestCapacityInjection(h.runDeps, withStopDispatch), {
+        canonicalHash: 'canon-run',
+        ...baseReq,
+        runId: 'run-m4-stop-dispatch',
+        model: 'grok-4.5',
+        idempotencyKey: 'm4-stop',
+        collisionScopeLockIds: ['repo:ex:m4-stop/**']}),
+    ).rejects.toMatchObject({
+      code: 'AUTHORIZATION_REQUIRED',
+      details: expect.objectContaining({
+        reason: 'CPU_GTE_90',
+        action: 'STOP_NEW_DISPATCH',
+      }),
+    })
+    await assertZeroMutation(h, 'run-m4-stop-dispatch')
+    await assertSurfaceUnchanged(h, before)
+
+    const withStopLimit: NonNullable<RegisterRunCapacity> = {
+      ...openCapacity(),
+      failSafeActions: [
+        {
+          action: 'STOP_LIMIT_ASSIGNMENT',
+          reason: 'LIMIT',
+          maskedAccountId: 'acct-lim-1',
+          failClosed: true,
+        },
+        {
+          action: 'PRESERVE_REQUEUE_UNFINISHED',
+          reason: 'LIMIT',
+          maskedAccountId: 'acct-lim-1',
+          failClosed: true,
+        },
+        {
+          action: 'ROTATE_LIMIT_ACCOUNT',
+          reason: 'LIMIT',
+          maskedAccountId: 'acct-lim-1',
+          failClosed: true,
+        },
+      ],
+    }
+    await expect(
+      registerRun(withTestCapacityInjection(h.runDeps, withStopLimit), {
+        canonicalHash: 'canon-run',
+        ...baseReq,
+        runId: 'run-m4-stop-limit',
+        model: 'grok-4.5',
+        maskedAccountRef: 'acct-lim-1',
+        idempotencyKey: 'm4-stop-limit',
+        collisionScopeLockIds: ['repo:ex:m4-limit/**']}),
+    ).rejects.toMatchObject({
+      code: 'AUTHORIZATION_REQUIRED',
+      details: expect.objectContaining({
+        reason: 'FAIL_SAFE_STOP_LIMIT',
+        action: 'STOP_LIMIT_ASSIGNMENT',
+        maskedAccountId: 'acct-lim-1',
+      }),
+    })
+    await assertZeroMutation(h, 'run-m4-stop-limit')
+    await assertSurfaceUnchanged(h, before)
+
+    // Different masked account still allowed under same failSafe LIMIT set
+    const otherOk = await registerRun(withTestCapacityInjection(h.runDeps, withStopLimit), {
+      canonicalHash: 'canon-run',
+      ...baseReq,
+      runId: 'run-m4-other-acct',
+      model: 'grok-4.5',
+      maskedAccountRef: 'acct-ok-other',
+      idempotencyKey: 'm4-other',
+      collisionScopeLockIds: ['repo:ex:m4-other/**']})
+    expect(otherOk.state).toBe('STARTING')
+  })
+
   it('capacity denial happens before board lock / claim / collision / audit (deep snapshot)', async () => {
     const h = harness()
     const before = await captureMutationSurface(h)
     await expect(
-      registerRun(h.runDeps, {
+      registerRun(withTestCapacityInjection(h.runDeps, blockedCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
         runId: 'run-pre-lock',
         model: 'gpt-5.3-codex-spark',
         idempotencyKey: 'pre-lock',
-        capacity: blockedCapacity(),
-        collisionScopeLockIds: ['repo:ex:pre-lock/**'],
-      }),
+        collisionScopeLockIds: ['repo:ex:pre-lock/**']}),
     ).rejects.toMatchObject({ code: 'AUTHORIZATION_REQUIRED' })
     // Full surface: not only counts
     await assertSurfaceUnchanged(h, before)
@@ -1453,27 +1649,23 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
   it('adversarial: successful register then replay/fence/collision/terminal semantics still hold under capacity', async () => {
     const h = harness()
     // Idempotent replay under OPEN capacity
-    const reg = await registerRun(h.runDeps, {
+    const reg = await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-sem-1',
       model: 'grok-4.5',
       idempotencyKey: 'sem-reg-1',
-      capacity: openCapacity(),
       collisionScopeLockIds: ['repo:ex:sem-1/**'],
-      initialState: 'RUNNING',
-    })
+      initialState: 'RUNNING'})
     expect(reg.fencingToken).toBeTruthy()
-    const replay = await registerRun(h.runDeps, {
+    const replay = await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
       runId: 'run-sem-1',
       model: 'grok-4.5',
       idempotencyKey: 'sem-reg-1',
-      capacity: openCapacity(),
       collisionScopeLockIds: ['repo:ex:sem-1/**'],
-      initialState: 'RUNNING',
-    })
+      initialState: 'RUNNING'})
     expect(replay.replayed).toBe(true)
     expect(replay.fencingToken).toBe(reg.fencingToken)
 
@@ -1494,16 +1686,14 @@ describe('C2A2 provider capacity gate — always-on, zero mutation on denial', (
 
     // Collision: second run same scope rejected
     await expect(
-      registerRun(h.runDeps, {
+      registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       canonicalHash: 'canon-run',
       ...baseReq,
         runId: 'run-sem-collide',
         model: 'gpt-5.3-codex-spark',
         agentId: 'agent-other',
         idempotencyKey: 'sem-collide',
-        capacity: openCapacity(),
-        collisionScopeLockIds: ['repo:ex:sem-1/**'],
-      }),
+        collisionScopeLockIds: ['repo:ex:sem-1/**']}),
     ).rejects.toMatchObject({ code: 'CLAIM_COLLISION' })
     await assertZeroMutation(h, 'run-sem-collide')
 
@@ -1539,7 +1729,7 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
     expect(board0.boardRev).toBe(0)
 
     await expect(
-      registerRun(h.runDeps, {
+      registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
         boardId: BOARD,
         runId: 'run-env-miss',
         taskId: 'T-E',
@@ -1549,13 +1739,11 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
         expectedEntityRev: 0,
         expectedBoardRev: 0,
         idempotencyKey: 'env-miss',
-        canonicalHash: '',
-        capacity: openCapacity(),
-      }),
+        canonicalHash: ''}),
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
 
     await expect(
-      registerRun(h.runDeps, {
+      registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
         boardId: BOARD,
         runId: 'run-env-pin',
         taskId: 'T-E',
@@ -1566,13 +1754,11 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
         currentPinHash: 'canon-B',
         expectedEntityRev: 0,
         expectedBoardRev: 0,
-        idempotencyKey: 'env-pin',
-        capacity: openCapacity(),
-      }),
+        idempotencyKey: 'env-pin'}),
     ).rejects.toMatchObject({ code: 'STALE_REVISION' })
 
     await expect(
-      registerRun(h.runDeps, {
+      registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
         boardId: BOARD,
         runId: 'run-env-board',
         taskId: 'T-E',
@@ -1582,12 +1768,10 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
         canonicalHash: 'canon-A',
         expectedEntityRev: 0,
         expectedBoardRev: 99,
-        idempotencyKey: 'env-board',
-        capacity: openCapacity(),
-      }),
+        idempotencyKey: 'env-board'}),
     ).rejects.toMatchObject({ code: 'STALE_REVISION' })
 
-    const reg = await registerRun(h.runDeps, {
+    const reg = await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       boardId: BOARD,
       runId: 'run-env-ok',
       taskId: 'T-E',
@@ -1599,9 +1783,7 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
       expectedEntityRev: 0,
       expectedBoardRev: 0,
       idempotencyKey: 'env-ok',
-      initialState: 'RUNNING',
-      capacity: openCapacity(),
-    })
+      initialState: 'RUNNING'})
     expect(reg.replayed).toBe(false)
     expect(reg.entityRev).toBe(1)
     expect(reg.boardRev).toBe(0)
@@ -1609,7 +1791,7 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
     expect(afterReg.boardRev).toBe(0) // register never bumps board
 
     // Exact replay must include the same material envelope (currentPinHash is hashed).
-    const replay = await registerRun(h.runDeps, {
+    const replay = await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       boardId: BOARD,
       runId: 'run-env-ok',
       taskId: 'T-E',
@@ -1621,15 +1803,13 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
       expectedEntityRev: 0,
       expectedBoardRev: 0,
       idempotencyKey: 'env-ok',
-      initialState: 'RUNNING',
-      capacity: openCapacity(),
-    })
+      initialState: 'RUNNING'})
     expect(replay.replayed).toBe(true)
     expect((await h.atomic.getBoardState(BOARD)).boardRev).toBe(0)
 
     // Same key, different body → IDEMPOTENCY_CONFLICT
     await expect(
-      registerRun(h.runDeps, {
+      registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
         boardId: BOARD,
         runId: 'run-env-other',
         taskId: 'T-OTHER',
@@ -1640,15 +1820,13 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
         expectedEntityRev: 0,
         expectedBoardRev: 0,
         idempotencyKey: 'env-ok',
-        initialState: 'RUNNING',
-        capacity: openCapacity(),
-      }),
+        initialState: 'RUNNING'}),
     ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
   })
 
   it('heartbeat: idempotency required; 24h key replay; entity/board CAS; pin mismatch; no board bump', async () => {
     const h = harness()
-    const reg = await registerRun(h.runDeps, {
+    const reg = await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       boardId: BOARD,
       runId: 'run-hb-env',
       taskId: 'T-HB-E',
@@ -1659,9 +1837,7 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
       expectedEntityRev: 0,
       expectedBoardRev: 0,
       idempotencyKey: 'reg-hb-env',
-      initialState: 'RUNNING',
-      capacity: openCapacity(),
-    })
+      initialState: 'RUNNING'})
 
     await expect(
       heartbeatRun(h.runDeps, {
@@ -1772,7 +1948,7 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
 
   it('reconcile dry/apply: expectedBoardRev required; dry no board bump; apply one bump; same-hash re-apply no second bump', async () => {
     const h = harness()
-    await registerRun(h.runDeps, {
+    await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       boardId: BOARD,
       runId: 'run-rec-env',
       taskId: 'T-REC-E',
@@ -1783,9 +1959,7 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
       expectedEntityRev: 0,
       expectedBoardRev: 0,
       idempotencyKey: 'reg-rec-env',
-      initialState: 'RUNNING',
-      capacity: openCapacity(),
-    })
+      initialState: 'RUNNING'})
     h.clock.advance(60_000 + 30_000 + 1)
 
     const leader = await claimReconcilerLeadership(h.recDeps, {
@@ -1963,7 +2137,7 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
 
     // --- dry-run path: exact replay no board bump; same-key timeBudgetMs change => conflict ---
     const h = harness()
-    await registerRun(h.runDeps, {
+    await registerRun(withTestCapacityInjection(h.runDeps, openCapacity()), {
       boardId: BOARD,
       runId: 'run-dry-hash',
       taskId: 'T-DRY-HASH',
@@ -1974,9 +2148,7 @@ describe('Full envelope CAS/replay/conflict — register/heartbeat/reconcile/int
       expectedEntityRev: 0,
       expectedBoardRev: 0,
       idempotencyKey: 'reg-dry-hash',
-      initialState: 'RUNNING',
-      capacity: openCapacity(),
-    })
+      initialState: 'RUNNING'})
     h.clock.advance(60_000 + 30_000 + 1)
 
     const leader = await claimReconcilerLeadership(h.recDeps, {
@@ -2664,5 +2836,215 @@ describe('reconcile_apply entity CAS behavioral matrix', () => {
         idempotencyKey: 'apply-cas-pin-miss',
       }),
     ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+  })
+})
+
+describe('RELEASE_LOCKS reconciler action (AC-LOCK-02 path)', () => {
+  it('classify emits RELEASE_LOCKS for terminal run with residual collision scopes', () => {
+    const now = Date.parse('2026-07-13T12:00:00.000Z')
+    const rec: RunRecord = {
+      boardId: BOARD,
+      runId: 'run-term-locks',
+      state: 'SUCCEEDED',
+      planId: null,
+      planItemRank: null,
+      taskId: 'T-TERM',
+      targetGate: 'FUNCTIONAL',
+      role: 'PRODUCT',
+      agentId: 'agent-t',
+      model: 'grok-4.5',
+      effort: 'high',
+      maskedAccountRef: null,
+      canonicalHash: 'canon-t',
+      collisionScopeLockIds: ['repo:ex:term/**'],
+      fencingToken: 'fence-term',
+      fencingVersion: 1,
+      registeredAtMs: now - 60_000,
+      heartbeatAtMs: now - 30_000,
+      leaseExpiresAtMs: null,
+      materialProgressAtMs: null,
+      heartbeatSequence: 2,
+      expectedEntityRev: 2,
+      expectedBoardRev: 0,
+      entityRev: 2,
+      boardRev: 0,
+      stalled: false,
+      history: [],
+      lastHeartbeatResponse: null,
+      controllerRunId: null,
+      parentRunId: null,
+      idempotencyKey: null,
+    }
+    const withLocks = classifyRunForReconcile(rec, now, true)
+    expect(withLocks.action).toBe('RELEASE_LOCKS')
+    expect(withLocks.classification).toBe('TERMINAL')
+    expect(withLocks.reason).toBe('terminal_held_locks_release')
+    expect(withLocks.afterState).toBe('SUCCEEDED')
+
+    const cleaned = classifyRunForReconcile({ ...rec, collisionScopeLockIds: [] }, now, true)
+    expect(cleaned.action).toBe('PRESERVE_TERMINAL')
+  })
+
+  it('apply RELEASE_LOCKS fence-releases HELD locks, clears scopes, history + material audit', async () => {
+    const h = harness()
+    const scope = 'repo:ex:release-path/**'
+    const reg = await registerRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-rel',
+      taskId: 'T-REL',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-rel',
+      model: 'grok-4.5',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-rel',
+      initialState: 'RUNNING',
+      canonicalHash: 'canon-rel',
+      collisionScopeLockIds: [scope],
+    })
+    expect(reg.fencingToken).toBeTruthy()
+
+    // Force terminal while leaving collision scopes + HELD lock (simulates failed/partial cleanup)
+    const live = await h.runs.get(BOARD, 'run-rel')
+    expect(live).toBeTruthy()
+    await h.runs.put({
+      ...live!,
+      state: 'SUCCEEDED',
+      leaseExpiresAtMs: null,
+      entityRev: live!.entityRev + 1,
+      history: [
+        ...live!.history,
+        {
+          atMs: h.clock.nowMs(),
+          atISO: h.clock.nowISO(),
+          fromState: live!.state,
+          toState: 'SUCCEEDED',
+          reason: 'forced_terminal_for_test',
+          actorId: 'agent-rel',
+        },
+      ],
+    })
+
+    const heldBefore = h.locks.snapshot().collision.filter((l) => l.runId === 'run-rel' && l.state === 'HELD')
+    expect(heldBefore.length).toBeGreaterThanOrEqual(1)
+
+    const leader = await claimReconcilerLeadership(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-rel',
+    })
+    const boardRev = (await h.atomic.getBoardState(BOARD)).boardRev
+    const dry = await dryRunReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-rel',
+      fencingToken: leader.fencingToken,
+      expectedBoardRev: boardRev,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-rel',
+      idempotencyKey: 'dry-rel-1',
+    })
+    const releaseItems = dry.items.filter((i) => i.runId === 'run-rel')
+    expect(releaseItems).toHaveLength(1)
+    expect(releaseItems[0]?.action).toBe('RELEASE_LOCKS')
+
+    const apply = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-rel',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      expectedBoardRev: boardRev,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-rel',
+      idempotencyKey: 'apply-rel-1',
+    })
+    expect(apply.applied).toBe(true)
+    expect(apply.appliedCount).toBeGreaterThanOrEqual(1)
+    expect(apply.itemIds).toContain('run-rel')
+
+    const after = await h.runs.get(BOARD, 'run-rel')
+    expect(after?.state).toBe('SUCCEEDED')
+    expect(after?.collisionScopeLockIds).toEqual([])
+    expect(after?.history.some((x) => x.reason.startsWith('reconcile_release_locks:'))).toBe(true)
+
+    const heldAfter = h.locks.snapshot().collision.filter((l) => l.runId === 'run-rel' && l.state === 'HELD')
+    expect(heldAfter).toHaveLength(0)
+    const released = h.locks.snapshot().collision.filter((l) => l.runId === 'run-rel' && l.state === 'RELEASED')
+    expect(released.length).toBeGreaterThanOrEqual(1)
+
+    const audit = h.atomic.auditSnapshot()
+    expect(
+      audit.some(
+        (e) =>
+          e.kind === 'LOCK_RELEASED' &&
+          e.subjectId === 'run-rel' &&
+          (e.detail as { via?: string }).via === 'reconciler_RELEASE_LOCKS',
+      ),
+    ).toBe(true)
+
+    // Idempotent re-apply of same dryRunHash
+    const apply2 = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-rel',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      expectedBoardRev: apply.boardRev,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-rel',
+      idempotencyKey: 'apply-rel-2',
+    })
+    expect(apply2.idempotentReplay).toBe(true)
+  })
+
+  it('MARK_STALE apply also releases HELD collision locks for the run', async () => {
+    const h = harness()
+    const reg = await registerRun(h.runDeps, {
+      boardId: BOARD,
+      runId: 'run-stale-lock',
+      taskId: 'T-STALE-L',
+      targetGate: 'FUNCTIONAL',
+      agentId: 'agent-sl',
+      model: 'grok-4.5',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'reg-stale-l',
+      initialState: 'RUNNING',
+      canonicalHash: 'canon-sl',
+      collisionScopeLockIds: ['repo:ex:stale-l/**'],
+    })
+    expect(reg.fencingToken).toBeTruthy()
+
+    h.clock.advance(60_000 + 30_000 + 1)
+    const leader = await claimReconcilerLeadership(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-sl',
+    })
+    const boardRev = (await h.atomic.getBoardState(BOARD)).boardRev
+    const dry = await dryRunReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-sl',
+      fencingToken: leader.fencingToken,
+      expectedBoardRev: boardRev,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-sl',
+      idempotencyKey: 'dry-sl-1',
+    })
+    const item = dry.items.find((i) => i.runId === 'run-stale-lock')
+    expect(item?.action).toBe('MARK_STALE')
+
+    const apply = await applyReconcile(h.recDeps, {
+      boardId: BOARD,
+      leaderId: 'leader-sl',
+      fencingToken: leader.fencingToken,
+      dryRunHash: dry.dryRunHash,
+      expectedBoardRev: boardRev,
+      entityExpectedRev: 0,
+      canonicalHash: 'canon-sl',
+      idempotencyKey: 'apply-sl-1',
+    })
+    expect(apply.applied).toBe(true)
+    const after = await h.runs.get(BOARD, 'run-stale-lock')
+    expect(after?.state).toBe('STALE')
+    expect(after?.collisionScopeLockIds).toEqual([])
+    const held = h.locks.snapshot().collision.filter((l) => l.runId === 'run-stale-lock' && l.state === 'HELD')
+    expect(held).toHaveLength(0)
   })
 })

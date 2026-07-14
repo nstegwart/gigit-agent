@@ -9,10 +9,12 @@ import {
   deriveDurableOwnership,
   deriveFeatureFlowBranch,
   isControlCenterBoard,
+  isRunCollisionSafe,
   mapTaskClassification,
   mapWorkTaskToControlCenterInput,
   rawBoardFromCanonicalProjection,
   resolveControlCenterDefinitionLoad,
+  isControlCenterPinProbeUnreadable,
   workTasksFromCanonicalProjection,
   CONTROL_CENTER_PRIMARY_NAV_IDS,
 } from '#/server/control-center-ui-adapter'
@@ -98,7 +100,8 @@ describe('control-center-ui-adapter', () => {
       taskClass: 'PRODUCT',
       disposition: 'ACTIVE',
       membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
-      membershipProofHash: 'proofhash_cccc',
+      membershipProofHash: 'abcdef0123456789abcdcccc',
+      membershipProductLine: 'sales-rebuild',
       canonicalSnapshotId: PIN.canonicalSnapshotId,
       canonicalHash: PIN.canonicalHash,
       taskHash: PIN.taskHash,
@@ -203,6 +206,9 @@ describe('control-center-ui-adapter', () => {
         grokPerAccount: [],
         grokMajority: false,
         healthyGrokUsableCapacity: 2,
+        sparkUsableCapacity: 0,
+        solUsableCapacity: 0,
+        otherUsableCapacity: 0,
         combinedLive: 0,
         combinedCap: 200,
         floorTarget: 60,
@@ -215,6 +221,7 @@ describe('control-center-ui-adapter', () => {
         nonGrokAssignmentAllowed: true,
         grokAssignmentAllowed: true,
         limitingReasons: [],
+        failSafeActions: [],
         policy: {
           sparkMax: 10,
           solMax: 10,
@@ -225,6 +232,7 @@ describe('control-center-ui-adapter', () => {
           physicalSlotsDisplayOnly: true,
           neverAccountsAll: true,
           neverFiller: true,
+          cpuBoundedDrainMaxReduceSlots: 10,
         },
       },
       entityRev: 1,
@@ -389,6 +397,9 @@ describe('control-center-ui-adapter', () => {
         grokPerAccount: [],
         grokMajority: false,
         healthyGrokUsableCapacity: 0,
+        sparkUsableCapacity: 0,
+        solUsableCapacity: 0,
+        otherUsableCapacity: 0,
         combinedLive: 0,
         combinedCap: 200,
         floorTarget: 60,
@@ -401,6 +412,7 @@ describe('control-center-ui-adapter', () => {
         nonGrokAssignmentAllowed: false,
         grokAssignmentAllowed: false,
         limitingReasons: ['ACCOUNT_SYNC_STALE'],
+        failSafeActions: [],
         policy: {
           sparkMax: 10,
           solMax: 10,
@@ -411,6 +423,7 @@ describe('control-center-ui-adapter', () => {
           physicalSlotsDisplayOnly: true,
           neverAccountsAll: true,
           neverFiller: true,
+          cpuBoundedDrainMaxReduceSlots: 10,
         },
       },
       entityRev: 2,
@@ -683,6 +696,9 @@ describe('control-center-ui-adapter', () => {
           grokPerAccount: [],
           grokMajority: false,
           healthyGrokUsableCapacity: 0,
+          sparkUsableCapacity: 0,
+          solUsableCapacity: 0,
+          otherUsableCapacity: 0,
           combinedLive: 0,
           combinedCap: 200,
           floorTarget: 60,
@@ -695,6 +711,7 @@ describe('control-center-ui-adapter', () => {
           nonGrokAssignmentAllowed: false,
           grokAssignmentAllowed: false,
           limitingReasons: [],
+          failSafeActions: [],
           policy: {
             sparkMax: 10,
             solMax: 10,
@@ -705,6 +722,7 @@ describe('control-center-ui-adapter', () => {
             physicalSlotsDisplayOnly: true,
             neverAccountsAll: true,
             neverFiller: true,
+            cpuBoundedDrainMaxReduceSlots: 10,
           },
         },
         entityRev: 1,
@@ -786,6 +804,45 @@ function bareRunRecord(
 
 describe('control-center-ui-adapter durable ownership', () => {
   const nowMs = Date.parse('2026-07-13T12:00:00.000Z')
+
+  it('SEEDED_ONGOING-shaped durable run → VALID_CURRENT + RUNNING ownership', () => {
+    // Mirrors qa seed buildSeededOngoingDurableRunRecord (task-ongoing-1 / run-synth-ongoing).
+    const seeded = bareRunRecord({
+      runId: 'run-synth-ongoing',
+      taskId: 'task-ongoing-1',
+      agentId: 'run-synth-ongoing',
+      state: 'RUNNING',
+      role: 'Worker',
+      model: 'grok-4.5',
+      effort: 'high',
+      targetGate: 'PROD_READY',
+      maskedAccountRef: 'acc_synth_r2d_001',
+      fencingToken: 'fence_synth_run-synth-ongoing',
+      fencingVersion: 1,
+      registeredAtMs: nowMs,
+      heartbeatAtMs: nowMs,
+      materialProgressAtMs: nowMs,
+      leaseExpiresAtMs: nowMs + 30 * 60 * 1000,
+      stalled: false,
+    })
+    const claim = deriveClaimStateFromRunRecord(seeded, nowMs, {
+      taskId: 'task-ongoing-1',
+      lifecycleStage: 'IMPL_IN_PROGRESS',
+      productStageMode: 'STAGE_2',
+    })
+    expect(claim.claimState).toBe('VALID_CURRENT')
+    expect(claim.runLiveness).toBe('RUNNING')
+    const own = deriveDurableOwnership([seeded], nowMs, [
+      {
+        taskId: 'task-ongoing-1',
+        lifecycleStage: 'IMPL_IN_PROGRESS',
+        productStageMode: 'STAGE_2',
+      },
+    ])
+    expect(own.byTaskId.get('task-ongoing-1')?.claimState).toBe('VALID_CURRENT')
+    expect(own.byTaskId.get('task-ongoing-1')?.runLiveness).toBe('RUNNING')
+    expect(own.primaryOwnership.some((p) => p.taskId === 'task-ongoing-1')).toBe(true)
+  })
 
   it('deriveClaimStateFromRunRecord: VALID_CURRENT / EXPIRED / ORPHAN / FENCED / BEYOND_STAGE', () => {
     const live = bareRunRecord({
@@ -917,12 +974,15 @@ describe('control-center-ui-adapter durable ownership', () => {
       lifecycleRev: 0,
       issuedAt: '2026-07-13T00:00:00.000Z',
       membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
-      membershipProofHash: 'proofhash_membership_1',
+      membershipProofHash: 'abcdef0123456789abcdef99',
+      membershipProductLine: 'sales-rebuild',
     }
 
+    // R2: membership from project identity allowlist, not receipt product-line self-assert
     const classified = bareTask('T-own', {
       claimState: 'STALE',
       lifecycleStage: 'MAPPED',
+      projectId: 'sales-rebuild',
     }) as WorkTask & {
       classification: {
         taskClass: 'PRODUCT'
@@ -1022,6 +1082,9 @@ describe('control-center-ui-adapter durable ownership', () => {
           grokPerAccount: [],
           grokMajority: false,
           healthyGrokUsableCapacity: 1,
+          sparkUsableCapacity: 0,
+          solUsableCapacity: 0,
+          otherUsableCapacity: 0,
           combinedLive: 0,
           combinedCap: 200,
           floorTarget: 60,
@@ -1034,6 +1097,7 @@ describe('control-center-ui-adapter durable ownership', () => {
           nonGrokAssignmentAllowed: true,
           grokAssignmentAllowed: true,
           limitingReasons: [],
+          failSafeActions: [],
           policy: {
             sparkMax: 10,
             solMax: 10,
@@ -1044,6 +1108,7 @@ describe('control-center-ui-adapter durable ownership', () => {
             physicalSlotsDisplayOnly: true,
             neverAccountsAll: true,
             neverFiller: true,
+            cpuBoundedDrainMaxReduceSlots: 10,
           },
         },
         entityRev: 1,
@@ -1173,7 +1238,7 @@ describe('control-center-ui-adapter durable ownership', () => {
             rank: 1,
             taskId: 'T1',
             targetGate: 'G',
-            role: 'r',
+            role: 'PRODUCT',
             selectionReason: 'x',
             priorityPortfolioId: 'SALES_WEB_RELATED_BACKEND',
             dependencyProof: { satisfied: true },
@@ -1202,6 +1267,240 @@ describe('control-center-ui-adapter durable ownership', () => {
     expect(packets.some((p) => p.packetId.startsWith('plan:'))).toBe(true)
     expect(packets.some((p) => p.packetId.startsWith('run:'))).toBe(true)
     expect(packets.every((p) => p.isPriorityPortfolio)).toBe(true)
+  })
+
+  it('isPriorityPortfolio is membership-only (plan tag alone does not inflate)', () => {
+    const packets = buildPriorityPacketsFromDurable({
+      plan: {
+        boardId: 'mfs-rebuild',
+        planId: 'p2',
+        planVersion: 1,
+        planHash: 'h',
+        canonicalSnapshotId: 's',
+        canonicalHash: 'ch',
+        boardRevAtPublish: 1,
+        issuedAt: PIN.generatedAt,
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        issuedAtMs: nowMs,
+        expiresAtMs: nowMs + 1e12,
+        stage: null,
+        items: [
+          {
+            rank: 1,
+            taskId: 'OUTSIDER',
+            targetGate: 'G',
+            role: 'PRODUCT',
+            selectionReason: 'x',
+            priorityPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+            dependencyProof: { satisfied: true },
+            expectedEntityRev: 0,
+            expectedBoardRev: 1,
+          },
+        ],
+        status: 'ACTIVE',
+        generatedAt: PIN.generatedAt,
+        generatedAtMs: nowMs,
+        supersededByPlanId: null,
+        entityRev: 1,
+      },
+      runs: [],
+      membershipTaskIds: new Set(), // empty membership
+      pinCanonicalHash: 'ch',
+      nowMs,
+    })
+    expect(packets).toHaveLength(1)
+    expect(packets[0]!.isPriorityPortfolio).toBe(false)
+  })
+
+  it('collisionSafe fails when run has scopes without fencing token', () => {
+    expect(isRunCollisionSafe({ collisionScopeLockIds: [], fencingToken: null })).toBe(true)
+    expect(
+      isRunCollisionSafe({ collisionScopeLockIds: ['repo:x'], fencingToken: 'fence' }),
+    ).toBe(true)
+    expect(
+      isRunCollisionSafe({ collisionScopeLockIds: ['repo:x'], fencingToken: null }),
+    ).toBe(false)
+
+    const packets = buildPriorityPacketsFromDurable({
+      plan: null,
+      runs: [
+        bareRunRecord({
+          runId: 'unsafe',
+          taskId: 'T1',
+          agentId: 'a',
+          state: 'RUNNING',
+          collisionScopeLockIds: ['repo:x'],
+          fencingToken: null,
+        }),
+      ],
+      membershipTaskIds: new Set(['T1']),
+      pinCanonicalHash: 'ch',
+      nowMs,
+    })
+    expect(packets[0]!.collisionSafe).toBe(false)
+  })
+
+  it('priorityMembership rejects product-line + hex alone; requires pin-bound allowlist (R2)', () => {
+    const weakReceipt: ClassificationReceipt = {
+      receiptId: 'r-weak',
+      receiptHash: 'abcdef0123456789abcdef01',
+      taskId: 'T-weak',
+      taskClass: 'PRODUCT',
+      disposition: 'ACTIVE',
+      membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+      membershipProofHash: 'not-hex-proof',
+      canonicalSnapshotId: PIN.canonicalSnapshotId,
+      canonicalHash: PIN.canonicalHash,
+      taskHash: PIN.taskHash,
+      boardRev: PIN.boardRev,
+      lifecycleRev: PIN.lifecycleRev,
+      issuedAt: '2026-07-13T00:00:00.000Z',
+    }
+    const t = bareTask('T-weak', {}) as WorkTask & {
+      classification: {
+        taskClass: 'PRODUCT'
+        disposition: 'ACTIVE'
+        receipt: ClassificationReceipt
+      }
+    }
+    t.classification = {
+      taskClass: 'PRODUCT',
+      disposition: 'ACTIVE',
+      receipt: weakReceipt,
+    }
+    const weak = mapWorkTaskToControlCenterInput(t, PIN)
+    expect(weak.priorityMembership).toBe(false)
+
+    // Self-asserted product-line + valid hex without allowlist → still false (R2)
+    t.classification = {
+      taskClass: 'PRODUCT',
+      disposition: 'ACTIVE',
+      receipt: {
+        ...weakReceipt,
+        membershipProofHash: 'abcdef0123456789abcdef99',
+        membershipProductLine: 'sales-rebuild',
+      },
+    }
+    expect(mapWorkTaskToControlCenterInput(t, PIN).priorityMembership).toBe(false)
+
+    // Pin-bound direct membership allowlist → true
+    const strong = mapWorkTaskToControlCenterInput(t, PIN, {
+      directMembershipAllowlist: {
+        canonicalSnapshotId: PIN.canonicalSnapshotId,
+        canonicalHash: PIN.canonicalHash,
+        taskHash: PIN.taskHash,
+        boardRev: PIN.boardRev,
+        lifecycleRev: PIN.lifecycleRev,
+        byTaskId: new Map([['T-weak', 'sales-rebuild']]),
+      },
+    })
+    expect(strong.priorityMembership).toBe(true)
+  })
+
+  it('backend priorityMembership rejects satisfied:true without graph-validated refs (M1)', () => {
+    const baseReceipt: ClassificationReceipt = {
+      receiptId: 'r-be',
+      receiptHash: 'abcdef0123456789abcdef01',
+      taskId: 'T-backend',
+      taskClass: 'PRODUCT',
+      disposition: 'ACTIVE',
+      membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+      membershipProofHash: 'abcdef0123456789abcdef99',
+      membershipProductLine: 'backend',
+      membershipDirectDependencyProof: {
+        satisfied: true,
+        targetOutcome: 'sales-rebuild',
+      },
+      canonicalSnapshotId: PIN.canonicalSnapshotId,
+      canonicalHash: PIN.canonicalHash,
+      taskHash: PIN.taskHash,
+      boardRev: PIN.boardRev,
+      lifecycleRev: PIN.lifecycleRev,
+      issuedAt: '2026-07-13T00:00:00.000Z',
+    }
+    const t = bareTask('T-backend', { dependencies: ['SALES-1'] }) as WorkTask & {
+      classification: {
+        taskClass: 'PRODUCT'
+        disposition: 'ACTIVE'
+        receipt: ClassificationReceipt
+      }
+    }
+    t.classification = {
+      taskClass: 'PRODUCT',
+      disposition: 'ACTIVE',
+      receipt: baseReceipt,
+    }
+    // No refs → false even with task.dependencies present
+    expect(mapWorkTaskToControlCenterInput(t, PIN).priorityMembership).toBe(false)
+
+    t.classification = {
+      taskClass: 'PRODUCT',
+      disposition: 'ACTIVE',
+      receipt: {
+        ...baseReceipt,
+        membershipDirectDependencyProof: {
+          satisfied: true,
+          targetOutcome: 'sales-rebuild',
+          refs: ['SALES-1'],
+        },
+      },
+    }
+    // Refs match task.dependencies / join but NO outcome map → false (map required)
+    expect(
+      mapWorkTaskToControlCenterInput(t, PIN, {
+        dependencyJoins: [{ fromTaskId: 'T-backend', toTaskId: 'SALES-1' }],
+      }).priorityMembership,
+    ).toBe(false)
+    // Refs + join + pin-bound receipt-valid outcome map → true
+    expect(
+      mapWorkTaskToControlCenterInput(t, PIN, {
+        dependencyJoins: [{ fromTaskId: 'T-backend', toTaskId: 'SALES-1' }],
+        outcomeProductLinesByTaskId: new Map([['SALES-1', 'sales-rebuild']]),
+      }).priorityMembership,
+    ).toBe(true)
+    // Refs claim wrong target not on graph → false
+    t.classification = {
+      taskClass: 'PRODUCT',
+      disposition: 'ACTIVE',
+      receipt: {
+        ...baseReceipt,
+        membershipDirectDependencyProof: {
+          satisfied: true,
+          targetOutcome: 'sales-rebuild',
+          refs: ['NOT-ON-GRAPH'],
+        },
+      },
+    }
+    expect(
+      mapWorkTaskToControlCenterInput(t, PIN, {
+        dependencyJoins: [{ fromTaskId: 'T-backend', toTaskId: 'SALES-1' }],
+        outcomeProductLinesByTaskId: new Map([['SALES-1', 'sales-rebuild']]),
+      }).priorityMembership,
+    ).toBe(false)
+    // Structural ROOT authority alone still does not grant membership via adapter
+    t.classification = {
+      taskClass: 'PRODUCT',
+      disposition: 'ACTIVE',
+      receipt: {
+        ...baseReceipt,
+        membershipDirectDependencyProof: {
+          satisfied: true,
+          targetOutcome: 'sales-rebuild',
+        },
+        membershipRootAuthority: {
+          issuerRole: 'ROOT_ORCHESTRATOR',
+          signature: 'fedcba9876543210fedcba98',
+          coversMembershipProofHash: 'abcdef0123456789abcdef99',
+          canonicalHash: PIN.canonicalHash,
+        },
+      },
+    }
+    expect(
+      mapWorkTaskToControlCenterInput(t, PIN, {
+        dependencyJoins: [{ fromTaskId: 'T-backend', toTaskId: 'SALES-1' }],
+        outcomeProductLinesByTaskId: new Map([['SALES-1', 'sales-rebuild']]),
+      }).priorityMembership,
+    ).toBe(false)
   })
 })
 
@@ -1388,6 +1687,53 @@ describe('canonical definition → control-center aggregation', () => {
       ctx.controlData.imports,
     )
     expect(load).toEqual({ kind: 'legacy', reason: 'PIN_MISSING' })
+  })
+
+  it('PB1: table absent (ER_NO_SUCH_TABLE) → legacy PIN_MISSING, not uncaught throw', async () => {
+    const err = new Error("Table 'disposable.board_revisions' doesn't exist") as Error & {
+      code: string
+      errno: number
+      sqlState: string
+    }
+    err.code = 'ER_NO_SUCH_TABLE'
+    err.errno = 1146
+    err.sqlState = '42S02'
+    expect(isControlCenterPinProbeUnreadable(err)).toBe(true)
+    const imports = {
+      getBoardState: async () => {
+        throw err
+      },
+    } as unknown as Parameters<typeof resolveControlCenterDefinitionLoad>[1]
+    const load = await resolveControlCenterDefinitionLoad('pb1-ui-table-absent', imports, [])
+    expect(load).toEqual({ kind: 'legacy', reason: 'PIN_MISSING' })
+  })
+
+  it('PB1: row absent (null) → legacy PIN_MISSING', async () => {
+    const imports = {
+      getBoardState: async () => null,
+    } as unknown as Parameters<typeof resolveControlCenterDefinitionLoad>[1]
+    const load = await resolveControlCenterDefinitionLoad('pb1-ui-row-absent', imports, [])
+    expect(load).toEqual({ kind: 'legacy', reason: 'PIN_MISSING' })
+  })
+
+  it('PB1: genuine query failure rethrows (not masked as PIN_MISSING)', async () => {
+    const err = new Error('Lock wait timeout exceeded') as Error & {
+      code: string
+      errno: number
+      sqlState: string
+    }
+    err.code = 'ER_LOCK_WAIT_TIMEOUT'
+    err.errno = 1205
+    err.sqlState = 'HY000'
+    expect(isControlCenterPinProbeUnreadable(err)).toBe(false)
+    const imports = {
+      getBoardState: async () => {
+        throw err
+      },
+    } as unknown as Parameters<typeof resolveControlCenterDefinitionLoad>[1]
+    await expect(
+      resolveControlCenterDefinitionLoad('pb1-ui-lock-timeout', imports, []),
+    ).rejects.toMatchObject({ code: 'ER_LOCK_WAIT_TIMEOUT', errno: 1205 })
   })
 
   it('pin-complete aggregation: DISTINCT definition rollup excludes legacy-only + missing class → UNCLASSIFIED', async () => {

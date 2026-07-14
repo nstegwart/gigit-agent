@@ -10,6 +10,9 @@ import {
   assertBearerChannel,
   assertAgentOwnRun,
   assertIntegratorBounds,
+  integratorPathspecMatches,
+  normalizeRepoRelativePath,
+  parseIntegratorBoundPathspec,
   assertMcpToolCatalogIntegrity,
   assertNotOwnerEvidenceImpersonation,
   assertNotRootProductionApproval,
@@ -1509,5 +1512,131 @@ describe('INTEGRATOR missing bindings fail-closed', () => {
     expect(() => assertIntegratorBounds(noPath, { pathspec: 'src/x.ts', checkpointId: 'cp-1' })).toThrow(
       /missing pathspec/,
     )
+  })
+
+  it('denies whitespace-only pathspec bindings and empty-prefix match-all', () => {
+    const whitespaceOnly: Principal = {
+      role: 'INTEGRATOR',
+      actorId: 'int-ws',
+      channel: 'bearer',
+      scopes: defaultScopesForRole('INTEGRATOR'),
+      boards: ['mfs-rebuild'],
+      checkpointId: 'cp-1',
+      pathspecs: ['', '   '],
+    }
+    expect(() =>
+      assertIntegratorBounds(whitespaceOnly, { pathspec: 'src/x.ts', checkpointId: 'cp-1' }),
+    ).toThrow(/missing pathspec/)
+
+    const bareGlob: Principal = {
+      ...whitespaceOnly,
+      pathspecs: ['**'],
+    }
+    // bare ** must not match-all via empty prefix after strip
+    expect(() =>
+      assertIntegratorBounds(bareGlob, { pathspec: 'anywhere/else.ts', checkpointId: 'cp-1' }),
+    ).toThrow(/missing pathspec|pathspec outside|INTEGRATOR_PATH_BOUNDED/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// H1 — path segment boundary + normalize (authz bypass fix)
+// ---------------------------------------------------------------------------
+describe('INTEGRATOR pathspec H1 segment boundary', () => {
+  it('normalizeRepoRelativePath rejects absolute, dot-dot, empty; collapses dots', () => {
+    expect(normalizeRepoRelativePath('src/server/rbac.ts')).toBe('src/server/rbac.ts')
+    expect(normalizeRepoRelativePath('src/./server/./rbac.ts')).toBe('src/server/rbac.ts')
+    expect(normalizeRepoRelativePath('src//server///x.ts')).toBe('src/server/x.ts')
+    expect(normalizeRepoRelativePath('src\\server\\x.ts')).toBe('src/server/x.ts')
+    expect(normalizeRepoRelativePath('../secrets')).toBeNull()
+    expect(normalizeRepoRelativePath('src/../secrets')).toBeNull()
+    expect(normalizeRepoRelativePath('/etc/passwd')).toBeNull()
+    expect(normalizeRepoRelativePath('C:/Windows')).toBeNull()
+    expect(normalizeRepoRelativePath('//unc/share')).toBeNull()
+    expect(normalizeRepoRelativePath('')).toBeNull()
+    expect(normalizeRepoRelativePath('   ')).toBeNull()
+    expect(normalizeRepoRelativePath('a\0b')).toBeNull()
+  })
+
+  it('parseIntegratorBoundPathspec: exact vs prefix; bare ** rejected', () => {
+    expect(parseIntegratorBoundPathspec('src/server')).toEqual({ mode: 'exact', base: 'src/server' })
+    expect(parseIntegratorBoundPathspec('src/server/')).toEqual({
+      mode: 'prefix',
+      base: 'src/server',
+    })
+    expect(parseIntegratorBoundPathspec('src/server/**')).toEqual({
+      mode: 'prefix',
+      base: 'src/server',
+    })
+    expect(parseIntegratorBoundPathspec('src/**')).toEqual({ mode: 'prefix', base: 'src' })
+    expect(parseIntegratorBoundPathspec('**')).toBeNull()
+    expect(parseIntegratorBoundPathspec('/*')).toBeNull()
+    expect(parseIntegratorBoundPathspec('../x/**')).toBeNull()
+    expect(parseIntegratorBoundPathspec('/abs/**')).toBeNull()
+  })
+
+  it('src/server MUST NOT match src/server-evil (prefix over-match H1)', () => {
+    expect(integratorPathspecMatches('src/server-evil/x.ts', 'src/server')).toBe(false)
+    expect(integratorPathspecMatches('src/server-evil/x.ts', 'src/server/**')).toBe(false)
+    expect(integratorPathspecMatches('src/server/rbac.ts', 'src/server')).toBe(false) // exact only
+    expect(integratorPathspecMatches('src/server', 'src/server')).toBe(true)
+    expect(integratorPathspecMatches('src/server/rbac.ts', 'src/server/**')).toBe(true)
+    expect(integratorPathspecMatches('src/server', 'src/server/**')).toBe(true)
+    expect(integratorPathspecMatches('src/client/x.ts', 'src/server/**')).toBe(false)
+  })
+
+  it('assertIntegratorBounds enforces H1 cases', () => {
+    const exactBound: Principal = {
+      role: 'INTEGRATOR',
+      actorId: 'int-h1',
+      channel: 'bearer',
+      scopes: defaultScopesForRole('INTEGRATOR'),
+      boards: ['mfs-rebuild'],
+      checkpointId: 'cp-1',
+      pathspecs: ['src/server'],
+    }
+    expect(() =>
+      assertIntegratorBounds(exactBound, {
+        pathspec: 'src/server-evil/x.ts',
+        checkpointId: 'cp-1',
+      }),
+    ).toThrow(/pathspec outside|INTEGRATOR_PATH_BOUNDED/)
+    expect(() =>
+      assertIntegratorBounds(exactBound, { pathspec: 'src/server', checkpointId: 'cp-1' }),
+    ).not.toThrow()
+    expect(() =>
+      assertIntegratorBounds(exactBound, {
+        pathspec: 'src/server/rbac.ts',
+        checkpointId: 'cp-1',
+      }),
+    ).toThrow(/pathspec outside|INTEGRATOR_PATH_BOUNDED/)
+
+    const treeBound: Principal = {
+      ...exactBound,
+      pathspecs: ['src/server/**'],
+    }
+    expect(() =>
+      assertIntegratorBounds(treeBound, {
+        pathspec: 'src/server/rbac.ts',
+        checkpointId: 'cp-1',
+      }),
+    ).not.toThrow()
+    expect(() =>
+      assertIntegratorBounds(treeBound, {
+        pathspec: 'src/server-evil/x.ts',
+        checkpointId: 'cp-1',
+      }),
+    ).toThrow(/pathspec outside|INTEGRATOR_PATH_BOUNDED/)
+
+    // .. and absolute rejected
+    expect(() =>
+      assertIntegratorBounds(treeBound, {
+        pathspec: 'src/../secrets',
+        checkpointId: 'cp-1',
+      }),
+    ).toThrow(/pathspec outside|INTEGRATOR_PATH_BOUNDED/)
+    expect(() =>
+      assertIntegratorBounds(treeBound, { pathspec: '/etc/passwd', checkpointId: 'cp-1' }),
+    ).toThrow(/pathspec outside|INTEGRATOR_PATH_BOUNDED/)
   })
 })

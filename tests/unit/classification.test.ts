@@ -6,12 +6,15 @@ import type {
   TaskClassificationRecord,
 } from '#/lib/control-plane-types'
 import {
+  buildDirectMembershipAllowlist,
   contributesToProductReadiness,
   evaluateClassification,
+  isPriorityPortfolioMembership,
   isProductDenominatorMember,
   isTaskClass,
   isTaskDisposition,
   isTrackedWork,
+  stripSelfAssertedMembershipFields,
 } from '#/server/classification'
 
 const PIN: PinnedRevisionTuple = {
@@ -291,5 +294,573 @@ describe('classification validity fail-closed matrix', () => {
       PIN,
     )
     expect(ev.reasons).toContain('RECEIPT_TASK_MISMATCH')
+  })
+})
+
+describe('AC-PRIORITY-01 isPriorityPortfolioMembership product-line gate', () => {
+  function directAllow(
+    byTaskId: ReadonlyMap<string, string>,
+    pin: typeof PIN = PIN,
+  ) {
+    return {
+      canonicalSnapshotId: pin.canonicalSnapshotId,
+      canonicalHash: pin.canonicalHash,
+      taskHash: pin.taskHash,
+      boardRev: pin.boardRev,
+      lifecycleRev: pin.lifecycleRev,
+      byTaskId,
+    }
+  }
+
+  it('rejects portfolio-id + truthy non-hex proof alone', () => {
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M1', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: 'proof',
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  it('rejects sales-rebuild self-assert (product-line + hex) without allowlist (R2)', () => {
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M2', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: 'abcdef0123456789abcdef01',
+          membershipProductLine: 'sales-rebuild',
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  it('rejects mfs-web-original-upgrade self-assert without allowlist (R2)', () => {
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M3', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: 'abcdef0123456789abcdef01',
+          membershipProductLine: 'mfs-web-original-upgrade',
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  it('accepts sales-rebuild only with pin-bound direct membership allowlist (R2)', () => {
+    const r = receipt('M2', 'PRODUCT', 'ACTIVE', {
+      // Caller fields optional — allowlist is authority
+      membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+      membershipProofHash: 'deadbeefdeadbeefdeadbeef',
+      membershipProductLine: 'sales-rebuild',
+    })
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        directMembershipAllowlist: directAllow(new Map([['M2', 'sales-rebuild']])),
+      }),
+    ).toBe(true)
+    // Allowlist alone (no self-asserted product line) still grants
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M2b', 'PRODUCT', 'ACTIVE'),
+        {
+          pin: PIN,
+          directMembershipAllowlist: directAllow(new Map([['M2b', 'sales-rebuild']])),
+        },
+      ),
+    ).toBe(true)
+  })
+
+  it('accepts mfs-web-original-upgrade only with pin-bound allowlist (R2)', () => {
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M3a', 'PRODUCT', 'ACTIVE'),
+        {
+          pin: PIN,
+          directMembershipAllowlist: directAllow(
+            new Map([['M3a', 'mfs-web-original-upgrade']]),
+          ),
+        },
+      ),
+    ).toBe(true)
+  })
+
+  it('backend rejects satisfied:true without refs (security M1)', () => {
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M4', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: 'abcdef0123456789abcdef01',
+          membershipProductLine: 'backend',
+        }),
+      ),
+    ).toBe(false)
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M5', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: 'abcdef0123456789abcdef01',
+          membershipProductLine: 'backend',
+          membershipDirectDependencyProof: {
+            satisfied: true,
+            targetOutcome: 'sales-rebuild',
+          },
+        }),
+      ),
+    ).toBe(false)
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M5b', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: 'abcdef0123456789abcdef01',
+          membershipProductLine: 'backend',
+          membershipDirectDependencyProof: {
+            satisfied: true,
+            targetOutcome: 'sales-rebuild',
+            refs: [],
+          },
+        }),
+      ),
+    ).toBe(false)
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M6', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: 'abcdef0123456789abcdef01',
+          membershipProductLine: 'backend',
+          membershipDirectDependencyProof: {
+            satisfied: false,
+            targetOutcome: 'sales-rebuild',
+            refs: ['SALES-1'],
+          },
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  it('backend accepts non-empty refs + pin-bound outcome membership map', () => {
+    const r = receipt('BE-1', 'PRODUCT', 'ACTIVE', {
+      membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+      membershipProofHash: 'abcdef0123456789abcdef01',
+      membershipProductLine: 'backend',
+      membershipDirectDependencyProof: {
+        satisfied: true,
+        targetOutcome: 'sales-rebuild',
+        refs: ['SALES-1'],
+      },
+    })
+    const salesMap = new Map([['SALES-1', 'sales-rebuild']])
+    const boundSalesMap = {
+      canonicalSnapshotId: PIN.canonicalSnapshotId,
+      canonicalHash: PIN.canonicalHash,
+      boardRev: PIN.boardRev,
+      lifecycleRev: PIN.lifecycleRev,
+      byTaskId: salesMap,
+    }
+    // Missing graph → fail closed
+    expect(isPriorityPortfolioMembership(r)).toBe(false)
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        dependencyJoins: [],
+        directDependencyTargets: [],
+        outcomeMembershipMap: boundSalesMap,
+      }),
+    ).toBe(false)
+    // Ref not on graph → fail closed
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        dependencyJoins: [{ fromTaskId: 'BE-1', toTaskId: 'OTHER' }],
+        outcomeMembershipMap: boundSalesMap,
+      }),
+    ).toBe(false)
+    // Valid edge WITHOUT outcome map → fail closed (map required)
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        dependencyJoins: [{ fromTaskId: 'BE-1', toTaskId: 'SALES-1' }],
+      }),
+    ).toBe(false)
+    // Valid edge + empty outcome map → fail closed
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        dependencyJoins: [{ fromTaskId: 'BE-1', toTaskId: 'SALES-1' }],
+        outcomeProductLinesByTaskId: new Map(),
+      }),
+    ).toBe(false)
+    // Valid edge + pin-bound outcome map
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        dependencyJoins: [{ fromTaskId: 'BE-1', toTaskId: 'SALES-1' }],
+        outcomeMembershipMap: boundSalesMap,
+      }),
+    ).toBe(true)
+    // Edge key form + bound map
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('BE-2', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: 'abcdef0123456789abcdef01',
+          membershipProductLine: 'backend',
+          membershipDirectDependencyProof: {
+            satisfied: true,
+            targetOutcome: 'mfs-web-original-upgrade',
+            refs: ['BE-2->MFS-1'],
+          },
+        }),
+        {
+          pin: PIN,
+          dependencyJoins: [{ fromTaskId: 'BE-2', toTaskId: 'MFS-1' }],
+          outcomeMembershipMap: {
+            canonicalSnapshotId: PIN.canonicalSnapshotId,
+            canonicalHash: PIN.canonicalHash,
+            boardRev: PIN.boardRev,
+            lifecycleRev: PIN.lifecycleRev,
+            byTaskId: new Map([['MFS-1', 'mfs-web-original-upgrade']]),
+          },
+        },
+      ),
+    ).toBe(true)
+    // Outcome product-line map rejects wrong line
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        dependencyJoins: [{ fromTaskId: 'BE-1', toTaskId: 'SALES-1' }],
+        outcomeMembershipMap: {
+          ...boundSalesMap,
+          byTaskId: new Map([['SALES-1', 'mfs-web-original-upgrade']]),
+        },
+      }),
+    ).toBe(false)
+    // Outcome product-line map accepts matching line (convenience unbound + pin)
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        dependencyJoins: [{ fromTaskId: 'BE-1', toTaskId: 'SALES-1' }],
+        outcomeProductLinesByTaskId: new Map([['SALES-1', 'sales-rebuild']]),
+      }),
+    ).toBe(true)
+    // Stale outcome map pin binding (boardRev) → fail closed
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        dependencyJoins: [{ fromTaskId: 'BE-1', toTaskId: 'SALES-1' }],
+        outcomeMembershipMap: {
+          ...boundSalesMap,
+          boardRev: PIN.boardRev + 1,
+        },
+      }),
+    ).toBe(false)
+    // Stale outcome map pin binding (canonicalHash) → fail closed
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        dependencyJoins: [{ fromTaskId: 'BE-1', toTaskId: 'SALES-1' }],
+        outcomeMembershipMap: {
+          ...boundSalesMap,
+          canonicalHash: 'stalehashcccccccccccccccc',
+        },
+      }),
+    ).toBe(false)
+  })
+
+  it('backend rejects forgeable structural ROOT authority without graph+map', () => {
+    const proof = 'abcdef0123456789abcdef99'
+    const rootAuth = {
+      issuerRole: 'ROOT_ORCHESTRATOR' as const,
+      signature: 'fedcba9876543210fedcba98',
+      coversMembershipProofHash: proof,
+      canonicalHash: PIN.canonicalHash,
+    }
+    // Structural ROOT alone (no refs / no map) → false (bypass removed)
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('BE-ROOT', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: proof,
+          membershipProductLine: 'backend',
+          membershipDirectDependencyProof: {
+            satisfied: true,
+            targetOutcome: 'sales-rebuild',
+          },
+          membershipRootAuthority: rootAuth,
+        }),
+        { pin: PIN },
+      ),
+    ).toBe(false)
+    // ROOT fields + refs but no outcome map → still false
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('BE-ROOT2', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: proof,
+          membershipProductLine: 'backend',
+          membershipDirectDependencyProof: {
+            satisfied: true,
+            targetOutcome: 'sales-rebuild',
+            refs: ['SALES-1'],
+          },
+          membershipRootAuthority: rootAuth,
+        }),
+        {
+          pin: PIN,
+          dependencyJoins: [{ fromTaskId: 'BE-ROOT2', toTaskId: 'SALES-1' }],
+        },
+      ),
+    ).toBe(false)
+    // Graph + map path still works even if forgeable ROOT fields present (ignored)
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('BE-ROOT3', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: proof,
+          membershipProductLine: 'backend',
+          membershipDirectDependencyProof: {
+            satisfied: true,
+            targetOutcome: 'sales-rebuild',
+            refs: ['SALES-1'],
+          },
+          membershipRootAuthority: rootAuth,
+        }),
+        {
+          pin: PIN,
+          dependencyJoins: [{ fromTaskId: 'BE-ROOT3', toTaskId: 'SALES-1' }],
+          outcomeMembershipMap: {
+            canonicalSnapshotId: PIN.canonicalSnapshotId,
+            canonicalHash: PIN.canonicalHash,
+            boardRev: PIN.boardRev,
+            lifecycleRev: PIN.lifecycleRev,
+            byTaskId: new Map([['SALES-1', 'sales-rebuild']]),
+          },
+        },
+      ),
+    ).toBe(true)
+  })
+
+  it('backend rejects stale pin when graph context pin mismatches receipt', () => {
+    const r = receipt('BE-STALE', 'PRODUCT', 'ACTIVE', {
+      membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+      membershipProofHash: 'abcdef0123456789abcdef01',
+      membershipProductLine: 'backend',
+      membershipDirectDependencyProof: {
+        satisfied: true,
+        targetOutcome: 'sales-rebuild',
+        refs: ['SALES-1'],
+      },
+    })
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: { ...PIN, boardRev: PIN.boardRev + 1 },
+        dependencyJoins: [{ fromTaskId: 'BE-STALE', toTaskId: 'SALES-1' }],
+        outcomeProductLinesByTaskId: new Map([['SALES-1', 'sales-rebuild']]),
+      }),
+    ).toBe(false)
+    // Absent pin → fail closed even with graph + map
+    expect(
+      isPriorityPortfolioMembership(r, {
+        dependencyJoins: [{ fromTaskId: 'BE-STALE', toTaskId: 'SALES-1' }],
+        outcomeProductLinesByTaskId: new Map([['SALES-1', 'sales-rebuild']]),
+      }),
+    ).toBe(false)
+  })
+
+  it('sales/mfs direct membership requires allowlist, not dependency proof (R2)', () => {
+    // Self-assert without allowlist → false
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('S1', 'PRODUCT', 'ACTIVE', {
+          membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+          membershipProofHash: 'abcdef0123456789abcdef01',
+          membershipProductLine: 'sales-rebuild',
+        }),
+      ),
+    ).toBe(false)
+    // Allowlist + pin, no dep proof → true
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('S1', 'PRODUCT', 'ACTIVE'),
+        {
+          pin: PIN,
+          directMembershipAllowlist: directAllow(new Map([['S1', 'sales-rebuild']])),
+        },
+      ),
+    ).toBe(true)
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('M1m', 'PRODUCT', 'ACTIVE'),
+        {
+          pin: PIN,
+          directMembershipAllowlist: directAllow(
+            new Map([['M1m', 'mfs-web-original-upgrade']]),
+          ),
+        },
+      ),
+    ).toBe(true)
+  })
+
+  it('R2 adversarial: arbitrary hex + product-line never grants without allowlist', () => {
+    for (const hex of [
+      'deadbeefdeadbeefdeadbeef',
+      'ffffffffffffffff',
+      'abcdef0123456789abcdef01',
+    ]) {
+      expect(
+        isPriorityPortfolioMembership(
+          receipt('ADV-HEX', 'PRODUCT', 'ACTIVE', {
+            membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+            membershipProofHash: hex,
+            membershipProductLine: 'sales-rebuild',
+          }),
+        ),
+      ).toBe(false)
+      expect(
+        isPriorityPortfolioMembership(
+          receipt('ADV-HEX-MFS', 'PRODUCT', 'ACTIVE', {
+            membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+            membershipProofHash: hex,
+            membershipProductLine: 'mfs-web-original-upgrade',
+          }),
+          { pin: PIN },
+        ),
+      ).toBe(false)
+    }
+  })
+
+  it('R2 adversarial: stale pin on allowlist fails closed', () => {
+    const r = receipt('STALE-D', 'PRODUCT', 'ACTIVE')
+    const allow = directAllow(new Map([['STALE-D', 'sales-rebuild']]))
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: { ...PIN, boardRev: PIN.boardRev + 1 },
+        directMembershipAllowlist: allow,
+      }),
+    ).toBe(false)
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        directMembershipAllowlist: { ...allow, boardRev: PIN.boardRev + 1 },
+      }),
+    ).toBe(false)
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        directMembershipAllowlist: {
+          ...allow,
+          canonicalHash: 'stalehashcccccccccccccccc',
+        },
+      }),
+    ).toBe(false)
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        directMembershipAllowlist: { ...allow, taskHash: 'staletaskhashhhhhhhhhhh' },
+      }),
+    ).toBe(false)
+    // Absent pin → false even with allowlist
+    expect(
+      isPriorityPortfolioMembership(r, {
+        directMembershipAllowlist: allow,
+      }),
+    ).toBe(false)
+  })
+
+  it('R2 adversarial: allowlist task miss / wrong line / claimed mismatch fail closed', () => {
+    const r = receipt('MISS', 'PRODUCT', 'ACTIVE', {
+      membershipProductLine: 'sales-rebuild',
+    })
+    // Task not on allowlist
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        directMembershipAllowlist: directAllow(new Map([['OTHER', 'sales-rebuild']])),
+      }),
+    ).toBe(false)
+    // Allowlist maps to backend (invalid for direct)
+    expect(
+      isPriorityPortfolioMembership(r, {
+        pin: PIN,
+        directMembershipAllowlist: directAllow(new Map([['MISS', 'backend']])),
+      }),
+    ).toBe(false)
+    // Claimed product line disagrees with derived
+    expect(
+      isPriorityPortfolioMembership(
+        receipt('MISS2', 'PRODUCT', 'ACTIVE', {
+          membershipProductLine: 'mfs-web-original-upgrade',
+        }),
+        {
+          pin: PIN,
+          directMembershipAllowlist: directAllow(new Map([['MISS2', 'sales-rebuild']])),
+        },
+      ),
+    ).toBe(false)
+  })
+
+  it('R2 buildDirectMembershipAllowlist derives from project/repo/feature identity only', () => {
+    const allow = buildDirectMembershipAllowlist(
+      PIN,
+      [
+        { id: 'T-sales', projectId: 'sales-rebuild' },
+        { id: 'T-mfs', featureContractId: 'mfs-web-original-upgrade' },
+        { id: 'T-repo', repository: 'sales-rebuild' },
+        { id: 'T-other', projectId: 'proj-sales-web' },
+        { id: 'T-via-proj', projectId: 'p1' },
+      ],
+      {
+        projects: [
+          { id: 'p1', nama: 'sales-rebuild' },
+          { id: 'proj-sales-web', nama: 'Sales Web' },
+        ],
+        features: [{ id: 'f1', projectId: 'p1' }],
+      },
+    )
+    expect(allow.byTaskId.get('T-sales')).toBe('sales-rebuild')
+    expect(allow.byTaskId.get('T-mfs')).toBe('mfs-web-original-upgrade')
+    expect(allow.byTaskId.get('T-repo')).toBe('sales-rebuild')
+    // Arbitrary project id is NOT a product line
+    expect(allow.byTaskId.get('T-other')).toBeUndefined()
+    // Project nama maps to product line → tasks under that project id get line
+    expect(allow.byTaskId.get('T-via-proj')).toBe('sales-rebuild')
+    expect(allow.canonicalSnapshotId).toBe(PIN.canonicalSnapshotId)
+    expect(allow.taskHash).toBe(PIN.taskHash)
+  })
+
+  it('R2 stripSelfAssertedMembershipFields removes sales/mfs self-assert and root authority', () => {
+    const stripped = stripSelfAssertedMembershipFields(
+      receipt('X', 'PRODUCT', 'ACTIVE', {
+        membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+        membershipProofHash: 'deadbeefdeadbeefdeadbeef',
+        membershipProductLine: 'sales-rebuild',
+        membershipRootAuthority: {
+          issuerRole: 'ROOT_ORCHESTRATOR',
+          signature: 'fedcba9876543210fedcba98',
+          coversMembershipProofHash: 'deadbeefdeadbeefdeadbeef',
+        },
+      }),
+    )
+    expect(stripped.membershipProductLine).toBeUndefined()
+    expect(stripped.membershipProofHash).toBeUndefined()
+    expect(stripped.membershipPortfolioId).toBeUndefined()
+    expect(stripped.membershipRootAuthority).toBeUndefined()
+    // Backend fields preserved
+    const be = stripSelfAssertedMembershipFields(
+      receipt('B', 'PRODUCT', 'ACTIVE', {
+        membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+        membershipProofHash: 'abcdef0123456789abcdef01',
+        membershipProductLine: 'backend',
+        membershipDirectDependencyProof: {
+          satisfied: true,
+          targetOutcome: 'sales-rebuild',
+          refs: ['SALES-1'],
+        },
+      }),
+    )
+    expect(be.membershipProductLine).toBe('backend')
+    expect(be.membershipProofHash).toBe('abcdef0123456789abcdef01')
+    expect(be.membershipDirectDependencyProof?.refs).toEqual(['SALES-1'])
   })
 })

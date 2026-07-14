@@ -44,6 +44,47 @@ export async function waitForHttpOk(url, { timeoutMs = 90_000, intervalMs = 400 
 }
 
 /**
+ * Disposable harness public allowlist for owned-preview child env only.
+ *
+ * Product semantics stay fail-closed: empty/unset `CAIRN_PUBLIC_BOARD_IDS` deny all.
+ * This helper never mutates `process.env` — inject via `startOwnedPreviewServer({ env })`.
+ *
+ * @param {string} boardId exact board id to allow (must be non-empty after trim)
+ * @returns {{ CAIRN_PUBLIC_BOARD_IDS: string }}
+ */
+export function buildOwnedPreviewPublicAllowlistEnv(boardId) {
+  const id = typeof boardId === 'string' ? boardId.trim() : ''
+  if (!id) {
+    throw new Error(
+      'FAIL-CLOSED harness public allowlist: non-empty boardId required for CAIRN_PUBLIC_BOARD_IDS',
+    )
+  }
+  // Exact single board — not a wildcard, not comma-joined fixtures.
+  return { CAIRN_PUBLIC_BOARD_IDS: id }
+}
+
+/**
+ * Pure membership check matching product `resolvePublicBoardAllowlist` parse rules
+ * (comma/space/semicolon split; empty raw → deny all). Harness self-tests only.
+ *
+ * @param {NodeJS.ProcessEnv | Record<string, string | undefined> | null | undefined} env
+ * @param {string} boardId
+ * @returns {boolean}
+ */
+export function publicAllowlistEnvAllows(env, boardId) {
+  if (!boardId || typeof boardId !== 'string') return false
+  const raw = String(env?.CAIRN_PUBLIC_BOARD_IDS ?? env?.CAIRN_PUBLIC_BOARDS ?? '').trim()
+  if (!raw) return false
+  const set = new Set(
+    raw
+      .split(/[,;\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean),
+  )
+  return set.has(boardId)
+}
+
+/**
  * Start `pnpm preview` (or CAIRN_HARNESS_SERVER_CMD) on a free port with env overrides.
  * Returns { pid, port, baseUrl, stop, logPath, child }.
  *

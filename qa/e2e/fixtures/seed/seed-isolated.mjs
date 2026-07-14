@@ -43,6 +43,9 @@ import {
 import {
   BOARD_VIEWS,
   DEFAULT_BOARD_ID,
+  FORBIDDEN_PLACEHOLDER_CANONICAL_HASH,
+  SEEDED_ONGOING,
+  bindAuthorityCanonicalHash,
   buildAccountSyncSeed,
   buildBoardDocs,
   buildDispatchPlanSeed,
@@ -53,6 +56,27 @@ import {
   validateFixtureContract,
   CANONICAL_TASK_IDS,
 } from './control-center-fixture.mjs'
+// buildAccountSyncSeed / buildDispatchPlanSeed used by self-tests for entityExpectedRev wire
+import {
+  FP_C_GREENFIELD_CHAIN_VERSIONS,
+  applyControlPlaneSchemaToIsoDb,
+  buildFpCRunRecord,
+  loadMigrationFile,
+} from '../../lib/control-plane-schema-seed.mjs'
+
+/**
+ * Tables healthz probes when 004/005/006 are in schema_migrations history.
+ * Must exist after real migration apply — ledger-only stamp is not enough.
+ * Mirrors src/routes/api.healthz.ts REQUIRED_TABLES_BY_MIGRATION.
+ */
+export const HEALTHZ_REQUIRED_TABLES_004_006 = Object.freeze([
+  'control_plane_classification_receipts',
+  'control_plane_decisions',
+  'control_plane_dispatch_plans',
+  'control_plane_runs',
+  'control_plane_collision_locks',
+  'control_plane_stage_evidence_receipts',
+])
 
 /** Real definition schema — never store TM_UI_CONTRACT_V1 as a control_plane snapshot. */
 export const CANONICAL_TASK_SNAPSHOT_SCHEMA = 'MFS_CANONICAL_TASK_SNAPSHOT_V1'
@@ -306,6 +330,50 @@ export async function ensureBaselineTables(db) {
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (board_id, evidence_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+  // Product V3 durable run registry (migration 005 shape). Required so disposable
+  // ensure+replace can plant RUNNING ownership without legacy dual-read.
+  await db.query(`CREATE TABLE IF NOT EXISTS control_plane_runs (
+    board_id VARCHAR(64) NOT NULL,
+    run_id VARCHAR(160) NOT NULL,
+    state VARCHAR(32) NOT NULL,
+    plan_id VARCHAR(64) NULL,
+    plan_item_rank INT UNSIGNED NULL,
+    task_id VARCHAR(160) NOT NULL,
+    target_gate VARCHAR(160) NOT NULL,
+    role VARCHAR(64) NOT NULL,
+    agent_id VARCHAR(160) NOT NULL,
+    model VARCHAR(160) NOT NULL,
+    effort VARCHAR(64) NOT NULL DEFAULT '',
+    masked_account_ref VARCHAR(160) NULL,
+    canonical_hash CHAR(64) NULL,
+    collision_scope_lock_ids_json JSON NULL,
+    fencing_token VARCHAR(160) NULL,
+    fencing_version INT UNSIGNED NOT NULL DEFAULT 0,
+    registered_at_ms BIGINT NULL,
+    heartbeat_at_ms BIGINT NULL,
+    lease_expires_at_ms BIGINT NULL,
+    material_progress_at_ms BIGINT NULL,
+    heartbeat_sequence BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    expected_entity_rev BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    expected_board_rev BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    entity_rev BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    board_rev BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    stalled TINYINT(1) NOT NULL DEFAULT 0,
+    history_json JSON NULL,
+    last_heartbeat_response_json JSON NULL,
+    controller_run_id VARCHAR(160) NULL,
+    parent_run_id VARCHAR(160) NULL,
+    idempotency_key VARCHAR(191) NULL,
+    subject_hash CHAR(64) NULL,
+    record_json JSON NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (board_id, run_id),
+    KEY idx_runs_state (board_id, state, lease_expires_at_ms),
+    KEY idx_runs_task (board_id, task_id),
+    KEY idx_runs_agent (board_id, agent_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 }
 
 /**
@@ -315,8 +383,10 @@ export async function ensureBaselineTables(db) {
  *
  * Definition-only payload (no lifecycle stage/evidence fields on tasks).
  * Hash = sha256(stable-sorted JSON of payload) matching server produceCanonicalSnapshot.
+ * Authority pin hash = server canonicalSubjectHash:
+ *   sha256(stableStringify({ snapshotId, payloadSha256, boardId }))
  *
- * @returns {{ schemaVersion: string, manifest: object, payload: object, payloadSha256: string }}
+ * @returns {{ schemaVersion: string, manifest: object, payload: object, payloadSha256: string, canonicalHash: string }}
  */
 export function produceSyntheticCanonicalSnapshot({
   boardId,
@@ -523,10 +593,341 @@ export function isCanonicalCompleteSchema(schemaVersion) {
 }
 
 /**
+ * After board content is known, compute the exact authority hash the runtime
+ * healthz/subject_hash path uses, then rebind tasks/docs/dispatch/account so
+ * snapshot + taskHash + boardRev + lifecycleRev + canonicalHash stay coherent.
+ *
+ * Pure (no MySQL). Does not weaken comparePinParity — returns the hash that
+ * must match runtime board_revisions.subject_hash.
+ *
+ * @returns {{
+ *   pin: object,
+ *   boundTasks: object[],
+ *   docs: object,
+ *   dispatchSeed: object,
+ *   accountSyncSeed: object,
+ *   canonical: object,
+ *   payloadSha256: string,
+ * }}
+ */
+export function materializeAuthorityPin(options = {}) {
+  const now = options.now ?? new Date().toISOString()
+  const boardId = options.boardId ?? DEFAULT_BOARD_ID
+  const producerVersion = options.producerVersion ?? 'seed-isolated-canonical-v1'
+  const taskIds =
+    options.taskIds ??
+    (Array.isArray(options.tasks) ? options.tasks.map((t) => t.id) : CANONICAL_TASK_IDS)
+
+  // Pass 1: build content with pre-materialization pin identity (hash may be null).
+  const pinIdentity = buildHarnessPin(taskIds, {
+    ...(options.pinBase ?? {}),
+    canonicalHash: null,
+  })
+  const tasksPass1 =
+    options.tasks ?? buildSyntheticTasks(now, pinIdentity)
+
+  const canonicalPass1 = produceSyntheticCanonicalSnapshot({
+    boardId,
+    pin: pinIdentity,
+    boundTasks: tasksPass1,
+    now,
+    producerVersion,
+  })
+  const pin = bindAuthorityCanonicalHash(pinIdentity, canonicalPass1.canonicalHash)
+
+  // Pass 2: rebind all pin-bearing fixture rows to the authority hash.
+  const boundTasks = buildSyntheticTasks(now, pin)
+  const docs = options.docs ?? buildBoardDocs(now, pin)
+  const dispatchSeed = options.dispatchSeed ?? buildDispatchPlanSeed(now, pin)
+  const accountSyncSeed = options.accountSyncSeed ?? buildAccountSyncSeed(now, pin)
+
+  // Stability: content hash must not depend on pin.canonicalHash (definition payload).
+  const canonical = produceSyntheticCanonicalSnapshot({
+    boardId,
+    pin,
+    boundTasks,
+    now,
+    producerVersion,
+  })
+  if (canonical.canonicalHash !== pin.canonicalHash) {
+    throw new Error(
+      `materializeAuthorityPin: hash unstable after rebind ` +
+        `(pass1=${pin.canonicalHash.slice(0, 12)} pass2=${canonical.canonicalHash.slice(0, 12)})`,
+    )
+  }
+  if (pin.canonicalHash === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH) {
+    throw new Error('materializeAuthorityPin: authority is still forbidden placeholder')
+  }
+
+  return {
+    pin,
+    boundTasks,
+    docs,
+    dispatchSeed,
+    accountSyncSeed,
+    canonical,
+    payloadSha256: canonical.payloadSha256,
+    boardId,
+    now,
+  }
+}
+
+/**
+ * LEDger-only stamp of schema_migrations 000..006 (checksums from on-disk files).
+ *
+ * Prefer {@link applyProductMigrations000Through006} / applyControlPlaneSchemaToIsoDb
+ * for greenfield disposable DBs — healthz clears schema.version when 004/005/006
+ * history is present but required CREATE TABLE objects are missing.
+ *
+ * Kept for staging board-scoped seed (ambient already has tables) and pure ledger
+ * refresh. Idempotent: ON DUPLICATE KEY UPDATE. Never touches ambient non-iso DBs
+ * (caller must already be on disposable/iso connection).
+ *
+ * @returns {{ ok: true, applied: string[], skipped: string[], finalVersions: string[] }}
+ */
+export async function seedSchemaMigrationsThrough006(db) {
+  await db.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
+    version VARCHAR(64) NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    sha256 CHAR(64) NOT NULL,
+    classification VARCHAR(64) NOT NULL,
+    applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    applied_by VARCHAR(160) NULL,
+    dry_run TINYINT(1) NOT NULL DEFAULT 0,
+    PRIMARY KEY (version),
+    UNIQUE KEY uq_schema_migrations_filename (filename)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+
+  let already = []
+  try {
+    const [rows] = await db.query(
+      `SELECT version FROM schema_migrations WHERE dry_run = 0 ORDER BY version ASC`,
+    )
+    already = (Array.isArray(rows) ? rows : []).map((r) => String(r.version))
+  } catch {
+    already = []
+  }
+
+  const applied = []
+  const skipped = []
+  const versions = [...FP_C_GREENFIELD_CHAIN_VERSIONS]
+  for (const version of versions) {
+    if (already.includes(version)) {
+      skipped.push(version)
+      // Still refresh checksum/classification so ledger matches product files.
+    }
+    const m = loadMigrationFile(version)
+    await db.query(
+      `INSERT INTO schema_migrations
+         (version, filename, sha256, classification, applied_by, dry_run)
+       VALUES (?, ?, ?, ?, ?, 0)
+       ON DUPLICATE KEY UPDATE
+         filename = VALUES(filename),
+         sha256 = VALUES(sha256),
+         classification = VALUES(classification),
+         applied_by = VALUES(applied_by),
+         dry_run = 0`,
+      [m.version, m.filename, m.sha256, m.classification, 'seed-isolated-schema-006'],
+    )
+    if (!already.includes(version)) applied.push(version)
+  }
+
+  const [finalRows] = await db.query(
+    `SELECT version FROM schema_migrations WHERE dry_run = 0 ORDER BY version ASC`,
+  )
+  const finalVersions = (Array.isArray(finalRows) ? finalRows : []).map((r) =>
+    String(r.version),
+  )
+  const tip = finalVersions[finalVersions.length - 1] ?? ''
+  if (tip !== '006') {
+    throw new Error(
+      `seedSchemaMigrationsThrough006: expected tip 006, got ${tip || '(empty)'} ` +
+        `versions=[${finalVersions.join(',')}]`,
+    )
+  }
+  for (const need of versions) {
+    if (!finalVersions.includes(need)) {
+      throw new Error(
+        `seedSchemaMigrationsThrough006: missing version ${need} after seed`,
+      )
+    }
+  }
+  return { ok: true, applied, skipped, finalVersions }
+}
+
+/**
+ * Apply product migration SQL 000..006 on a disposable iso DB via repository
+ * migration API (control-plane-schema-seed applyControlPlaneSchemaToIsoDb).
+ * Creates required tables (not ledger-only). Idempotent via schema_migrations.
+ *
+ * @param {string} dbName
+ * @returns {Promise<{ ok: true, dbName: string, applied: string[], skipped: string[], finalApplied: string[], requiredTables: string[], missingRequiredTables: string[] }>}
+ */
+export async function applyProductMigrations000Through006(dbName) {
+  assertSafeIsoDbName(dbName)
+  const schema = await applyControlPlaneSchemaToIsoDb(dbName, {
+    versions: [...FP_C_GREENFIELD_CHAIN_VERSIONS],
+  })
+  const missingRequiredTables = []
+  await withDbConnection(dbName, async (conn) => {
+    for (const table of HEALTHZ_REQUIRED_TABLES_004_006) {
+      const [rows] = await conn.query(
+        `SELECT 1 AS ok FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
+        [table],
+      )
+      if (!Array.isArray(rows) || rows.length === 0) {
+        missingRequiredTables.push(table)
+      }
+    }
+  })
+  if (missingRequiredTables.length > 0) {
+    throw new Error(
+      `applyProductMigrations000Through006: required tables missing after migrate: ` +
+        missingRequiredTables.join(','),
+    )
+  }
+  const tip = schema.finalApplied[schema.finalApplied.length - 1] ?? ''
+  if (tip !== '006') {
+    throw new Error(
+      `applyProductMigrations000Through006: expected tip 006, got ${tip || '(empty)'} ` +
+        `versions=[${schema.finalApplied.join(',')}]`,
+    )
+  }
+  return {
+    ok: true,
+    dbName,
+    applied: schema.applied,
+    skipped: schema.skipped,
+    finalApplied: schema.finalApplied,
+    requiredTables: [...HEALTHZ_REQUIRED_TABLES_004_006],
+    missingRequiredTables,
+  }
+}
+
+/**
  * Delete only board-scoped rows for the synthetic board, then insert fresh fixture.
  * Does NOT DROP DATABASE, does NOT truncate unrelated boards/tables, does NOT
- * touch schema_migrations.
+ * wipe schema_migrations (ledger seeded separately via real migrate / seedSchemaMigrationsThrough006).
  */
+/**
+ * Product-shaped durable RUNNING row for SEEDED_ONGOING (task-ongoing-1).
+ * Must satisfy deriveClaimStateFromRunRecord → VALID_CURRENT + runLiveness RUNNING
+ * so Rule 6 ONGOING works when product ownership is durable-only (no dual-read).
+ */
+export function buildSeededOngoingDurableRunRecord(ctx) {
+  const boardId = ctx.boardId
+  const nowMs =
+    (typeof ctx.now === 'string' ? Date.parse(ctx.now) : Number(ctx.nowMs)) || Date.now()
+  const boardRev = Number(ctx.pin?.boardRev ?? 0) || 0
+  const planId =
+    ctx.dispatchSeed?.planId ??
+    ctx.dispatchSeed?.items?.[0]?.planId ??
+    'plan-synth-r2d-001'
+  const rec = buildFpCRunRecord(boardId, {
+    nowMs,
+    runId: SEEDED_ONGOING.runId,
+    taskId: SEEDED_ONGOING.taskId,
+    state: 'RUNNING',
+    planId,
+    planItemRank: 1,
+    targetGate: SEEDED_ONGOING.targetGate,
+    role: SEEDED_ONGOING.role,
+    agentId: SEEDED_ONGOING.agentId,
+    model: SEEDED_ONGOING.model,
+    effort: SEEDED_ONGOING.effort,
+    maskedAccountRef: 'acc_synth_r2d_001',
+    canonicalHash: ctx.pin?.canonicalHash ?? null,
+    fencingToken: `fence_synth_${SEEDED_ONGOING.runId}`,
+    boardRev,
+    idempotencyKey: `idem-synth-ongoing-${boardId}-${SEEDED_ONGOING.runId}`,
+  })
+  // Fresh lease + distinct material progress (not heartbeat mirror) for PRODUCTIVE ages.
+  rec.registeredAtMs = nowMs
+  rec.heartbeatAtMs = nowMs
+  rec.materialProgressAtMs = nowMs
+  rec.leaseExpiresAtMs = nowMs + 30 * 60 * 1000
+  rec.stalled = false
+  rec.fencingVersion = 1
+  rec.history = [
+    {
+      atMs: nowMs,
+      atISO: new Date(nowMs).toISOString(),
+      fromState: null,
+      toState: 'RUNNING',
+      reason: 'synth-ongoing-durable-seed',
+      actorId: ctx.actor ?? SEED_ACTOR_ISOLATED,
+    },
+  ]
+  return rec
+}
+
+/** Insert product control_plane_runs columns + full record_json (decodeRunRecord path). */
+async function insertDurableRunRow(db, rec) {
+  const historyJson = JSON.stringify(rec.history)
+  const locksJson = JSON.stringify(rec.collisionScopeLockIds ?? [])
+  const recordJson = JSON.stringify(rec)
+  await db.query(
+    `INSERT INTO control_plane_runs (
+      board_id, run_id, state, plan_id, plan_item_rank, task_id, target_gate, role,
+      agent_id, model, effort, masked_account_ref, canonical_hash,
+      collision_scope_lock_ids_json, fencing_token, fencing_version,
+      registered_at_ms, heartbeat_at_ms, lease_expires_at_ms, material_progress_at_ms,
+      heartbeat_sequence, expected_entity_rev, expected_board_rev, entity_rev, board_rev,
+      stalled, history_json, last_heartbeat_response_json, controller_run_id, parent_run_id,
+      idempotency_key, record_json
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON DUPLICATE KEY UPDATE
+      state=VALUES(state), plan_id=VALUES(plan_id), plan_item_rank=VALUES(plan_item_rank),
+      task_id=VALUES(task_id), target_gate=VALUES(target_gate), role=VALUES(role),
+      agent_id=VALUES(agent_id), model=VALUES(model), effort=VALUES(effort),
+      masked_account_ref=VALUES(masked_account_ref),
+      collision_scope_lock_ids_json=VALUES(collision_scope_lock_ids_json),
+      fencing_token=VALUES(fencing_token), fencing_version=VALUES(fencing_version),
+      registered_at_ms=VALUES(registered_at_ms), heartbeat_at_ms=VALUES(heartbeat_at_ms),
+      lease_expires_at_ms=VALUES(lease_expires_at_ms),
+      material_progress_at_ms=VALUES(material_progress_at_ms),
+      heartbeat_sequence=VALUES(heartbeat_sequence),
+      entity_rev=VALUES(entity_rev), board_rev=VALUES(board_rev), stalled=VALUES(stalled),
+      history_json=VALUES(history_json), record_json=VALUES(record_json),
+      idempotency_key=VALUES(idempotency_key)`,
+    [
+      rec.boardId,
+      rec.runId,
+      rec.state,
+      rec.planId,
+      rec.planItemRank,
+      rec.taskId,
+      rec.targetGate,
+      rec.role,
+      rec.agentId,
+      rec.model,
+      rec.effort,
+      rec.maskedAccountRef,
+      rec.canonicalHash,
+      locksJson,
+      rec.fencingToken,
+      rec.fencingVersion,
+      rec.registeredAtMs,
+      rec.heartbeatAtMs,
+      rec.leaseExpiresAtMs,
+      rec.materialProgressAtMs,
+      rec.heartbeatSequence,
+      rec.expectedEntityRev,
+      rec.expectedBoardRev,
+      rec.entityRev,
+      rec.boardRev,
+      rec.stalled ? 1 : 0,
+      historyJson,
+      null,
+      rec.controllerRunId ?? null,
+      rec.parentRunId ?? null,
+      rec.idempotencyKey,
+      recordJson,
+    ],
+  )
+}
+
 export async function replaceBoardScopedSyntheticRows(db, ctx) {
   const {
     boardId,
@@ -543,6 +944,9 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
   } = ctx
 
   // Board-scoped wipe (mfs-rebuild only). Order respects FKs if any exist later.
+  // Durable runs cleared so ONGOING ownership comes only from product registry seed
+  // (never legacy board_docs dual-read).
+  await db.query('DELETE FROM control_plane_runs WHERE board_id=?', [boardId])
   await db.query('DELETE FROM control_plane_evidence WHERE board_id=?', [boardId])
   await db.query('DELETE FROM control_plane_snapshots WHERE board_id=?', [boardId])
   await db.query('DELETE FROM board_revisions WHERE board_id=?', [boardId])
@@ -660,8 +1064,20 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
   }
 
   // subject_hash must equal server canonicalSubjectHash(snapshot) for pin-complete load.
-  // Prefer produced canonicalHash over fixture pin.canonicalHash (harness residual).
+  // Authority pin MUST already carry the materialized hash (materializeAuthorityPin).
   const pinSubjectHash = canonical.canonicalHash
+  if (!pin?.canonicalHash || pin.canonicalHash !== pinSubjectHash) {
+    throw new Error(
+      `replaceBoardScopedSyntheticRows: pin.canonicalHash must equal produced ` +
+        `canonicalSubjectHash (pin=${String(pin?.canonicalHash).slice(0, 16)} ` +
+        `produced=${pinSubjectHash.slice(0, 16)}) — call materializeAuthorityPin first`,
+    )
+  }
+  if (pinSubjectHash === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH) {
+    throw new Error(
+      'replaceBoardScopedSyntheticRows: refusing forbidden placeholder as subject_hash',
+    )
+  }
 
   await db.query(
     `INSERT INTO board_revisions (board_id, board_rev, lifecycle_rev, subject_hash, canonical_snapshot_id)
@@ -756,6 +1172,17 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
       }),
     ],
   )
+
+  // Durable V3 ownership for Overview ONGOING (product control_plane_runs only).
+  // board_docs kind=runs may still exist for residual diagnostics — never relied on here.
+  const ongoingRun = buildSeededOngoingDurableRunRecord({
+    boardId,
+    now,
+    pin,
+    dispatchSeed,
+    actor,
+  })
+  await insertDurableRunRow(db, ongoingRun)
 }
 
 /** Programmatic readback: counts + pin + taskHash. No secrets. */
@@ -796,6 +1223,44 @@ export async function readbackSeedProof(db, boardId) {
     [boardId],
   )
 
+  // Durable ONGOING run readback (product control_plane_runs — not board_docs).
+  let durableOngoingRunning = 0
+  let durableOngoingRun = null
+  try {
+    const [runCount] = await db.query(
+      `SELECT COUNT(*) AS n FROM control_plane_runs
+       WHERE board_id=? AND task_id=? AND state='RUNNING'`,
+      [boardId, SEEDED_ONGOING.taskId],
+    )
+    durableOngoingRunning = Number(runCount[0]?.n ?? 0)
+    const [runRows] = await db.query(
+      `SELECT run_id, state, agent_id, role, model, effort, masked_account_ref,
+              fencing_token, fencing_version, lease_expires_at_ms, registered_at_ms,
+              heartbeat_at_ms, material_progress_at_ms, stalled, record_json
+       FROM control_plane_runs
+       WHERE board_id=? AND task_id=? AND run_id=?
+       LIMIT 1`,
+      [boardId, SEEDED_ONGOING.taskId, SEEDED_ONGOING.runId],
+    )
+    durableOngoingRun = runRows?.[0] ?? null
+  } catch {
+    durableOngoingRunning = 0
+    durableOngoingRun = null
+  }
+
+  const durableRecord =
+    durableOngoingRun?.record_json != null
+      ? typeof durableOngoingRun.record_json === 'string'
+        ? (() => {
+            try {
+              return JSON.parse(durableOngoingRun.record_json)
+            } catch {
+              return null
+            }
+          })()
+        : durableOngoingRun.record_json
+      : null
+
   // Presence of schema_migrations (must remain if migrations already applied).
   let schemaMigrationsPresent = null
   try {
@@ -829,6 +1294,22 @@ export async function readbackSeedProof(db, boardId) {
       classifiedTasks: Number(classifiedRows[0].n),
       missingProofUnclassified: Number(missingRows[0].n) === 1,
       doneLifecycleStage: doneStage[0]?.s ?? null,
+      durableOngoingRunningCount: durableOngoingRunning,
+      durableOngoingRunId: durableOngoingRun?.run_id ?? null,
+      durableOngoingState: durableOngoingRun?.state ?? null,
+      durableOngoingHasFence: Boolean(durableOngoingRun?.fencing_token),
+      durableOngoingHasLease:
+        durableOngoingRun?.lease_expires_at_ms != null &&
+        Number(durableOngoingRun.lease_expires_at_ms) > 0,
+      durableOngoingHasAgent: Boolean(durableOngoingRun?.agent_id),
+      durableOngoingHasRecordJson: Boolean(
+        durableRecord && durableRecord.runId === SEEDED_ONGOING.runId,
+      ),
+      durableOngoingFreshTimes: Boolean(
+        durableOngoingRun?.registered_at_ms != null &&
+          durableOngoingRun?.heartbeat_at_ms != null &&
+          durableOngoingRun?.material_progress_at_ms != null,
+      ),
     },
     schemaMigrationsPresent,
   }
@@ -838,15 +1319,71 @@ function buildSeedContext(options = {}) {
   const now = options.now ?? new Date().toISOString()
   const boardId =
     options.boardId ?? process.env.BOARD_ID?.trim() ?? DEFAULT_BOARD_ID
-  const tasks = options.tasks ?? buildSyntheticTasks(now)
-  const pin = { ...buildHarnessPin(tasks.map((t) => t.id)), ...(options.pin ?? {}) }
-  const boundTasks = options.tasks ?? buildSyntheticTasks(now, pin)
-  const docs = options.docs ?? buildBoardDocs(now, pin)
-  const dispatchSeed = options.dispatchSeed ?? buildDispatchPlanSeed(now, pin)
-  const accountSyncSeed = options.accountSyncSeed ?? buildAccountSyncSeed(now, pin)
-  const contract = validateFixtureContract(boundTasks, docs)
+  const producerVersion = options.producerVersion ?? 'c3-r4f-seed'
+
+  // Materialize authority hash first so pin/tasks/docs/dispatch/account stay coherent.
+  // Callers may pass a fully materialized pin (with real 64-hex) to skip recompute path
+  // only when boundTasks/docs/dispatch are also supplied together.
+  let pin
+  let boundTasks
+  let docs
+  let dispatchSeed
+  let accountSyncSeed
+  let materializeMeta = null
+
+  const pinOverride = options.pin ?? null
+  const hasMaterializedOverride =
+    pinOverride &&
+    typeof pinOverride.canonicalHash === 'string' &&
+    /^[0-9a-f]{64}$/i.test(pinOverride.canonicalHash) &&
+    pinOverride.canonicalHash.toLowerCase() !== FORBIDDEN_PLACEHOLDER_CANONICAL_HASH
+
+  if (
+    hasMaterializedOverride &&
+    options.tasks &&
+    options.docs &&
+    options.dispatchSeed &&
+    options.accountSyncSeed
+  ) {
+    pin = { ...buildHarnessPin(options.tasks.map((t) => t.id)), ...pinOverride }
+    boundTasks = options.tasks
+    docs = options.docs
+    dispatchSeed = options.dispatchSeed
+    accountSyncSeed = options.accountSyncSeed
+  } else {
+    const mat = materializeAuthorityPin({
+      boardId,
+      now,
+      producerVersion,
+      tasks: options.tasks,
+      pinBase: pinOverride
+        ? {
+            boardRev: pinOverride.boardRev,
+            lifecycleRev: pinOverride.lifecycleRev,
+            canonicalSnapshotId: pinOverride.canonicalSnapshotId,
+          }
+        : undefined,
+      docs: options.docs,
+      dispatchSeed: options.dispatchSeed,
+      accountSyncSeed: options.accountSyncSeed,
+    })
+    pin = mat.pin
+    boundTasks = mat.boundTasks
+    docs = mat.docs
+    dispatchSeed = mat.dispatchSeed
+    accountSyncSeed = mat.accountSyncSeed
+    materializeMeta = {
+      payloadSha256: mat.payloadSha256,
+      canonicalHash: mat.pin.canonicalHash,
+    }
+  }
+
+  const contract = validateFixtureContract(boundTasks, docs, pin)
   if (!contract.ok) {
     throw new Error(`seed fixture contract failed: ${contract.errors.join('; ')}`)
+  }
+  if (!pin.canonicalHash || pin.canonicalHash === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH) {
+    throw new Error('seed fixture pin.canonicalHash missing or forbidden placeholder')
   }
   return {
     now,
@@ -857,12 +1394,13 @@ function buildSeedContext(options = {}) {
     dispatchSeed,
     accountSyncSeed,
     contract,
+    materializeMeta,
     actor: options.actor ?? SEED_ACTOR_ISOLATED,
     boardName: options.boardName ?? 'MFS Rebuild (SYNTH C3-R4F)',
     boardDescription:
       options.boardDescription ??
       'Synthetic isolated board for deterministic browser harness. Not production.',
-    producerVersion: options.producerVersion ?? 'c3-r4f-seed',
+    producerVersion,
   }
 }
 
@@ -906,10 +1444,44 @@ export async function seedIsolatedControlCenter(options = {}) {
 
   await recreateIsolatedDatabase(dbName)
 
+  // Real product migrations 000–006 (CREATE tables + ledger) — NOT ledger-only stamp.
+  // healthz requires schema-required-tables for 004/005/006 before schema.version=006.
+  const schemaApply = await applyProductMigrations000Through006(dbName)
+
   return withDbConnection(dbName, async (db) => {
+    // IF NOT EXISTS safety for any seed-only columns beyond migration baseline.
     await ensureBaselineTables(db)
     await replaceBoardScopedSyntheticRows(db, ctx)
     const readback = await readbackSeedProof(db, ctx.boardId)
+
+    // Fail-closed: subject_hash must equal materialized authority (parity source).
+    if (
+      !readback.pin?.subjectHash ||
+      readback.pin.subjectHash !== ctx.pin.canonicalHash
+    ) {
+      throw new Error(
+        `seedIsolatedControlCenter: subject_hash/readback pin mismatch ` +
+          `subject=${String(readback.pin?.subjectHash).slice(0, 16)} ` +
+          `authority=${String(ctx.pin.canonicalHash).slice(0, 16)}`,
+      )
+    }
+
+    // Fail-closed: durable RUNNING ownership for task-ongoing-1 must exist.
+    if (
+      !readback.seedProof?.durableOngoingRunningCount ||
+      readback.seedProof.durableOngoingRunId !== SEEDED_ONGOING.runId ||
+      !readback.seedProof.durableOngoingHasFence ||
+      !readback.seedProof.durableOngoingHasLease ||
+      !readback.seedProof.durableOngoingHasAgent ||
+      !readback.seedProof.durableOngoingHasRecordJson ||
+      !readback.seedProof.durableOngoingFreshTimes
+    ) {
+      throw new Error(
+        `seedIsolatedControlCenter: durable control_plane_runs RUNNING seed missing/incomplete ` +
+          `for ${SEEDED_ONGOING.taskId} (${SEEDED_ONGOING.runId}): ` +
+          JSON.stringify(readback.seedProof ?? {}),
+      )
+    }
 
     const provenance = {
       mode: 'isolated',
@@ -922,23 +1494,42 @@ export async function seedIsolatedControlCenter(options = {}) {
       boardDocs: readback.boardDocs,
       boardRevisions: readback.boardRevisions,
       usersSeeded: 0,
+      // Authority pin for comparePinParity — numbers preserved for MCP CAS.
       pin: {
         canonicalSnapshotId: ctx.pin.canonicalSnapshotId,
         canonicalHash: ctx.pin.canonicalHash,
         taskHash: ctx.pin.taskHash,
-        boardRev: String(ctx.pin.boardRev),
-        lifecycleRev: String(ctx.pin.lifecycleRev),
+        boardRev: ctx.pin.boardRev,
+        lifecycleRev: ctx.pin.lifecycleRev,
+      },
+      schemaMigrations: {
+        tip: schemaApply.finalApplied[schemaApply.finalApplied.length - 1] ?? null,
+        versions: schemaApply.finalApplied,
+        appliedThisRun: schemaApply.applied,
+        skippedThisRun: schemaApply.skipped,
+        mode: 'product-migrations-000-006',
+        requiredTablesPresent: schemaApply.missingRequiredTables.length === 0,
+        requiredTables: schemaApply.requiredTables,
+      },
+      dispatchSeed: {
+        planId: ctx.dispatchSeed.planId,
+        entityExpectedRev:
+          ctx.dispatchSeed.entityExpectedRev ??
+          ctx.dispatchSeed.items?.[0]?.expectedEntityRev ??
+          null,
+        expectedBoardRev: ctx.dispatchSeed.expectedBoardRev ?? null,
       },
       seedProof: {
         ...readback.seedProof,
         dispatchPlanId: ctx.dispatchSeed.planId,
         accountSyncSourceRevision: ctx.accountSyncSeed.sourceRevision,
         readbackTaskHash: readback.taskHash,
+        subjectHashMatchesAuthority: true,
       },
-      note: 'Zero users — first admin via /login bootstrap. Synthetic only. No ambient DB copy.',
+      note: 'Zero users — first admin via /login bootstrap. Synthetic only. No ambient DB copy. Authority canonicalHash is content-derived (not placeholder).',
       positiveExamples: [
         'task-done-1 PRODUCT+ACTIVE + PROD_READY',
-        'task-ongoing-1 claim VALID_CURRENT + run running',
+        'task-ongoing-1 durable control_plane_runs RUNNING + VALID_CURRENT (deriveDurableOwnership; not board_docs dual-read)',
         'task-next-1 dispatch plan rank 1',
         'task-missing-proof-1 sole UNCLASSIFIED',
       ],
@@ -967,6 +1558,8 @@ export async function seedIsolatedControlCenter(options = {}) {
       ...provenance,
       provenancePath,
       readback,
+      dispatchSeed: ctx.dispatchSeed,
+      accountSyncSeed: ctx.accountSyncSeed,
       contract: {
         ok: ctx.contract.ok,
         taskHash: ctx.contract.taskHash,
@@ -1065,12 +1658,15 @@ export async function seedStagingSynthetic(options = {}) {
 
   return withNamedDbConnection(dbName, async (db) => {
     await ensureBaselineTables(db)
+    // Idempotent ledger seed — does not wipe existing history; ODKU only.
+    const schemaSeed = await seedSchemaMigrationsThrough006(db)
     await replaceBoardScopedSyntheticRows(db, ctx)
     const readback = await readbackSeedProof(db, ctx.boardId)
 
     // Idempotency check: second replace in-process optional via options.verifyIdempotent
     let idempotent = null
     if (options.verifyIdempotent !== false) {
+      const schemaSeed2 = await seedSchemaMigrationsThrough006(db)
       await replaceBoardScopedSyntheticRows(db, ctx)
       const readback2 = await readbackSeedProof(db, ctx.boardId)
       idempotent = {
@@ -1079,13 +1675,19 @@ export async function seedStagingSynthetic(options = {}) {
         pinBoardRevMatch: readback2.pin?.boardRev === readback.pin?.boardRev,
         snapshotMatch:
           readback2.pin?.canonicalSnapshotId === readback.pin?.canonicalSnapshotId,
+        subjectHashMatch: readback2.pin?.subjectHash === readback.pin?.subjectHash,
+        schemaTipMatch:
+          schemaSeed2.finalVersions[schemaSeed2.finalVersions.length - 1] ===
+          schemaSeed.finalVersions[schemaSeed.finalVersions.length - 1],
+        schemaSecondSkippedAll: schemaSeed2.applied.length === 0,
         tasks: readback2.tasks,
         taskHash: readback2.taskHash,
       }
       if (
         !idempotent.tasksMatch ||
         !idempotent.taskHashMatch ||
-        !idempotent.pinBoardRevMatch
+        !idempotent.pinBoardRevMatch ||
+        !idempotent.subjectHashMatch
       ) {
         throw new Error(
           `staging-seed idempotent readback mismatch: ${JSON.stringify(idempotent)}`,
@@ -1109,6 +1711,25 @@ export async function seedStagingSynthetic(options = {}) {
         `staging-seed boardRev mismatch: got ${readback.pin?.boardRev} expected ${ctx.pin.boardRev}`,
       )
     }
+    if (readback.pin?.subjectHash !== ctx.pin.canonicalHash) {
+      throw new Error(
+        `staging-seed subject_hash mismatch: got ${readback.pin?.subjectHash} expected ${ctx.pin.canonicalHash}`,
+      )
+    }
+    if (
+      !readback.seedProof?.durableOngoingRunningCount ||
+      readback.seedProof.durableOngoingRunId !== SEEDED_ONGOING.runId ||
+      !readback.seedProof.durableOngoingHasFence ||
+      !readback.seedProof.durableOngoingHasLease ||
+      !readback.seedProof.durableOngoingHasAgent ||
+      !readback.seedProof.durableOngoingHasRecordJson ||
+      !readback.seedProof.durableOngoingFreshTimes
+    ) {
+      throw new Error(
+        `staging-seed durable control_plane_runs RUNNING incomplete for ${SEEDED_ONGOING.taskId}: ` +
+          JSON.stringify(readback.seedProof ?? {}),
+      )
+    }
 
     const provenance = {
       mode: 'staging',
@@ -1126,8 +1747,12 @@ export async function seedStagingSynthetic(options = {}) {
         canonicalSnapshotId: ctx.pin.canonicalSnapshotId,
         canonicalHash: ctx.pin.canonicalHash,
         taskHash: ctx.pin.taskHash,
-        boardRev: String(ctx.pin.boardRev),
-        lifecycleRev: String(ctx.pin.lifecycleRev),
+        boardRev: ctx.pin.boardRev,
+        lifecycleRev: ctx.pin.lifecycleRev,
+      },
+      schemaMigrations: {
+        tip: schemaSeed.finalVersions[schemaSeed.finalVersions.length - 1] ?? null,
+        versions: schemaSeed.finalVersions,
       },
       readback: {
         taskHash: readback.taskHash,
@@ -1139,7 +1764,7 @@ export async function seedStagingSynthetic(options = {}) {
       idempotent,
       syntheticOnly: true,
       productionDerived: false,
-      note: 'Board-scoped upsert only. No DROP DATABASE. Migration history preserved when present. Synthetic only.',
+      note: 'Board-scoped upsert only. No DROP DATABASE. Migration history preserved when present. Synthetic only. Authority hash content-derived.',
     }
 
     const provenancePath = writeProvenance(provenance, options)
@@ -1166,12 +1791,17 @@ export function runSeedSelfTests() {
   const results = []
   const ok = (name, pass, detail = null) => results.push({ name, pass, detail })
 
-  // Fixture contract
+  // Fixture contract (materialized authority pin)
   const now = '2026-07-13T12:00:00.000Z'
-  const pin = buildHarnessPin()
-  const tasks = buildSyntheticTasks(now, pin)
-  const docs = buildBoardDocs(now, pin)
-  const contract = validateFixtureContract(tasks, docs)
+  const mat = materializeAuthorityPin({
+    boardId: DEFAULT_BOARD_ID,
+    now,
+    producerVersion: 'seed-self-test',
+  })
+  const pin = mat.pin
+  const tasks = mat.boundTasks
+  const docs = mat.docs
+  const contract = validateFixtureContract(tasks, docs, pin)
   ok('fixture-contract', contract.ok, contract.errors?.join('; ') || null)
   ok('canonical-task-count', tasks.length === CANONICAL_TASK_IDS.length, String(tasks.length))
   ok(
@@ -1179,7 +1809,18 @@ export function runSeedSelfTests() {
     /^[0-9a-f]{64}$/i.test(pin.taskHash),
     pin.taskHash?.slice(0, 12),
   )
+  ok(
+    'authority-hash-hex-not-placeholder',
+    /^[0-9a-f]{64}$/i.test(pin.canonicalHash) &&
+      pin.canonicalHash !== FORBIDDEN_PLACEHOLDER_CANONICAL_HASH,
+    pin.canonicalHash?.slice(0, 16),
+  )
   ok('board-id-default', DEFAULT_BOARD_ID === 'mfs-rebuild')
+  ok(
+    'pre-materialize-pin-has-null-hash',
+    buildHarnessPin().canonicalHash == null,
+    String(buildHarnessPin().canonicalHash),
+  )
 
   // Seed hardening: real MFS_CANONICAL_TASK_SNAPSHOT_V1, never TM_UI as complete.
   const synthCanon = produceSyntheticCanonicalSnapshot({
@@ -1205,6 +1846,11 @@ export function runSeedSelfTests() {
     synthCanon.payloadSha256?.slice(0, 12),
   )
   ok(
+    'canonical-subject-hash-matches-pin',
+    synthCanon.canonicalHash === pin.canonicalHash,
+    synthCanon.canonicalHash?.slice(0, 16),
+  )
+  ok(
     'canonical-payload-has-tasks',
     Array.isArray(synthCanon.payload.tasks) && synthCanon.payload.tasks.length === tasks.length,
     String(synthCanon.payload.tasks?.length),
@@ -1215,6 +1861,97 @@ export function runSeedSelfTests() {
       (t) => t.lifecycleStage == null && t.lifecycle_stage == null,
     ),
     'lifecycle-free',
+  )
+
+  // Content change → hash change (fail-closed pin identity)
+  const alteredTasks = tasks.map((t) =>
+    t.id === 'task-done-1'
+      ? { ...t, title: `${t.title} [MUTATED-FOR-HASH]` }
+      : t,
+  )
+  const alteredCanon = produceSyntheticCanonicalSnapshot({
+    boardId: DEFAULT_BOARD_ID,
+    pin,
+    boundTasks: alteredTasks,
+    now,
+    producerVersion: 'seed-self-test',
+  })
+  ok(
+    'content-change-changes-payload-and-subject-hash',
+    alteredCanon.payloadSha256 !== synthCanon.payloadSha256 &&
+      alteredCanon.canonicalHash !== pin.canonicalHash,
+    `base=${pin.canonicalHash.slice(0, 12)} alt=${alteredCanon.canonicalHash.slice(0, 12)}`,
+  )
+
+  // Cross-pin reject: bindAuthorityCanonicalHash refuses placeholder
+  let placeholderRejected = false
+  try {
+    bindAuthorityCanonicalHash(pin, FORBIDDEN_PLACEHOLDER_CANONICAL_HASH)
+  } catch {
+    placeholderRejected = true
+  }
+  ok('cross-pin-placeholder-rejected', placeholderRejected)
+
+  // Cross-pin reject: wrong authority hash fails contract vs receipts
+  const wrongPin = {
+    ...pin,
+    canonicalHash: 'e'.repeat(64),
+  }
+  const wrongContract = validateFixtureContract(tasks, docs, wrongPin)
+  ok(
+    'cross-pin-receipt-mismatch-detected',
+    !wrongContract.ok &&
+      wrongContract.errors.some((e) => /canonicalHash mismatch/i.test(e)),
+    wrongContract.errors?.slice(0, 2).join('; '),
+  )
+
+  // Schema chain tip constant (pure — loadMigrationFile for 006)
+  try {
+    const m006 = loadMigrationFile('006')
+    ok(
+      'schema-006-file-loadable',
+      m006.version === '006' &&
+        /^[0-9a-f]{64}$/i.test(m006.sha256) &&
+        m006.filename.includes('006'),
+      m006.filename,
+    )
+    ok(
+      'schema-greenfield-chain-through-006',
+      FP_C_GREENFIELD_CHAIN_VERSIONS[FP_C_GREENFIELD_CHAIN_VERSIONS.length - 1] ===
+        '006' && FP_C_GREENFIELD_CHAIN_VERSIONS.includes('000'),
+      FP_C_GREENFIELD_CHAIN_VERSIONS.join(','),
+    )
+    ok(
+      'healthz-required-tables-004-006-named',
+      HEALTHZ_REQUIRED_TABLES_004_006.length === 6 &&
+        HEALTHZ_REQUIRED_TABLES_004_006.includes('control_plane_dispatch_plans') &&
+        HEALTHZ_REQUIRED_TABLES_004_006.includes('control_plane_stage_evidence_receipts'),
+      HEALTHZ_REQUIRED_TABLES_004_006.join(','),
+    )
+  } catch (e) {
+    ok('schema-006-file-loadable', false, String(e?.message || e))
+    ok('schema-greenfield-chain-through-006', false, String(e?.message || e))
+    ok('healthz-required-tables-004-006-named', false, String(e?.message || e))
+  }
+
+  // Dispatch/account seeds expose explicit entityExpectedRev 0 (create) for MCP envelope
+  const dispatchSeed = mat.dispatchSeed ?? buildDispatchPlanSeed(now, pin)
+  ok(
+    'dispatch-seed-entityExpectedRev-explicit-zero',
+    dispatchSeed.entityExpectedRev === 0 &&
+      dispatchSeed.expectedEntityRev === 0 &&
+      dispatchSeed.items?.[0]?.expectedEntityRev === 0,
+    JSON.stringify({
+      top: dispatchSeed.entityExpectedRev,
+      alias: dispatchSeed.expectedEntityRev,
+      item: dispatchSeed.items?.[0]?.expectedEntityRev,
+    }),
+  )
+  const accountSeed = mat.accountSyncSeed ?? buildAccountSyncSeed(now, pin)
+  ok(
+    'account-seed-entityExpectedRev-explicit-zero',
+    accountSeed.entityExpectedRev === 0 && accountSeed.expectedEntityRev === 0,
+    String(accountSeed.entityExpectedRev),
   )
 
   // Gate: missing approval
@@ -1317,6 +2054,75 @@ export function runSeedSelfTests() {
       replaceBoardScopedSyntheticRows.toString(),
     ),
   )
+  const replaceSrc = replaceBoardScopedSyntheticRows.toString()
+  ok(
+    'replace-clears-control-plane-runs',
+    /DELETE FROM control_plane_runs WHERE board_id=\?/.test(replaceSrc),
+  )
+  ok(
+    'replace-inserts-control-plane-runs',
+    /INSERT INTO control_plane_runs/.test(replaceSrc) ||
+      /insertDurableRunRow/.test(replaceSrc),
+  )
+  ok(
+    'replace-no-legacy-dual-read-flag',
+    !/enableLegacyDualRead|legacyDualRead|DUAL_READ/.test(replaceSrc),
+  )
+
+  // Product-shaped durable ongoing record for deriveDurableOwnership VALID_CURRENT+RUNNING.
+  const ongoingRec = buildSeededOngoingDurableRunRecord({
+    boardId: DEFAULT_BOARD_ID,
+    now,
+    pin,
+    dispatchSeed: mat.dispatchSeed ?? buildDispatchPlanSeed(now, pin),
+    actor: SEED_ACTOR_ISOLATED,
+  })
+  ok(
+    'durable-ongoing-ids',
+    ongoingRec.runId === SEEDED_ONGOING.runId &&
+      ongoingRec.taskId === SEEDED_ONGOING.taskId &&
+      ongoingRec.state === 'RUNNING' &&
+      ongoingRec.stalled === false,
+    `${ongoingRec.runId}/${ongoingRec.taskId}/${ongoingRec.state}`,
+  )
+  ok(
+    'durable-ongoing-lease-fence-agent',
+    Boolean(ongoingRec.agentId) &&
+      Boolean(ongoingRec.fencingToken) &&
+      ongoingRec.fencingVersion === 1 &&
+      ongoingRec.leaseExpiresAtMs != null &&
+      ongoingRec.leaseExpiresAtMs > ongoingRec.registeredAtMs,
+    `agent=${ongoingRec.agentId} fence=${ongoingRec.fencingToken} lease=${ongoingRec.leaseExpiresAtMs}`,
+  )
+  ok(
+    'durable-ongoing-zero-click-fields',
+    ongoingRec.role === SEEDED_ONGOING.role &&
+      ongoingRec.model === SEEDED_ONGOING.model &&
+      ongoingRec.effort === SEEDED_ONGOING.effort &&
+      ongoingRec.targetGate === SEEDED_ONGOING.targetGate &&
+      Boolean(ongoingRec.maskedAccountRef) &&
+      ongoingRec.registeredAtMs != null &&
+      ongoingRec.heartbeatAtMs != null &&
+      ongoingRec.materialProgressAtMs != null,
+    JSON.stringify({
+      role: ongoingRec.role,
+      model: ongoingRec.model,
+      effort: ongoingRec.effort,
+      gate: ongoingRec.targetGate,
+      mask: ongoingRec.maskedAccountRef,
+    }),
+  )
+  ok(
+    'durable-ongoing-full-record-json-shape',
+    ongoingRec.boardId === DEFAULT_BOARD_ID &&
+      Array.isArray(ongoingRec.history) &&
+      ongoingRec.history[0]?.toState === 'RUNNING',
+    String(ongoingRec.history?.[0]?.reason),
+  )
+  ok(
+    'baseline-creates-control-plane-runs',
+    /CREATE TABLE IF NOT EXISTS control_plane_runs/.test(ensureBaselineTables.toString()),
+  )
 
   const failCount = results.filter((r) => !r.pass).length
   return { ok: failCount === 0, failCount, results }
@@ -1392,6 +2198,26 @@ export async function runDisposableUpsertProof(options = {}) {
       const [mig] = await db.query(
         `SELECT version, filename FROM schema_migrations WHERE version='001'`,
       )
+      const [runRows] = await db.query(
+        `SELECT run_id, state, agent_id, fencing_token, lease_expires_at_ms, record_json
+         FROM control_plane_runs WHERE board_id=? AND task_id=?`,
+        [ctx.boardId, SEEDED_ONGOING.taskId],
+      )
+
+      const durableOk =
+        r1.seedProof?.durableOngoingRunningCount >= 1 &&
+        r1.seedProof?.durableOngoingRunId === SEEDED_ONGOING.runId &&
+        r1.seedProof?.durableOngoingState === 'RUNNING' &&
+        r1.seedProof?.durableOngoingHasFence === true &&
+        r1.seedProof?.durableOngoingHasLease === true &&
+        r1.seedProof?.durableOngoingHasAgent === true &&
+        r1.seedProof?.durableOngoingHasRecordJson === true &&
+        r1.seedProof?.durableOngoingFreshTimes === true &&
+        r2.seedProof?.durableOngoingRunId === SEEDED_ONGOING.runId &&
+        Array.isArray(runRows) &&
+        runRows.length === 1 &&
+        runRows[0].run_id === SEEDED_ONGOING.runId &&
+        runRows[0].state === 'RUNNING'
 
       const proof = {
         ok: true,
@@ -1408,11 +2234,22 @@ export async function runDisposableUpsertProof(options = {}) {
           tasks: r2.tasks,
           taskHash: r2.taskHash,
           pin: r2.pin,
+          seedProof: r2.seedProof,
         },
         idempotent: {
           tasksMatch: r1.tasks === r2.tasks,
           taskHashMatch: r1.taskHash === r2.taskHash,
           pinMatch: r1.pin?.canonicalSnapshotId === r2.pin?.canonicalSnapshotId,
+          durableOngoingMatch:
+            r1.seedProof?.durableOngoingRunId === r2.seedProof?.durableOngoingRunId &&
+            r1.seedProof?.durableOngoingRunningCount ===
+              r2.seedProof?.durableOngoingRunningCount,
+        },
+        durableOngoing: {
+          ok: durableOk,
+          runId: r1.seedProof?.durableOngoingRunId ?? null,
+          state: r1.seedProof?.durableOngoingState ?? null,
+          count: r1.seedProof?.durableOngoingRunningCount ?? 0,
         },
         preserved: {
           unrelatedBoard: Number(siblingBoards[0].n) === 1,
@@ -1426,6 +2263,8 @@ export async function runDisposableUpsertProof(options = {}) {
         proof.idempotent.tasksMatch &&
         proof.idempotent.taskHashMatch &&
         proof.idempotent.pinMatch &&
+        proof.idempotent.durableOngoingMatch &&
+        proof.durableOngoing.ok &&
         proof.preserved.unrelatedBoard &&
         proof.preserved.unrelatedTask &&
         proof.preserved.schemaMigration001 &&

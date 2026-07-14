@@ -71,8 +71,10 @@ import {
   PIN_MISSING,
 } from '../lib/screenshot-manifest.mjs'
 import {
+  buildOwnedPreviewPublicAllowlistEnv,
   pickFreePort,
   portIsFree,
+  publicAllowlistEnvAllows,
   startOwnedPreviewServer,
 } from '../lib/server-lifecycle.mjs'
 import { resetPageZoom, setPageZoom } from '../lib/zoom.mjs'
@@ -80,6 +82,7 @@ import {
   validateFixtureContract,
   DEFAULT_BOARD_ID,
   HARNESS_PIN,
+  FORBIDDEN_PLACEHOLDER_CANONICAL_HASH,
   REDACTION_CANARIES,
   SEEDED_ONGOING,
   buildHarnessPin,
@@ -91,7 +94,11 @@ import {
   computeLegacyAdHocPlanHash,
   CANONICAL_TASK_IDS,
 } from '../fixtures/seed/control-center-fixture.mjs'
-import { seedIsolatedControlCenter } from '../fixtures/seed/seed-isolated.mjs'
+import {
+  seedIsolatedControlCenter,
+  materializeAuthorityPin,
+  produceSyntheticCanonicalSnapshot,
+} from '../fixtures/seed/seed-isolated.mjs'
 import {
   aggregateProbeVerdicts,
   assertProbesFailClosed,
@@ -112,6 +119,7 @@ import {
 import {
   bootstrapControlPlaneOnServer,
   buildChildBearerEnv,
+  comparePinParity,
   createSyntheticRootPrincipal,
   probeRuntimePin,
   redactSecretsDeep,
@@ -231,11 +239,75 @@ async function runSelfTest() {
     contract.taskHash === expectedTaskHash && expectedTaskHash.length === 64,
     `taskHash=${String(contract.taskHash).slice(0, 16)}…`,
   )
-  const pin = buildHarnessPin()
+  const pinPre = buildHarnessPin()
   ok(
     'fixture-pin-taskHash-parity',
-    pin.taskHash === HARNESS_PIN.taskHash && pin.taskHash === expectedTaskHash,
+    pinPre.taskHash === HARNESS_PIN.taskHash && pinPre.taskHash === expectedTaskHash,
   )
+  ok(
+    'fixture-pre-materialize-hash-null',
+    pinPre.canonicalHash == null && HARNESS_PIN.canonicalHash == null,
+    String(pinPre.canonicalHash),
+  )
+  const matPin = materializeAuthorityPin({ boardId: DEFAULT_BOARD_ID })
+  const pin = matPin.pin
+  ok(
+    'fixture-materialized-authority-hash',
+    /^[0-9a-f]{64}$/i.test(pin.canonicalHash) &&
+      pin.canonicalHash !== FORBIDDEN_PLACEHOLDER_CANONICAL_HASH,
+    pin.canonicalHash?.slice(0, 16),
+  )
+  ok(
+    'fixture-materialized-hash-matches-subject-algo',
+    matPin.canonical.canonicalHash === pin.canonicalHash,
+  )
+  // Content change → hash change (self-test; no MySQL)
+  const altered = matPin.boundTasks.map((t) =>
+    t.id === 'task-next-1' ? { ...t, title: `${t.title}__HASH_BUMP` } : t,
+  )
+  const altCanon = produceSyntheticCanonicalSnapshot({
+    boardId: DEFAULT_BOARD_ID,
+    pin,
+    boundTasks: altered,
+    now: matPin.now,
+  })
+  ok(
+    'fixture-content-change-hash-change',
+    altCanon.canonicalHash !== pin.canonicalHash &&
+      altCanon.payloadSha256 !== matPin.payloadSha256,
+    `base=${pin.canonicalHash.slice(0, 12)} alt=${altCanon.canonicalHash.slice(0, 12)}`,
+  )
+  // Cross-pin reject: wrong runtime hash must fail comparePinParity (not weakened)
+  const crossPin = comparePinParity(
+    {
+      ok: true,
+      httpStatus: 200,
+      canonicalSnapshotId: pin.canonicalSnapshotId,
+      canonicalHash: 'd'.repeat(64),
+      boardRev: pin.boardRev,
+      lifecycleRev: pin.lifecycleRev,
+      taskHash: pin.taskHash,
+    },
+    pin,
+  )
+  ok(
+    'fixture-cross-pin-hash-reject',
+    !crossPin.ok && crossPin.mismatches.some((m) => m.field === 'canonicalHash'),
+    crossPin.detail,
+  )
+  const matchPin = comparePinParity(
+    {
+      ok: true,
+      httpStatus: 200,
+      canonicalSnapshotId: pin.canonicalSnapshotId,
+      canonicalHash: pin.canonicalHash,
+      boardRev: pin.boardRev,
+      lifecycleRev: pin.lifecycleRev,
+      taskHash: pin.taskHash,
+    },
+    pin,
+  )
+  ok('fixture-pin-parity-match', matchPin.ok === true && matchPin.detail === 'pin_parity_ok')
   const scenarios = buildScenarioMatrix(pin)
   ok('fixture-scenario-matrix-size', scenarios.length >= 9, `n=${scenarios.length}`)
   const scenarioIds = new Set(scenarios.map((s) => s.scenario))
@@ -554,8 +626,15 @@ async function runSelfTest() {
       HARNESS_PIN.taskHash?.length === 64,
     JSON.stringify({ boardRev: HARNESS_PIN.boardRev, taskHashPrefix: HARNESS_PIN.taskHash?.slice(0, 12) }),
   )
+  ok(
+    'pin-authority-not-placeholder',
+    pin.canonicalHash &&
+      pin.canonicalHash !== FORBIDDEN_PLACEHOLDER_CANONICAL_HASH &&
+      pin.canonicalHash.length === 64,
+    pin.canonicalHash?.slice(0, 16),
+  )
 
-  // Manifest: fresh clear + pin PRESENT when provenance supplied
+  // Manifest: fresh clear + pin PRESENT when provenance supplied (materialized authority)
   const c = new ScreenshotManifestCollector({ runId: RUN_ID })
   c.clear()
   c.add({
@@ -568,14 +647,18 @@ async function runSelfTest() {
     width: 1440,
     height: 900,
     pins: {
-      canonicalSnapshotId: HARNESS_PIN.canonicalSnapshotId,
-      canonicalHash: HARNESS_PIN.canonicalHash,
-      boardRev: String(HARNESS_PIN.boardRev),
-      lifecycleRev: String(HARNESS_PIN.lifecycleRev),
+      canonicalSnapshotId: pin.canonicalSnapshotId,
+      canonicalHash: pin.canonicalHash,
+      boardRev: String(pin.boardRev),
+      lifecycleRev: String(pin.lifecycleRev),
     },
   })
   ok('manifest-pin-PRESENT', c.rows[0].pinFields === 'PRESENT', c.rows[0].pinFields)
   ok('manifest-no-MISSING-pin', c.rows[0].boardRev !== PIN_MISSING)
+  ok(
+    'manifest-not-placeholder-hash',
+    c.rows[0].canonicalHash !== FORBIDDEN_PLACEHOLDER_CANONICAL_HASH,
+  )
 
   // auth classifier
   const { classifyAuthSurface } = await import('../lib/auth-assert.mjs')
@@ -1093,6 +1176,7 @@ async function runSelfTest() {
     heartbeatAge: true,
     materialProgressAge: true,
     evidence: true,
+    productiveState: true,
   }
   ok(
     'ongoing-fields-pass',
@@ -1101,6 +1185,17 @@ async function runSelfTest() {
       onlyQueryString: false,
       sectionPresent: true,
       visibleFields: ongoingFields,
+      seededTaskId: SEEDED_ONGOING.taskId,
+      foundTaskId: SEEDED_ONGOING.taskId,
+    }).ok,
+  )
+  ok(
+    'ongoing-fields-require-productive-state',
+    !evaluateOngoingZeroClick({
+      hasOngoingQuery: true,
+      onlyQueryString: false,
+      sectionPresent: true,
+      visibleFields: { ...ongoingFields, productiveState: false },
       seededTaskId: SEEDED_ONGOING.taskId,
       foundTaskId: SEEDED_ONGOING.taskId,
     }).ok,
@@ -1128,6 +1223,82 @@ async function runSelfTest() {
     ok(`bootstrap-${r.name}`, r.pass, r.detail ?? undefined)
   }
   ok('bootstrap-contract-suite', boot.ok === true, `failCount=${boot.failCount}`)
+
+  // --- Public allowlist for disposable owned preview (harness-only; product deny-all intact) ---
+  {
+    const exactBoard = DEFAULT_BOARD_ID
+    const otherBoard = 'not-allowlisted-board-xyz'
+    const priorIds = process.env.CAIRN_PUBLIC_BOARD_IDS
+    const priorBoards = process.env.CAIRN_PUBLIC_BOARDS
+    try {
+      // Ensure ambient parent keys cannot mask "no mutate" proof.
+      delete process.env.CAIRN_PUBLIC_BOARD_IDS
+      delete process.env.CAIRN_PUBLIC_BOARDS
+
+      const childEnv = buildOwnedPreviewPublicAllowlistEnv(exactBoard)
+      ok(
+        'public-allowlist-exact-board-key',
+        childEnv.CAIRN_PUBLIC_BOARD_IDS === exactBoard &&
+          Object.keys(childEnv).length === 1 &&
+          Object.keys(childEnv)[0] === 'CAIRN_PUBLIC_BOARD_IDS',
+        JSON.stringify(childEnv),
+      )
+      ok(
+        'public-allowlist-exact-board-allowed',
+        publicAllowlistEnvAllows(childEnv, exactBoard) === true,
+        `board=${exactBoard}`,
+      )
+      ok(
+        'public-allowlist-different-board-denied',
+        publicAllowlistEnvAllows(childEnv, otherBoard) === false,
+        `other=${otherBoard}`,
+      )
+      ok(
+        'public-allowlist-empty-env-deny-all',
+        publicAllowlistEnvAllows({}, exactBoard) === false &&
+          publicAllowlistEnvAllows({ CAIRN_PUBLIC_BOARD_IDS: '' }, exactBoard) === false,
+      )
+      ok(
+        'public-allowlist-helper-no-parent-env-mutate',
+        process.env.CAIRN_PUBLIC_BOARD_IDS === undefined &&
+          process.env.CAIRN_PUBLIC_BOARDS === undefined,
+        `ids=${process.env.CAIRN_PUBLIC_BOARD_IDS ?? 'unset'} boards=${process.env.CAIRN_PUBLIC_BOARDS ?? 'unset'}`,
+      )
+
+      // Env cleanup: parent snapshot restore contract (mirrors runFull finally).
+      const snapshot = {
+        CAIRN_PUBLIC_BOARD_IDS: priorIds,
+        CAIRN_PUBLIC_BOARDS: priorBoards,
+      }
+      // Simulate accidental parent pollution then restore.
+      process.env.CAIRN_PUBLIC_BOARD_IDS = 'polluted-parent-must-not-leak'
+      process.env.CAIRN_PUBLIC_BOARDS = 'also-polluted'
+      for (const key of ['CAIRN_PUBLIC_BOARD_IDS', 'CAIRN_PUBLIC_BOARDS']) {
+        if (snapshot[key] === undefined) delete process.env[key]
+        else process.env[key] = snapshot[key]
+      }
+      ok(
+        'public-allowlist-env-cleanup-restores-parent',
+        process.env.CAIRN_PUBLIC_BOARD_IDS === priorIds &&
+          process.env.CAIRN_PUBLIC_BOARDS === priorBoards,
+        `ids=${process.env.CAIRN_PUBLIC_BOARD_IDS ?? 'unset'} boards=${process.env.CAIRN_PUBLIC_BOARDS ?? 'unset'}`,
+      )
+
+      // Fail-closed empty boardId
+      let threw = false
+      try {
+        buildOwnedPreviewPublicAllowlistEnv('   ')
+      } catch (e) {
+        threw = /FAIL-CLOSED|boardId/i.test(String(e?.message || e))
+      }
+      ok('public-allowlist-empty-boardId-fail-closed', threw)
+    } finally {
+      if (priorIds === undefined) delete process.env.CAIRN_PUBLIC_BOARD_IDS
+      else process.env.CAIRN_PUBLIC_BOARD_IDS = priorIds
+      if (priorBoards === undefined) delete process.env.CAIRN_PUBLIC_BOARDS
+      else process.env.CAIRN_PUBLIC_BOARDS = priorBoards
+    }
+  }
 
   const failCount = results.filter((r) => !r.pass).length
   writeJson('logs/self-test.json', { runId: RUN_ID, results, failCount })
@@ -2280,6 +2451,10 @@ async function runProbes(page, boardId, _storagePath) {
       const titleEl = card.querySelector('h3, .ongoingTitle, [data-field="title"]')
       const chips = [...card.querySelectorAll('.chip, [class*="chip"]')].map((c) => textOf(c))
       const chipBlob = chips.join(' | ')
+      const prodAttr =
+        card.getAttribute('data-productive-state') ||
+        card.querySelector('[data-productive-state]')?.getAttribute('data-productive-state') ||
+        ''
       const visibleFields = {
         taskId:
           !!taskIdEl ||
@@ -2297,6 +2472,8 @@ async function runProbes(page, boardId, _storagePath) {
         materialProgressAge:
           !!field(card, 'material-age') || /material progress/i.test(card.innerText || ''),
         evidence: !!field(card, 'evidence'),
+        // UI_CONTRACT §7 PRODUCTIVE | IDLE | STALLED
+        productiveState: /^(PRODUCTIVE|IDLE|STALLED)$/.test(prodAttr),
       }
       return {
         sectionPresent: !!section,
@@ -2430,8 +2607,12 @@ async function runFull() {
     // 1b) Per-run synthetic ROOT principal (memory only — never written to disk/logs)
     syntheticPrincipal = createSyntheticRootPrincipal({ boardId })
     const childBearerEnv = buildChildBearerEnv(syntheticPrincipal)
+    // Child-only public allowlist for harness publicRedaction probe (exact boardId).
+    // Does NOT relax product empty-allowlist deny-all; does NOT set process.env on parent.
+    const publicAllowlistEnv = buildOwnedPreviewPublicAllowlistEnv(boardId)
 
     // 2) Start owned server bound to iso DB + child-only CAIRN_BEARER_PRINCIPALS_JSON
+    //    + CAIRN_PUBLIC_BOARD_IDS=<exact boardId>
     const port = preferPort && Number.isFinite(preferPort) ? preferPort : await pickFreePort(0)
     // Parent process: only set non-secret DB name for seed helpers; never set bearer env on parent.
     parentEnvSnapshot.CAIRN_DB_NAME = process.env.CAIRN_DB_NAME
@@ -2439,6 +2620,9 @@ async function runFull() {
     parentEnvSnapshot.WEB_BASE = process.env.WEB_BASE
     parentEnvSnapshot.CAIRN_E2E_USERNAME = process.env.CAIRN_E2E_USERNAME
     parentEnvSnapshot.CAIRN_E2E_PASSWORD = process.env.CAIRN_E2E_PASSWORD
+    // Snapshot public allowlist keys so cleanup restores ambient parent state (we never set them).
+    parentEnvSnapshot.CAIRN_PUBLIC_BOARD_IDS = process.env.CAIRN_PUBLIC_BOARD_IDS
+    parentEnvSnapshot.CAIRN_PUBLIC_BOARDS = process.env.CAIRN_PUBLIC_BOARDS
     process.env.CAIRN_DB_NAME = dbName
     process.env.BOARD_ID = boardId
     server = await startOwnedPreviewServer({
@@ -2452,6 +2636,8 @@ async function runFull() {
         // password from process env / .env already in child env via spread
         // Synthetic ROOT principals JSON — child process only (MCP auth boundary)
         ...childBearerEnv,
+        // Public snapshot allowlist — child process only (exact board under test)
+        ...publicAllowlistEnv,
       },
       logDir: path.join(OUT_ROOT, 'logs'),
       healthTimeoutMs: 120_000,
@@ -2473,14 +2659,34 @@ async function runFull() {
       health: server.health,
       logPath: server.logPath,
       // names only — never values of bearer env
-      injectedEnvKeys: server.injectedEnvKeys ?? Object.keys(childBearerEnv),
+      injectedEnvKeys: [
+        ...(server.injectedEnvKeys ?? Object.keys(childBearerEnv)),
+        ...Object.keys(publicAllowlistEnv),
+      ],
+      publicAllowlistBoardId: boardId,
       syntheticRootPrincipal: syntheticPrincipal.principalMeta,
     })
 
     // 2b) Authorized control-plane bootstrap (dispatch plan + account-sync via real /mcp).
     // Fail-closed: pin mismatch / MCP auth / readback failure throws → non-zero exit.
     // In-memory stores live only in the preview process — seed alone cannot fill them.
-    const authorityPin = buildHarnessPin()
+    // Authority pin MUST be the seed-materialized hash (never pre-materialize placeholder).
+    const authorityPin = {
+      canonicalSnapshotId: seedResult.pin.canonicalSnapshotId,
+      canonicalHash: seedResult.pin.canonicalHash,
+      taskHash: seedResult.pin.taskHash,
+      boardRev: Number(seedResult.pin.boardRev),
+      lifecycleRev: Number(seedResult.pin.lifecycleRev),
+    }
+    if (
+      !authorityPin.canonicalHash ||
+      authorityPin.canonicalHash === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH ||
+      !/^[0-9a-f]{64}$/i.test(authorityPin.canonicalHash)
+    ) {
+      throw new Error(
+        `HARNESS FAIL: seed authority pin.canonicalHash invalid or placeholder: ${String(authorityPin.canonicalHash).slice(0, 24)}`,
+      )
+    }
     const runtimePinProbe = await probeRuntimePin(server.baseUrl, {
       bearer: syntheticPrincipal.bearer,
       secrets: [syntheticPrincipal.bearer],
@@ -2502,8 +2708,10 @@ async function runFull() {
         requireBearer: true,
         failClosed: true,
         principalMeta: syntheticPrincipal.principalMeta,
-        dispatchSeed: buildDispatchPlanSeed(undefined, authorityPin),
-        accountSyncSeed: buildAccountSyncSeed(undefined, authorityPin),
+        dispatchSeed:
+          seedResult.dispatchSeed ?? buildDispatchPlanSeed(undefined, authorityPin),
+        accountSyncSeed:
+          seedResult.accountSyncSeed ?? buildAccountSyncSeed(undefined, authorityPin),
       })
     } catch (e) {
       const detail =
@@ -2542,6 +2750,7 @@ async function runFull() {
           boardRev: authorityPin.boardRev,
           lifecycleRev: authorityPin.lifecycleRev,
           canonicalSnapshotId: authorityPin.canonicalSnapshotId,
+          canonicalHash: authorityPin.canonicalHash,
         },
         controlPlaneBootstrapOk: cpBootstrap.ok,
         controlPlaneResiduals: cpBootstrap.residuals,
@@ -2785,8 +2994,17 @@ async function runFull() {
     } else if (dbName && keepDb) {
       cleanup.dbDropped = { skipped: true, dbName }
     }
-    // Restore parent env mutations (never leave CAIRN_BEARER_* on parent — we never set them)
-    for (const key of ['CAIRN_DB_NAME', 'BOARD_ID', 'WEB_BASE', 'CAIRN_E2E_USERNAME', 'CAIRN_E2E_PASSWORD']) {
+    // Restore parent env mutations (never leave CAIRN_BEARER_* / public allowlist on parent —
+    // bearer + allowlist were child-only; restore ambient parent values for allowlist keys).
+    for (const key of [
+      'CAIRN_DB_NAME',
+      'BOARD_ID',
+      'WEB_BASE',
+      'CAIRN_E2E_USERNAME',
+      'CAIRN_E2E_PASSWORD',
+      'CAIRN_PUBLIC_BOARD_IDS',
+      'CAIRN_PUBLIC_BOARDS',
+    ]) {
       if (parentEnvSnapshot[key] === undefined) delete process.env[key]
       else process.env[key] = parentEnvSnapshot[key]
     }

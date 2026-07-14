@@ -85,6 +85,7 @@ describe('perf-budgets harness helpers', () => {
       seriesCount: 2,
       burst: 20,
       sustainedPerMinute: 60,
+      warmDiscard: false,
     })
     expect(plan.sampleN).toBe(10)
     expect(plan.gapMs).toBeGreaterThanOrEqual(1000)
@@ -93,6 +94,47 @@ describe('perf-budgets harness helpers', () => {
     expect(plan.reasons.some((r: string) => r.startsWith('sampleN_capped_burst_half'))).toBe(
       true,
     )
+  })
+
+  it('warm discard adds one request per series to sample plan totalRequests', async () => {
+    const m = await loadFlow()
+    const plan = m.resolveSamplePlan({
+      sampleN: 10,
+      seriesCount: 2,
+      burst: 20,
+      sustainedPerMinute: 60,
+      warmDiscard: true,
+    })
+    expect(plan.warmDiscard).toBe(true)
+    expect(plan.warmExtra).toBe(2)
+    expect(plan.totalRequests).toBe(22)
+    expect(plan.reasons.some((r: string) => r.startsWith('warm_discard_extra'))).toBe(true)
+  })
+
+  it('evaluatePublicPayloadBound fail-closes over MAX_PAGE_SIZE parity', async () => {
+    const m = await loadFlow()
+    const ok = m.evaluatePublicPayloadBound({ taskCount: 8, bodyBytes: 6000, hasPagination: false })
+    expect(ok.ok).toBe(true)
+    expect(ok.code).toBeNull()
+    const fail = m.evaluatePublicPayloadBound({
+      taskCount: 1000,
+      bodyBytes: 900_000,
+      hasPagination: false,
+    })
+    expect(fail.ok).toBe(false)
+    expect(fail.failClosed).toBe(true)
+    expect(fail.code).toBe('PAYLOAD_UNBOUNDED')
+    expect(String(fail.warning)).toContain('PAYLOAD_UNBOUNDED')
+  })
+
+  it('inspectPublicSnapshotPayload counts tasks from JSON body', async () => {
+    const m = await loadFlow()
+    const ins = m.inspectPublicSnapshotPayload(
+      JSON.stringify({ tasks: [{ id: 1 }, { id: 2 }], runs: [] }),
+    )
+    expect(ins.taskCount).toBe(2)
+    expect(ins.bodyBytes).toBeGreaterThan(0)
+    expect(ins.hasPagination).toBe(false)
   })
 
   it('honors explicit gap but flags when below policy refill', async () => {
@@ -248,5 +290,8 @@ describe('perf-budgets harness helpers', () => {
     expect(r.checks.classTunnel).toBe(true)
     expect(r.checks.classApp).toBe(true)
     expect(r.checks.summaryExcludesRetry).toBe(true)
+    expect(r.checks.samplePlanWarm).toBe(true)
+    expect(r.checks.payloadFailClosed).toBe(true)
+    expect(r.checks.warmDiscardSemantics).toBe(true)
   })
 })

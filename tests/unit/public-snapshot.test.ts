@@ -571,6 +571,7 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
       canonicalSnapshotId: 'snap-1',
       boardRev: 10,
       lifecycleRev: 5,
+      canonicalHash: 'a'.repeat(64),
     },
     dependencies: [
       { name: 'mysql', status: 'up' },
@@ -614,6 +615,7 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
     expect(p.schema.match).toBe(true)
     expect(p.release.match).toBe(true)
     expect(p.canonicalSnapshotId).toBe('snap-1')
+    expect(p.canonicalHash).toBe('a'.repeat(64))
     expect(p.boardRev).toBe(10)
     expect(p.lifecycleRev).toBe(5)
     expect(p.migration.status).toBe('READY')
@@ -622,6 +624,28 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
       { name: 'mcp', status: 'up' },
       { name: 'schema-required-tables', status: 'up' },
     ])
+  })
+
+  it('surfaces null canonicalHash when pin hash unproven (never invents)', async () => {
+    const noHash: HealthObserved = {
+      ...healthyObserved,
+      snapshot: {
+        canonicalSnapshotId: 'snap-no-hash',
+        boardRev: 1,
+        lifecycleRev: 1,
+        canonicalHash: null,
+      },
+    }
+    const result = await handleHealthz(new Request('http://local/api/healthz'), {
+      authGuard: allowAllHealthGuard(),
+      loadExpected: () => expected,
+      loadObserved: () => noHash,
+    })
+    expect(result.status).toBe(200)
+    const p = result.payload as ReturnType<typeof buildHealthzPayload>
+    expect(p.canonicalSnapshotId).toBe('snap-no-hash')
+    expect(p.canonicalHash).toBeNull()
+    expect(Object.prototype.hasOwnProperty.call(p, 'canonicalHash')).toBe(true)
   })
 
   it('only 003 applied (prior-schema) => unhealthy vs latest expected 005', () => {
@@ -722,6 +746,7 @@ describe('AC-OPS-01 /healthz auth guard + SHA/schema mismatch', () => {
       canonicalSnapshotId: 'snap-1',
       boardRev: 10,
       lifecycleRev: 5,
+      canonicalHash: 'a'.repeat(64),
     },
     dependencies: [
       { name: 'mysql', status: 'up' },
@@ -1775,6 +1800,7 @@ describe('health route auth/mismatch via public exports (no product edit)', () =
       canonicalSnapshotId: 'snap-1',
       boardRev: 10,
       lifecycleRev: 5,
+      canonicalHash: 'a'.repeat(64),
     },
     dependencies: [
       { name: 'mysql', status: 'up' },

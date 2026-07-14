@@ -157,7 +157,7 @@ export function evaluateStagingDataLoad(req = {}) {
   return refuse(
     'PRODUCTION_DERIVED',
     'USE_TS_LIBRARY_FOR_FULL_PROOF',
-    'production-derived loads must use src/server/staging-data-provenance evaluateStagingDataLoad with payload proof; seed path is synthetic-only',
+    'production-derived loads must use src/server/staging-production-derived-load-adapter (authorizeAndPrepareStagingProductionDerivedLoad → evaluateStagingDataLoad + payload proof); seed path is synthetic-only',
   )
 }
 

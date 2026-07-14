@@ -14,6 +14,7 @@ import {
   assignBucket,
   computePriorityAllocation,
   computeRollupV3,
+  isAllowedClosureRole,
   type RollupTaskInput,
 } from '#/server/rollup-v3'
 
@@ -479,7 +480,91 @@ describe('AC-BUCKET-05/07 STALE overlay + RECONCILIATION_PENDING', () => {
       PIN,
     )
     expect(a.primary).toBe('RECONCILIATION_PENDING')
+    expect(a.overlays).toContain('STALE_CLAIM')
     expect(a.overlays).toContain('RECONCILIATION_DRILLDOWN')
+  })
+
+  it.each([
+    ['STALE', 'STALE_CLAIM'],
+    ['ORPHAN', 'STALE_CLAIM'],
+    ['EXPIRED', 'STALE_CLAIM'],
+    ['FENCED', 'STALE_CLAIM'],
+  ] as const)(
+    'incomplete %s ownership → RECONCILIATION_PENDING + STALE_CLAIM (STALE chip family)',
+    (claimState, familyOverlay) => {
+      const a = assignBucket(
+        productTask(`R-${claimState}`, 'BUILT', { claimState }),
+        PIN,
+      )
+      expect(a.primary).toBe('RECONCILIATION_PENDING')
+      expect(a.ruleIndex).toBe(4)
+      expect(a.overlays).toContain(familyOverlay)
+      expect(a.overlays).toContain('RECONCILIATION_DRILLDOWN')
+      // Mutual exclusivity: not also DONE
+      expect(a.outsideTracked).toBe(false)
+    },
+  )
+
+  it('incomplete BEYOND_STAGE → RECONCILIATION_PENDING + BEYOND_STAGE_ONGOING (not STALE_CLAIM)', () => {
+    const a = assignBucket(
+      productTask('R-BEYOND', 'BUILT', { claimState: 'BEYOND_STAGE' }),
+      PIN,
+    )
+    expect(a.primary).toBe('RECONCILIATION_PENDING')
+    expect(a.overlays).toContain('BEYOND_STAGE_ONGOING')
+    expect(a.overlays).toContain('RECONCILIATION_DRILLDOWN')
+    expect(a.overlays).not.toContain('STALE_CLAIM')
+  })
+
+  it('completed stays DONE with reconciliation overlay; incomplete STALE stays RECON not DONE', () => {
+    const done = assignBucket(
+      productTask('D-STALE', 'PROD_READY', {
+        claimState: 'STALE',
+        productStageMode: 'STAGE_2',
+      }),
+      PIN,
+    )
+    const recon = assignBucket(
+      productTask('R-STALE', 'BUILT', { claimState: 'STALE' }),
+      PIN,
+    )
+    expect(done.primary).toBe('DONE')
+    expect(done.overlays).toContain('STALE_CLAIM')
+    expect(done.overlays).toContain('RECONCILIATION_DRILLDOWN')
+    expect(recon.primary).toBe('RECONCILIATION_PENDING')
+    expect(recon.overlays).toContain('STALE_CLAIM')
+    expect(recon.overlays).toContain('RECONCILIATION_DRILLDOWN')
+  })
+
+  it('rollup STALE_CLAIM count includes incomplete recon + completed linger; denom equality holds', () => {
+    const result = computeRollupV3({
+      pin: PIN,
+      tasks: [
+        productTask('D1', 'PROD_READY', {
+          claimState: 'ORPHAN',
+          productStageMode: 'STAGE_2',
+        }),
+        productTask('R1', 'BUILT', { claimState: 'STALE' }),
+        productTask('R2', 'FUNCTIONAL', { claimState: 'FENCED' }),
+        productTask('R3', 'MAPPED', { claimState: 'EXPIRED' }),
+        productTask('Q1', 'MAPPED', { eligible: true }),
+      ],
+      g5Domains: [],
+    })
+    const sum =
+      result.buckets.DONE +
+      result.buckets.RECONCILIATION_PENDING +
+      result.buckets.ONGOING +
+      result.buckets.NEXT +
+      result.buckets.QUEUED +
+      result.buckets.BLOCKED
+    expect(sum).toBe(result.trackedWorkDenominator)
+    expect(result.buckets.DONE).toBe(1)
+    expect(result.buckets.RECONCILIATION_PENDING).toBe(3)
+    expect(result.buckets.QUEUED).toBe(1)
+    // D1 + R1 + R2 + R3 all carry STALE_CLAIM
+    expect(result.overlays.STALE_CLAIM).toBe(4)
+    expect(result.overlays.RECONCILIATION_DRILLDOWN).toBe(4)
   })
 
   it('stale data/dispatch/account overlays recorded', () => {
@@ -644,6 +729,112 @@ describe('AC-PRIORITY-01/02 membership + zero/null frontier semantics', () => {
     expect(alloc.priorityCapacityShare).toBe(0.5)
     // > 0.5 required — equal 0.5 is not majority
     expect(alloc.majorityAllocationPass).toBe(false)
+  })
+
+  it('AC-PRIORITY-01 DISTINCT membership by taskId (duplicate rows → denom=1)', () => {
+    const alloc = computePriorityAllocation({
+      pin: PIN,
+      tasks: [
+        {
+          taskId: 'P1',
+          classification: cls('P1', 'PRODUCT', 'ACTIVE'),
+          priorityMembership: true,
+        },
+        {
+          taskId: 'P1',
+          classification: cls('P1', 'PRODUCT', 'ACTIVE'),
+          priorityMembership: true,
+        },
+        {
+          taskId: 'P2',
+          classification: cls('P2', 'PRODUCT', 'ACTIVE'),
+          priorityMembership: true,
+        },
+      ],
+      packets: [],
+    })
+    expect(alloc.membershipTaskIds).toEqual(['P1', 'P2'])
+    expect(alloc.membershipDenominator).toBe(2)
+  })
+
+  it('no membership → priorityClosureCapacity forced 0 (fail-closed EMPTY)', () => {
+    const alloc = computePriorityAllocation({
+      pin: PIN,
+      tasks: [],
+      packets: [
+        {
+          packetId: 'pk1',
+          taskId: 'X',
+          liveOrReserved: true,
+          genuine: true,
+          unique: true,
+          currentHash: true,
+          dependencyReady: true,
+          collisionSafe: true,
+          advancesOpenClosureGate: true,
+          isPriorityPortfolio: true,
+        },
+      ],
+    })
+    expect(alloc.membershipDenominator).toBe(0)
+    expect(alloc.priorityClosureCapacity).toBe(0)
+    expect(alloc.allClosureCapacity).toBe(1)
+    expect(alloc.majorityAllocationPass).toBeNull()
+    expect(alloc.priorityCapacityShare).toBeNull()
+    expect(alloc.frontierState).toBe('PRIORITY_FRONTIER_EMPTY')
+  })
+
+  it('closure-role filter excludes root/idle/health; allows Stage roles + implementer', () => {
+    expect(isAllowedClosureRole('PRODUCT')).toBe(true)
+    expect(isAllowedClosureRole('implementer')).toBe(true)
+    expect(isAllowedClosureRole('INVENTORY')).toBe(true)
+    expect(isAllowedClosureRole('root')).toBe(false)
+    expect(isAllowedClosureRole('idle_controller')).toBe(false)
+    expect(isAllowedClosureRole('health-only')).toBe(false)
+    expect(isAllowedClosureRole('mystery-role')).toBe(false)
+    expect(isAllowedClosureRole(null)).toBe(true)
+    expect(isAllowedClosureRole('')).toBe(true)
+
+    const alloc = computePriorityAllocation({
+      pin: PIN,
+      tasks: [
+        {
+          taskId: 'P1',
+          classification: cls('P1', 'PRODUCT', 'ACTIVE'),
+          priorityMembership: true,
+        },
+      ],
+      packets: [
+        {
+          packetId: 'ok',
+          taskId: 'P1',
+          liveOrReserved: true,
+          genuine: true,
+          unique: true,
+          currentHash: true,
+          dependencyReady: true,
+          collisionSafe: true,
+          advancesOpenClosureGate: true,
+          isPriorityPortfolio: true,
+          closureRole: 'PRODUCT',
+        },
+        {
+          packetId: 'bad',
+          taskId: 'P1',
+          liveOrReserved: true,
+          genuine: true,
+          unique: true,
+          currentHash: true,
+          dependencyReady: true,
+          collisionSafe: true,
+          advancesOpenClosureGate: true,
+          isPriorityPortfolio: true,
+          closureRole: 'root',
+        },
+      ],
+    })
+    expect(alloc.allClosureCapacity).toBe(1)
+    expect(alloc.priorityClosureCapacity).toBe(1)
   })
 })
 

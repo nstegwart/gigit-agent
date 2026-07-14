@@ -1,17 +1,36 @@
-// Adaptive-nav E2E (Batch 5 multi-board).
-// Each board's data/boards.json `views` array drives which sidebar tabs render
-// (AppShell.NAV + the adaptive `visible` filter). Boards without a "board" view
-// redirect their bare `/b/<id>/` index to the first enabled view.
-//   - ibils     views: board, agents, projects, features, map, design, decisions, log
-//   - mfs-rebuild views: tasks, ops, projects, agents  (NO board/features/map)
-// Sidebar labels: ops -> "Accounts" (see AppShell.NAV).
+// Adaptive-nav E2E (Batch 5 multi-board + control-center IA for mfs-rebuild).
+//
+// Classic boards (ibils): data/boards.json `views` array drives which sidebar tabs
+// render (AppShell.NAV + the adaptive `visible` filter). Boards without a "board"
+// view redirect their bare `/b/<id>/` index to the first enabled view.
+//   - ibils views: board, agents, projects, features, map, design, decisions, log
+//
+// Control-center boards (mfs-rebuild): UI_CONTRACT §2 nine primary IA — always shown
+// via AppShell.CONTROL_CENTER_NAV (views filter bypassed). Bare index stays Overview
+// (no adaptive redirect to tasks). Labels (exact English `.lbl` order):
+//   Overview, Work, Priority, Projects, Features / Flows, Agents / Runs,
+//   Ops / Accounts, Decisions, Evidence / Audit
+// Sidebar ops label is "Ops / Accounts" (not legacy "Accounts"); there is no "Tasks" tab.
 import { expect, test, type Locator, type Page } from '@playwright/test'
+
+/** Exact English labels for control-center boards (AppShell.CONTROL_CENTER_NAV_LABELS). */
+const CONTROL_CENTER_NAV_LABELS = [
+  'Overview',
+  'Work',
+  'Priority',
+  'Projects',
+  'Features / Flows',
+  'Agents / Runs',
+  'Ops / Accounts',
+  'Decisions',
+  'Evidence / Audit',
+] as const
 
 // A sidebar nav item selected by its exact `.lbl` text (stable across trailing-slash
 // / href differences). Scoped to `.sidebar a.nav-item` so page-body links never match.
 function navItem(page: Page, label: string): Locator {
   return page.locator('.sidebar a.nav-item', {
-    has: page.locator('.lbl', { hasText: new RegExp(`^${label}$`) }),
+    has: page.locator('.lbl', { hasText: new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }),
   })
 }
 
@@ -27,46 +46,53 @@ test.describe('adaptive sidebar nav', () => {
     await expect(navItem(page, 'Features')).toBeVisible()
 
     // ibils does NOT enable ops/prod -> Accounts/Production tabs absent entirely.
+    // (CC boards use "Ops / Accounts"; classic label remains "Accounts".)
     await expect(navItem(page, 'Accounts')).toHaveCount(0)
     await expect(navItem(page, 'Production')).toHaveCount(0)
   })
 
-  test('mfs-rebuild board shows Tasks/Accounts, hides Features/Map', async ({
+  test('mfs-rebuild board shows nine control-center IA (Overview, Ops / Accounts, Features / Flows)', async ({
     page,
   }) => {
     await page.goto('/b/mfs-rebuild/projects')
 
     await expect(page.locator('.sidebar')).toBeVisible()
+    await expect(page.locator('[data-control-center="true"]').first()).toBeVisible()
 
-    // mfs-rebuild enables tasks/ops -> those tabs render.
-    await expect(navItem(page, 'Tasks')).toBeVisible()
-    await expect(navItem(page, 'Accounts')).toBeVisible()
+    // All nine primary IA destinations present (UI_CONTRACT §2).
+    for (const label of CONTROL_CENTER_NAV_LABELS) {
+      await expect(navItem(page, label)).toBeVisible()
+    }
 
-    // mfs-rebuild does NOT enable features/map -> those tabs absent.
-    await expect(navItem(page, 'Features')).toHaveCount(0)
+    // Spot-check named contract labels from the task text.
+    await expect(navItem(page, 'Overview')).toBeVisible()
+    await expect(navItem(page, 'Ops / Accounts')).toBeVisible()
+    await expect(navItem(page, 'Features / Flows')).toBeVisible()
+
+    // Legacy Batch-5 adaptive labels must NOT drive the CC sidebar.
+    await expect(navItem(page, 'Tasks')).toHaveCount(0)
+    await expect(navItem(page, 'Accounts')).toHaveCount(0)
     await expect(navItem(page, 'Map')).toHaveCount(0)
+    // Classic "Features" alone is not a CC label (CC uses "Features / Flows").
+    await expect(navItem(page, 'Features')).toHaveCount(0)
   })
 })
 
 test.describe('adaptive board-index redirect', () => {
-  test('mfs-rebuild bare index redirects to an enabled view (no Board KPI strip)', async ({
-    page,
-  }) => {
+  test('mfs-rebuild bare index stays on Overview (no Tasks redirect)', async ({ page }) => {
     await page.goto('/b/mfs-rebuild/')
 
-    // A board without a "board" view must NOT stay on the bare index: the client
-    // <Navigate replace> lands us on the first enabled view (tasks). Assert the URL
-    // moved off the bare index onto a named sub-view under this board's scope.
-    await expect(page).toHaveURL(/\/b\/mfs-rebuild\/(tasks|ops|prod|guide|projects|agents)(\/|$)/)
-    await expect(page).not.toHaveURL(/\/b\/mfs-rebuild\/?$/)
+    // Control-center boards render Overview at bare index — no adaptive Navigate
+    // to tasks/ops. URL must remain the board root (optional trailing slash).
+    await expect(page).toHaveURL(/\/b\/mfs-rebuild\/?$/)
 
-    // The Board home body (KPI strip) must NOT be present — this board has no board view.
+    // Overview chrome: active nav + bilingual page title (SECTION_TITLE + id-ID).
+    await expect(navItem(page, 'Overview')).toHaveClass(/active/)
+    await expect(page.locator('#page-title')).toHaveText(/Overview/)
+
+    // Surface assertion: control-center shell + overview route (not board KPI strip).
+    await expect(page.locator('.app--control-center, [data-control-center="true"]').first()).toBeVisible()
     await expect(page.locator('[data-testid="board-smoke"]')).toHaveCount(0)
-
-    // Landing view is Tasks (mfs-rebuild's first enabled view) — topbar reflects it.
-    await expect(page).toHaveURL(/\/b\/mfs-rebuild\/tasks(\/|$)/)
-    await expect(page.locator('#page-title')).toHaveText('Tasks')
-    await expect(navItem(page, 'Tasks')).toHaveClass(/active/)
   })
 
   test('ibils bare index stays on the Board home KPI view', async ({ page }) => {

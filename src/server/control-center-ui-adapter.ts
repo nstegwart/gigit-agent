@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto'
 import { buildModel } from '#/lib/model'
 import type {
   ClassificationReceipt,
+  DependencyJoin,
   G5DomainRecord,
   PrimaryOwnership,
   TaskClassificationRecord,
@@ -94,6 +95,13 @@ import {
 } from '#/server/run-registry'
 import type { PriorityPacket } from '#/server/rollup-v3'
 import type { ClaimState, RunLiveness } from '#/server/rollup-v3'
+import { isAllowedClosureRole } from '#/server/rollup-v3'
+import {
+  buildDirectMembershipAllowlist,
+  isPriorityPortfolioMembership,
+  type DirectMembershipAllowlist,
+  type PriorityMembershipContext,
+} from '#/server/classification'
 
 /** Optional run-registry / extended fields never mirrored from heartbeat alone. */
 type RunSourceExt = Run & {
@@ -484,8 +492,38 @@ export function mapRunRecordToBoardRun(rec: RunRecord): Run & RunSourceExt {
 }
 
 /**
+ * Collision-safe for a durable run:
+ * - no scopes → safe
+ * - scopes present → must hold a fencing token (locks acquired)
+ * Never the tautology `(length ?? 0) >= 0`.
+ */
+export function isRunCollisionSafe(rec: {
+  collisionScopeLockIds?: ReadonlyArray<string> | null
+  fencingToken?: string | null
+}): boolean {
+  const scopes = rec.collisionScopeLockIds ?? []
+  if (scopes.length === 0) return true
+  return typeof rec.fencingToken === 'string' && rec.fencingToken.length > 0
+}
+
+/**
+ * Plan reserved packet: scopes empty → safe; non-empty scopes are pre-validated
+ * at plan publish and treated as reserved-collision-safe only when array is finite.
+ */
+export function isPlanItemCollisionSafe(item: {
+  collisionScopeLockIds?: ReadonlyArray<string> | null
+}): boolean {
+  const scopes = item.collisionScopeLockIds
+  if (scopes == null) return true
+  if (!Array.isArray(scopes)) return false
+  // Non-array garbage → fail closed; empty/non-empty arrays OK (publish-validated).
+  return true
+}
+
+/**
  * Build PriorityPacket[] from active plan + live durable runs.
  * Empty when no plan items / live reserved capacity — never invent majority PASS.
+ * isPriorityPortfolio is membership-grounded only (never plan tag alone).
  */
 export function buildPriorityPacketsFromDurable(opts: {
   plan: DispatchPlanRecord | null
@@ -511,9 +549,9 @@ export function buildPriorityPacketsFromDurable(opts: {
       (plan.canonicalHash === opts.pinCanonicalHash || opts.pinCanonicalHash.length === 0)
     for (const it of plan.items) {
       const depOk = it.dependencyProof == null || it.dependencyProof.satisfied === true
-      const isPriority =
-        it.priorityPortfolioId === 'SALES_WEB_RELATED_BACKEND' ||
-        opts.membershipTaskIds.has(it.taskId)
+      // Membership-only: do not inflate priority from plan priorityPortfolioId alone.
+      const isPriority = opts.membershipTaskIds.has(it.taskId)
+      const roleOk = isAllowedClosureRole(it.role)
       push({
         packetId: `plan:${plan.planId}:${it.rank}:${it.taskId}`,
         taskId: it.taskId,
@@ -522,9 +560,11 @@ export function buildPriorityPacketsFromDurable(opts: {
         unique: true,
         currentHash: hashOk,
         dependencyReady: depOk,
-        collisionSafe: true,
+        collisionSafe: isPlanItemCollisionSafe(it),
         advancesOpenClosureGate: depOk,
         isPriorityPortfolio: isPriority,
+        closureRole: it.role ?? null,
+        excluded: roleOk ? undefined : true,
       })
     }
   }
@@ -538,6 +578,8 @@ export function buildPriorityPacketsFromDurable(opts: {
       rec.canonicalHash === opts.pinCanonicalHash ||
       opts.pinCanonicalHash.length === 0
     const isPriority = opts.membershipTaskIds.has(rec.taskId)
+    const roleOk = isAllowedClosureRole(rec.role)
+    const queued = rec.state === 'QUEUED'
     push({
       packetId: `run:${rec.runId}`,
       taskId: rec.taskId,
@@ -546,10 +588,11 @@ export function buildPriorityPacketsFromDurable(opts: {
       unique: true,
       currentHash: hashOk,
       dependencyReady: true,
-      collisionSafe: (rec.collisionScopeLockIds?.length ?? 0) >= 0,
+      collisionSafe: isRunCollisionSafe(rec),
       advancesOpenClosureGate: isLeasedState(rec.state),
       isPriorityPortfolio: isPriority,
-      excluded: rec.state === 'QUEUED' ? true : undefined,
+      closureRole: rec.role ?? null,
+      excluded: queued || !roleOk ? true : undefined,
     })
   }
 
@@ -716,6 +759,53 @@ function mapEvidenceStringRefs(value: unknown): string[] {
   return out
 }
 
+/**
+ * Build pin-bound membership proof context for SALES_WEB_RELATED_BACKEND.
+ * - Direct sales/mfs (R2): pin-bound project/repo/feature allowlist — never
+ *   caller membershipProductLine or arbitrary hex alone.
+ * - Backend (M1): graph-validated refs + pin-bound receipt-valid outcome map —
+ *   never satisfied:true alone, never structural ROOT authority.
+ */
+export function buildPriorityMembershipContext(
+  pin: ControlCenterPin,
+  task: WorkTask,
+  opts: {
+    dependencyJoins?: ReadonlyArray<DependencyJoin> | null
+    outcomeProductLinesByTaskId?: ReadonlyMap<string, string> | null
+    directMembershipAllowlist?: DirectMembershipAllowlist | null
+  } = {},
+): PriorityMembershipContext {
+  const deps = Array.isArray(task.dependencies)
+    ? task.dependencies.filter((d): d is string => typeof d === 'string' && d.trim() !== '')
+    : []
+  const lines = opts.outcomeProductLinesByTaskId ?? null
+  const pinTuple = {
+    canonicalSnapshotId: pin.canonicalSnapshotId,
+    canonicalHash: pin.canonicalHash,
+    taskHash: pin.taskHash,
+    boardRev: pin.boardRev,
+    lifecycleRev: pin.lifecycleRev,
+  }
+  return {
+    pin: pinTuple,
+    dependencyJoins: opts.dependencyJoins ?? null,
+    directDependencyTargets: deps,
+    // Explicit pin-bound map (snapshot/hash/boardRev/lifecycleRev) when lines present.
+    outcomeMembershipMap:
+      lines && lines.size > 0
+        ? {
+            canonicalSnapshotId: pin.canonicalSnapshotId,
+            canonicalHash: pin.canonicalHash,
+            boardRev: pin.boardRev,
+            lifecycleRev: pin.lifecycleRev,
+            byTaskId: lines,
+          }
+        : null,
+    outcomeProductLinesByTaskId: lines,
+    directMembershipAllowlist: opts.directMembershipAllowlist ?? null,
+  }
+}
+
 export function mapWorkTaskToControlCenterInput(
   task: WorkTask,
   pin: ControlCenterPin,
@@ -733,6 +823,21 @@ export function mapWorkTaskToControlCenterInput(
     durableClassification?: TaskClassificationRecord | null
     /** Force DATA_INTEGRITY (e.g. conflicting primary ownership). */
     forceDataIntegrity?: boolean
+    /**
+     * Canonical dependency joins at the same pin (board-wide). Used to validate
+     * backend membership refs. Absent → backend graph path fails closed.
+     */
+    dependencyJoins?: ReadonlyArray<DependencyJoin> | null
+    /**
+     * Product-line of sales/mfs outcome tasks for backend ref validation.
+     * Server-derived from allowlist — not caller membershipProductLine.
+     */
+    outcomeProductLinesByTaskId?: ReadonlyMap<string, string> | null
+    /**
+     * Pin-bound direct membership allowlist (sales-rebuild | mfs-web-original-upgrade).
+     * Built from project/repo/feature identities — required for direct membership (R2).
+     */
+    directMembershipAllowlist?: DirectMembershipAllowlist | null
   } = {},
 ): ControlCenterTaskInput {
   const classification =
@@ -853,10 +958,17 @@ export function mapWorkTaskToControlCenterInput(
     materialProgressAt,
     evidenceLink: task.evidence_path ?? run?.evidencePath ?? null,
     createdAt: task.updated ? new Date(task.updated).toISOString() : pin.generatedAt,
-    // Priority membership only when receipt proves portfolio — never from title/phase.
-    priorityMembership: Boolean(
-      classification.receipt?.membershipPortfolioId === 'SALES_WEB_RELATED_BACKEND' &&
-        classification.receipt?.membershipProofHash,
+    // Priority membership: PRODUCT ACTIVE receipt + server-derived membership.
+    // Never from title/phase; never portfolio-id + truthy hash / product-line alone.
+    // Direct sales/mfs: pin-bound project/repo/feature allowlist (R2).
+    // Backend: graph-validated refs + outcome map (M1) — fail closed.
+    priorityMembership: isPriorityPortfolioMembership(
+      classification.receipt,
+      buildPriorityMembershipContext(pin, task, {
+        dependencyJoins: opts.dependencyJoins,
+        outcomeProductLinesByTaskId: opts.outcomeProductLinesByTaskId,
+        directMembershipAllowlist: opts.directMembershipAllowlist,
+      }),
     ),
   }
 }
@@ -1321,6 +1433,54 @@ export function buildControlCenterAggregationFromSources(
     }
   }
 
+  // Canonical dependency edges (M1) + server-derived direct membership allowlist (R2).
+  // Product lines come from project/repo/feature identities at this pin — never from
+  // caller membershipProductLine on receipts.
+  const dependencyJoins: DependencyJoin[] = []
+  for (const t of src.tasks) {
+    const deps = Array.isArray(t.dependencies) ? t.dependencies : []
+    for (const d of deps) {
+      if (typeof d !== 'string' || !d.trim()) continue
+      dependencyJoins.push({ fromTaskId: t.id, toTaskId: d.trim() })
+    }
+  }
+  const pinTuple = {
+    canonicalSnapshotId: pin.canonicalSnapshotId,
+    canonicalHash: pin.canonicalHash,
+    taskHash: pin.taskHash,
+    boardRev: pin.boardRev,
+    lifecycleRev: pin.lifecycleRev,
+  }
+  const projectsForAllow =
+    model.projects?.map((p) => ({
+      id: p.id,
+      nama: p.nama ?? null,
+      name: (p as { name?: string | null }).name ?? p.nama ?? null,
+    })) ?? []
+  const featuresForAllow =
+    model.features?.map((f) => ({
+      id: f.id,
+      nama: f.nama ?? null,
+      name: (f as { name?: string | null }).name ?? f.nama ?? null,
+      projectId: f.projectId ?? null,
+    })) ?? []
+  const directMembershipAllowlist = buildDirectMembershipAllowlist(
+    pinTuple,
+    src.tasks.map((t) => ({
+      id: t.id,
+      projectId: t.projectId ?? null,
+      featureContractId: t.featureContractId ?? null,
+      repository: (t as { repository?: string | null }).repository ?? null,
+    })),
+    { projects: projectsForAllow, features: featuresForAllow },
+  )
+  // Outcome map for backend refs = server-derived allowlist lines only (not receipt fields).
+  const outcomeProductLinesByTaskId = new Map<string, string>(
+    [...directMembershipAllowlist.byTaskId.entries()].filter(
+      ([, line]) => line === 'sales-rebuild' || line === 'mfs-web-original-upgrade',
+    ),
+  )
+
   const tasks: ControlCenterTaskInput[] = src.tasks.map((t) => {
     const hasBlocking =
       Boolean(t.featureContractId && openBlockingFeatureIds.has(t.featureContractId)) ||
@@ -1347,6 +1507,9 @@ export function buildControlCenterAggregationFromSources(
       durableOwnership: useDurableOwnership ? own : null,
       durableClassification: durableCls,
       forceDataIntegrity: forceDi,
+      dependencyJoins,
+      outcomeProductLinesByTaskId,
+      directMembershipAllowlist,
     })
   })
 
@@ -1648,6 +1811,8 @@ export function buildControlCenterAggregationFromSources(
     sectionErrors,
     // Distinct non-conflicting ownership only (conflicts already p0Blocker).
     primaryOwnership: ownership?.primaryOwnership ?? [],
+    // Same pin graph used for backend membership ref validation (security M1).
+    dependencyJoins,
     frontierStateWhenEmpty: 'PRIORITY_FRONTIER_EMPTY',
   }
 
@@ -1943,17 +2108,40 @@ export type ControlCenterDefinitionLoad =
     }
 
 /**
+ * Pin-table probe failures that must degrade to legacy PIN_MISSING (same as null row).
+ * Strict allowlist — other DB/programming errors rethrow (not false DATA_INTEGRITY hide).
+ */
+export function isControlCenterPinProbeUnreadable(err: unknown): boolean {
+  const e = err as { code?: string | number; errno?: number; sqlState?: string; message?: string }
+  const code = e?.code != null ? String(e.code) : ''
+  const errno = typeof e.errno === 'number' ? e.errno : typeof e.code === 'number' ? e.code : NaN
+  if (code === 'ER_NO_SUCH_TABLE' || errno === 1146) return true
+  if (e.sqlState === '42S02' && /board_revisions/i.test(String(e.message ?? ''))) return true
+  return false
+}
+
+/**
  * Resolve definition sources for control-center.
  * Pin-complete + valid snapshot → sole definition authority.
  * Pin-complete + mismatch → fail-closed empty definition (no legacy merge).
  * No pin → legacy path (caller loads board_docs/tasks).
+ * Missing board_revisions table (ER_NO_SUCH_TABLE) ≡ missing row (PIN_MISSING), not uncaught throw.
  */
 export async function resolveControlCenterDefinitionLoad(
   boardId: string,
   imports: NonNullable<ControlPlaneRuntimeContext['controlData']>['imports'],
   lifecycleTasks: WorkTask[] = [],
 ): Promise<ControlCenterDefinitionLoad> {
-  const boardState = await imports.getBoardState(boardId)
+  let boardState: Awaited<ReturnType<typeof imports.getBoardState>>
+  try {
+    boardState = await imports.getBoardState(boardId)
+  } catch (e) {
+    // Probe only — pin-complete load path below still fail-closed on SNAPSHOT_MISSING etc.
+    if (isControlCenterPinProbeUnreadable(e)) {
+      return { kind: 'legacy', reason: 'PIN_MISSING' }
+    }
+    throw e
+  }
   if (!boardState) {
     return { kind: 'legacy', reason: 'PIN_MISSING' }
   }

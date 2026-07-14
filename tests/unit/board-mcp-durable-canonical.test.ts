@@ -56,6 +56,7 @@ import {
   toLegacyAdvanceCompatibilityResponse,
   unclassifiedClassificationForTask,
   writeToolSchemaHasFullEnvelope,
+  isPinProbeUnreadable,
   MUTATION_ENVELOPE_REQUIRED_KEYS,
   type McpAuthContext,
 } from '#/server/board-mcp'
@@ -85,7 +86,8 @@ import { PUBLIC_SERIALIZER_VERSION } from '#/server/public-snapshot'
 import {
   heartbeatRun,
   registerRun,
-  type RegisterRunRequest,
+  type RegisterRunCapacity,
+  withTestCapacityInjection,
 } from '#/server/run-registry'
 import { openDecisionV3, resolveDecisionV3 } from '#/server/decisions-v3'
 import { publishDispatchPlan } from '#/server/control-plane-ingest'
@@ -98,7 +100,7 @@ import { validateCanonicalSnapshot } from '#/server/canonical-snapshot'
 
 const BOARD = 'durable-mcp-board'
 
-function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
+function openCapacity(): NonNullable<RegisterRunCapacity> {
   return {
     dispatchMode: 'OPEN',
     dispatchAllowed: true,
@@ -106,6 +108,12 @@ function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
     nonGrokAssignmentAllowed: true,
     grokAssignmentAllowed: true,
     limitingReasons: [],
+    // M2: dispatchAllowed requires complete family remainings (fail closed without these).
+    sparkUsableCapacity: 10,
+    solUsableCapacity: 10,
+    otherUsableCapacity: 10,
+    healthyGrokUsableCapacity: 20,
+    failSafeActions: [],
   }
 }
 
@@ -157,7 +165,7 @@ describe('durable MCP runtime context', () => {
 
   it('defaultRunDeps shares durable runs for register path', async () => {
     const deps = defaultRunDeps(BOARD, 0)
-    const reg = await registerRun(deps, {
+    const reg = await registerRun(withTestCapacityInjection(deps, openCapacity()), {
       boardId: BOARD,
       runId: 'run-dur-1',
       taskId: 'task-1',
@@ -169,8 +177,8 @@ describe('durable MCP runtime context', () => {
       canonicalHash: 'b'.repeat(64),
       idempotencyKey: 'idem-dur-1',
       initialState: 'STARTING',
-      capacity: openCapacity(),
-    })
+      // Disposable unit fixture: honor injected capacity (prod MCP never sets this).
+})
     expect(reg.fencingToken).toBeTruthy()
     const listed = await deps.runs.list(BOARD)
     expect(listed.some((r) => r.runId === 'run-dur-1')).toBe(true)
@@ -762,6 +770,25 @@ describe('legacy mutation envelope hardening (AC-API-03)', () => {
         pathspecs: ['src/server/board-mcp.ts'],
       }),
     ).not.toThrow()
+    // Fail-closed: empty / whitespace pathspecs must NOT soft-pass (prior residual).
+    expect(() =>
+      enforceIntegratorLockBounds(integ, {
+        checkpointId: 'cp-allowed',
+        pathspecs: [],
+      }),
+    ).toThrow(RbacError)
+    expect(() =>
+      enforceIntegratorLockBounds(integ, {
+        checkpointId: 'cp-allowed',
+        pathspecs: ['', '  '],
+      }),
+    ).toThrow(RbacError)
+    expect(() =>
+      enforceIntegratorLockBounds(integ, {
+        checkpointId: null,
+        pathspecs: ['src/server/board-mcp.ts'],
+      }),
+    ).toThrow(RbacError)
   })
 
   it('assertRegisteredRunOrThrow fails closed for unknown byRunId', async () => {
@@ -774,7 +801,7 @@ describe('legacy mutation envelope hardening (AC-API-03)', () => {
 describe('P0 advance_task V3-only ownership (not principal-self)', () => {
   it('resolveAdvanceTaskPersistedAgentId returns V3 agentId for registry-only run', async () => {
     const deps = defaultRunDeps(BOARD, 0)
-    await registerRun(deps, {
+    await registerRun(withTestCapacityInjection(deps, openCapacity()), {
       boardId: BOARD,
       runId: 'v3-run-foreign',
       taskId: 'task-own-1',
@@ -786,15 +813,15 @@ describe('P0 advance_task V3-only ownership (not principal-self)', () => {
       canonicalHash: 'b'.repeat(64),
       idempotencyKey: 'idem-v3-foreign',
       initialState: 'STARTING',
-      capacity: openCapacity(),
-    })
+      // Disposable unit fixture: honor injected capacity (prod MCP never sets this).
+})
     const owner = await resolveAdvanceTaskPersistedAgentId(BOARD, 'v3-run-foreign')
     expect(owner).toBe('agent-foreign-owner')
   })
 
   it('AGENT foreign V3 byRunId is denied; self V3 byRunId is allowed', async () => {
     const deps = defaultRunDeps(BOARD, 0)
-    await registerRun(deps, {
+    await registerRun(withTestCapacityInjection(deps, openCapacity()), {
       boardId: BOARD,
       runId: 'v3-run-self',
       taskId: 'task-own-2',
@@ -806,9 +833,9 @@ describe('P0 advance_task V3-only ownership (not principal-self)', () => {
       canonicalHash: 'b'.repeat(64),
       idempotencyKey: 'idem-v3-self',
       initialState: 'STARTING',
-      capacity: openCapacity(),
-    })
-    await registerRun(deps, {
+      // Disposable unit fixture: honor injected capacity (prod MCP never sets this).
+})
+    await registerRun(withTestCapacityInjection(deps, openCapacity()), {
       boardId: BOARD,
       runId: 'v3-run-other',
       taskId: 'task-own-3',
@@ -820,8 +847,8 @@ describe('P0 advance_task V3-only ownership (not principal-self)', () => {
       canonicalHash: 'b'.repeat(64),
       idempotencyKey: 'idem-v3-other',
       initialState: 'STARTING',
-      capacity: openCapacity(),
-    })
+      // Disposable unit fixture: honor injected capacity (prod MCP never sets this).
+})
     const agent: Principal = {
       role: 'AGENT',
       actorId: 'agent-a',
@@ -1623,6 +1650,70 @@ describe('applyImport → MCP list/get canonical definition parity', () => {
     expect(authz.incompleteCode).toBe('PIN_MISSING')
     expect(authz.pin.stale).toBe(true)
     expect(authz.pin.staleReason).toBe('PIN_AUTHORITY_INCOMPLETE')
+  })
+
+  it('PB1: table absent (ER_NO_SUCH_TABLE) → legacy PIN_MISSING, not uncaught throw', async () => {
+    const boardId = 'pb1-table-absent'
+    const ctx = resolveMcpRuntimeContext()
+    const err = new Error("Table 'disposable.board_revisions' doesn't exist") as Error & {
+      code: string
+      errno: number
+      sqlState: string
+    }
+    err.code = 'ER_NO_SUCH_TABLE'
+    err.errno = 1146
+    err.sqlState = '42S02'
+    expect(isPinProbeUnreadable(err)).toBe(true)
+    ctx.controlData.imports.getBoardState = async () => {
+      throw err
+    }
+    const authz = await resolveBoardDefinitionAuthority(boardId)
+    expect(authz.mode).toBe('legacy')
+    if (authz.mode !== 'legacy') return
+    expect(authz.incompleteCode).toBe('PIN_MISSING')
+    expect(authz.pin.staleReason).toBe('PIN_AUTHORITY_INCOMPLETE')
+
+    const server = new McpServer({ name: 'pb1-table', version: '0.0.0' })
+    registerBoardTools(server, authRoot())
+    const listed = await callToolJson(server, 'list_projects', { boardId })
+    expect(listed.ok).not.toBe(false)
+    expect(listed.code).not.toBe('MCP_HANDLER_ERROR')
+    expect(Array.isArray(listed.projects)).toBe(true)
+    expect(listed.staleReason === 'PIN_AUTHORITY_INCOMPLETE' || listed.stale === true).toBe(true)
+  })
+
+  it('PB1: row absent (null getBoardState) → legacy PIN_MISSING (unchanged)', async () => {
+    const authz = await resolveBoardDefinitionAuthority('pb1-row-absent')
+    expect(authz.mode).toBe('legacy')
+    if (authz.mode !== 'legacy') return
+    expect(authz.incompleteCode).toBe('PIN_MISSING')
+  })
+
+  it('PB1: genuine query failure rethrows (not masked as PIN_MISSING)', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const err = new Error('Lock wait timeout exceeded') as Error & {
+      code: string
+      errno: number
+      sqlState: string
+    }
+    err.code = 'ER_LOCK_WAIT_TIMEOUT'
+    err.errno = 1205
+    err.sqlState = 'HY000'
+    expect(isPinProbeUnreadable(err)).toBe(false)
+    ctx.controlData.imports.getBoardState = async () => {
+      throw err
+    }
+    await expect(resolveBoardDefinitionAuthority('pb1-lock-timeout')).rejects.toMatchObject({
+      code: 'ER_LOCK_WAIT_TIMEOUT',
+      errno: 1205,
+    })
+    // typedError still sanitizes unknown MySQL to MCP_HANDLER_ERROR (not success).
+    const te = mcpTypedErrorForTests(err)
+    expect(te).toEqual({
+      ok: false,
+      error: 'MCP_HANDLER_ERROR',
+      code: 'MCP_HANDLER_ERROR',
+    })
   })
 
   it('lifecycle overlay left-joins stage without inventing missing stages', () => {
@@ -2814,7 +2905,7 @@ describe('ten V3 handlers: runtime CAS + pin-hash negatives (not schema-only)', 
         expectedBoardRev: 0,
         canonicalHash: '',
         idempotencyKey: 'reg-neg',
-        capacity: openCapacity(),
+
       }),
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
 
@@ -2831,7 +2922,7 @@ describe('ten V3 handlers: runtime CAS + pin-hash negatives (not schema-only)', 
         canonicalHash: PIN,
         currentPinHash: 'wrong-pin',
         idempotencyKey: 'reg-neg-2',
-        capacity: openCapacity(),
+
       }),
     ).rejects.toMatchObject({ code: 'STALE_REVISION' })
 

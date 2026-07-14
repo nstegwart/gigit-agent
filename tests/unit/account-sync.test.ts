@@ -11,11 +11,23 @@ import {
   AccountSyncError,
   authorizeProviderAssignment,
   CAP_REASON_GROK_MAJORITY_NO_RECOVERY,
+  CAP_REASON_GROK_NO_REMAINING,
   CAP_REASON_GROK_ONLY_RECOVERY,
   CAP_REASON_NON_GROK_DENIED_GROK_ONLY,
+  CAP_REASON_OTHER_NO_REMAINING,
+  CAP_REASON_SOL_NO_REMAINING,
+  CAP_REASON_FAMILY_REMAINING_REQUIRED,
+  CAP_REASON_FAIL_SAFE_STOP_DISPATCH,
+  CAP_REASON_FAIL_SAFE_STOP_LIMIT,
+  CAP_REASON_SPARK_NO_REMAINING,
+  CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS,
   createMemoryAccountSyncStore,
   evaluateAccountSyncFreshness,
+  evaluateCapacityFailSafeActions,
   evaluateCapacityPolicy,
+  evaluateFailSafeAssignmentGate,
+  hasCompleteFamilyRemainings,
+  planCapacityFailSafeIntents,
   getSharedAccountSyncStore,
   isCoalescableAccountSyncTrigger,
   isFailClosedStable,
@@ -439,6 +451,395 @@ describe('AC-CAP capacity policy', () => {
     expect(authorizeProviderAssignment(r, { model: 'gpt-5.3-codex-spark' }).allowed).toBe(true)
     expect(authorizeProviderAssignment(r, { model: 'gpt-5.6-sol' }).allowed).toBe(true)
     expect(authorizeProviderAssignment(r, { model: 'not-a-grok-model' }).providerKind).toBe('OTHER')
+  })
+
+  it('AC-CAP-01 assignment: multi-SPARK remaining clamped to global sparkMax=10', () => {
+    const r = evaluateCapacityPolicy({
+      accounts: [
+        spark('s1', { effectiveInUse: 0, effectiveCap: 10 }),
+        spark('s2', { effectiveInUse: 0, effectiveCap: 10 }),
+        grok('g1', { effectiveInUse: 5, effectiveCap: 5 }),
+        grok('g2', { effectiveInUse: 5, effectiveCap: 5 }),
+        grok('g3', { effectiveInUse: 5, effectiveCap: 5 }),
+      ],
+    })
+    expect(r.sparkLive).toBe(0)
+    expect(r.grokLive).toBe(15)
+    expect(r.grokMajority).toBe(true)
+    expect(r.dispatchMode).toBe('OPEN')
+    // Must NOT be 20 (10+10 multi-account sum)
+    expect(r.usableCapacity).toBe(10)
+    expect(r.sparkUsableCapacity).toBe(10)
+    expect(r.solUsableCapacity).toBe(0)
+    expect(r.nonGrokAssignmentAllowed).toBe(true)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(true)
+    // SOL-only headroom is zero — cannot borrow SPARK remaining
+    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(false)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).reason).toBe(
+      CAP_REASON_SOL_NO_REMAINING,
+    )
+    expect(r.limitingReasons.some((x) => x.startsWith('SPARK_REMAINING_CLAMP'))).toBe(true)
+  })
+
+  it('AC-CAP-01 assignment: multi-SOL remaining clamped to global solMax=10', () => {
+    const r = evaluateCapacityPolicy({
+      accounts: [
+        sol('sol1', { effectiveInUse: 0, effectiveCap: 10 }),
+        sol('sol2', { effectiveInUse: 0, effectiveCap: 10 }),
+        grok('g1', { effectiveInUse: 5, effectiveCap: 5 }),
+        grok('g2', { effectiveInUse: 5, effectiveCap: 5 }),
+        grok('g3', { effectiveInUse: 5, effectiveCap: 5 }),
+      ],
+    })
+    expect(r.solLive).toBe(0)
+    expect(r.usableCapacity).toBe(10)
+    expect(r.solUsableCapacity).toBe(10)
+    expect(r.sparkUsableCapacity).toBe(0)
+    expect(r.limitingReasons.some((x) => x.startsWith('SOL_REMAINING_CLAMP'))).toBe(true)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(true)
+    // SPARK must not consume SOL-only remaining after global clamp
+    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(false)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).reason).toBe(
+      CAP_REASON_SPARK_NO_REMAINING,
+    )
+  })
+
+  it('AC-CAP-01 assignment: combined remaining clamped so live+usable <=200', () => {
+    // 39×5=195 live + spare cap10 would raw-remain 10 → clamp to 5
+    const near = evaluateCapacityPolicy({
+      accounts: [
+        ...Array.from({ length: 39 }, (_, i) =>
+          grok(`g${i}`, { effectiveInUse: 5, effectiveCap: 5 }),
+        ),
+        grok('spare', { effectiveInUse: 0, effectiveCap: 10 }),
+      ],
+    })
+    expect(near.combinedLive).toBe(195)
+    expect(near.healthyGrokUsableCapacity).toBe(5)
+    expect(near.usableCapacity).toBe(5)
+    expect(near.combinedLive + near.usableCapacity).toBeLessThanOrEqual(200)
+    expect(near.limitingReasons.some((x) => x.startsWith('COMBINED_REMAINING_CLAMP'))).toBe(true)
+    expect(authorizeProviderAssignment(near, { providerKind: 'GROK' }).allowed).toBe(true)
+  })
+
+  it('AC-CAP authorize: SPARK cannot consume SOL-only remaining headroom', () => {
+    // SPARK full at global 10; SOL has spare; Grok majority so OPEN + nonGrokAllowed
+    const r = evaluateCapacityPolicy({
+      accounts: [
+        spark('s1', { effectiveInUse: 10, effectiveCap: 10 }),
+        sol('sol1', { effectiveInUse: 2, effectiveCap: 10 }),
+        grok('g1', { effectiveInUse: 5, effectiveCap: 5 }),
+        grok('g2', { effectiveInUse: 5, effectiveCap: 5 }),
+        grok('g3', { effectiveInUse: 5, effectiveCap: 5 }),
+      ],
+    })
+    expect(r.grokMajority).toBe(true)
+    expect(r.dispatchMode).toBe('OPEN')
+    expect(r.sparkUsableCapacity).toBe(0)
+    expect(r.solUsableCapacity).toBe(8)
+    expect(r.nonGrokAssignmentAllowed).toBe(true)
+    // Residual attack: coarse nonGrok flag would wrongly allow SPARK
+    const sparkAuth = authorizeProviderAssignment(r, { providerKind: 'SPARK' })
+    expect(sparkAuth.allowed).toBe(false)
+    expect(sparkAuth.reason).toBe(CAP_REASON_SPARK_NO_REMAINING)
+    expect(authorizeProviderAssignment(r, { model: 'gpt-5.3-codex-spark' }).allowed).toBe(false)
+    const solAuth = authorizeProviderAssignment(r, { providerKind: 'SOL' })
+    expect(solAuth.allowed).toBe(true)
+    expect(solAuth.reason).toBeNull()
+    expect(authorizeProviderAssignment(r, { model: 'gpt-5.6-sol' }).allowed).toBe(true)
+    // Grok accounts full → grokAssignmentAllowed false (family flag)
+    expect(authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed).toBe(false)
+    expect(r.grokAssignmentAllowed).toBe(false)
+    expect(r.healthyGrokUsableCapacity).toBe(0)
+  })
+
+  it('AC-CAP authorize: SOL cannot consume SPARK-only remaining headroom', () => {
+    const r = evaluateCapacityPolicy({
+      accounts: [
+        spark('s1', { effectiveInUse: 1, effectiveCap: 10 }),
+        sol('sol1', { effectiveInUse: 10, effectiveCap: 10 }),
+        grok('g1', { effectiveInUse: 5, effectiveCap: 5 }),
+        grok('g2', { effectiveInUse: 5, effectiveCap: 5 }),
+        grok('g3', { effectiveInUse: 5, effectiveCap: 5 }),
+      ],
+    })
+    expect(r.dispatchMode).toBe('OPEN')
+    expect(r.sparkUsableCapacity).toBe(9)
+    expect(r.solUsableCapacity).toBe(0)
+    expect(r.nonGrokAssignmentAllowed).toBe(true)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(false)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).reason).toBe(
+      CAP_REASON_SOL_NO_REMAINING,
+    )
+    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(true)
+    // OTHER has zero remaining under pure SPARK/SOL fleet
+    expect(authorizeProviderAssignment(r, { providerKind: 'OTHER' }).allowed).toBe(false)
+    expect(authorizeProviderAssignment(r, { providerKind: 'OTHER' }).reason).toBe(
+      CAP_REASON_OTHER_NO_REMAINING,
+    )
+  })
+
+  it('AC-CAP authorize: both SPARK and SOL remaining still provider-specific under OPEN', () => {
+    const r = evaluateCapacityPolicy({
+      accounts: [
+        spark('s1', { effectiveInUse: 3, effectiveCap: 10 }),
+        sol('sol1', { effectiveInUse: 4, effectiveCap: 10 }),
+        grok('g1', { effectiveInUse: 5, effectiveCap: 5 }),
+        grok('g2', { effectiveInUse: 5, effectiveCap: 5 }),
+      ],
+    })
+    expect(r.dispatchMode).toBe('OPEN')
+    expect(r.sparkUsableCapacity).toBe(7)
+    expect(r.solUsableCapacity).toBe(6)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(true)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(true)
+    expect(authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed).toBe(false)
+  })
+
+  it('AC-CAP-03 failSafe: CPU>=90 emits STOP_NEW_DISPATCH + BOUNDED_DRAIN_REDUCE', () => {
+    const many = Array.from({ length: 20 }, (_, i) =>
+      grok(`g${i}`, { effectiveInUse: 5, effectiveCap: 5 }),
+    )
+    const r = evaluateCapacityPolicy({
+      accounts: many,
+      genuineReadyPacketCount: 60,
+      health: { cpuPercent: 95 },
+    })
+    expect(r.dispatchMode).toBe('BLOCKED')
+    expect(r.usableCapacity).toBe(0)
+    expect(r.limitingReasons).toContain('CPU_GTE_90')
+    expect(r.policy.cpuBoundedDrainMaxReduceSlots).toBe(CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS)
+
+    const stop = r.failSafeActions.find((a) => a.action === 'STOP_NEW_DISPATCH')
+    const drain = r.failSafeActions.find((a) => a.action === 'BOUNDED_DRAIN_REDUCE')
+    expect(stop).toEqual({
+      action: 'STOP_NEW_DISPATCH',
+      reason: 'CPU_GTE_90',
+      failClosed: true,
+    })
+    expect(drain?.reason).toBe('CPU_GTE_90')
+    expect(drain?.failClosed).toBe(true)
+    expect(drain?.maxReduceSlots).toBe(CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS)
+    expect(drain?.targetLiveSlots).toBe(r.combinedLive - CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS)
+    // Pure hooks never invent runner mutation fields beyond fail-closed descriptors
+    expect(drain && 'runnerMutation' in drain).toBe(false)
+    expect(authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed).toBe(false)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(false)
+  })
+
+  it('AC-CAP-03 failSafe: LIMIT emits stop + preserve-requeue + rotate without runner mutation', () => {
+    const r = evaluateCapacityPolicy({
+      accounts: [
+        grok('ok', { status: 'OK', effectiveInUse: 1, effectiveCap: 5 }),
+        grok('lim', { status: 'LIMIT', effectiveInUse: 3, effectiveCap: 5 }),
+        spark('s-lim', { status: 'LIMIT', effectiveInUse: 2, effectiveCap: 10 }),
+      ],
+    })
+    // LIMIT does not contribute live/usable
+    expect(r.grokLive).toBe(1)
+    const limitActions = r.failSafeActions.filter((a) => a.reason === 'LIMIT')
+    expect(limitActions.length).toBe(6) // 3 actions × 2 LIMIT accounts
+    for (const id of ['lim', 's-lim']) {
+      expect(
+        limitActions.some(
+          (a) => a.action === 'STOP_LIMIT_ASSIGNMENT' && a.maskedAccountId === id && a.failClosed,
+        ),
+      ).toBe(true)
+      expect(
+        limitActions.some(
+          (a) =>
+            a.action === 'PRESERVE_REQUEUE_UNFINISHED' && a.maskedAccountId === id && a.failClosed,
+        ),
+      ).toBe(true)
+      expect(
+        limitActions.some(
+          (a) => a.action === 'ROTATE_LIMIT_ACCOUNT' && a.maskedAccountId === id && a.failClosed,
+        ),
+      ).toBe(true)
+    }
+    // Standalone pure hook matches evaluateCapacityPolicy emission
+    const standalone = evaluateCapacityFailSafeActions({
+      accounts: r.failSafeActions.length
+        ? [
+            { maskedAccountId: 'ok', status: 'OK', effectiveInUse: 1 },
+            { maskedAccountId: 'lim', status: 'LIMIT', effectiveInUse: 3 },
+            { maskedAccountId: 's-lim', status: 'LIMIT', effectiveInUse: 2 },
+          ]
+        : [],
+      cpuPercent: 10,
+      combinedLive: r.combinedLive,
+      dispatchMode: r.dispatchMode,
+    })
+    expect(standalone.filter((a) => a.reason === 'LIMIT').length).toBe(6)
+    expect(standalone.some((a) => a.action === 'BOUNDED_DRAIN_REDUCE')).toBe(false)
+  })
+
+  it('M2 authorize: dispatchAllowed without complete family remainings fails closed', () => {
+    const partial = {
+      dispatchMode: 'OPEN' as const,
+      dispatchAllowed: true,
+      usableCapacity: 10,
+      nonGrokAssignmentAllowed: true,
+      grokAssignmentAllowed: true,
+      limitingReasons: [] as string[],
+    }
+    expect(hasCompleteFamilyRemainings(partial)).toBe(false)
+    expect(authorizeProviderAssignment(partial, { providerKind: 'SPARK' }).allowed).toBe(false)
+    expect(authorizeProviderAssignment(partial, { providerKind: 'SPARK' }).reason).toBe(
+      CAP_REASON_FAMILY_REMAINING_REQUIRED,
+    )
+    expect(authorizeProviderAssignment(partial, { providerKind: 'SOL' }).reason).toBe(
+      CAP_REASON_FAMILY_REMAINING_REQUIRED,
+    )
+    expect(authorizeProviderAssignment(partial, { providerKind: 'GROK' }).reason).toBe(
+      CAP_REASON_FAMILY_REMAINING_REQUIRED,
+    )
+
+    const full = {
+      ...partial,
+      sparkUsableCapacity: 5,
+      solUsableCapacity: 5,
+      otherUsableCapacity: 0,
+      healthyGrokUsableCapacity: 5,
+    }
+    expect(hasCompleteFamilyRemainings(full)).toBe(true)
+    expect(authorizeProviderAssignment(full, { providerKind: 'SPARK' }).allowed).toBe(true)
+    expect(authorizeProviderAssignment(full, { providerKind: 'SOL' }).allowed).toBe(true)
+    expect(authorizeProviderAssignment(full, { providerKind: 'GROK' }).allowed).toBe(true)
+
+    // Explicit zero remaining still denies even when nonGrok flag true
+    expect(
+      authorizeProviderAssignment(
+        { ...full, sparkUsableCapacity: 0, solUsableCapacity: 5 },
+        { providerKind: 'SPARK' },
+      ).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(
+        { ...full, sparkUsableCapacity: 0, solUsableCapacity: 5 },
+        { providerKind: 'SOL' },
+      ).allowed,
+    ).toBe(true)
+    // Present zero Grok remaining denies even when grokAssignmentAllowed true
+    const grokZero = authorizeProviderAssignment(
+      { ...full, healthyGrokUsableCapacity: 0 },
+      { providerKind: 'GROK' },
+    )
+    expect(grokZero.allowed).toBe(false)
+    expect(grokZero.reason).toBe(CAP_REASON_GROK_NO_REMAINING)
+    // NaN present value fails closed as zero remaining (family incomplete → FAMILY first)
+    // After complete family with NaN → isFiniteNonNegativeRemaining false → FAMILY_REMAINING_REQUIRED
+    expect(
+      authorizeProviderAssignment(
+        { ...full, sparkUsableCapacity: Number.NaN },
+        { providerKind: 'SPARK' },
+      ).reason,
+    ).toBe(CAP_REASON_FAMILY_REMAINING_REQUIRED)
+  })
+
+  it('M4: planCapacityFailSafeIntents + evaluateFailSafeAssignmentGate (no external side effects)', () => {
+    const r = evaluateCapacityPolicy({
+      accounts: [
+        grok('ok', { status: 'OK', effectiveInUse: 1, effectiveCap: 5 }),
+        grok('lim', { status: 'LIMIT', effectiveInUse: 2, effectiveCap: 5 }),
+      ],
+      health: { cpuPercent: 95 },
+    })
+    const intents = planCapacityFailSafeIntents(r.failSafeActions)
+    expect(intents.some((i) => i.action === 'STOP_NEW_DISPATCH' && i.blocksAssignment)).toBe(true)
+    expect(
+      intents.some(
+        (i) =>
+          i.action === 'BOUNDED_DRAIN_REDUCE' &&
+          i.scheduleTrigger === 'PERIODIC_HEALTH' &&
+          i.blocksAssignment &&
+          !('runnerMutation' in i),
+      ),
+    ).toBe(true)
+    expect(
+      intents.some(
+        (i) =>
+          i.action === 'PRESERVE_REQUEUE_UNFINISHED' &&
+          i.scheduleTrigger === 'REQUEUE' &&
+          i.maskedAccountId === 'lim' &&
+          !i.blocksAssignment,
+      ),
+    ).toBe(true)
+    expect(
+      intents.some(
+        (i) =>
+          i.action === 'ROTATE_LIMIT_ACCOUNT' &&
+          i.scheduleTrigger === 'ROTATION' &&
+          i.maskedAccountId === 'lim',
+      ),
+    ).toBe(true)
+
+    const stop = evaluateFailSafeAssignmentGate(r.failSafeActions)
+    expect(stop.blocked).toBe(true)
+    expect(stop.action).toBe('STOP_NEW_DISPATCH')
+
+    const limitOnly = evaluateCapacityFailSafeActions({
+      accounts: [
+        { maskedAccountId: 'lim', status: 'LIMIT', effectiveInUse: 1 },
+      ],
+      cpuPercent: 10,
+      combinedLive: 1,
+      dispatchMode: 'OPEN',
+    })
+    const gateLim = evaluateFailSafeAssignmentGate(limitOnly, {
+      maskedAccountRef: 'lim',
+    })
+    expect(gateLim.blocked).toBe(true)
+    expect(gateLim.action).toBe('STOP_LIMIT_ASSIGNMENT')
+    expect(gateLim.maskedAccountId).toBe('lim')
+    expect(gateLim.reason).toBe('LIMIT')
+
+    const gateOther = evaluateFailSafeAssignmentGate(limitOnly, {
+      maskedAccountRef: 'other',
+    })
+    expect(gateOther.blocked).toBe(false)
+
+    // authorizeProviderAssignment honors failSafe on OPEN snapshot
+    const openWithStop = {
+      dispatchMode: 'OPEN' as const,
+      dispatchAllowed: true,
+      usableCapacity: 10,
+      nonGrokAssignmentAllowed: true,
+      grokAssignmentAllowed: true,
+      limitingReasons: [] as string[],
+      sparkUsableCapacity: 5,
+      solUsableCapacity: 5,
+      otherUsableCapacity: 0,
+      healthyGrokUsableCapacity: 5,
+      failSafeActions: [
+        { action: 'STOP_NEW_DISPATCH' as const, reason: 'CPU_GTE_90', failClosed: true as const },
+      ],
+    }
+    expect(authorizeProviderAssignment(openWithStop, { providerKind: 'GROK' }).reason).toBe(
+      'CPU_GTE_90',
+    )
+    void CAP_REASON_FAIL_SAFE_STOP_DISPATCH
+    void CAP_REASON_FAIL_SAFE_STOP_LIMIT
+  })
+
+  it('AC-CAP-03 failSafe: CPU drain is bounded (maxReduceSlots <= combinedLive and policy cap)', () => {
+    const lowLive = evaluateCapacityPolicy({
+      accounts: [grok('g1', { effectiveInUse: 3, effectiveCap: 5 })],
+      health: { cpuPercent: 99 },
+    })
+    expect(lowLive.dispatchMode).toBe('BLOCKED')
+    const drain = lowLive.failSafeActions.find((a) => a.action === 'BOUNDED_DRAIN_REDUCE')
+    expect(drain?.maxReduceSlots).toBe(3) // combinedLive=3 < CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS
+    expect(drain?.targetLiveSlots).toBe(0)
+    expect(drain?.maxReduceSlots).toBeLessThanOrEqual(CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS)
+
+    const idle = evaluateCapacityPolicy({
+      accounts: [grok('g1', { effectiveInUse: 0, effectiveCap: 5 })],
+      health: { cpuPercent: 90 },
+    })
+    const idleDrain = idle.failSafeActions.find((a) => a.action === 'BOUNDED_DRAIN_REDUCE')
+    expect(idleDrain?.maxReduceSlots).toBe(0)
+    expect(idleDrain?.targetLiveSlots).toBe(0)
   })
 })
 

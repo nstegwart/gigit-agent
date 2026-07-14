@@ -619,8 +619,9 @@ export function buildAdvanceTaskArgs(lifeRebound, serverReceipt, opts = {}) {
  * Fail-closed before plan-with-live-pin / execute: boardRev + lifecycleRev must be
  * finite numbers; deployedSha (or release.sha) non-empty string.
  *
- * Note: product buildHealthzPayload currently omits canonicalHash even when observed;
- * mutation CAS requires a separate pin source (get_overview / pin nest) for subject hash.
+ * Note: product buildHealthzPayload surfaces canonicalHash when observed (null when
+ * unproven). This helper intentionally does not require hash — full live-pin
+ * completeness is enforced by extractCompleteLivePin / STAGING_BIND_LIVE_PIN smoke.
  *
  * @param {object|null|undefined} body - parsed /api/healthz JSON
  * @returns {{ ok: boolean, code: string|null, missing: string[], pin: object|null, message: string|null }}

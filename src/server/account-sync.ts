@@ -142,6 +142,67 @@ export interface CapacityHealthInput {
  */
 export type CapacityDispatchMode = 'OPEN' | 'GROK_ONLY' | 'BLOCKED'
 
+/**
+ * Fail-closed operator action descriptors for CPU drain + LIMIT requeue/rotate.
+ * Pure policy only — does not mutate runners/accounts. Consumers must honor or
+ * remain blocked; inventing external runner mutation outside these codes is forbidden.
+ */
+export type CapacityFailSafeActionKind =
+  | 'STOP_NEW_DISPATCH'
+  | 'BOUNDED_DRAIN_REDUCE'
+  | 'STOP_LIMIT_ASSIGNMENT'
+  | 'PRESERVE_REQUEUE_UNFINISHED'
+  | 'ROTATE_LIMIT_ACCOUNT'
+
+export interface CapacityFailSafeAction {
+  action: CapacityFailSafeActionKind
+  reason: string
+  /** Present for LIMIT-account scoped actions. */
+  maskedAccountId?: string
+  /**
+   * BOUNDED_DRAIN_REDUCE: suggested upper bound on live slots after this drain step.
+   * Never invents runner kill — fail-closed hint only.
+   */
+  targetLiveSlots?: number
+  /** BOUNDED_DRAIN_REDUCE: max slots to reduce this cycle (bounded, not full fleet kill). */
+  maxReduceSlots?: number
+  /** Always true: action is mandatory fail-closed policy, not advisory telemetry. */
+  failClosed: true
+}
+
+/** Max live slots reduced per CPU drain evaluation (bounded step-down). */
+export const CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS = 10 as const
+
+/**
+ * Internal schedule-able fail-safe intent derived from CapacityFailSafeAction.
+ * Pure bookkeeping for register/scheduler boundaries — never carries runner
+ * kill / external API mutation fields.
+ */
+export type CapacityFailSafeScheduleTrigger = Extract<
+  AccountSyncTrigger,
+  'REQUEUE' | 'ROTATION' | 'LIMIT_TRANSITION' | 'PERIODIC_HEALTH'
+>
+
+export interface CapacityFailSafeIntent {
+  action: CapacityFailSafeActionKind
+  /** Account-sync trigger to schedule internally; null when assignment-block only. */
+  scheduleTrigger: CapacityFailSafeScheduleTrigger | null
+  reason: string
+  maskedAccountId?: string
+  maxReduceSlots?: number
+  targetLiveSlots?: number
+  failClosed: true
+  /** When true, register/dispatch must deny new assignment. */
+  blocksAssignment: boolean
+}
+
+export interface CapacityFailSafeAssignmentGate {
+  blocked: boolean
+  reason: string | null
+  action: CapacityFailSafeActionKind | null
+  maskedAccountId?: string
+}
+
 export interface CapacityPolicyResult {
   sparkLive: number
   sparkCap: number
@@ -153,6 +214,18 @@ export interface CapacityPolicyResult {
   grokMajority: boolean
   /** Remaining assignable slots on healthy Grok accounts only. */
   healthyGrokUsableCapacity: number
+  /**
+   * Remaining assignable SPARK slots after global sparkMax clamp + combined budget.
+   * SPARK must not consume SOL-only headroom (authorizeProviderAssignment uses this).
+   */
+  sparkUsableCapacity: number
+  /**
+   * Remaining assignable SOL slots after global solMax clamp + combined budget.
+   * SOL must not consume SPARK-only headroom.
+   */
+  solUsableCapacity: number
+  /** Remaining OTHER provider slots after combined budget (OPEN only). */
+  otherUsableCapacity: number
   combinedLive: number
   combinedCap: number
   floorTarget: number
@@ -167,11 +240,16 @@ export interface CapacityPolicyResult {
    */
   dispatchAllowed: boolean
   dispatchMode: CapacityDispatchMode
-  /** True only in OPEN mode when fail-safes permit. */
+  /** True only in OPEN mode when fail-safes permit and some non-Grok family remaining > 0. */
   nonGrokAssignmentAllowed: boolean
   /** True in OPEN or GROK_ONLY when fail-safes permit and healthy Grok usable remains (or OPEN). */
   grokAssignmentAllowed: boolean
   limitingReasons: Array<string>
+  /**
+   * Exact fail-closed CPU drain / LIMIT requeue-rotate policy actions.
+   * Empty when no fail-safe side-effect is required. Never mutates runners here.
+   */
+  failSafeActions: Array<CapacityFailSafeAction>
   /** Policy constants (versioned). */
   policy: {
     sparkMax: 10
@@ -183,6 +261,8 @@ export interface CapacityPolicyResult {
     physicalSlotsDisplayOnly: true
     neverAccountsAll: true
     neverFiller: true
+    /** Bounded CPU drain step size (exact constant; matches CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS). */
+    cpuBoundedDrainMaxReduceSlots: 10
   }
 }
 
@@ -199,6 +279,16 @@ export const CAP_REASON_GROK_MAJORITY_NO_RECOVERY = 'GROK_MAJORITY_NO_RECOVERY'
 export const CAP_REASON_NON_GROK_DENIED_GROK_ONLY = 'NON_GROK_DENIED_GROK_ONLY'
 export const CAP_REASON_ASSIGNMENT_BLOCKED = 'ASSIGNMENT_BLOCKED'
 export const CAP_REASON_PROVIDER_NOT_ALLOWED = 'PROVIDER_NOT_ALLOWED'
+export const CAP_REASON_SPARK_NO_REMAINING = 'SPARK_NO_REMAINING'
+export const CAP_REASON_SOL_NO_REMAINING = 'SOL_NO_REMAINING'
+export const CAP_REASON_OTHER_NO_REMAINING = 'OTHER_NO_REMAINING'
+export const CAP_REASON_GROK_NO_REMAINING = 'GROK_NO_REMAINING'
+/** Missing family remaining fields when dispatchAllowed — fail closed (M2). */
+export const CAP_REASON_FAMILY_REMAINING_REQUIRED = 'FAMILY_REMAINING_REQUIRED'
+/** Fail-safe STOP_NEW_DISPATCH / bounded drain blocks assignment (M4). */
+export const CAP_REASON_FAIL_SAFE_STOP_DISPATCH = 'FAIL_SAFE_STOP_DISPATCH'
+/** Fail-safe STOP_LIMIT_ASSIGNMENT for the requested masked account (M4). */
+export const CAP_REASON_FAIL_SAFE_STOP_LIMIT = 'FAIL_SAFE_STOP_LIMIT'
 
 export type AccountSyncErrorCode =
   | 'AUTHORIZATION_REQUIRED'
@@ -277,6 +367,7 @@ export function evaluateCapacityPolicy(input: {
     physicalSlotsDisplayOnly: true as const,
     neverAccountsAll: true as const,
     neverFiller: true as const,
+    cpuBoundedDrainMaxReduceSlots: CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS,
   }
   const limitingReasons: Array<string> = []
 
@@ -377,27 +468,80 @@ export function evaluateCapacityPolicy(input: {
   }
 
   // Remaining capacity split by provider family (healthy / contributes only).
+  // AC-CAP-01: per-account sums are then clamped to GLOBAL Spark/SOL ceilings
+  // and combined<=200 remaining headroom (assignment-side, not report-only).
   let healthyGrokUsableCapacity = 0
-  let nonGrokUsableCapacity = 0
+  let sparkUsableCapacity = 0
+  let solUsableCapacity = 0
+  let otherUsableCapacity = 0
   for (const a of input.accounts) {
     if (!contributesUsableCapacity(a.status)) continue
     if (a.providerKind === 'GROK') {
       const row = grokPerAccount.find((g) => g.maskedAccountId === a.maskedAccountId)
       if (row) healthyGrokUsableCapacity += Math.max(0, row.cap - row.inUse)
     } else if (a.providerKind === 'SPARK') {
-      nonGrokUsableCapacity += Math.max(
+      sparkUsableCapacity += Math.max(
         0,
         Math.min(a.effectiveCap, policy.sparkMax) - a.effectiveInUse,
       )
     } else if (a.providerKind === 'SOL') {
-      nonGrokUsableCapacity += Math.max(
+      solUsableCapacity += Math.max(
         0,
         Math.min(a.effectiveCap, policy.solMax) - a.effectiveInUse,
       )
     } else {
-      nonGrokUsableCapacity += Math.max(0, a.effectiveCap - a.effectiveInUse)
+      otherUsableCapacity += Math.max(0, a.effectiveCap - a.effectiveInUse)
     }
   }
+  // Global Spark/SOL assignment remaining (not multi-account sum).
+  const sparkGlobalRemaining = Math.max(0, policy.sparkMax - sparkLive)
+  const solGlobalRemaining = Math.max(0, policy.solMax - solLive)
+  if (sparkUsableCapacity > sparkGlobalRemaining) {
+    limitingReasons.push(
+      `SPARK_REMAINING_CLAMP:${sparkUsableCapacity}>${sparkGlobalRemaining}`,
+    )
+    sparkUsableCapacity = sparkGlobalRemaining
+  }
+  if (solUsableCapacity > solGlobalRemaining) {
+    limitingReasons.push(
+      `SOL_REMAINING_CLAMP:${solUsableCapacity}>${solGlobalRemaining}`,
+    )
+    solUsableCapacity = solGlobalRemaining
+  }
+  let nonGrokUsableCapacity = sparkUsableCapacity + solUsableCapacity + otherUsableCapacity
+
+  // Combined assignment remaining: live + new must not exceed combinedMax.
+  const combinedRemaining = Math.max(0, policy.combinedMax - combinedLive)
+  if (healthyGrokUsableCapacity + nonGrokUsableCapacity > combinedRemaining) {
+    limitingReasons.push(
+      `COMBINED_REMAINING_CLAMP:${healthyGrokUsableCapacity + nonGrokUsableCapacity}>${combinedRemaining}`,
+    )
+    // Prefer Grok remaining under the combined budget (majority recovery path).
+    if (healthyGrokUsableCapacity > combinedRemaining) {
+      healthyGrokUsableCapacity = combinedRemaining
+      nonGrokUsableCapacity = 0
+    } else {
+      nonGrokUsableCapacity = Math.min(
+        nonGrokUsableCapacity,
+        Math.max(0, combinedRemaining - healthyGrokUsableCapacity),
+      )
+    }
+  }
+
+  // Keep family remainings consistent with post-combined nonGrok budget so SPARK
+  // cannot claim SOL-only residual (and vice versa) after the combined clamp.
+  ;({
+    sparkUsableCapacity,
+    solUsableCapacity,
+    otherUsableCapacity,
+  } = clampFamilyRemainingsToNonGrokBudget(
+    sparkUsableCapacity,
+    solUsableCapacity,
+    otherUsableCapacity,
+    nonGrokUsableCapacity,
+  ))
+  nonGrokUsableCapacity = sparkUsableCapacity + solUsableCapacity + otherUsableCapacity
+
   const rawUsableOpen = healthyGrokUsableCapacity + nonGrokUsableCapacity
 
   // Hard fail-safes that fully block new assignment (independent of majority).
@@ -419,21 +563,38 @@ export function evaluateCapacityPolicy(input: {
   let usableCapacity = 0
   let nonGrokAssignmentAllowed = false
   let grokAssignmentAllowed = false
+  let finalSparkUsable = 0
+  let finalSolUsable = 0
+  let finalOtherUsable = 0
+  let finalGrokUsable = 0
 
   if (hardBlocked) {
     dispatchMode = 'BLOCKED'
     usableCapacity = 0
     nonGrokAssignmentAllowed = false
     grokAssignmentAllowed = false
+    finalSparkUsable = 0
+    finalSolUsable = 0
+    finalOtherUsable = 0
+    finalGrokUsable = 0
   } else if (grokMajority) {
     dispatchMode = 'OPEN'
     usableCapacity = Math.max(0, rawUsableOpen)
+    finalSparkUsable = Math.max(0, sparkUsableCapacity)
+    finalSolUsable = Math.max(0, solUsableCapacity)
+    finalOtherUsable = Math.max(0, otherUsableCapacity)
+    finalGrokUsable = Math.max(0, healthyGrokUsableCapacity)
     // Family-level: only claim allowed when remaining slots exist for that family.
-    nonGrokAssignmentAllowed = nonGrokUsableCapacity > 0
-    grokAssignmentAllowed = healthyGrokUsableCapacity > 0
+    nonGrokAssignmentAllowed =
+      finalSparkUsable + finalSolUsable + finalOtherUsable > 0
+    grokAssignmentAllowed = finalGrokUsable > 0
   } else if (healthyGrokUsableCapacity > 0) {
     dispatchMode = 'GROK_ONLY'
     usableCapacity = Math.max(0, healthyGrokUsableCapacity)
+    finalSparkUsable = 0
+    finalSolUsable = 0
+    finalOtherUsable = 0
+    finalGrokUsable = Math.max(0, healthyGrokUsableCapacity)
     nonGrokAssignmentAllowed = false
     grokAssignmentAllowed = true
     if (!limitingReasons.includes(CAP_REASON_GROK_ONLY_RECOVERY)) {
@@ -444,6 +605,10 @@ export function evaluateCapacityPolicy(input: {
     usableCapacity = 0
     nonGrokAssignmentAllowed = false
     grokAssignmentAllowed = false
+    finalSparkUsable = 0
+    finalSolUsable = 0
+    finalOtherUsable = 0
+    finalGrokUsable = 0
     if (!limitingReasons.includes(CAP_REASON_GROK_MAJORITY_NO_RECOVERY)) {
       limitingReasons.push(CAP_REASON_GROK_MAJORITY_NO_RECOVERY)
     }
@@ -455,6 +620,13 @@ export function evaluateCapacityPolicy(input: {
     usableCapacity > 0 &&
     (nonGrokAssignmentAllowed || grokAssignmentAllowed)
 
+  const failSafeActions = evaluateCapacityFailSafeActions({
+    accounts: input.accounts,
+    cpuPercent: cpu,
+    combinedLive,
+    dispatchMode,
+  })
+
   return {
     sparkLive,
     sparkCap: policy.sparkMax,
@@ -463,7 +635,10 @@ export function evaluateCapacityPolicy(input: {
     grokLive,
     grokPerAccount,
     grokMajority,
-    healthyGrokUsableCapacity: Math.max(0, healthyGrokUsableCapacity),
+    healthyGrokUsableCapacity: finalGrokUsable,
+    sparkUsableCapacity: finalSparkUsable,
+    solUsableCapacity: finalSolUsable,
+    otherUsableCapacity: finalOtherUsable,
     combinedLive,
     combinedCap: policy.combinedMax,
     floorTarget: policy.floorMin,
@@ -476,8 +651,259 @@ export function evaluateCapacityPolicy(input: {
     nonGrokAssignmentAllowed,
     grokAssignmentAllowed,
     limitingReasons,
+    failSafeActions,
     policy,
   }
+}
+
+/**
+ * Proportionally re-clamp SPARK/SOL/OTHER remainings so their sum equals the
+ * post-combined nonGrok budget. Preserves family identity (no cross-family borrow).
+ */
+export function clampFamilyRemainingsToNonGrokBudget(
+  spark: number,
+  sol: number,
+  other: number,
+  nonGrokBudget: number,
+): { sparkUsableCapacity: number; solUsableCapacity: number; otherUsableCapacity: number } {
+  const budget = Math.max(0, Math.floor(nonGrokBudget))
+  const s0 = Math.max(0, Math.floor(spark))
+  const l0 = Math.max(0, Math.floor(sol))
+  const o0 = Math.max(0, Math.floor(other))
+  const sum = s0 + l0 + o0
+  if (sum <= budget) {
+    return { sparkUsableCapacity: s0, solUsableCapacity: l0, otherUsableCapacity: o0 }
+  }
+  if (budget === 0 || sum === 0) {
+    return { sparkUsableCapacity: 0, solUsableCapacity: 0, otherUsableCapacity: 0 }
+  }
+  // Integer proportional scale; distribute leftover by original rank (SPARK → SOL → OTHER).
+  let s = Math.floor((s0 * budget) / sum)
+  let l = Math.floor((l0 * budget) / sum)
+  let o = Math.floor((o0 * budget) / sum)
+  let leftover = budget - (s + l + o)
+  const order: Array<'s' | 'l' | 'o'> = []
+  if (s0 > 0) order.push('s')
+  if (l0 > 0) order.push('l')
+  if (o0 > 0) order.push('o')
+  let i = 0
+  while (leftover > 0 && order.length > 0) {
+    const k = order[i % order.length]!
+    if (k === 's' && s < s0) {
+      s += 1
+      leftover -= 1
+    } else if (k === 'l' && l < l0) {
+      l += 1
+      leftover -= 1
+    } else if (k === 'o' && o < o0) {
+      o += 1
+      leftover -= 1
+    } else {
+      // Cap reached for this family; drop from rotation.
+      order.splice(i % order.length, 1)
+      continue
+    }
+    i += 1
+  }
+  return { sparkUsableCapacity: s, solUsableCapacity: l, otherUsableCapacity: o }
+}
+
+/**
+ * Pure fail-closed policy hooks for CPU>=90 bounded drain/reduce and LIMIT
+ * requeue/rotation. Does not mutate runners, accounts, or external systems —
+ * only emits exact actions consumers must honor or stay blocked.
+ */
+export function evaluateCapacityFailSafeActions(input: {
+  accounts: Array<Pick<MaskedAccountRecord, 'maskedAccountId' | 'status' | 'effectiveInUse'>>
+  cpuPercent: number
+  combinedLive: number
+  dispatchMode: CapacityDispatchMode
+}): Array<CapacityFailSafeAction> {
+  const actions: Array<CapacityFailSafeAction> = []
+  const cpu = input.cpuPercent
+
+  if (cpu >= 90) {
+    actions.push({
+      action: 'STOP_NEW_DISPATCH',
+      reason: 'CPU_GTE_90',
+      failClosed: true,
+    })
+    const maxReduce = Math.min(
+      CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS,
+      Math.max(0, input.combinedLive),
+    )
+    const targetLiveSlots = Math.max(0, input.combinedLive - maxReduce)
+    actions.push({
+      action: 'BOUNDED_DRAIN_REDUCE',
+      reason: 'CPU_GTE_90',
+      maxReduceSlots: maxReduce,
+      targetLiveSlots,
+      failClosed: true,
+    })
+  }
+
+  for (const a of input.accounts) {
+    if (a.status !== 'LIMIT') continue
+    actions.push({
+      action: 'STOP_LIMIT_ASSIGNMENT',
+      reason: 'LIMIT',
+      maskedAccountId: a.maskedAccountId,
+      failClosed: true,
+    })
+    // Preserve unfinished work for requeue even when inUse reports 0 (fail-closed
+    // preserve path); rotation always required for LIMIT accounts.
+    actions.push({
+      action: 'PRESERVE_REQUEUE_UNFINISHED',
+      reason: 'LIMIT',
+      maskedAccountId: a.maskedAccountId,
+      failClosed: true,
+    })
+    actions.push({
+      action: 'ROTATE_LIMIT_ACCOUNT',
+      reason: 'LIMIT',
+      maskedAccountId: a.maskedAccountId,
+      failClosed: true,
+    })
+  }
+
+  return actions
+}
+
+/**
+ * Map fail-safe policy actions → internal scheduler/register intents.
+ * No external side effects (no runner kill, no provider API calls).
+ */
+export function planCapacityFailSafeIntents(
+  actions: ReadonlyArray<CapacityFailSafeAction>,
+): Array<CapacityFailSafeIntent> {
+  const out: Array<CapacityFailSafeIntent> = []
+  for (const a of actions) {
+    switch (a.action) {
+      case 'STOP_NEW_DISPATCH':
+        out.push({
+          action: a.action,
+          scheduleTrigger: null,
+          reason: a.reason,
+          failClosed: true,
+          blocksAssignment: true,
+        })
+        break
+      case 'BOUNDED_DRAIN_REDUCE':
+        out.push({
+          action: a.action,
+          scheduleTrigger: 'PERIODIC_HEALTH',
+          reason: a.reason,
+          maxReduceSlots: a.maxReduceSlots,
+          targetLiveSlots: a.targetLiveSlots,
+          failClosed: true,
+          // Drain is bounded bookkeeping; assignment already blocked via
+          // STOP_NEW_DISPATCH + dispatchMode BLOCKED. Still marks blocked so
+          // partial capacity snapshots that only carry drain honor the stop.
+          blocksAssignment: true,
+        })
+        break
+      case 'STOP_LIMIT_ASSIGNMENT':
+        out.push({
+          action: a.action,
+          scheduleTrigger: 'LIMIT_TRANSITION',
+          reason: a.reason,
+          maskedAccountId: a.maskedAccountId,
+          failClosed: true,
+          blocksAssignment: true,
+        })
+        break
+      case 'PRESERVE_REQUEUE_UNFINISHED':
+        out.push({
+          action: a.action,
+          scheduleTrigger: 'REQUEUE',
+          reason: a.reason,
+          maskedAccountId: a.maskedAccountId,
+          failClosed: true,
+          blocksAssignment: false,
+        })
+        break
+      case 'ROTATE_LIMIT_ACCOUNT':
+        out.push({
+          action: a.action,
+          scheduleTrigger: 'ROTATION',
+          reason: a.reason,
+          maskedAccountId: a.maskedAccountId,
+          failClosed: true,
+          blocksAssignment: false,
+        })
+        break
+      default: {
+        const _exhaustive: never = a.action
+        void _exhaustive
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * Assignment-boundary gate for failSafeActions (register/dispatch).
+ * Honors STOP_NEW_DISPATCH, BOUNDED_DRAIN_REDUCE, and STOP_LIMIT_ASSIGNMENT
+ * for the requested masked account. Does not execute requeue/rotate.
+ */
+export function evaluateFailSafeAssignmentGate(
+  actions: ReadonlyArray<CapacityFailSafeAction> | null | undefined,
+  opts?: { maskedAccountRef?: string | null },
+): CapacityFailSafeAssignmentGate {
+  if (!actions || actions.length === 0) {
+    return { blocked: false, reason: null, action: null }
+  }
+  const intents = planCapacityFailSafeIntents(actions)
+  const stopDispatch = intents.find(
+    (i) =>
+      i.blocksAssignment &&
+      (i.action === 'STOP_NEW_DISPATCH' || i.action === 'BOUNDED_DRAIN_REDUCE'),
+  )
+  if (stopDispatch) {
+    return {
+      blocked: true,
+      reason: stopDispatch.reason || CAP_REASON_FAIL_SAFE_STOP_DISPATCH,
+      action: stopDispatch.action,
+    }
+  }
+  const ref = opts?.maskedAccountRef
+  if (ref != null && String(ref).trim() !== '') {
+    const stopLimit = intents.find(
+      (i) =>
+        i.action === 'STOP_LIMIT_ASSIGNMENT' &&
+        i.maskedAccountId === ref &&
+        i.blocksAssignment,
+    )
+    if (stopLimit) {
+      return {
+        blocked: true,
+        reason: stopLimit.reason || CAP_REASON_FAIL_SAFE_STOP_LIMIT,
+        action: stopLimit.action,
+        maskedAccountId: stopLimit.maskedAccountId,
+      }
+    }
+  }
+  return { blocked: false, reason: null, action: null }
+}
+
+/**
+ * True when all four family remaining fields are present as finite non-negative
+ * numbers. Full CapacityPolicyResult always supplies them; partial caller
+ * snapshots that omit them must fail closed when dispatch is allowed (M2).
+ */
+export function hasCompleteFamilyRemainings(capacity: unknown): boolean {
+  if (capacity == null || typeof capacity !== 'object') return false
+  const c = capacity as Record<string, unknown>
+  return (
+    isFiniteNonNegativeRemaining(c.sparkUsableCapacity) &&
+    isFiniteNonNegativeRemaining(c.solUsableCapacity) &&
+    isFiniteNonNegativeRemaining(c.otherUsableCapacity) &&
+    isFiniteNonNegativeRemaining(c.healthyGrokUsableCapacity)
+  )
+}
+
+function isFiniteNonNegativeRemaining(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }
 
 /**
@@ -486,6 +912,15 @@ export function evaluateCapacityPolicy(input: {
  * call this at the real assignment boundary — this module does not wire it.
  *
  * Model strings may be supplied for convenience; providerKind wins when both set.
+ *
+ * Provider-specific remaining headroom (AC-CAP residual repair):
+ * - SPARK requires sparkUsableCapacity > 0 (cannot consume SOL-only residual)
+ * - SOL requires solUsableCapacity > 0 (cannot consume SPARK-only residual)
+ * - OTHER requires otherUsableCapacity > 0
+ * - GROK requires grokAssignmentAllowed + healthyGrokUsableCapacity > 0
+ * When dispatchAllowed is true, missing family remaining fields fail closed
+ * (FAMILY_REMAINING_REQUIRED) — no soft flag-only path (M2). Present zero/NaN
+ * still deny via the provider-specific remaining codes.
  */
 export function authorizeProviderAssignment(
   capacity: Pick<
@@ -496,11 +931,23 @@ export function authorizeProviderAssignment(
     | 'nonGrokAssignmentAllowed'
     | 'grokAssignmentAllowed'
     | 'limitingReasons'
-  >,
+  > &
+    Partial<
+      Pick<
+        CapacityPolicyResult,
+        | 'sparkUsableCapacity'
+        | 'solUsableCapacity'
+        | 'otherUsableCapacity'
+        | 'healthyGrokUsableCapacity'
+        | 'failSafeActions'
+      >
+    >,
   request: {
     providerKind?: AccountProviderKind
     /** Optional model id; mapped when providerKind omitted. */
     model?: string
+    /** When set, STOP_LIMIT_ASSIGNMENT for this masked account denies. */
+    maskedAccountRef?: string | null
   },
 ): ProviderAssignmentDecision {
   const providerKind =
@@ -524,6 +971,37 @@ export function authorizeProviderAssignment(
     }
   }
 
+  // Fail-safe assignment gate (STOP_NEW_DISPATCH / BOUNDED_DRAIN / STOP_LIMIT).
+  const failSafeGate = evaluateFailSafeAssignmentGate(capacity.failSafeActions, {
+    maskedAccountRef: request.maskedAccountRef,
+  })
+  if (failSafeGate.blocked) {
+    return {
+      allowed: false,
+      providerKind,
+      dispatchMode: capacity.dispatchMode,
+      reason:
+        failSafeGate.action === 'STOP_LIMIT_ASSIGNMENT'
+          ? CAP_REASON_FAIL_SAFE_STOP_LIMIT
+          : failSafeGate.reason ?? CAP_REASON_FAIL_SAFE_STOP_DISPATCH,
+    }
+  }
+
+  // M2: when dispatch is allowed, family remainings are mandatory (no soft path).
+  if (!hasCompleteFamilyRemainings(capacity)) {
+    return {
+      allowed: false,
+      providerKind,
+      dispatchMode: capacity.dispatchMode,
+      reason: CAP_REASON_FAMILY_REMAINING_REQUIRED,
+    }
+  }
+
+  const sparkRem = readOptionalRemaining(capacity.sparkUsableCapacity)
+  const solRem = readOptionalRemaining(capacity.solUsableCapacity)
+  const otherRem = readOptionalRemaining(capacity.otherUsableCapacity)
+  const grokRem = readOptionalRemaining(capacity.healthyGrokUsableCapacity)
+
   if (providerKind === 'GROK') {
     if (!capacity.grokAssignmentAllowed) {
       return {
@@ -531,6 +1009,14 @@ export function authorizeProviderAssignment(
         providerKind,
         dispatchMode: capacity.dispatchMode,
         reason: CAP_REASON_PROVIDER_NOT_ALLOWED,
+      }
+    }
+    if (grokRem !== null && grokRem <= 0) {
+      return {
+        allowed: false,
+        providerKind,
+        dispatchMode: capacity.dispatchMode,
+        reason: CAP_REASON_GROK_NO_REMAINING,
       }
     }
     return {
@@ -541,7 +1027,7 @@ export function authorizeProviderAssignment(
     }
   }
 
-  // Spark / SOL / OTHER
+  // Spark / SOL / OTHER — GROK_ONLY or family flag still coarse-deny first.
   if (capacity.dispatchMode === 'GROK_ONLY' || !capacity.nonGrokAssignmentAllowed) {
     return {
       allowed: false,
@@ -554,12 +1040,67 @@ export function authorizeProviderAssignment(
     }
   }
 
+  // Provider-specific remaining: SPARK cannot consume SOL-only headroom and vice versa.
+  if (providerKind === 'SPARK') {
+    if (sparkRem !== null && sparkRem <= 0) {
+      return {
+        allowed: false,
+        providerKind,
+        dispatchMode: capacity.dispatchMode,
+        reason: CAP_REASON_SPARK_NO_REMAINING,
+      }
+    }
+    return {
+      allowed: true,
+      providerKind,
+      dispatchMode: capacity.dispatchMode,
+      reason: null,
+    }
+  }
+
+  if (providerKind === 'SOL') {
+    if (solRem !== null && solRem <= 0) {
+      return {
+        allowed: false,
+        providerKind,
+        dispatchMode: capacity.dispatchMode,
+        reason: CAP_REASON_SOL_NO_REMAINING,
+      }
+    }
+    return {
+      allowed: true,
+      providerKind,
+      dispatchMode: capacity.dispatchMode,
+      reason: null,
+    }
+  }
+
+  // OTHER
+  if (otherRem !== null && otherRem <= 0) {
+    return {
+      allowed: false,
+      providerKind,
+      dispatchMode: capacity.dispatchMode,
+      reason: CAP_REASON_OTHER_NO_REMAINING,
+    }
+  }
   return {
     allowed: true,
     providerKind,
     dispatchMode: capacity.dispatchMode,
     reason: null,
   }
+}
+
+/**
+ * Finite remaining number, or null when field omitted.
+ * Callers that require complete family fields must gate via
+ * hasCompleteFamilyRemainings first (register path always does).
+ */
+function readOptionalRemaining(value: unknown): number | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  return Math.max(0, value)
 }
 
 /**

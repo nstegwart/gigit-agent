@@ -412,6 +412,53 @@ describe('control-data-persistence MySQL adapters (memory SQL)', () => {
       expect(evaluation.contributesToProductReadiness).toBe(true)
     })
 
+    it('R2 put strips self-asserted sales-rebuild membership fields', async () => {
+      const pin = {
+        canonicalSnapshotId: 'snap-r2',
+        canonicalHash: 'chash-r2aaaaaaaaaaaaaaaa',
+        taskHash: 'thash-r2bbbbbbbbbbbbbbbb',
+        boardRev: 5,
+        lifecycleRev: 1,
+      }
+      const receipt: ClassificationReceipt = {
+        receiptId: 'rcpt-r2',
+        receiptHash: 'abcdef0123456789r2strip',
+        taskId: 't-r2',
+        taskClass: 'PRODUCT',
+        disposition: 'ACTIVE',
+        membershipPortfolioId: 'SALES_WEB_RELATED_BACKEND',
+        membershipProofHash: 'deadbeefdeadbeefdeadbeef',
+        membershipProductLine: 'sales-rebuild',
+        canonicalSnapshotId: pin.canonicalSnapshotId,
+        canonicalHash: pin.canonicalHash,
+        taskHash: pin.taskHash,
+        boardRev: pin.boardRev,
+        lifecycleRev: pin.lifecycleRev,
+        issuedAt: '2026-07-13T00:00:00.000Z',
+        expiresAt: null,
+      }
+      await store.classification.put(
+        'b-r2',
+        {
+          taskId: 't-r2',
+          taskClass: 'PRODUCT',
+          disposition: 'ACTIVE',
+          receipt,
+        },
+        { boardRev: pin.boardRev, entityRev: 1, lifecycleRev: pin.lifecycleRev },
+      )
+      const got = await store.classification.get('b-r2', 't-r2')
+      expect(got?.receipt?.membershipProductLine).toBeUndefined()
+      expect(got?.receipt?.membershipProofHash).toBeUndefined()
+      expect(got?.receipt?.membershipPortfolioId).toBeUndefined()
+      const archived = await store.classification.getReceipt('b-r2', 'rcpt-r2')
+      expect(archived?.membershipProductLine).toBeUndefined()
+      expect(archived?.membershipProofHash).toBeUndefined()
+      // Class/disposition still persisted
+      expect(got?.taskClass).toBe('PRODUCT')
+      expect(got?.disposition).toBe('ACTIVE')
+    })
+
     it('putReceipt same hash is idempotent; different hash is IDEMPOTENCY_CONFLICT with no write', async () => {
       const base: ClassificationReceipt = {
         receiptId: 'rcpt-imm-1',

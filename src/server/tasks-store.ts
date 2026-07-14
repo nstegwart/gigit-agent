@@ -12,10 +12,15 @@ import type {
   ClassificationReceipt,
   PinnedRevisionTuple,
   TaskClass,
+  TaskClassificationRecord,
   TaskDisposition,
 } from '#/lib/control-plane-types'
 import { TASK_CLASSES, TASK_DISPOSITIONS } from '#/lib/control-plane-types'
-import { evaluateClassification } from '#/server/classification'
+import {
+  evaluateClassification,
+  sanitizeClassificationRecordForPersistence,
+  stripSelfAssertedMembershipFields,
+} from '#/server/classification'
 import { subjectHashOf } from '#/server/revisions'
 
 let schemaReady: Promise<void> | null = null
@@ -339,6 +344,31 @@ export function projectLightTaskClassification(sources: {
   }
 }
 
+/**
+ * Security R2: strip self-asserted sales/mfs membership from embedded task
+ * classification before any persistence (summary + full data JSON).
+ */
+function sanitizeWorkTaskMembershipFields(t: WorkTask): WorkTask {
+  const raw = t as WorkTaskClassificationCarrier
+  let changed = false
+  const out: WorkTaskClassificationCarrier = { ...raw }
+
+  if (raw.classification && typeof raw.classification === 'object') {
+    const cls = raw.classification as TaskClassificationRecord
+    if (cls.receipt && typeof cls.receipt === 'object') {
+      out.classification = sanitizeClassificationRecordForPersistence(cls)
+      changed = true
+    }
+  }
+  if (raw.classificationReceipt && typeof raw.classificationReceipt === 'object') {
+    out.classificationReceipt = stripSelfAssertedMembershipFields(
+      raw.classificationReceipt as ClassificationReceipt,
+    )
+    changed = true
+  }
+  return changed ? (out as WorkTask) : t
+}
+
 /** Fields the list views (TasksTable, project page, list_tasks) need — no heavy mapping. */
 function summaryOf(t: WorkTask) {
   const raw = t as WorkTaskClassificationCarrier
@@ -353,11 +383,18 @@ function summaryOf(t: WorkTask) {
   }
   // Persist classification into summary so list reads stay light (no full data pull).
   // Only forward when present — never invent PRODUCT from phase/pct.
+  // Security R2: strip self-asserted sales/mfs membership fields at embed boundary.
   if (raw.classification && typeof raw.classification === 'object') {
-    base.classification = raw.classification
+    const cls = raw.classification as TaskClassificationRecord
+    base.classification =
+      cls.receipt && typeof cls.receipt === 'object'
+        ? sanitizeClassificationRecordForPersistence(cls)
+        : raw.classification
   }
   if (raw.classificationReceipt && typeof raw.classificationReceipt === 'object') {
-    base.classificationReceipt = raw.classificationReceipt
+    base.classificationReceipt = stripSelfAssertedMembershipFields(
+      raw.classificationReceipt as ClassificationReceipt,
+    )
   }
   if (typeof raw.taskClass === 'string') base.taskClass = raw.taskClass
   if (typeof raw.disposition === 'string') base.disposition = raw.disposition
@@ -370,10 +407,11 @@ function summaryOf(t: WorkTask) {
   return base
 }
 function rowValues(boardId: string, t: WorkTask): Array<unknown> {
+  const clean = sanitizeWorkTaskMembershipFields(t)
   return [
-    boardId, t.id, t.projectId ?? null, t.featureContractId ?? null, t.group ?? null,
-    t.phase ?? null, t.scope ?? null, t.title ?? null, t.updated ?? null,
-    JSON.stringify(summaryOf(t)), JSON.stringify(t),
+    boardId, clean.id, clean.projectId ?? null, clean.featureContractId ?? null, clean.group ?? null,
+    clean.phase ?? null, clean.scope ?? null, clean.title ?? null, clean.updated ?? null,
+    JSON.stringify(summaryOf(clean)), JSON.stringify(clean),
   ]
 }
 const COLS = '(board_id, id, project_id, feature_contract_id, grp, phase, scope, title, updated, summary, data)'
@@ -965,11 +1003,18 @@ export async function upsertTaskV3(
       canonicalSnapshotId:
         inp.classification.receipt?.canonicalSnapshotId ?? pin.canonicalSnapshotId,
     }, inp.task.id, now)
-    taskClass = inp.classification.taskClass
-    disposition = inp.classification.disposition
-    classificationReceipt = inp.classification.receipt
-    classificationReceiptId = inp.classification.receipt?.receiptId ?? null
-    classificationReceiptHash = inp.classification.receipt?.receiptHash ?? null
+    // Security R2: strip self-asserted sales/mfs membership at V3 upsert boundary.
+    const sanitizedCls = sanitizeClassificationRecordForPersistence({
+      taskId: inp.task.id,
+      taskClass: inp.classification.taskClass,
+      disposition: inp.classification.disposition,
+      receipt: inp.classification.receipt,
+    })
+    taskClass = sanitizedCls.taskClass
+    disposition = sanitizedCls.disposition
+    classificationReceipt = sanitizedCls.receipt
+    classificationReceiptId = sanitizedCls.receipt?.receiptId ?? null
+    classificationReceiptHash = sanitizedCls.receipt?.receiptHash ?? null
   }
 
   // Never trust legacy phase/scope/mappingPct for class

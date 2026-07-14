@@ -18,6 +18,10 @@ import type {
   TaskClassificationRecord,
   TaskDisposition,
 } from '#/lib/control-plane-types'
+import {
+  sanitizeClassificationRecordForPersistence,
+  stripSelfAssertedMembershipFields,
+} from '#/server/classification'
 import type {
   RegisteredStageEvidence,
   StageEvidenceStore,
@@ -1798,7 +1802,9 @@ export function createMysqlClassificationStore(client: ControlDataSqlClient): Cl
     },
 
     async put(boardId, record, pins = {}) {
-      const receipt = record.receipt
+      // Security R2: strip self-asserted sales/mfs product-line + hex at durable boundary.
+      const sanitized = sanitizeClassificationRecordForPersistence(record)
+      const receipt = sanitized.receipt
       await client.query(
         `INSERT INTO control_plane_classification (
            board_id, task_id, task_class, disposition,
@@ -1820,9 +1826,9 @@ export function createMysqlClassificationStore(client: ControlDataSqlClient): Cl
            control_plane_root_accepted=VALUES(control_plane_root_accepted)`,
         [
           boardId,
-          record.taskId,
-          record.taskClass,
-          record.disposition,
+          sanitized.taskId,
+          sanitized.taskClass,
+          sanitized.disposition,
           receipt?.receiptId ?? null,
           receipt?.receiptHash ?? null,
           receipt?.membershipPortfolioId ?? null,
@@ -1833,15 +1839,15 @@ export function createMysqlClassificationStore(client: ControlDataSqlClient): Cl
           receipt?.canonicalHash ?? null,
           receipt?.taskHash ?? null,
           pins.lifecycleRev ?? receipt?.lifecycleRev ?? null,
-          record.controlPlaneTargetGate ?? null,
-          record.controlPlaneGateVerifiedPass == null
+          sanitized.controlPlaneTargetGate ?? null,
+          sanitized.controlPlaneGateVerifiedPass == null
             ? null
-            : record.controlPlaneGateVerifiedPass
+            : sanitized.controlPlaneGateVerifiedPass
               ? 1
               : 0,
-          record.controlPlaneRootAccepted == null
+          sanitized.controlPlaneRootAccepted == null
             ? null
-            : record.controlPlaneRootAccepted
+            : sanitized.controlPlaneRootAccepted
               ? 1
               : 0,
         ],
@@ -1852,29 +1858,31 @@ export function createMysqlClassificationStore(client: ControlDataSqlClient): Cl
     },
 
     async putReceipt(boardId, receipt) {
+      // Security R2: strip self-asserted direct membership before archive insert.
+      const clean = stripSelfAssertedMembershipFields(receipt)
       // Insert-once archive: exact same receipt_hash may idempotently replay;
       // different hash/payload => IDEMPOTENCY_CONFLICT with no write.
-      const existing = await this.getReceipt(boardId, receipt.receiptId)
+      const existing = await this.getReceipt(boardId, clean.receiptId)
       if (existing) {
         assertImmutableReplay({
           kind: 'control_plane_classification_receipts',
-          key: `${boardId}::${receipt.receiptId}`,
+          key: `${boardId}::${clean.receiptId}`,
           existingHash: existing.receiptHash,
-          nextHash: receipt.receiptHash,
+          nextHash: clean.receiptHash,
           extra: {
             existingCanonicalHash: existing.canonicalHash,
-            nextCanonicalHash: receipt.canonicalHash,
+            nextCanonicalHash: clean.canonicalHash,
           },
         })
         // Same receipt_hash: also reject silent payload drift on canonical pin.
-        if (existing.canonicalHash !== receipt.canonicalHash) {
+        if (existing.canonicalHash !== clean.canonicalHash) {
           throw new ControlDataPersistenceError(
             'IDEMPOTENCY_CONFLICT',
             'classification receipt rewrite with different canonical_hash forbidden',
             {
-              key: `${boardId}::${receipt.receiptId}`,
+              key: `${boardId}::${clean.receiptId}`,
               existingCanonicalHash: existing.canonicalHash,
-              nextCanonicalHash: receipt.canonicalHash,
+              nextCanonicalHash: clean.canonicalHash,
             },
           )
         }
@@ -1888,21 +1896,21 @@ export function createMysqlClassificationStore(client: ControlDataSqlClient): Cl
          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           boardId,
-          receipt.receiptId,
-          receipt.taskId,
-          receipt.receiptHash,
-          receipt.taskClass,
-          receipt.disposition,
-          receipt.membershipPortfolioId ?? null,
-          receipt.membershipProofHash ?? null,
-          receipt.canonicalSnapshotId,
-          receipt.canonicalHash,
-          receipt.taskHash,
-          receipt.boardRev,
-          receipt.lifecycleRev,
-          toMysqlDateTime(receipt.issuedAt),
-          toMysqlDateTime(receipt.expiresAt ?? null),
-          jsonParam(receipt),
+          clean.receiptId,
+          clean.taskId,
+          clean.receiptHash,
+          clean.taskClass,
+          clean.disposition,
+          clean.membershipPortfolioId ?? null,
+          clean.membershipProofHash ?? null,
+          clean.canonicalSnapshotId,
+          clean.canonicalHash,
+          clean.taskHash,
+          clean.boardRev,
+          clean.lifecycleRev,
+          toMysqlDateTime(clean.issuedAt),
+          toMysqlDateTime(clean.expiresAt ?? null),
+          jsonParam(clean),
         ],
       )
     },

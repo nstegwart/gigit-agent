@@ -117,6 +117,7 @@ describe('OBS-WIRE healthz + public-snapshot routes', () => {
           canonicalSnapshotId: null,
           boardRev: null,
           lifecycleRev: null,
+          canonicalHash: null,
         },
         dependencies: [],
       }),
@@ -140,9 +141,11 @@ describe('OBS-WIRE healthz + public-snapshot routes', () => {
     expect(sink.snapshot().some((e) => e.endpoint === '/api/healthz' && e.result === 'deny')).toBe(
       true,
     )
+    // Auth deny must not invent release/schema alert evaluation
+    expect(obs.alerts.get('UNHEALTHY_RELEASE_SCHEMA_MISMATCH')).toBeNull()
   })
 
-  it('healthz ok records latency + board/lifecycle rev', async () => {
+  it('healthz ok records latency + board/lifecycle rev + canonicalHash + release/schema alert', async () => {
     const sink = createMemoryLogSink()
     const obs = createObservabilityIntegration({
       sink,
@@ -182,12 +185,140 @@ describe('OBS-WIRE healthz + public-snapshot routes', () => {
     )
     expect(res.status).toBe(200)
     expect(res.headers.get('x-request-id')).toBe('obs-healthz-ok-001')
+    const body = (await res.json()) as {
+      canonicalSnapshotId: string
+      canonicalHash: string
+      boardRev: number
+      lifecycleRev: number
+      release: { match: boolean }
+      schema: { match: boolean }
+    }
+    // Live-pin contract: all four fields on authenticated healthz body
+    expect(body.canonicalSnapshotId).toBe('snap-ok')
+    expect(body.canonicalHash).toBe('c'.repeat(64))
+    expect(body.boardRev).toBe(9)
+    expect(body.lifecycleRev).toBe(5)
     const log = sink.snapshot().find((e) => e.endpoint === '/api/healthz')
     expect(log?.result).toBe('ok')
     expect(log?.boardRev).toBe(9)
     expect(log?.lifecycleRev).toBe(5)
     expect(log?.latencyMs).toBeGreaterThanOrEqual(0)
     expect(obs.metrics.count('api_latency_ms')).toBeGreaterThanOrEqual(1)
+    // evaluateAlerts wired for release/schema — inactive when match=true
+    const releaseAlert = obs.alerts.get('UNHEALTHY_RELEASE_SCHEMA_MISMATCH')
+    expect(releaseAlert).not.toBeNull()
+    expect(releaseAlert?.active).toBe(false)
+    expect(releaseAlert?.runbookId).toBe('rb-release-schema-mismatch')
+  })
+
+  it('healthz mismatch activates UNHEALTHY_RELEASE_SCHEMA_MISMATCH via evaluateAlerts', async () => {
+    const sink = createMemoryLogSink()
+    const obs = createObservabilityIntegration({
+      sink,
+      nowIso: () => '2026-07-14T00:00:00.000Z',
+      nowMs: () => 2500,
+    })
+    setSharedObservabilityIntegrationForTests(obs)
+    setHealthzDeps({
+      authGuard: allowAllHealthGuard({ actorId: 'root-1', role: 'ROOT_ORCHESTRATOR' }),
+      loadExpected: async () => ({
+        deployedSha: 'b'.repeat(40),
+        schemaVersion: '006',
+      }),
+      loadObserved: async () => ({
+        deployedSha: '0'.repeat(40),
+        schemaVersion: '001',
+        migration: {
+          status: 'PENDING',
+          appliedVersions: ['001'],
+          expectedLatestVersion: '006',
+          schemaVersion: '001',
+        },
+        snapshot: {
+          canonicalSnapshotId: 'snap-mismatch',
+          boardRev: 1,
+          lifecycleRev: 1,
+          canonicalHash: 'd'.repeat(64),
+        },
+        dependencies: [{ name: 'mysql', status: 'up' }],
+      }),
+    })
+
+    const res = await healthzGetHandler(
+      new Request('http://127.0.0.1/api/healthz', {
+        headers: { 'x-request-id': 'obs-healthz-mismatch-001' },
+      }),
+    )
+    expect(res.status).toBe(503)
+    const body = (await res.json()) as {
+      status: string
+      canonicalHash: string
+      release: { match: boolean }
+      schema: { match: boolean }
+    }
+    expect(body.status).toBe('unhealthy')
+    expect(body.canonicalHash).toBe('d'.repeat(64))
+    expect(body.release.match).toBe(false)
+    expect(body.schema.match).toBe(false)
+    const releaseAlert = obs.alerts.get('UNHEALTHY_RELEASE_SCHEMA_MISMATCH')
+    expect(releaseAlert?.active).toBe(true)
+    expect(releaseAlert?.runbookId).toBe('rb-release-schema-mismatch')
+  })
+
+  it('healthz log sink never contains raw canonical hash — hasCanonicalHash flag only', async () => {
+    const RAW_HASH = 'f'.repeat(64)
+    const sink = createMemoryLogSink()
+    const obs = createObservabilityIntegration({
+      sink,
+      nowIso: () => '2026-07-14T00:00:00.000Z',
+      nowMs: () => 2600,
+    })
+    setSharedObservabilityIntegrationForTests(obs)
+    setHealthzDeps({
+      authGuard: allowAllHealthGuard({ actorId: 'root-1', role: 'ROOT_ORCHESTRATOR' }),
+      loadExpected: async () => ({
+        deployedSha: 'b'.repeat(40),
+        schemaVersion: '006',
+      }),
+      loadObserved: async () => ({
+        deployedSha: 'b'.repeat(40),
+        schemaVersion: '006',
+        migration: {
+          status: 'READY',
+          appliedVersions: ['000', '001', '002', '003', '004', '005', '006'],
+          expectedLatestVersion: '006',
+          schemaVersion: '006',
+        },
+        snapshot: {
+          canonicalSnapshotId: 'snap-hash-redact',
+          boardRev: 11,
+          lifecycleRev: 7,
+          canonicalHash: RAW_HASH,
+        },
+        dependencies: [{ name: 'mysql', status: 'up' }],
+      }),
+    })
+
+    const res = await healthzGetHandler(
+      new Request('http://127.0.0.1/api/healthz', {
+        headers: { 'x-request-id': 'obs-healthz-hash-redact-001' },
+      }),
+    )
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { canonicalHash: string | null }
+    // Response body intentionally carries hash for live-pin bind
+    expect(body.canonicalHash).toBe(RAW_HASH)
+
+    const dumped = JSON.stringify(sink.snapshot())
+    expect(dumped).not.toContain(RAW_HASH)
+    const log = sink.snapshot().find((e) => e.endpoint === '/api/healthz')
+    expect(log).toBeDefined()
+    expect(log?.meta).toBeDefined()
+    expect((log?.meta as Record<string, unknown> | undefined)?.hasCanonicalHash).toBe(true)
+    // meta must not echo the full hash under any key
+    const metaJson = JSON.stringify(log?.meta ?? {})
+    expect(metaJson).not.toContain(RAW_HASH)
+    expect(metaJson).toContain('hasCanonicalHash')
   })
 
   it('public-snapshot ok emits PUBLIC role log with pin revs; no body secrets', async () => {
@@ -224,5 +355,10 @@ describe('OBS-WIRE healthz + public-snapshot routes', () => {
     expect(log?.lifecycleRev).toBe(2)
     const dumped = JSON.stringify(sink.snapshot())
     expect(dumped).not.toMatch(/password|Bearer eyJ/i)
+    // Freshness alert evaluated from body age (30s) vs interval (60s) → inactive
+    const freshnessAlert = obs.alerts.get('PUBLIC_FRESHNESS_STALE')
+    expect(freshnessAlert).not.toBeNull()
+    expect(freshnessAlert?.active).toBe(false)
+    expect(freshnessAlert?.runbookId).toBe('rb-public-freshness-stale')
   })
 })

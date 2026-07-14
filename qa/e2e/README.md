@@ -70,6 +70,23 @@ Default Playwright run (no hand-exported passwords):
 
 Helpers: `qa/e2e/lib/auth-fixture.mjs` (+ `auth-fixture.d.mts` for TS), `qa/e2e/lib/start-auth-preview.mjs`, `tests/e2e/fixtures/mcp-auth.ts`, `tests/e2e/fixtures/global-setup.ts` / `global-teardown.ts`.
 
+### FP-C control-plane schema + seed (disposable iso only)
+
+After ambient board clone, `prepareIsolatedAuthFixture` runs **FP-C** via `qa/e2e/lib/control-plane-schema-seed.mjs`:
+
+1. Apply migrations **001,002,004,005** (+ **006** tip) on the **iso DB only** (never ambient / staging / prod).
+2. Seed ≥1 `control_plane_runs` row + masked `control_plane_account_snapshots` per board (fixture-shaped product table contracts).
+3. Idempotent: second prepare reuses meta; re-apply skips `schema_migrations`; seed uses ODKU.
+
+| Variable | Notes |
+| --- | --- |
+| `CAIRN_E2E_SKIP_FP_C=1` | Skip schema/seed (debug only; list_runs/list_accounts will MCP_HANDLER_ERROR without CP tables) |
+| CLI self-test | `node qa/e2e/lib/control-plane-schema-seed.mjs --self-test` |
+| CLI disposable proof | `node qa/e2e/lib/control-plane-schema-seed.mjs --disposable-proof` |
+| Contract | `tests/e2e/fixtures/fp-c-schema-seed.contract.harness.spec.ts` (harness-contract) |
+
+Does **not** edit production migration files or `board-mcp`.
+
 ```bash
 pnpm build
 # optional: export CAIRN_E2E_USERNAME=… CAIRN_E2E_PASSWORD=…  (else auto-synth)
@@ -191,7 +208,9 @@ node qa/e2e/flows/staging-agent-smoke.mjs --real
 | Public snapshot           | `flows/public-snapshot.mjs`                      | none                 | `/api/public-snapshot` HTTP probe                                    |
 | **Public consumer conformance** | `flows/public-consumer-conformance.mjs`    | none (fixture default; LIVE optional) | MFS_PUBLIC_CONSUMER_SYNC_CONTRACT_V1 offline fixtures + optional LIVE ETag/304/429 probes. **EXCLUDED:** real consumer publish/mutation (`writeAuthority`, `/opt/mfs/workspace/CONTRACT`, `/var/www/contract`, nginx, deploy) |
 | **Security probes**       | `flows/security-probes.mjs`                      | none (optional bearer) | Unauth healthz/MCP/public + rate-limit + redaction (AC-AUTH/PUBLIC) |
-| **Perf budgets**          | `flows/perf-budgets.mjs`                         | none                 | Scale-1000 + p95; identical public/filter path budget-aligned; rate-limit-aware sampling; TUNNEL/HARNESS/APP class; opt-in `--load-10m` (AC-PERF-01). Docs: `docs/control-center/PERFORMANCE.md` |
+| **Perf budgets**          | `flows/perf-budgets.mjs`                         | none                 | Scale-1000 + **warmed** p95 (cold discard); identical public/filter path budget-aligned; rate-limit-aware sampling; TUNNEL/HARNESS/APP class; fail-closed `PAYLOAD_UNBOUNDED`; opt-in `--load-10m` (AC-PERF-01). Docs: `docs/control-center/PERFORMANCE.md` |
+| **Perf UI Overview/LCP**  | `flows/perf-ui-overview-lcp.mjs`                 | storageState for live | Overview-ready / LCP ≤2.5s + optional UI filter feedback ≤200ms **in-surface after data** (nav wall fail-closed; self-test pure; `--live` Playwright) |
+| **Perf freshness SLAs**   | `flows/perf-freshness-sla.mjs`                   | none (live-ro GET)   | Runner≤30s / material≤30s / public≤60s **server-clock**; OOO negative lag fail-closed; reconnect/duplicate/manual-refresh pure scenarios; `--self-test` / `--live-ro` (no load) |
 | Scale-1000 fixture        | `qa/fixtures/staging/scale-1000/generate.mjs`    | n/a                  | Deterministic 1000 tasks / 200 runs / 20 accounts / 100 decisions    |
 
 ### Example commands (piecewise)
@@ -237,7 +256,9 @@ WEB_BASE=http://127.0.0.1:33211 BOARD_ID=mfs-rebuild node qa/e2e/flows/perf-budg
 node qa/fixtures/staging/scale-1000/generate.mjs
 node qa/e2e/flows/security-probes.mjs --self-test
 node qa/e2e/flows/perf-budgets.mjs --self-test
-# Unit: tests/unit/perf-budgets.test.ts
+node qa/e2e/flows/perf-ui-overview-lcp.mjs --self-test
+node qa/e2e/flows/perf-freshness-sla.mjs --self-test
+# Unit: tests/unit/perf-budgets.test.ts tests/unit/perf-ui-overview-lcp.test.ts tests/unit/perf-freshness-sla.test.ts
 
 # Staging gate fixture pack (pure self-test; no staging mutation)
 node qa/e2e/flows/staging-gates.mjs --self-test

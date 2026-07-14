@@ -177,6 +177,24 @@ describe('C3-R2A module AA hard-locals (no var pass-through trap)', () => {
     // Must not still use the failing pair
     expect(fg.toLowerCase()).not.toBe('#c62828')
   })
+
+  it('summaryChipBlocking uses local darker FG that AA-passes measured soft #f1dfe1', () => {
+    // Root defect: Decisions_* axe — #c62828 on #f1dfe1 = 4.38 (decisions-blocking-count).
+    // --dec-blocked stays #c62828; only .summaryChipBlocking text is darker.
+    expect(decisionsCss).toMatch(/--dec-blocked:\s*#c62828/)
+    const chip = decisionsCss.match(/\.summaryChipBlocking\s*\{([^}]+)\}/)
+    expect(chip?.[1]).toBeTruthy()
+    const color = chip![1].match(/color:\s*(#[0-9a-fA-F]{6})/)
+    expect(color?.[1]).toBeTruthy()
+    const fg = color![1]
+    // Harness-measured soft (rgba(198,40,40,0.12) composite on light Decisions surface)
+    const measuredSoft = '#f1dfe1'
+    const ratio = contrastRatio(fg, measuredSoft)
+    expect(ratio).toBeGreaterThanOrEqual(4.5)
+    expect(fg.toLowerCase()).not.toBe('#c62828')
+    // Pre-fix pair must remain failing so the test documents the defect pair
+    expect(contrastRatio('#c62828', measuredSoft)).toBeLessThan(4.5)
+  })
 })
 
 describe('C3-R2A shell scroll + legacy table a11y markup', () => {

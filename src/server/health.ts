@@ -37,7 +37,8 @@ export interface HealthSnapshotInfo {
   canonicalSnapshotId: string | null
   boardRev: number | null
   lifecycleRev: number | null
-  canonicalHash?: string | null
+  /** Subject/payload hash for the pinned observation; null when unproven (never invent). */
+  canonicalHash: string | null
 }
 
 export interface MigrationHealthInfo {
@@ -83,6 +84,12 @@ export interface HealthzPayload {
     schemaVersion: string
   }
   canonicalSnapshotId: string | null
+  /**
+   * Live pin hash for STAGING_BIND_LIVE_PIN / extractCompleteLivePin.
+   * Same pinned observation as board_revisions.subject_hash or
+   * control_plane_snapshots.payload_sha256 — null when unproven.
+   */
+  canonicalHash: string | null
   boardRev: number | null
   lifecycleRev: number | null
   dependencies: Array<{
@@ -184,6 +191,12 @@ export function buildHealthzPayload(
       schemaVersion: observed.migration.schemaVersion,
     },
     canonicalSnapshotId: observed.snapshot.canonicalSnapshotId,
+    // Surface hash from the same pinned observation as boardRev/lifecycleRev/snapshotId.
+    // Smoke STAGING_BIND_LIVE_PIN requires this top-level field (probeRuntimePin).
+    canonicalHash:
+      observed.snapshot.canonicalHash === undefined
+        ? null
+        : observed.snapshot.canonicalHash,
     boardRev: observed.snapshot.boardRev,
     lifecycleRev: observed.snapshot.lifecycleRev,
     dependencies: observed.dependencies.map((d) => ({

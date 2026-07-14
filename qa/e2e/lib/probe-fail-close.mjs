@@ -402,6 +402,7 @@ export function evaluateOngoingZeroClick(input) {
     failures.push('ongoing_only_query_string_insufficient')
   }
   if (!input.sectionPresent) failures.push('ongoing_section_absent')
+  // UI_CONTRACT §7 zero-click: include PRODUCTIVE/IDLE/STALLED (productiveState).
   const requiredFields = input.requiredFields ?? [
     'taskId',
     'title',
@@ -415,6 +416,7 @@ export function evaluateOngoingZeroClick(input) {
     'heartbeatAge',
     'materialProgressAge',
     'evidence',
+    'productiveState',
   ]
   const missing = (input.missingFields ?? []).length
     ? input.missingFields

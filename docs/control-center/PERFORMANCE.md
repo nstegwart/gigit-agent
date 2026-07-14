@@ -10,10 +10,12 @@ paths that hit the same public-snapshot handler twice under different budgets.
 
 | Surface | Budget | When it applies |
 |--------|--------|-----------------|
-| **On-host / API public snapshot p95** | **≤ 500 ms** (`PERF_P95_MS`) | Warmed `GET /api/public-snapshot` on an **on-host** proof boundary, or when a **server latency header** is present and preferred |
-| **UI filter feedback** | **≤ 200 ms** (`PERF_UI_FILTER_P95_MS`) | **True UI filter surface only** — set `PERF_UI_FILTER_URL` to a real control-center filter route/query. Not the default harness probe |
+| **On-host / API public snapshot p95** | **≤ 500 ms** (`PERF_P95_MS`) | **Warmed** `GET /api/public-snapshot` (default: **1 cold sample discarded** per series) on an **on-host** proof boundary, or when a **server latency header** is present and preferred |
+| **UI filter feedback** | **≤ 200 ms** (`PERF_UI_FILTER_P95_MS`) | **True UI filter surface only** — set `PERF_UI_FILTER_URL` or run `perf-ui-overview-lcp.mjs --live --filter`. Not the default identical public probe |
 | Sustained load | 20 req/s × 10 min | Opt-in `--load-10m` only |
-| LCP / Overview-ready | ≤ 2.5 s | Browser probe (not in default node flow) |
+| LCP / Overview-ready | ≤ 2.5 s | `qa/e2e/flows/perf-ui-overview-lcp.mjs` (self-test pure; `--live` Playwright) |
+| Runner visible / material publish / public | ≤30s / ≤30s / ≤60s | `qa/e2e/flows/perf-freshness-sla.mjs` (**server-clock** lag; `--self-test` / `--live-ro`) |
+| Public payload bound | ≤200 tasks / ≤512 KiB | Fail-closed `PAYLOAD_UNBOUNDED` in `perf-budgets.mjs` (MCP `MAX_PAGE_SIZE` parity) |
 | Scale fixture | 1000 tasks / 200 runs / 20 accounts / 100 decisions | `qa/fixtures/staging/scale-1000` |
 
 These two latency budgets are **not interchangeable**. UI filter feedback ≤200 is
@@ -103,6 +105,8 @@ Default multi-series sampling is capped so public + filter do not self-trip:
 - `sampleN` ≤ `burst/2` (default cap **10** when two series)
 - `gapMs` auto ≥ **1000 ms** (token refill floor) unless `PERF_SAMPLE_GAP_MS` is set
 - series cool-down between public and filter series
+- **Warm discard (default):** one cold GET per series is issued and **excluded** from APP p95 (`PERF_WARM_DISCARD=0` to disable)
+- Warm requests count toward rate plan `totalRequests`
 - **429 samples are classified separately**; they do **not** enter APP p95
 - **429 retries are not folded into APP latency** (`retries429 > 0` excluded)
 
@@ -112,11 +116,89 @@ Override carefully:
 PERF_SAMPLE_N=8 PERF_SAMPLE_GAP_MS=2000 WEB_BASE=… node qa/e2e/flows/perf-budgets.mjs
 ```
 
+## Public payload fail-closed
+
+Public snapshot materializes full `tasks[]` / `runs[]` without pageSize. The harness
+inspects one response body and fail-closes with `PAYLOAD_UNBOUNDED` when:
+
+- `taskCount > PERF_PAYLOAD_MAX_TASKS` (default **200**, MCP `MAX_PAGE_SIZE` parity), or
+- `bodyBytes > PERF_PAYLOAD_MAX_BYTES` (default **512 KiB**)
+
+This is a **harness warning gate**, not a product fix. Product still returns O(n)
+payloads; at scale-1000 the bound is expected to trip until pagination exists.
+
+## Overview-ready / LCP + UI filter
+
+```bash
+# Pure self-test (no browser)
+node qa/e2e/flows/perf-ui-overview-lcp.mjs --self-test
+
+# Live bounded Playwright (requires WEB_BASE + storageState for auth surfaces)
+WEB_BASE=http://127.0.0.1:33211 BOARD_ID=mfs-rebuild \
+  node qa/e2e/flows/perf-ui-overview-lcp.mjs --live
+
+# + filter feedback (Work bucket deep-link or PERF_UI_FILTER_URL)
+WEB_BASE=… PERF_UI_FILTER_URL=/b/mfs-rebuild/work?bucket=ONGOING \
+  node qa/e2e/flows/perf-ui-overview-lcp.mjs --live --filter
+```
+
+Ready metric: `[data-testid="control-center-overview"]:not([data-surface-state="loading"])`
+within **≤ 2.5 s**. LCP is secondary when the marker is present.
+
+### UI filter feedback metric (in-surface after data)
+
+Product budget **≤ 200 ms** is **in-surface feedback after data is available**, not cold
+navigation:
+
+1. Load Work base (`/b/{board}/work`) and wait for data-ready surface.
+2. Start timer; click target bucket tab (`data-testid=work-tab-{BUCKET}`).
+3. Stop timer when feedback / selected tab is visible.
+4. Sample is tagged `metricKind: in_surface_after_data`.
+
+**Fail closed:**
+
+- `metricKind` of `navigation_wall` / `page_goto` / cold load → never PASS (even if ms ≤ 200)
+- Work data not ready, or filter control unavailable after data → no sample; FAIL when applicable
+- Do **not** substitute `page.goto` wall time for the ≤200 claim
+
+## Timed freshness (server-clock)
+
+Lag is always `visibleAt(server) − eventAt(server)`. Client wall-clock is support-only.
+
+**Out-of-order / negative lag (hard rule):** if `visibleAt < eventAt`, `lagMs` is negative
+(e.g. **-15000**). That is **always FAIL** (`error: out_of_order_negative_lag`). Negative
+lag must never pass because it is ≤ SLA numerically.
+
+```bash
+# Pure timelines + public snapshot field evaluator + handling scenarios
+node qa/e2e/flows/perf-freshness-sla.mjs --self-test
+
+# Single RO public-snapshot GET (no register/load)
+WEB_BASE=http://127.0.0.1:33211 BOARD_ID=mfs-rebuild \
+  node qa/e2e/flows/perf-freshness-sla.mjs --live-ro
+```
+
+Budgets: runner **≤30 s**, material **≤30 s**, public publication lag / ageMs **≤60 s**.
+`stale:true` with age within product threshold is **forceStale** (domain blockers), not
+an age-SLA fail by itself. `--live-mutate` is disabled by default (shared staging safety).
+
+### Handling scenarios (pure evaluators)
+
+| Scenario | Evaluator | Contract |
+|----------|-----------|----------|
+| **reconnect** | `evaluateReconnectRecovery` | order: event ≤ disconnect ≤ reconnect ≤ reVisible; lag = reVisible − reconnect ≤ SLA |
+| **duplicate** | `evaluateDuplicateDelivery` | multi-delivery same event → normalize earliest valid visibleAt ≥ eventAt; discard OOO samples |
+| **out-of-order** | `serverClockLagMs` / `evaluateTimedSla` | negative lag always FAIL |
+| **manual refresh** | `evaluateManualRefresh` | refreshRequestedAt → refreshVisibleAt server lag; staleBefore expected, not auto-fail |
+| **stale snapshot** | `evaluatePublicFreshnessFromSnapshot` | forceStale orthogonal to age SLA |
+
 ## Commands
 
 ```bash
 # Self-test (no network)
 node qa/e2e/flows/perf-budgets.mjs --self-test
+node qa/e2e/flows/perf-ui-overview-lcp.mjs --self-test
+node qa/e2e/flows/perf-freshness-sla.mjs --self-test
 
 # Scale fixture only
 node qa/e2e/flows/perf-budgets.mjs --scale-only
@@ -137,7 +219,9 @@ WEB_BASE=… PERF_LOAD_RPS=20 PERF_LOAD_DURATION_SEC=600 \
 ## Unit tests
 
 ```bash
-pnpm exec vitest run tests/unit/perf-budgets.test.ts
+pnpm exec vitest run tests/unit/perf-budgets.test.ts \
+  tests/unit/perf-ui-overview-lcp.test.ts \
+  tests/unit/perf-freshness-sla.test.ts
 # or
 npm test -- tests/unit/perf-budgets.test.ts
 ```
@@ -147,3 +231,4 @@ npm test -- tests/unit/perf-budgets.test.ts
 - Every public GET still reloads full aggregation before materialize/ETag (APP residual for load, not filter-specific).
 - Optional aggregation short-TTL cache is product work, not required for on-host ≤500.
 - Do not invent a filter materialization path for `view=filter` unless product needs it.
+- Public snapshot O(n) full-board payload remains a product residual; harness only fail-closes the warning.

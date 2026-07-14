@@ -29,6 +29,48 @@ export interface PinnedRevisionTuple {
   lifecycleRev: number
 }
 
+/**
+ * Portfolio membership product-line classes for SALES_WEB_RELATED_BACKEND
+ * (PRIORITY ALLOCATION Membership bullets).
+ */
+export type MembershipProductLine =
+  | 'sales-rebuild'
+  | 'mfs-web-original-upgrade'
+  | 'backend'
+
+/**
+ * Strict direct-dependency proof for backend membership class.
+ * `satisfied:true` alone is NOT authority — non-empty graph-validated `refs`
+ * plus a pin-bound receipt-valid outcome membership map are required
+ * (see isPriorityPortfolioMembership). Structural ROOT fields are NOT authority.
+ */
+export interface MembershipDirectDependencyProof {
+  satisfied: boolean
+  /**
+   * Target outcome product-line (sales-rebuild | mfs-web-original-upgrade).
+   * Required for backend membership.
+   */
+  targetOutcome?: string | null
+  /**
+   * Non-empty refs to direct dependency targets / edge keys that must exist
+   * on the current pin's canonical dependency graph. Self-asserted empty/missing
+   * refs fail closed.
+   */
+  refs?: ReadonlyArray<string> | null
+}
+
+/**
+ * @deprecated FORGEABLE — structural only, never cryptographic. IGNORED by
+ * isPriorityPortfolioMembership (r3). Kept on the wire type so historical
+ * receipts deserialize; presence does NOT grant backend priority membership.
+ */
+export interface MembershipRootAuthority {
+  issuerRole: 'ROOT_ORCHESTRATOR'
+  signature: string
+  coversMembershipProofHash: string
+  canonicalHash?: string | null
+}
+
 /** Classification / membership receipt bound to current revs+hashes. */
 export interface ClassificationReceipt {
   receiptId: string
@@ -38,8 +80,32 @@ export interface ClassificationReceipt {
   disposition: TaskDisposition
   /** Membership portfolio proof (e.g. SALES_WEB_RELATED_BACKEND) when applicable. */
   membershipPortfolioId?: string | null
-  /** Hash of the membership proof payload; required for product contribution. */
+  /**
+   * Hash of the membership proof payload (format-only for backend path).
+   * Arbitrary hex NEVER grants sales-rebuild | mfs-web-original-upgrade membership
+   * (security R2 — allowlist + pin bind required).
+   */
   membershipProofHash?: string | null
+  /**
+   * Product-line class for portfolio membership.
+   * - backend: required for backend path (+ strict dep proof).
+   * - sales-rebuild | mfs-web-original-upgrade: NOT authority (security R2) —
+   *   server derives from pin-bound project/repo/feature allowlist; self-assert
+   *   is stripped at persistence and ignored unless it matches derived line.
+   */
+  membershipProductLine?: MembershipProductLine | string | null
+  /**
+   * Required when membershipProductLine === 'backend': strict direct dependency
+   * proof to either sales-rebuild or mfs-web-original-upgrade outcome.
+   * Backend path cannot trust satisfied:true alone — needs non-empty graph refs
+   * + pin-bound receipt-valid outcome membership map.
+   */
+  membershipDirectDependencyProof?: MembershipDirectDependencyProof | null
+  /**
+   * @deprecated IGNORED — structural ROOT authority bypass removed (forgeable).
+   * Does not grant backend membership regardless of field values.
+   */
+  membershipRootAuthority?: MembershipRootAuthority | null
   canonicalSnapshotId: string
   canonicalHash: string
   taskHash: string

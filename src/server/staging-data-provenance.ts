@@ -832,7 +832,9 @@ export function evaluateStagingDataLoad(req: StagingLoadRequest): StagingLoadDec
   }
 
   const residualGaps: Array<string> = [
-    'gate is library-only; load executor / route wiring not in this module',
+    // Product entry: authorizeAndPrepareStagingProductionDerivedLoad
+    // (staging-production-derived-load-adapter). This library does not load data.
+    'gate is library-only; product surfaces must call via staging-production-derived-load-adapter before any load; HTTP/MCP/deploy executor not in this module',
   ]
   if (!bodyPresent && receiptPresent) {
     residualGaps.push(

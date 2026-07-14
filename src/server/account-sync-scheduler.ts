@@ -29,6 +29,7 @@ import {
   evaluateAccountSyncFreshness,
   evaluateCapacityPolicy,
   isCoalescableAccountSyncTrigger,
+  planCapacityFailSafeIntents,
   recordAccountReadbacks,
   surfacesHaveParity,
   syncAccounts,
@@ -37,6 +38,7 @@ import {
   type AccountSyncSnapshot,
   type AccountSyncStore,
   type AccountSyncTrigger,
+  type CapacityFailSafeIntent,
   type MaskedAccountRecord,
   type MaskedAccountStatus,
   type SyncAccountsRequest,
@@ -194,6 +196,11 @@ export interface AccountSyncPublishOutcome {
   coalescedCount?: number
   publishedAtMs?: number
   deadlineMs?: number | null
+  /**
+   * M4: fail-safe intents from capacity (STOP_LIMIT / requeue / rotate / bounded drain).
+   * Pure bookkeeping — no external runner mutation.
+   */
+  failSafeIntents?: Array<CapacityFailSafeIntent>
 }
 
 export interface AccountSyncTickResult {
@@ -213,6 +220,11 @@ export interface AccountSyncSchedulerBoardState {
   pendingHeartbeatDeadlineMs: number | null
   coalescedHeartbeatCount: number
   publishCount: number
+  /**
+   * M4: last capacity fail-safe intents (requeue/rotate/drain/stop-limit).
+   * Bookkeeping only — never executes external runner mutation.
+   */
+  pendingFailSafeIntents: Array<CapacityFailSafeIntent>
 }
 
 export interface AccountSyncScheduler {
@@ -239,6 +251,13 @@ export interface AccountSyncScheduler {
     boardId: string,
     reason: string,
   ): Promise<AccountSyncSnapshot | null>
+  /** Peek pending fail-safe intents for a board (M4 bookkeeping). */
+  peekFailSafeIntents(boardId: string): ReadonlyArray<CapacityFailSafeIntent>
+  /**
+   * Drain pending fail-safe intents for a board (returns + clears).
+   * Does not mutate runners/accounts/external systems.
+   */
+  drainFailSafeIntents(boardId: string): Array<CapacityFailSafeIntent>
 }
 
 /** Handle for the unref timer loop started per runtime context. */
@@ -901,6 +920,7 @@ function defaultBoardState(): AccountSyncSchedulerBoardState {
     pendingHeartbeatDeadlineMs: null,
     coalescedHeartbeatCount: 0,
     publishCount: 0,
+    pendingFailSafeIntents: [],
   }
 }
 
@@ -1097,6 +1117,12 @@ export function createAccountSyncScheduler(
     // Keep coalesced count as historical for the last window; reset after publish.
     st.coalescedHeartbeatCount = 0
 
+    // M4: wire failSafeActions → internal requeue/rotate/drain intents (no external side effects).
+    const failSafeIntents = planCapacityFailSafeIntents(
+      result.capacity?.failSafeActions ?? [],
+    )
+    st.pendingFailSafeIntents = failSafeIntents
+
     const stale = freshness?.stale ?? result.stale
     const staleReason = freshness?.staleReason ?? result.staleReason
     const usableCapacity = freshness?.usableCapacity ?? result.usableCapacity
@@ -1113,6 +1139,7 @@ export function createAccountSyncScheduler(
       usableCapacity,
       publishedAtMs: now,
       deadlineMs: null,
+      failSafeIntents,
     }
   }
 
@@ -1317,6 +1344,7 @@ export function createAccountSyncScheduler(
       lastIntent: st.lastIntent ? cloneIntent(st.lastIntent) : null,
       pendingHeartbeat: st.pendingHeartbeat ? cloneIntent(st.pendingHeartbeat) : null,
       lastIdentity: st.lastIdentity ? { ...st.lastIdentity } : null,
+      pendingFailSafeIntents: st.pendingFailSafeIntents.map((i) => ({ ...i })),
     }
   }
 
@@ -1332,6 +1360,19 @@ export function createAccountSyncScheduler(
     return out
   }
 
+  function peekFailSafeIntents(
+    boardId: string,
+  ): ReadonlyArray<CapacityFailSafeIntent> {
+    return ensureBoard(boardId).pendingFailSafeIntents.map((i) => ({ ...i }))
+  }
+
+  function drainFailSafeIntents(boardId: string): Array<CapacityFailSafeIntent> {
+    const st = ensureBoard(boardId)
+    const drained = st.pendingFailSafeIntents.map((i) => ({ ...i }))
+    st.pendingFailSafeIntents = []
+    return drained
+  }
+
   return {
     enqueue,
     tick,
@@ -1340,6 +1381,8 @@ export function createAccountSyncScheduler(
     listBoards,
     snapshot,
     failClosedStale: forceStaleUsableZero,
+    peekFailSafeIntents,
+    drainFailSafeIntents,
   }
 }
 

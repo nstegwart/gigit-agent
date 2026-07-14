@@ -31,7 +31,8 @@ import {
   heartbeatRun,
   terminateRun,
   RunRegistryError,
-  type RegisterRunRequest,
+  withTestCapacityInjection,
+  type RegisterRunCapacity,
 } from '#/server/run-registry'
 import { createFakeClock, createMemoryControlPlaneAtomicStore } from '#/server/board-store'
 import { createMemoryIdempotencyStorage } from '#/server/idempotency'
@@ -43,7 +44,8 @@ import { RbacError } from '#/server/rbac'
 const BOARD = 'term-run-board'
 const PIN = 'c'.repeat(64)
 
-function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
+/** OPEN capacity with complete M2 family remainings (fail-closed without these). */
+function openCapacity(): NonNullable<RegisterRunCapacity> {
   return {
     dispatchMode: 'OPEN',
     dispatchAllowed: true,
@@ -51,6 +53,11 @@ function openCapacity(): NonNullable<RegisterRunRequest['capacity']> {
     nonGrokAssignmentAllowed: true,
     grokAssignmentAllowed: true,
     limitingReasons: [],
+    sparkUsableCapacity: 10,
+    solUsableCapacity: 10,
+    otherUsableCapacity: 10,
+    healthyGrokUsableCapacity: 20,
+    failSafeActions: [],
   }
 }
 
@@ -205,7 +212,6 @@ describe('terminateRun domain harden', () => {
       idempotencyKey: 'reg-term-1',
       collisionScopeLockIds: ['repo:ex:term/**'],
       initialState: 'RUNNING',
-      capacity: openCapacity(),
     })
     expect(reg.fencingToken).toBeTruthy()
     const heldBefore = h.locks.snapshot().collision.filter(
@@ -264,7 +270,7 @@ describe('terminateRun domain harden', () => {
       canonicalHash: PIN,
       idempotencyKey: 'reg-term-2',
       initialState: 'RUNNING',
-      capacity: openCapacity(),
+
     })
 
     const body = {
@@ -305,7 +311,7 @@ describe('terminateRun domain harden', () => {
       canonicalHash: PIN,
       idempotencyKey: 'reg-fence',
       initialState: 'RUNNING',
-      capacity: openCapacity(),
+
     })
     await expect(
       terminateRun(h2.deps, {
@@ -340,7 +346,7 @@ describe('terminateRun domain harden', () => {
       canonicalHash: PIN,
       idempotencyKey: 'reg-term-3',
       initialState: 'RUNNING',
-      capacity: openCapacity(),
+
     })
 
     await expect(
@@ -404,7 +410,7 @@ describe('terminateRun domain harden', () => {
       idempotencyKey: 'reg-legacy',
       collisionScopeLockIds: ['repo:ex:legacy/**'],
       initialState: 'RUNNING',
-      capacity: openCapacity(),
+
     })
     const term = await terminateRun(h.deps, {
       boardId: BOARD,
@@ -432,7 +438,7 @@ describe('terminateRun domain harden', () => {
       canonicalHash: PIN,
       idempotencyKey: 'reg-pin',
       initialState: 'RUNNING',
-      capacity: openCapacity(),
+
     })
     await expect(
       terminateRun(h2.deps, {
@@ -465,7 +471,7 @@ describe('terminateRun domain harden', () => {
       canonicalHash: PIN,
       idempotencyKey: 'reg-hb',
       initialState: 'RUNNING',
-      capacity: openCapacity(),
+
     })
     const hb = await heartbeatRun(h.deps, {
       boardId: BOARD,
@@ -522,8 +528,10 @@ describe('terminate_run vs set_run_status non-alias (shared durable runtime)', (
 
   it('defaultRunDeps register+terminate works; set_run_status is separate catalog tool', async () => {
     const deps = defaultRunDeps(BOARD, 0)
-    // Seed board rev 0 on atomic if needed via register path
-    const reg = await registerRun(deps, {
+    // Seed board rev 0 on atomic if needed via register path.
+    // R3: inject via Symbol-branded deps capability only — defaultRunDeps getCapacity
+    // (loadCapacityForBoard missing sync) would forceZero STALE without inject.
+    const reg = await registerRun(withTestCapacityInjection(deps, openCapacity()), {
       boardId: BOARD,
       runId: 'run-shared',
       taskId: 'T-S',
@@ -537,7 +545,6 @@ describe('terminate_run vs set_run_status non-alias (shared durable runtime)', (
       idempotencyKey: 'reg-shared',
       collisionScopeLockIds: ['repo:shared:term/**'],
       initialState: 'RUNNING',
-      capacity: openCapacity(),
     })
     const term = await terminateRun(deps, {
       boardId: BOARD,

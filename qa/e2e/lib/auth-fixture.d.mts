@@ -151,6 +151,22 @@ export function mcpAuthHeaders(bearer?: string): { Authorization: string }
 export function loadSecretsSidecar(): boolean
 export function writeSecretsSidecar(): string
 export function eraseSecretsSidecar(): boolean
+export type CsrfSecretEnsureResult = {
+  configured: true
+  minted: boolean
+  source: 'env' | 'ephemeral'
+  secretCharLength: number
+  secretByteLength?: number
+}
+
+/**
+ * Mint process-local CAIRN_CSRF_SECRET when unset (FP-A).
+ * Never returns/logs the secret value; never writes it to the secrets sidecar.
+ */
+export function ensureCsrfSecretInEnv(opts?: {
+  forceNew?: boolean
+}): CsrfSecretEnsureResult
+
 export function ensureAuthSecretsInEnv(opts?: {
   forceNew?: boolean
   runId?: string
