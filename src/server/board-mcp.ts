@@ -27,8 +27,8 @@ import {
   type SubmitStageEvidenceInput,
   type TaskLifecycleV3State,
 } from '#/server/lifecycle-store'
-import { computeTaskHash, setTaskLifecycle, taskLifecycle, writeAudit } from '#/server/tasks-store'
-import { readDoc, writeDoc } from '#/server/db'
+import { computeTaskHash, setTaskLifecycle, taskLifecycle, taskStageRows, writeAudit } from '#/server/tasks-store'
+import { db, readDoc, writeDoc } from '#/server/db'
 import type { LifecycleStageKey } from '#/lib/control-plane-types'
 import { decideDecision, deleteBoard, deleteProject, setQueue, updateBoard, upsertProject } from '#/server/board-store'
 import {
@@ -2135,10 +2135,129 @@ function mapRunRecordToRegistered(run: {
 }
 
 /**
+ * Clone a V3 lifecycle state (history/stageReceipts shallow-copied for isolation).
+ */
+export function cloneTaskLifecycleV3State(t: TaskLifecycleV3State): TaskLifecycleV3State {
+  return {
+    ...t,
+    history: [...(t.history ?? [])],
+    stageReceipts: { ...(t.stageReceipts ?? {}) },
+  }
+}
+
+/**
+ * Insert-if-absent a durable lifecycle_v3_tasks record under a per-board MySQL
+ * advisory lock. Never overwrites an existing V3 record (preserves MAP_VERIFIED
+ * entityRev/history). Concurrent readers that lose the lock re-read after.
+ */
+export async function persistDurableLifecycleV3IfAbsent(
+  boardId: string,
+  taskId: string,
+  synthesized: TaskLifecycleV3State,
+): Promise<TaskLifecycleV3State> {
+  const lockName = `cairn_lc_v3_${boardId}`.slice(0, 64)
+  const conn = await db().getConnection()
+  try {
+    const [acqRows] = await conn.query('SELECT GET_LOCK(?, 10) AS l', [lockName])
+    const got = Number((acqRows as Array<{ l: number | null }>)[0]?.l)
+    if (got !== 1) {
+      // Lock unavailable: prefer any concurrent durable write, else ephemeral.
+      try {
+        const doc = await readDoc<{ tasks: Record<string, TaskLifecycleV3State> }>(
+          boardId,
+          LIFECYCLE_V3_TASKS_DOC,
+          { tasks: {} },
+        )
+        if (doc?.tasks?.[taskId]) return cloneTaskLifecycleV3State(doc.tasks[taskId])
+      } catch {
+        /* fall through */
+      }
+      return cloneTaskLifecycleV3State(synthesized)
+    }
+    try {
+      const [rows] = await conn.query(
+        'SELECT data FROM board_docs WHERE board_id=? AND kind=?',
+        [boardId, LIFECYCLE_V3_TASKS_DOC],
+      )
+      const raw = (rows as Array<{ data: unknown }>)[0]?.data
+      const tasks: Record<string, TaskLifecycleV3State> =
+        raw && typeof raw === 'object' && raw !== null && 'tasks' in (raw as object)
+          ? { ...((raw as { tasks: Record<string, TaskLifecycleV3State> }).tasks ?? {}) }
+          : {}
+      if (tasks[taskId]) {
+        return cloneTaskLifecycleV3State(tasks[taskId])
+      }
+      tasks[taskId] = {
+        ...synthesized,
+        history: [...synthesized.history],
+        stageReceipts: { ...synthesized.stageReceipts },
+      }
+      await conn.query('REPLACE INTO board_docs (board_id, kind, data) VALUES (?,?,?)', [
+        boardId,
+        LIFECYCLE_V3_TASKS_DOC,
+        JSON.stringify({ tasks }),
+      ])
+      return cloneTaskLifecycleV3State(tasks[taskId])
+    } finally {
+      await conn.query('SELECT RELEASE_LOCK(?) AS r', [lockName])
+    }
+  } finally {
+    conn.release()
+  }
+}
+
+/**
+ * Bulk ensure every tasks-table row has a durable V3 lifecycle record.
+ * Insert-if-absent only — never mutates existing MAP_VERIFIED / advanced rows.
+ */
+export async function backfillDurableLifecycleV3Records(
+  boardId: string,
+): Promise<{ total: number; already: number; created: number; missing: number }> {
+  const storage = createDurableLifecycleV3Storage(boardId)
+  const rows = await taskStageRows(boardId)
+  let already = 0
+  let created = 0
+  let missing = 0
+  let priorDoc: { tasks: Record<string, TaskLifecycleV3State> } = { tasks: {} }
+  try {
+    priorDoc = await readDoc(boardId, LIFECYCLE_V3_TASKS_DOC, { tasks: {} })
+  } catch {
+    priorDoc = { tasks: {} }
+  }
+  for (const r of rows) {
+    if (priorDoc.tasks?.[r.id]) {
+      already++
+      continue
+    }
+    const state = await storage.getTask(boardId, r.id)
+    if (!state) {
+      missing++
+      continue
+    }
+    // getTask lazy-persists; confirm
+    const after = await readDoc<{ tasks: Record<string, TaskLifecycleV3State> }>(
+      boardId,
+      LIFECYCLE_V3_TASKS_DOC,
+      { tasks: {} },
+    )
+    if (after?.tasks?.[r.id]) created++
+    else missing++
+  }
+  return { total: rows.length, already, created, missing }
+}
+
+/**
  * Durable LifecycleV3Storage: pin overlay + task V3 state in board_docs,
  * stage column via setTaskLifecycle, runs via V3 registry (+ legacy board.runs),
  * immutable audit via writeAudit, stage evidence via controlData.stageEvidence
  * (fallback board_docs archive when control-data unavailable).
+ *
+ * CRITICAL: getTask MUST return a durable entityRev. Synthesizing from legacy
+ * tasks.rev without persisting caused entityRev to flip 2↔0 between calls
+ * (canonical import wrote tasks rows but not lifecycle_v3_tasks), so
+ * advance_task / submit_stage_evidence always hit STALE_REVISION with boardRev
+ * stable. Fix: lazy insert-if-absent durable V3 record on first touch; V3
+ * entityRev starts at 0 (independent of legacy tasks.rev).
  */
 export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Storage {
   type PinOverlay = { boardRev: number; lifecycleRev: number }
@@ -2179,6 +2298,89 @@ export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Sto
     }
   }
 
+  function cloneState(t: TaskLifecycleV3State): TaskLifecycleV3State {
+    return cloneTaskLifecycleV3State(t)
+  }
+
+  /**
+   * Bootstrap V3 state from legacy tasks row / dual-write lifecycle JSON, then
+   * persist durable lifecycle_v3_tasks insert-if-absent so entityRev is stable.
+   */
+  async function bootstrapAndPersistV3(
+    taskId: string,
+    pin: LifecycleBoardPin,
+  ): Promise<TaskLifecycleV3State | null> {
+    const row = await taskLifecycle(boardId, taskId)
+    if (!row) return null
+
+    let synthesized: TaskLifecycleV3State
+    const lc = row.lifecycle as Record<string, unknown> | null
+    if (lc && lc.v3 === true && typeof lc.taskId === 'string') {
+      // Prefer embedded V3 snapshot (from a prior dual-write) but still durable-ize it.
+      synthesized = {
+        ...(lc as unknown as TaskLifecycleV3State),
+        history: Array.isArray(lc.history)
+          ? [...(lc.history as TaskLifecycleV3State['history'])]
+          : [],
+        stageReceipts:
+          lc.stageReceipts && typeof lc.stageReceipts === 'object'
+            ? { ...(lc.stageReceipts as TaskLifecycleV3State['stageReceipts']) }
+            : {},
+        // Pin revs always current (overlay may have advanced since dual-write).
+        boardRev: pin.boardRev,
+        lifecycleRev: pin.lifecycleRev,
+        canonicalSnapshotId: pin.canonicalSnapshotId,
+        canonicalHash: pin.canonicalHash,
+      }
+      // entityRev from embedded v3 is authoritative when present; never substitute tasks.rev.
+      if (typeof synthesized.entityRev !== 'number' || !Number.isFinite(synthesized.entityRev)) {
+        synthesized.entityRev = 0
+      }
+    } else {
+      const stage =
+        row.stage && isV3LifecycleStageKey(row.stage) ? (row.stage as LifecycleStageKey) : null
+      let taskHash = `${boardId}:${taskId}:v0`
+      try {
+        const full = await readTask(boardId, taskId)
+        if (full) {
+          taskHash = computeTaskHash({
+            id: full.id,
+            title: full.title,
+            projectId: full.projectId,
+            featureContractId: full.featureContractId,
+            objective: full.objective,
+            checkpoints: full.checkpoints,
+            dependencies: full.dependencies,
+          })
+        }
+      } catch {
+        /* keep fallback hash */
+      }
+      // V3 entityRev is independent of legacy tasks.rev (which dual-writes and
+      // list overlays bump). Untouched imported tasks start at entityRev=0 so
+      // clients can CAS with entityExpectedRev=0 deterministically.
+      synthesized = {
+        taskId,
+        stage,
+        entityRev: 0,
+        boardRev: pin.boardRev,
+        lifecycleRev: pin.lifecycleRev,
+        taskHash,
+        canonicalSnapshotId: pin.canonicalSnapshotId,
+        canonicalHash: pin.canonicalHash,
+        implementerRunId: row.implementerRun ?? null,
+        implementerAgentId: null,
+        implementerModel: null,
+        implementerThreadId: null,
+        history: [],
+        stageReceipts: {},
+        blockedReason: null,
+      }
+    }
+
+    return persistDurableLifecycleV3IfAbsent(boardId, taskId, synthesized)
+  }
+
   return {
     async getBoardPin(bid) {
       if (bid !== boardId) return null
@@ -2197,66 +2399,13 @@ export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Sto
       if (bid !== boardId) return null
       const doc = await loadTasksDoc()
       if (doc.tasks[taskId]) {
-        const t = doc.tasks[taskId]
-        return {
-          ...t,
-          history: [...(t.history ?? [])],
-          stageReceipts: { ...(t.stageReceipts ?? {}) },
-        }
+        return cloneState(doc.tasks[taskId])
       }
-      // Bootstrap from legacy task row when present.
+      // No durable V3 record — bootstrap from legacy and PERSIST (lazy backfill).
       try {
-        const row = await taskLifecycle(boardId, taskId)
-        if (!row) return null
         const pin = await this.getBoardPin(boardId)
         if (!pin) return null
-        const lc = row.lifecycle as Record<string, unknown> | null
-        if (lc && lc.v3 === true && typeof lc.taskId === 'string') {
-          return {
-            ...(lc as unknown as TaskLifecycleV3State),
-            history: Array.isArray(lc.history) ? [...(lc.history as TaskLifecycleV3State['history'])] : [],
-            stageReceipts:
-              lc.stageReceipts && typeof lc.stageReceipts === 'object'
-                ? { ...(lc.stageReceipts as TaskLifecycleV3State['stageReceipts']) }
-                : {},
-          }
-        }
-        const stage =
-          row.stage && isV3LifecycleStageKey(row.stage) ? (row.stage as LifecycleStageKey) : null
-        let taskHash = `${boardId}:${taskId}:v0`
-        try {
-          const full = await readTask(boardId, taskId)
-          if (full) {
-            taskHash = computeTaskHash({
-              id: full.id,
-              title: full.title,
-              projectId: full.projectId,
-              featureContractId: full.featureContractId,
-              objective: full.objective,
-              checkpoints: full.checkpoints,
-              dependencies: full.dependencies,
-            })
-          }
-        } catch {
-          /* keep fallback hash */
-        }
-        return {
-          taskId,
-          stage,
-          entityRev: row.rev ?? 0,
-          boardRev: pin.boardRev,
-          lifecycleRev: pin.lifecycleRev,
-          taskHash,
-          canonicalSnapshotId: pin.canonicalSnapshotId,
-          canonicalHash: pin.canonicalHash,
-          implementerRunId: row.implementerRun ?? null,
-          implementerAgentId: null,
-          implementerModel: null,
-          implementerThreadId: null,
-          history: [],
-          stageReceipts: {},
-          blockedReason: null,
-        }
+        return await bootstrapAndPersistV3(taskId, pin)
       } catch {
         return null
       }
@@ -2308,26 +2457,67 @@ export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Sto
       if (bid !== boardId) {
         throw new LifecycleV3Error('TASK_NOT_FOUND', 'board mismatch', { boardId: bid })
       }
-      const doc = await loadTasksDoc()
-      const nextTasks: TasksDoc = {
-        tasks: {
-          ...doc.tasks,
-          [state.taskId]: {
+      // Serialize with the same advisory lock as lazy-persist so concurrent
+      // insert-if-absent cannot clobber an advance write (or vice versa).
+      const lockName = `cairn_lc_v3_${boardId}`.slice(0, 64)
+      const conn = await db().getConnection()
+      try {
+        const [acqRows] = await conn.query('SELECT GET_LOCK(?, 10) AS l', [lockName])
+        const got = Number((acqRows as Array<{ l: number | null }>)[0]?.l)
+        if (got !== 1) {
+          throw new LifecycleV3Error(
+            'STALE_REVISION',
+            'lifecycle_v3_tasks board lock unavailable — retry',
+            { boardId, taskId: state.taskId },
+          )
+        }
+        try {
+          const [rows] = await conn.query(
+            'SELECT data FROM board_docs WHERE board_id=? AND kind=?',
+            [boardId, LIFECYCLE_V3_TASKS_DOC],
+          )
+          const raw = (rows as Array<{ data: unknown }>)[0]?.data
+          const tasks: Record<string, TaskLifecycleV3State> =
+            raw && typeof raw === 'object' && raw !== null && 'tasks' in (raw as object)
+              ? { ...((raw as { tasks: Record<string, TaskLifecycleV3State> }).tasks ?? {}) }
+              : {}
+          tasks[state.taskId] = {
             ...state,
             history: [...state.history],
             stageReceipts: { ...state.stageReceipts },
             boardRev: nextBoard.boardRev,
             lifecycleRev: nextBoard.lifecycleRev,
-          },
-        },
+          }
+          await conn.query('REPLACE INTO board_docs (board_id, kind, data) VALUES (?,?,?)', [
+            boardId,
+            LIFECYCLE_V3_TASKS_DOC,
+            JSON.stringify({ tasks }),
+          ])
+          await conn.query('REPLACE INTO board_docs (board_id, kind, data) VALUES (?,?,?)', [
+            boardId,
+            LIFECYCLE_V3_PIN_DOC,
+            JSON.stringify({
+              boardRev: nextBoard.boardRev,
+              lifecycleRev: nextBoard.lifecycleRev,
+            }),
+          ])
+        } finally {
+          await conn.query('SELECT RELEASE_LOCK(?) AS r', [lockName])
+        }
+      } finally {
+        conn.release()
       }
-      await writeDoc(boardId, LIFECYCLE_V3_TASKS_DOC, nextTasks)
-      await writeDoc(boardId, LIFECYCLE_V3_PIN_DOC, {
-        boardRev: nextBoard.boardRev,
-        lifecycleRev: nextBoard.lifecycleRev,
-      })
       // Dual-write stage column for list_tasks / rollup overlay (legacy consumers).
+      // CAS against CURRENT legacy tasks.rev — never equate V3 entityRev with tasks.rev
+      // (imports/overlays bump tasks.rev independently of V3 entity lifecycle).
       const lastEntry = state.history[state.history.length - 1]
+      let legacyExpected: number | undefined
+      try {
+        const row = await taskLifecycle(boardId, state.taskId)
+        if (row) legacyExpected = row.rev
+      } catch {
+        legacyExpected = undefined
+      }
       await setTaskLifecycle(boardId, state.taskId, {
         stage: state.stage ?? 'MAPPING',
         implementerRun: state.implementerRunId,
@@ -2339,7 +2529,7 @@ export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Sto
         },
         blockedReason: state.blockedReason,
         lastReceiptAt: lastEntry?.ts ?? new Date().toISOString(),
-        expectedRev: state.entityRev > 0 ? state.entityRev - 1 : undefined,
+        expectedRev: legacyExpected,
       })
     },
 
