@@ -49,7 +49,15 @@ function KnowledgeDomainRoute() {
 
   return (
     <div className="wrap" data-testid="control-center-knowledge-route">
-      <KnowledgeDomainScreen {...vm} surfaceState={surfaceState} onRetry={onRetry} />
+      <KnowledgeDomainScreen
+        {...vm}
+        surfaceState={surfaceState}
+        onRetry={onRetry}
+        conflictSources={vm.conflictSources}
+        redactions={vm.redactions}
+        knowledgeState={vm.knowledgeState}
+        lastValidGeneratedAt={vm.lastValidGeneratedAt}
+      />
     </div>
   )
 }

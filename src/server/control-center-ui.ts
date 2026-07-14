@@ -1569,11 +1569,37 @@ export function projectProjects(
   })
 }
 
+/**
+ * Prefer reviewed owner humanDisplay title on feature progress nodes.
+ * When content review is still required, keep technical source title (honest residual)
+ * rather than inventing copy — full humanDisplay backfill remains a separate gate.
+ */
+export function withOwnerFacingProgressNodeTitles(
+  agg: ControlCenterAggregation,
+  features: ReadonlyArray<FeatureUiSummary>,
+): FeatureUiSummary[] {
+  return features.map((f) => {
+    const nodes = f.progressNodes
+    if (!Array.isArray(nodes) || nodes.length === 0) return { ...f }
+    return {
+      ...f,
+      progressNodes: nodes.map((n) => {
+        const hd = resolveTaskOwnerHumanDisplay(agg, n.taskId)
+        if (!hd.contentReviewRequired && hd.ownerPrimaryTitle.trim()) {
+          return { ...n, title: hd.ownerPrimaryTitle }
+        }
+        return { ...n }
+      }),
+    }
+  })
+}
+
 export function projectFeatures(
   agg: ControlCenterAggregation,
   opts: { cursor?: string | null; pageSize?: number | null } = {},
 ): PinnedEnvelope<FeaturesData> {
-  const rows = agg.features.map((f) => ({
+  const features = withOwnerFacingProgressNodeTitles(agg, agg.features)
+  const rows = features.map((f) => ({
     ...f,
     createdAt: agg.pin.generatedAt,
     id: f.id,
@@ -1586,7 +1612,7 @@ export function projectFeatures(
   })
   const data: FeaturesData = stripSensitiveFields({
     surfaceVersion: CONTROL_CENTER_UI_SURFACE_VERSION,
-    features: agg.features.map((f) => ({ ...f })),
+    features: features.map((f) => ({ ...f })),
     // Strip pagination-only createdAt; KEEP FeatureUiSummary.id (detailHref needs it).
     // Previously `id` was destructured away → /features/undefined → "Feature not found".
     items: page.items.map(({ createdAt: _c, ...rest }) => rest as FeatureUiSummary),

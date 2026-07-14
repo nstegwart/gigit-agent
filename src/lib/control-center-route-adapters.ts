@@ -37,6 +37,10 @@ import type {
 import { G5_DOMAIN_LABELS, G5_REQUIRED_DOMAINS } from '#/lib/control-plane-types'
 import type { G5DomainId } from '#/lib/control-plane-types'
 import { sectionErrorHumanSentence } from '#/lib/section-error-copy'
+import {
+  knowledgeConflictSourcesFromRaw,
+  knowledgeRedactionsFromRaw,
+} from '#/lib/control-center-secondary-route-adapters'
 
 const SEVERITIES = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
 
@@ -1404,6 +1408,7 @@ export type KnowledgeDomainViewModel = {
   surfaceState: UiSurfaceState | 'loading' | 'error' | 'forbidden' | 'partial' | 'zero-results'
   boardId: string
   domain: string
+  domainId: string | null
   availability: 'available' | 'partial' | 'unavailable'
   title: string
   summary: string
@@ -1418,6 +1423,54 @@ export type KnowledgeDomainViewModel = {
   decisions: ReadonlyArray<{ decisionId: string; title: string; status: string }>
   evidence: ReadonlyArray<{ id: string; kind: string; summary: string }>
   gaps: ReadonlyArray<string>
+  /** Structured gaps from DomainKnowledgeBundle (AFFILIATE); null when absent. */
+  knowledgeGaps: ReadonlyArray<{
+    id: string
+    code: string
+    message: string
+    knowledgeState: string
+  }> | null
+  /** Coverage/omission manifest (AFFILIATE); null when absent. */
+  coverageManifest: ReadonlyArray<{
+    id: string
+    kind: string
+    label: string
+    disposition: string
+    reason: string | null
+    projectIds: ReadonlyArray<string>
+    knowledgeState: string
+  }> | null
+  relations: ReadonlyArray<{
+    id: string
+    fromId: string
+    toId: string
+    type: string
+    label: string
+  }> | null
+  flows: ReadonlyArray<{
+    id: string
+    name: string
+    featureId: string
+    projectIds: ReadonlyArray<string>
+  }> | null
+  boundaries: ReadonlyArray<string> | null
+  /**
+   * Multi-source CONFLICT projector fields (TM-08 / ART S21).
+   * Pass-through only — never invent a second source client-side.
+   */
+  conflictSources: ReadonlyArray<{
+    sourceId: string
+    label: string
+    citation: string | null
+    claim: string | null
+  }>
+  redactions: ReadonlyArray<{
+    fieldPath: string
+    reason: string
+    hiddenScope: string | null
+  }>
+  knowledgeState: string | null
+  lastValidGeneratedAt: string | null
   pin: {
     canonicalSnapshotId: string
     canonicalHash: string
@@ -1427,6 +1480,41 @@ export type KnowledgeDomainViewModel = {
     staleReason: string | null
   } | null
   error: { code: string; message: string } | null
+}
+
+function asKnowledgeGapRows(
+  raw: unknown,
+): KnowledgeDomainViewModel['knowledgeGaps'] {
+  if (!Array.isArray(raw)) return null
+  return raw.map((g) => {
+    const row = (g ?? {}) as Record<string, unknown>
+    return {
+      id: String(row.id ?? ''),
+      code: String(row.code ?? ''),
+      message: String(row.message ?? ''),
+      knowledgeState: String(row.knowledgeState ?? 'UNKNOWN'),
+    }
+  })
+}
+
+function asCoverageManifestRows(
+  raw: unknown,
+): KnowledgeDomainViewModel['coverageManifest'] {
+  if (!Array.isArray(raw)) return null
+  return raw.map((c) => {
+    const row = (c ?? {}) as Record<string, unknown>
+    return {
+      id: String(row.id ?? ''),
+      kind: String(row.kind ?? ''),
+      label: String(row.label ?? ''),
+      disposition: String(row.disposition ?? 'unknown'),
+      reason: typeof row.reason === 'string' ? row.reason : null,
+      projectIds: Array.isArray(row.projectIds)
+        ? row.projectIds.map((p) => String(p))
+        : [],
+      knowledgeState: String(row.knowledgeState ?? 'UNKNOWN'),
+    }
+  })
 }
 
 export function knowledgeDomainEnvelopeToViewModel(
@@ -1440,6 +1528,7 @@ export function knowledgeDomainEnvelopeToViewModel(
       ),
       boardId: opts.boardId,
       domain: opts.domain,
+      domainId: null,
       availability: 'unavailable',
       title: opts.domain,
       summary: 'Data domain knowledge tidak tersedia dari pin saat ini.',
@@ -1449,6 +1538,15 @@ export function knowledgeDomainEnvelopeToViewModel(
       decisions: [],
       evidence: [],
       gaps: ['NO_PINNED_DOMAIN_DATA'],
+      knowledgeGaps: null,
+      coverageManifest: null,
+      relations: null,
+      flows: null,
+      boundaries: null,
+      conflictSources: [],
+      redactions: [],
+      knowledgeState: 'UNKNOWN',
+      lastValidGeneratedAt: null,
       pin: null,
       error: envelope?.error
         ? { code: envelope.error.code, message: envelope.error.message }
@@ -1461,11 +1559,43 @@ export function knowledgeDomainEnvelopeToViewModel(
     availabilityRaw === 'available' || availabilityRaw === 'partial'
       ? availabilityRaw
       : 'unavailable'
+  const relations = Array.isArray(raw.relations)
+    ? (raw.relations as NonNullable<KnowledgeDomainViewModel['relations']>).map((r) => ({
+        id: String((r as { id?: string }).id ?? ''),
+        fromId: String((r as { fromId?: string }).fromId ?? ''),
+        toId: String((r as { toId?: string }).toId ?? ''),
+        type: String((r as { type?: string }).type ?? ''),
+        label: String((r as { label?: string }).label ?? ''),
+      }))
+    : null
+  const flows = Array.isArray(raw.flows)
+    ? (raw.flows as Array<Record<string, unknown>>).map((f) => ({
+        id: String(f.id ?? ''),
+        name: String(f.name ?? ''),
+        featureId: String(f.featureId ?? ''),
+        projectIds: Array.isArray(f.projectIds)
+          ? f.projectIds.map((p) => String(p))
+          : [],
+      }))
+    : null
+  const boundaries = Array.isArray(raw.boundaries)
+    ? raw.boundaries.map((b) => String(b))
+    : null
+  // TM-08: pass-through server conflicts/redactions only (no client invention).
+  const conflictSources = knowledgeConflictSourcesFromRaw(raw)
+  const redactions = knowledgeRedactionsFromRaw(raw)
+  const knowledgeState =
+    typeof raw.knowledgeState === 'string' && raw.knowledgeState.trim()
+      ? raw.knowledgeState.trim().toUpperCase()
+      : null
+  const lastValidGeneratedAt =
+    typeof raw.lastValidGeneratedAt === 'string' ? raw.lastValidGeneratedAt : null
   return {
     surfaceState: (raw.surfaceState as KnowledgeDomainViewModel['surfaceState']) ??
       envelope.surfaceState,
     boardId: opts.boardId,
     domain: String(raw.domain ?? opts.domain),
+    domainId: typeof raw.domainId === 'string' ? raw.domainId : null,
     availability,
     title: String(raw.title ?? opts.domain),
     summary: String(raw.summary ?? ''),
@@ -1483,6 +1613,15 @@ export function knowledgeDomainEnvelopeToViewModel(
       ? (raw.evidence as KnowledgeDomainViewModel['evidence'])
       : [],
     gaps: Array.isArray(raw.gaps) ? raw.gaps.map((g) => String(g)) : [],
+    knowledgeGaps: asKnowledgeGapRows(raw.knowledgeGaps),
+    coverageManifest: asCoverageManifestRows(raw.coverageManifest),
+    relations,
+    flows,
+    boundaries,
+    conflictSources,
+    redactions,
+    knowledgeState,
+    lastValidGeneratedAt,
     pin: {
       canonicalSnapshotId: envelope.canonicalSnapshotId,
       canonicalHash: envelope.canonicalHash,
@@ -1573,11 +1712,14 @@ export type DocumentationDomainViewModel = {
   surfaceState: UiSurfaceState | 'loading' | 'error' | 'forbidden' | 'partial' | 'zero-results'
   boardId: string
   domain: string
+  domainId: string | null
   availability: 'available' | 'partial' | 'unavailable'
   title: string
   bodyMarkdown: string
   citations: ReadonlyArray<{ field: string; path: string; note?: string }>
   gaps: ReadonlyArray<string>
+  knowledgeGaps: KnowledgeDomainViewModel['knowledgeGaps']
+  coverageManifest: KnowledgeDomainViewModel['coverageManifest']
   pin: {
     canonicalSnapshotId: string
     canonicalHash: string
@@ -1600,11 +1742,14 @@ export function documentationDomainEnvelopeToViewModel(
       ),
       boardId: opts.boardId,
       domain: opts.domain,
+      domainId: null,
       availability: 'unavailable',
       title: opts.domain,
       bodyMarkdown: '',
       citations: [],
       gaps: ['NO_PINNED_DOCUMENTATION'],
+      knowledgeGaps: null,
+      coverageManifest: null,
       pin: null,
       error: envelope?.error
         ? { code: envelope.error.code, message: envelope.error.message }
@@ -1631,11 +1776,14 @@ export function documentationDomainEnvelopeToViewModel(
     surfaceState: envelope.surfaceState,
     boardId: opts.boardId,
     domain: String(raw.domain ?? opts.domain),
+    domainId: typeof raw.domainId === 'string' ? raw.domainId : null,
     availability,
     title: String(raw.title ?? opts.domain),
     bodyMarkdown: String(raw.bodyMarkdown ?? ''),
     citations,
     gaps: Array.isArray(raw.gaps) ? raw.gaps.map((g) => String(g)) : [],
+    knowledgeGaps: asKnowledgeGapRows(raw.knowledgeGaps),
+    coverageManifest: asCoverageManifestRows(raw.coverageManifest),
     pin: {
       canonicalSnapshotId: envelope.canonicalSnapshotId,
       canonicalHash: envelope.canonicalHash,

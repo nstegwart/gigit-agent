@@ -41,15 +41,17 @@ function LoginPage() {
           <BrandMark size={40} />
           <div>
             <div className="brand-name" style={{ fontSize: 20 }}>Cairn</div>
-            <div className="brand-sub">Agent work board</div>
+            <div className="brand-sub">Papan kerja agen</div>
           </div>
         </div>
 
-        <h1 className="auth-title">{needsSetup ? 'Create the first admin' : 'Sign in'}</h1>
+        <h1 className="auth-title" data-testid="login-title">
+          {needsSetup ? 'Buat admin pertama' : 'Masuk'}
+        </h1>
         <p className="auth-sub">
           {needsSetup
-            ? 'This board has no accounts yet. Set up the admin — you can add teammates afterwards.'
-            : 'Enter your account to continue.'}
+            ? 'Board ini belum punya akun. Siapkan admin — rekan bisa ditambahkan kemudian.'
+            : 'Masukkan akun Anda untuk melanjutkan.'}
         </p>
 
         <form
@@ -60,7 +62,7 @@ function LoginPage() {
           }}
         >
           <label className="auth-label">
-            Username
+            Nama pengguna
             <input
               className="field"
               autoFocus
@@ -70,7 +72,7 @@ function LoginPage() {
             />
           </label>
           <label className="auth-label">
-            Password
+            Kata sandi
             <input
               className="field"
               type="password"
@@ -79,10 +81,10 @@ function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
-          {needsSetup ? <div className="auth-hint">Minimum 6 characters.</div> : null}
+          {needsSetup ? <div className="auth-hint">Minimal 6 karakter.</div> : null}
           {err ? <div className="auth-err">{err}</div> : null}
           <button className="btn btn-primary auth-submit" type="submit" disabled={!canSubmit}>
-            {busy ? 'Please wait…' : needsSetup ? 'Create admin & sign in' : 'Sign in'}
+            {busy ? 'Mohon tunggu…' : needsSetup ? 'Buat admin & masuk' : 'Masuk'}
           </button>
         </form>
       </div>

@@ -287,15 +287,32 @@ describe('task detail adapter + projector', () => {
 })
 
 describe('knowledge / search / documentation honesty', () => {
-  it('AFFILIATE unavailable when pin has no matching domain data', () => {
+  it('AFFILIATE pack remains available via DomainKnowledgeBundle even on empty pin', () => {
+    // 01A AFFILIATE is cross-project pack, not pin-hit only (TM-03 overlay).
     const env = projectKnowledgeDomainFromAgg(emptyAgg(), 'AFFILIATE')
-    expect(env.data).toMatchObject({ availability: 'unavailable', domain: 'AFFILIATE' })
+    const data = env.data as {
+      availability: string
+      domain: string
+      conflicts?: unknown[]
+      redactions?: unknown[]
+      knowledgeState?: string
+    }
+    expect(data.domain).toBe('AFFILIATE')
+    expect(data.availability).not.toBe('unavailable')
+    // TM-08 multi-source CONFLICT projector
+    expect(Array.isArray(data.conflicts)).toBe(true)
+    expect((data.conflicts?.length ?? 0) >= 2).toBe(true)
+    expect(Array.isArray(data.redactions)).toBe(true)
+    expect((data.redactions?.length ?? 0) >= 1).toBe(true)
+    expect(data.knowledgeState).toBe('CONFLICT')
     const vm = knowledgeDomainEnvelopeToViewModel(env as PinnedEnvelope<unknown>, {
       boardId: 'mfs-rebuild',
       domain: 'AFFILIATE',
     })
-    expect(vm.availability).toBe('unavailable')
-    expect(vm.gaps.length).toBeGreaterThan(0)
+    expect(vm.availability).not.toBe('unavailable')
+    expect(vm.conflictSources.length).toBeGreaterThanOrEqual(2)
+    expect(vm.redactions.length).toBeGreaterThanOrEqual(1)
+    expect(vm.knowledgeState).toBe('CONFLICT')
   })
 
   it('search zero-results for unmatched query', () => {
@@ -309,13 +326,14 @@ describe('knowledge / search / documentation honesty', () => {
     expect(vm.results).toHaveLength(0)
   })
 
-  it('documentation unavailable without domain hits', () => {
+  it('documentation AFFILIATE pack available without pin hits (honest partial gaps)', () => {
     const env = projectDocumentationDomainFromAgg(emptyAgg(), 'AFFILIATE')
     const vm = documentationDomainEnvelopeToViewModel(env as PinnedEnvelope<unknown>, {
       boardId: 'mfs-rebuild',
       domain: 'AFFILIATE',
     })
-    expect(vm.availability).toBe('unavailable')
+    // DomainKnowledgeBundle supplies AFFILIATE docs even when pin has no hits.
+    expect(vm.availability).not.toBe('unavailable')
   })
 
   it('knowledge partial when only task id matches domain token', () => {

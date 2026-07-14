@@ -35,6 +35,12 @@ import { peekControlPlaneRuntimeContext } from '#/server/control-plane-runtime-c
 import { getSharedAccountSyncStore } from '#/server/account-sync'
 import type { PrimaryBucket, StaleOverlayKind } from '#/lib/control-plane-types'
 import type { Json } from '#/lib/types'
+import {
+  affiliateBundleToDocumentationMarkdown,
+  affiliateBundleToKnowledgeDomainData,
+  buildAffiliateDomainKnowledgeBundle,
+  isAffiliateDomainId,
+} from '#/server/domain-knowledge-affiliate'
 
 const board = z.string().min(1)
 const cursorSchema = z.string().nullable().optional()
@@ -351,8 +357,9 @@ function domainTokenMatch(domain: string, ...fields: Array<string | null | undef
 }
 
 /**
- * Project knowledge domain from current pin only — never invent AFFILIATE readiness.
- * Unavailable/partial when no matching project/feature/task/evidence rows.
+ * Project knowledge domain from current pin, with AFFILIATE DomainKnowledgeBundle overlay.
+ * Non-AFFILIATE domains stay pin-only (never invent readiness).
+ * AFFILIATE uses the deterministic cross-project pack + coverageManifest (01A §AFFILIATE).
  */
 export function projectKnowledgeDomainFromAgg(
   agg: ControlCenterAggregation,
@@ -398,6 +405,34 @@ export function projectKnowledgeDomainFromAgg(
     .slice(0, 30)
     .map((e) => ({ id: e.id, kind: e.kind, summary: e.summary ?? '' }))
 
+  // AFFILIATE: deterministic DomainKnowledgeBundle (cross-project graph + coverage).
+  if (isAffiliateDomainId(d)) {
+    const pinHits = {
+      projects,
+      features,
+      tasks,
+      decisions,
+      evidence,
+      stale: agg.pin.stale,
+      staleReason: agg.pin.staleReason,
+      freshnessAgeSeconds: agg.pin.freshnessAgeSeconds,
+    }
+    const bundle = buildAffiliateDomainKnowledgeBundle({
+      snapshotId: agg.pin.canonicalSnapshotId || undefined,
+      revision: agg.pin.boardRev || undefined,
+      sourceHash: agg.pin.canonicalHash || undefined,
+      generatedAt: agg.pin.generatedAt || undefined,
+      pinHits,
+    })
+    const data = affiliateBundleToKnowledgeDomainData(bundle, pinHits)
+    const surfaceState: UiSurfaceState = data.surfaceState
+    return createPinnedEnvelope(agg.pin, data as unknown as Json, {
+      surface: 'common',
+      surfaceState,
+      nextCursor: null,
+    })
+  }
+
   const hitCount =
     projects.length + features.length + tasks.length + decisions.length + evidence.length
   const gaps: string[] = []
@@ -428,6 +463,12 @@ export function projectKnowledgeDomainFromAgg(
         ? `Domain ${d}: data parsial dari pin saat ini (${hitCount} hit). Gap: ${gaps.join(', ')}.`
         : `Domain ${d}: data tersedia dari pin board/project/feature/task/evidence.`
 
+  // Non-AFFILIATE: never invent multi-source conflicts. Emit empty arrays + honest state.
+  const knowledgeState = agg.pin.stale
+    ? 'STALE'
+    : availability === 'unavailable'
+      ? 'UNKNOWN'
+      : 'PROVEN'
   const data = {
     domain: d,
     title: d,
@@ -440,6 +481,19 @@ export function projectKnowledgeDomainFromAgg(
     decisions,
     evidence,
     gaps,
+    conflicts: [] as Array<{
+      sourceId: string
+      label: string
+      citation: string | null
+      claim: string | null
+    }>,
+    redactions: [] as Array<{
+      fieldPath: string
+      reason: string
+      hiddenScope: string | null
+    }>,
+    knowledgeState,
+    lastValidGeneratedAt: agg.pin.generatedAt ?? null,
   }
 
   return createPinnedEnvelope(agg.pin, data as unknown as Json, {
@@ -575,8 +629,9 @@ export const getControlCenterSearchFn = createServerFn({ method: 'GET' })
   })
 
 /**
- * ART S17 documentation domain export preview — citations from humanDisplay only.
- * Honest unavailable when no domain hits in pin.
+ * ART S17 documentation domain export preview.
+ * AFFILIATE uses DomainKnowledgeBundle markdown + citations; other domains stay pin-only.
+ * Honest unavailable when no domain hits in pin (non-AFFILIATE).
  */
 export function projectDocumentationDomainFromAgg(
   agg: ControlCenterAggregation,
@@ -585,13 +640,48 @@ export function projectDocumentationDomainFromAgg(
   const knowledge = projectKnowledgeDomainFromAgg(agg, domain)
   const k = knowledge.data as {
     domain: string
+    domainId?: string
+    title?: string
     availability: string
     projects: Array<{ id: string; name: string | null }>
     features: Array<{ id: string; name: string | null }>
     tasks: Array<{ taskId: string; title: string; ownerPrimaryTitle: string | null }>
     decisions: Array<{ decisionId: string; title: string }>
     gaps: string[]
+    knowledgeGaps?: ReadonlyArray<{ code: string; message: string }>
+    coverageManifest?: unknown
+    citations?: Array<{ field: string; path: string; note?: string }>
+    bundle?: Parameters<typeof affiliateBundleToDocumentationMarkdown>[0]
   } | null
+
+  // AFFILIATE pack: deterministic export preview even when pin hits are empty.
+  if (k && isAffiliateDomainId(domain) && k.bundle) {
+    const bodyMarkdown = affiliateBundleToDocumentationMarkdown(k.bundle)
+    const citations = (k.citations ?? []).map((c) => ({
+      field: c.field,
+      path: c.path,
+      note: c.note,
+    }))
+    return createPinnedEnvelope(
+      agg.pin,
+      {
+        domain: k.domain,
+        domainId: k.domainId ?? 'AFFILIATE',
+        title: k.title ?? k.domain,
+        availability: k.availability,
+        bodyMarkdown,
+        citations,
+        gaps: k.gaps,
+        knowledgeGaps: k.knowledgeGaps ?? null,
+        coverageManifest: k.coverageManifest ?? null,
+      } as unknown as Json,
+      {
+        surface: 'common',
+        surfaceState: k.availability === 'partial' ? 'partial' : knowledge.surfaceState,
+        nextCursor: null,
+      },
+    )
+  }
 
   if (!k || k.availability === 'unavailable') {
     return createPinnedEnvelope(
