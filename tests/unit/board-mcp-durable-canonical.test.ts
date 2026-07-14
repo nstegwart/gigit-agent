@@ -384,15 +384,16 @@ describe('legacy mutation envelope hardening (AC-API-03)', () => {
     }
   })
 
-  it('exhaustive registered-write matrix: all 42 catalog writes including 10 V3 + submit_stage_evidence', () => {
+  it('exhaustive registered-write matrix: all 43 catalog writes including 10 V3 + submit_stage_evidence + upsert_human_display', () => {
     const server = new McpServer({ name: 'write-matrix', version: '0.0.0' })
     registerBoardTools(server, authRoot())
     const writes = listRegisteredWriteToolSchemas()
     const names = new Set(writes.map((w) => w.name))
 
-    // Catalog constant must be exactly 42 (legacy/V3 + submit_stage_evidence + terminate_run)
-    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(42)
-    expect(writes).toHaveLength(42)
+    // Catalog constant must be exactly 43 (legacy/V3 + submit_stage_evidence + terminate_run + upsert_human_display)
+    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(43)
+    expect(writes).toHaveLength(43)
+    expect(REGISTERED_WRITE_TOOL_NAMES).toContain('upsert_human_display')
 
     const missing = REGISTERED_WRITE_TOOL_NAMES.filter((n) => !names.has(n))
     const extra = writes.map((w) => w.name).filter((n) => !(REGISTERED_WRITE_TOOL_NAMES as readonly string[]).includes(n))

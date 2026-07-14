@@ -601,6 +601,8 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   // NEXT projection is sole plan source — any authenticated board reader may observe it.
   { name: 'get_next', kind: 'read', scopes: ['board:read'] },
   { name: 'get_dispatch_next', kind: 'read', scopes: ['board:read'], aliasOf: 'get_next' },
+  // Owner humanDisplay projection (versioned; fail-closed CONTENT_REVIEW_REQUIRED when missing).
+  { name: 'get_human_display', kind: 'read', scopes: ['board:read'] },
 
   // Legacy writes
   { name: 'create_board', kind: 'write', scopes: ['import:write', 'lifecycle:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
@@ -652,6 +654,14 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   { name: 'open_decision_v3', kind: 'write', scopes: ['decision:write'], decisionRequest: true },
   { name: 'resolve_decision_v3', kind: 'write', scopes: ['decision:write'], roles: ['OWNER'], decisionResolve: true },
   { name: 'integration_lock', kind: 'write', scopes: ['integration:write'], roles: ['INTEGRATOR', 'ROOT_ORCHESTRATOR'] },
+  // Owner humanDisplay authoring + independent REVIEWED transition (not definition-graph).
+  // any-of: import:write (OWNER/ROOT) or board:read (AGENT may author GENERATED_NEEDS_REVIEW).
+  {
+    name: 'upsert_human_display',
+    kind: 'write',
+    scopes: ['import:write', 'board:read'],
+    roles: ['OWNER', 'ROOT_ORCHESTRATOR', 'AGENT'],
+  },
 ]
 
 const TOOL_SPEC_BY_NAME = new Map(MCP_TOOL_SPECS.map((t) => [t.name, t]))

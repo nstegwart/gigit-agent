@@ -55,6 +55,7 @@ export type HumanDisplayPersistenceErrorCode =
   | 'DATA_INTEGRITY'
   | 'CONTENT_REVIEW_REQUIRED'
   | 'TAMPER_DETECTED'
+  | 'INDEPENDENT_REVIEW_REQUIRED'
 
 export class HumanDisplayPersistenceError extends Error {
   readonly code: HumanDisplayPersistenceErrorCode
@@ -130,10 +131,130 @@ export interface HumanDisplayPutRequest {
    */
   expectedSourceHash: string
   actorId?: string | null
+  /** Principal role string for independent-review trail (audit payload). */
+  actorRole?: string | null
   /** Optional stable audit id; derived from content hash when omitted. */
   auditId?: string | null
   /** Optional capture time (ISO). */
   now?: string | null
+}
+
+/**
+ * Prior author trail for independent review (from audit or caller).
+ */
+export interface HumanDisplayAuthorTrail {
+  actorId: string | null
+  role: string | null
+}
+
+/**
+ * MCP authoring/review transition policy (ART: different role independently reviews
+ * before reviewStatus=REVIEWED). Authoring writes may only set GENERATED_NEEDS_REVIEW
+ * (or non-REVIEWED fail-closed statuses). REVIEWED requires a separate call by a
+ * different actor and different role than the prior author.
+ *
+ * assertHumanDisplayWritable only checks structural completeness — not this rule.
+ */
+export function assertHumanDisplayWriteTransition(opts: {
+  display: HumanDisplayV1
+  existing: HumanDisplayRecord | null
+  actorId: string
+  actorRole: string
+  previousAuthor: HumanDisplayAuthorTrail | null
+}): void {
+  const status = opts.display.reviewStatus
+  if (status === 'GENERATED_NEEDS_REVIEW') {
+    return
+  }
+  if (
+    status === 'BLOCKED_MISSING_SOURCE' ||
+    status === 'CONFLICT' ||
+    status === 'CONTENT_REVIEW_REQUIRED'
+  ) {
+    // Fail-closed authoring states (not owner-primary REVIEWED).
+    return
+  }
+  if (status !== 'REVIEWED') {
+    throw new HumanDisplayPersistenceError(
+      'INVALID_INPUT',
+      `unsupported reviewStatus for write: ${String(status)}`,
+      { reviewStatus: status },
+    )
+  }
+
+  // REVIEWED: independent review path only (never first insert as REVIEWED).
+  if (!opts.existing) {
+    throw new HumanDisplayPersistenceError(
+      'INDEPENDENT_REVIEW_REQUIRED',
+      'REVIEWED requires a prior authored humanDisplay row; author with GENERATED_NEEDS_REVIEW first',
+      { entityKind: opts.display.entityKind, entityId: opts.display.entityId },
+    )
+  }
+  const prevActor = opts.previousAuthor?.actorId?.trim() || null
+  const prevRole = opts.previousAuthor?.role?.trim() || null
+  if (!prevActor) {
+    throw new HumanDisplayPersistenceError(
+      'INDEPENDENT_REVIEW_REQUIRED',
+      'REVIEWED requires prior author actor trail for independent review',
+      { entityKind: opts.display.entityKind, entityId: opts.display.entityId },
+    )
+  }
+  if (prevActor === opts.actorId) {
+    throw new HumanDisplayPersistenceError(
+      'INDEPENDENT_REVIEW_REQUIRED',
+      'independent review required: reviewer actor must differ from author',
+      {
+        authorActorId: prevActor,
+        reviewerActorId: opts.actorId,
+      },
+    )
+  }
+  if (prevRole && prevRole === opts.actorRole) {
+    throw new HumanDisplayPersistenceError(
+      'INDEPENDENT_REVIEW_REQUIRED',
+      'independent review required: reviewer role must differ from author role (ART)',
+      {
+        authorRole: prevRole,
+        reviewerRole: opts.actorRole,
+      },
+    )
+  }
+}
+
+/**
+ * Resolve the most recent non-REVIEWED author trail for an entity from audit rows.
+ * Used by MCP upsert_human_display before allowing REVIEWED.
+ */
+export function resolveHumanDisplayPreviousAuthor(
+  audits: ReadonlyArray<HumanDisplayAuditRecord>,
+  entityKind: string,
+  entityId: string,
+): HumanDisplayAuthorTrail | null {
+  const relevant = audits
+    .filter(
+      (a) =>
+        a.entityKind === entityKind &&
+        a.entityId === entityId &&
+        a.reviewStatus !== 'REVIEWED' &&
+        (a.event === 'HUMAN_DISPLAY_PUT_INSERT' ||
+          a.event === 'HUMAN_DISPLAY_PUT_UPDATE' ||
+          a.event === 'HUMAN_DISPLAY_PUT_REPLAY'),
+    )
+    .slice()
+    .sort((a, b) => {
+      const t = b.capturedAt.localeCompare(a.capturedAt)
+      if (t !== 0) return t
+      return b.auditId.localeCompare(a.auditId)
+    })
+  const last = relevant[0]
+  if (!last) return null
+  const roleRaw = last.payload?.actorRole
+  const role =
+    typeof roleRaw === 'string' && roleRaw.trim() ? roleRaw.trim() : null
+  return {
+    actorId: last.actorId ?? null,
+    role,
+  }
 }
 
 export type HumanDisplayPutResult =
@@ -800,6 +921,9 @@ function applyPutLogic(opts: {
         replayed: true,
         contentVersion: display.contentVersion,
         reviewStatus: display.reviewStatus,
+        ...(req.actorRole != null && String(req.actorRole).trim()
+          ? { actorRole: String(req.actorRole).trim() }
+          : {}),
       },
     }
     return { next: existing, audit, replayed: true }
@@ -885,6 +1009,9 @@ function applyPutLogic(opts: {
       previousReviewStatus: existing?.reviewStatus ?? null,
       contentVersion: display.contentVersion,
       reviewStatus: display.reviewStatus,
+      ...(req.actorRole != null && String(req.actorRole).trim()
+        ? { actorRole: String(req.actorRole).trim() }
+        : {}),
     },
   }
 

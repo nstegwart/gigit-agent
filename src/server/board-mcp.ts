@@ -133,6 +133,19 @@ import {
   IdempotencyError,
   type IdempotencyStorage,
 } from '#/server/idempotency'
+import {
+  DEFAULT_HUMAN_LOCALE,
+  HUMAN_DISPLAY_SCHEMA_VERSION,
+  type HumanDisplayEntityKind,
+  type HumanDisplayReviewStatus,
+  type HumanDisplayV1,
+} from '#/server/human-display'
+import {
+  assertHumanDisplayWriteTransition,
+  HumanDisplayPersistenceError,
+  resolveHumanDisplayPreviousAuthor,
+  type HumanDisplayStore,
+} from '#/server/human-display-persistence'
 import type { LockStore } from '#/server/locks'
 import {
   evaluateCas,
@@ -1021,6 +1034,12 @@ const SAFE_TYPED_ERROR_CODES = new Set([
   // control-data / context
   'DB_UNAVAILABLE',
   'NOT_CONFIGURED',
+  // humanDisplay persistence
+  'INDEPENDENT_REVIEW_REQUIRED',
+  'SOURCE_HASH_MISMATCH',
+  'REVIEWED_IMMUTABLE',
+  'CONTENT_REVIEW_REQUIRED',
+  'TAMPER_DETECTED',
 ])
 
 function isSafeTypedErrorCode(code: string): boolean {
@@ -1250,6 +1269,7 @@ export const REGISTERED_WRITE_TOOL_NAMES = [
   'open_decision_v3',
   'resolve_decision_v3',
   'integration_lock',
+  'upsert_human_display',
 ] as const
 
 export type RegisteredWriteToolName = (typeof REGISTERED_WRITE_TOOL_NAMES)[number]
@@ -1259,6 +1279,11 @@ export type RegisteredWriteToolName = (typeof REGISTERED_WRITE_TOOL_NAMES)[numbe
  * (board_docs / tasks membership). On pin-complete authority these must NOT
  * silently diverge the active pin — only replace_board_snapshot / applyImport CAS
  * may advance definition. Lifecycle/run/account/decision tools are NOT listed.
+ *
+ * upsert_human_display is intentionally excluded: it persists owner-facing copy
+ * (control_plane_human_display), not the task/project/feature/board_docs definition
+ * graph. Pin-complete definition authority still applies via mutation envelope
+ * boardRev + canonicalHash binding (domain-owned CAS), not CANONICAL_IMPORT_REQUIRED.
  */
 export const DEFINITION_MUTATOR_TOOL_NAMES = [
   'toggle_task',
@@ -1576,6 +1601,166 @@ export async function assertMutationEnvelopeOrThrow(
 /** Fail closed not-found — throws so runMutationGate never CAS/idempotency-completes. */
 export function throwNotFound(message: string, details: Record<string, unknown> = {}): never {
   throw new McpMutationError('NOT_FOUND', message, details)
+}
+
+const HUMAN_DISPLAY_ENTITY_KINDS = ['task', 'project', 'feature'] as const
+const HUMAN_DISPLAY_REVIEW_STATUSES_MCP = [
+  'REVIEWED',
+  'GENERATED_NEEDS_REVIEW',
+  'BLOCKED_MISSING_SOURCE',
+  'CONFLICT',
+  'CONTENT_REVIEW_REQUIRED',
+] as const
+
+function nonEmptyString(v: unknown, field: string): string {
+  if (typeof v !== 'string' || !v.trim()) {
+    throw new McpMutationError('INVALID_INPUT', `${field} is required (non-empty string)`)
+  }
+  return v.trim()
+}
+
+function optionalStringField(v: unknown): string | null {
+  if (v == null) return null
+  if (typeof v !== 'string') return null
+  const t = v.trim()
+  return t.length ? t : null
+}
+
+/**
+ * Build HumanDisplayV1 from MCP upsert_human_display args.
+ * Accepts compact field names (why/current/…) and ART brief aliases
+ * (whyItMatters/currentState/remainingWork/nextAction/blockerSummary).
+ */
+export function parseHumanDisplayV1FromMcpArgs(
+  args: Record<string, unknown>,
+): HumanDisplayV1 {
+  const entityKindRaw = nonEmptyString(args.entityKind, 'entityKind')
+  if (!(HUMAN_DISPLAY_ENTITY_KINDS as readonly string[]).includes(entityKindRaw)) {
+    throw new McpMutationError(
+      'INVALID_INPUT',
+      `entityKind must be one of: ${HUMAN_DISPLAY_ENTITY_KINDS.join(', ')}`,
+      { entityKind: entityKindRaw },
+    )
+  }
+  const entityKind = entityKindRaw as HumanDisplayEntityKind
+  const entityId = nonEmptyString(args.entityId, 'entityId')
+
+  const reviewStatusRaw =
+    typeof args.reviewStatus === 'string' && args.reviewStatus.trim()
+      ? args.reviewStatus.trim()
+      : 'GENERATED_NEEDS_REVIEW'
+  if (!(HUMAN_DISPLAY_REVIEW_STATUSES_MCP as readonly string[]).includes(reviewStatusRaw)) {
+    throw new McpMutationError(
+      'INVALID_INPUT',
+      `invalid reviewStatus: ${reviewStatusRaw}`,
+      { reviewStatus: reviewStatusRaw },
+    )
+  }
+  const reviewStatus = reviewStatusRaw as HumanDisplayReviewStatus
+
+  const why = nonEmptyString(
+    args.why ?? args.whyItMatters,
+    'why / whyItMatters',
+  )
+  const current = nonEmptyString(
+    args.current ?? args.currentState,
+    'current / currentState',
+  )
+  const remaining = nonEmptyString(
+    args.remaining ?? args.remainingWork,
+    'remaining / remainingWork',
+  )
+  const next = nonEmptyString(args.next ?? args.nextAction, 'next / nextAction')
+  const blocker = nonEmptyString(
+    args.blocker ?? args.blockerSummary,
+    'blocker / blockerSummary',
+  )
+
+  const schemaVersion =
+    typeof args.schemaVersion === 'string' && args.schemaVersion.trim()
+      ? args.schemaVersion.trim()
+      : HUMAN_DISPLAY_SCHEMA_VERSION
+  if (schemaVersion !== HUMAN_DISPLAY_SCHEMA_VERSION) {
+    throw new McpMutationError(
+      'INVALID_INPUT',
+      `invalid schemaVersion: ${schemaVersion}`,
+      { schemaVersion },
+    )
+  }
+
+  const contentVersion =
+    typeof args.contentVersion === 'number' && Number.isFinite(args.contentVersion)
+      ? args.contentVersion
+      : 1
+
+  const boardRev =
+    typeof args.boardRev === 'number' && Number.isFinite(args.boardRev)
+      ? args.boardRev
+      : null
+  const lifecycleRev =
+    typeof args.lifecycleRev === 'number' && Number.isFinite(args.lifecycleRev)
+      ? args.lifecycleRev
+      : null
+
+  const citations = Array.isArray(args.citations)
+    ? (args.citations as HumanDisplayV1['citations']).map((c) => ({ ...c }))
+    : []
+  const acceptanceLinks = Array.isArray(args.acceptanceLinks)
+    ? (args.acceptanceLinks as HumanDisplayV1['acceptanceLinks']).map((c) => ({ ...c }))
+    : []
+  const missionQuestionLinks = Array.isArray(args.missionQuestionLinks)
+    ? (args.missionQuestionLinks as HumanDisplayV1['missionQuestionLinks']).map((c) => ({
+        ...c,
+      }))
+    : []
+
+  return {
+    schemaVersion: HUMAN_DISPLAY_SCHEMA_VERSION,
+    locale:
+      typeof args.locale === 'string' && args.locale.trim()
+        ? args.locale.trim()
+        : DEFAULT_HUMAN_LOCALE,
+    title: nonEmptyString(args.title, 'title'),
+    outcome: nonEmptyString(args.outcome, 'outcome'),
+    why,
+    current,
+    remaining,
+    next,
+    doneWhen: nonEmptyString(args.doneWhen, 'doneWhen'),
+    blocker,
+    ownerAction: nonEmptyString(args.ownerAction, 'ownerAction'),
+    reviewStatus,
+    sourceHash: nonEmptyString(args.sourceHash, 'sourceHash'),
+    reviewedAt: optionalStringField(args.reviewedAt),
+    contentVersion,
+    entityKind,
+    entityId,
+    parentFeatureTitle:
+      typeof args.parentFeatureTitle === 'string' ? args.parentFeatureTitle : '',
+    businessArea: typeof args.businessArea === 'string' ? args.businessArea : '',
+    actor: typeof args.actor === 'string' ? args.actor : '',
+    snapshotId: optionalStringField(args.snapshotId),
+    boardRev,
+    lifecycleRev,
+    // Optional pin binding on the display payload — not the mutation envelope hash.
+    canonicalHash: optionalStringField(
+      args.displayCanonicalHash ?? args.contentCanonicalHash ?? args.pinCanonicalHash,
+    ),
+    citations,
+    acceptanceLinks,
+    missionQuestionLinks,
+  }
+}
+
+function mapHumanDisplayPersistenceError(e: unknown): never {
+  if (e instanceof HumanDisplayPersistenceError) {
+    throw new McpMutationError(e.code, e.message, { ...e.details })
+  }
+  throw e
+}
+
+function sharedHumanDisplayStore(): HumanDisplayStore {
+  return resolveMcpRuntimeContext().humanDisplay
 }
 
 /**
@@ -2904,7 +3089,6 @@ export interface BoardPin {
 async function resolveBoardPin(boardId: string): Promise<BoardPin> {
   const clock = systemClock()
   const generatedAt = clock.nowISO()
-  const liveHash = await boardHash(boardId)
 
   let boardRev = 0
   let lifecycleRev = 0
@@ -2938,6 +3122,17 @@ async function resolveBoardPin(boardId: string): Promise<BoardPin> {
     }
   } catch {
     // fall through to atomic + live hash
+  }
+
+  // Live board_docs hash is fallback when durable pin hash is absent.
+  // Soft-fail only when durable hash already authority (memory unit harness without MySQL).
+  // Without durable hash, rethrow so fail-closed callers still see DB/unavailable errors.
+  let liveHash = ''
+  try {
+    liveHash = await boardHash(boardId)
+  } catch (e) {
+    if (!durableHash) throw e
+    liveHash = ''
   }
 
   // Atomic boardRev if import path missing revs (still not inventing lifecycle).
@@ -7412,6 +7607,280 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     },
   )
 
+
+  // ---- owner humanDisplay (persistence + MCP authoring / independent review) ----
+  const HUMAN_DISPLAY_COPY_SCHEMA = {
+    title: z.string(),
+    outcome: z.string(),
+    why: z.string().optional(),
+    whyItMatters: z.string().optional(),
+    current: z.string().optional(),
+    currentState: z.string().optional(),
+    remaining: z.string().optional(),
+    remainingWork: z.string().optional(),
+    next: z.string().optional(),
+    nextAction: z.string().optional(),
+    blocker: z.string().optional(),
+    blockerSummary: z.string().optional(),
+    doneWhen: z.string(),
+    ownerAction: z.string(),
+    parentFeatureTitle: z.string().optional(),
+    businessArea: z.string().optional(),
+    actor: z.string().optional(),
+    sourceHash: z.string(),
+    locale: z.string().optional(),
+    reviewStatus: z
+      .enum([
+        'REVIEWED',
+        'GENERATED_NEEDS_REVIEW',
+        'BLOCKED_MISSING_SOURCE',
+        'CONFLICT',
+        'CONTENT_REVIEW_REQUIRED',
+      ])
+      .optional(),
+    reviewedAt: z.string().nullable().optional(),
+    contentVersion: z.number().int().optional(),
+    schemaVersion: z.string().optional(),
+    snapshotId: z.string().nullable().optional(),
+    boardRev: z.number().int().nullable().optional(),
+    lifecycleRev: z.number().int().nullable().optional(),
+    displayCanonicalHash: z.string().optional(),
+    contentCanonicalHash: z.string().optional(),
+    pinCanonicalHash: z.string().optional(),
+    citations: z
+      .array(
+        z.object({
+          field: z.string(),
+          path: z.string(),
+          note: z.string().optional(),
+        }),
+      )
+      .optional(),
+    acceptanceLinks: z
+      .array(
+        z.object({
+          id: z.string().optional(),
+          path: z.string(),
+          summary: z.string().optional(),
+        }),
+      )
+      .optional(),
+    missionQuestionLinks: z
+      .array(
+        z.object({
+          questionId: z.string(),
+          field: z.string().optional(),
+          note: z.string().optional(),
+        }),
+      )
+      .optional(),
+  } as const
+
+  secureWriteTool(
+    'upsert_human_display',
+    {
+      title: 'Upsert owner humanDisplay',
+      description:
+        'Author or independently review versioned owner-facing humanDisplay for a task/project/feature. Authoring writes may only set reviewStatus=GENERATED_NEEDS_REVIEW (or fail-closed non-REVIEWED statuses). Transition to REVIEWED requires a separate call by a different actor and different role than the author (ART independent review). Domain-owned CAS: entityExpectedRev is humanDisplay entity_rev (0 when absent); expectedBoardRev + canonicalHash bind the live board pin. Writes control_plane_human_display + immutable audit. Not a definition-graph mutator.',
+      inputSchema: {
+        ...BOARD_ARG,
+        entityKind: z.enum(['task', 'project', 'feature']),
+        entityId: z.string(),
+        ...HUMAN_DISPLAY_COPY_SCHEMA,
+      },
+    },
+    async (args) => {
+      const boardId = await bid(args.boardId)
+      try {
+        // Domain-owned CAS/idempotency (like submit_stage_evidence): humanDisplay
+        // entity_rev lives on control_plane_human_display, not the generic revisions store.
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId,
+          checkPinHash: true,
+        })
+        const display = parseHumanDisplayV1FromMcpArgs(args as Record<string, unknown>)
+        const actorId = actorIdOf()
+        const actorRole = principal?.role ?? 'UNKNOWN'
+        const store = sharedHumanDisplayStore()
+        const ctx = resolveMcpRuntimeContext()
+        const requestBody = { ...args, boardId }
+        const begin = await beginIdempotent(ctx.idempotency, {
+          scope: {
+            actorId,
+            boardId,
+            endpoint: 'upsert_human_display',
+            key: env.idempotencyKey,
+          },
+          requestBody,
+          nowMs: ctx.clock.nowMs(),
+        })
+        if (begin.kind === 'REPLAY' && begin.record) {
+          const prior = begin.record.responseBody
+          if (prior === null || typeof prior !== 'object') {
+            throw new McpMutationError(
+              'DATA_INTEGRITY',
+              'idempotent replay body is not an object',
+              { toolName: 'upsert_human_display', boardId },
+            )
+          }
+          return jsonText({ ...(prior as Record<string, unknown>), replayed: true })
+        }
+
+        try {
+          const body = await ctx.atomic.withBoardLock(boardId, async () => {
+            const board = await ctx.atomic.getBoardState(boardId)
+            if (board.boardRev !== env.expectedBoardRev) {
+              throw new McpMutationError(
+                STALE_REVISION,
+                `board rev mismatch: expected ${env.expectedBoardRev}, current ${board.boardRev}`,
+                {
+                  expectedBoardRev: env.expectedBoardRev,
+                  currentBoardRev: board.boardRev,
+                  boardId,
+                },
+              )
+            }
+
+            const existingGet = await store.get(boardId, display.entityKind, display.entityId)
+            const existing = existingGet.record
+            const audits = await store.listAudit(boardId)
+            const previousAuthor = resolveHumanDisplayPreviousAuthor(
+              audits,
+              display.entityKind,
+              display.entityId,
+            )
+            try {
+              assertHumanDisplayWriteTransition({
+                display,
+                existing,
+                actorId,
+                actorRole,
+                previousAuthor,
+              })
+            } catch (e) {
+              mapHumanDisplayPersistenceError(e)
+            }
+
+            // HD row board_rev pin CAS (0 when no row) — distinct from live board rev above.
+            const expectedHdBoardRev = existing?.boardRev ?? 0
+            const put = await store.put({
+              boardId,
+              display,
+              expectedEntityRev: env.entityExpectedRev,
+              expectedBoardRev: expectedHdBoardRev,
+              expectedSourceHash: display.sourceHash,
+              actorId,
+              actorRole,
+            })
+            if (!put.ok) {
+              throw new McpMutationError(put.code, put.message, {
+                ...put.details,
+                currentEntityRev: put.current?.entityRev ?? null,
+                currentBoardRevPin: put.current?.boardRev ?? null,
+              })
+            }
+
+            // Advance live board rev only on non-replay durable write (surface freshness).
+            if (!put.replayed) {
+              await ctx.atomic.bumpBoardRev(boardId)
+            }
+            const boardAfter = await ctx.atomic.getBoardState(boardId)
+            return {
+              ok: true as const,
+              boardId,
+              entityKind: put.record.entityKind,
+              entityId: put.record.entityId,
+              contentVersion: put.record.contentVersion,
+              reviewStatus: put.record.reviewStatus,
+              sourceHash: put.record.sourceHash,
+              contentHash: put.record.contentHash,
+              entityRev: put.record.entityRev,
+              boardRevPin: put.record.boardRev,
+              boardRev: boardAfter.boardRev,
+              auditId: put.auditId,
+              replayed: put.replayed,
+              record: put.record,
+            }
+          })
+          await completeIdempotent(ctx.idempotency, begin.scopeHash, 200, body, begin.requestHash)
+          return jsonText(body)
+        } catch (e) {
+          try {
+            await ctx.idempotency.delete(begin.scopeHash)
+          } catch {
+            /* ignore cleanup */
+          }
+          if (e instanceof IdempotencyError) {
+            throw new McpMutationError(e.code, e.message)
+          }
+          if (e instanceof HumanDisplayPersistenceError) {
+            throw new McpMutationError(e.code, e.message, { ...e.details })
+          }
+          throw e
+        }
+      } catch (e) {
+        return jsonText(typedError(e))
+      }
+    },
+  )
+
+  secureTool(
+    'get_human_display',
+    {
+      title: 'Get owner humanDisplay',
+      description:
+        'Read versioned owner humanDisplay for one entity (task/project/feature). Missing/stale/unreviewed fails closed to CONTENT_REVIEW_REQUIRED (no technical title as owner primary). Optional liveSourceHash / pin fields for freshness evaluation.',
+      inputSchema: {
+        ...BOARD_ARG,
+        entityKind: z.enum(['task', 'project', 'feature']),
+        entityId: z.string(),
+        liveSourceHash: z.string().optional(),
+      },
+    },
+    async (rawArgs) => {
+      try {
+        const boardId = await bid(rawArgs.boardId as string | undefined)
+        const entityKindRaw = String(rawArgs.entityKind ?? '')
+        if (!(HUMAN_DISPLAY_ENTITY_KINDS as readonly string[]).includes(entityKindRaw)) {
+          throw new McpMutationError(
+            'INVALID_INPUT',
+            `entityKind must be one of: ${HUMAN_DISPLAY_ENTITY_KINDS.join(', ')}`,
+          )
+        }
+        const entityKind = entityKindRaw as HumanDisplayEntityKind
+        const entityId = nonEmptyString(rawArgs.entityId, 'entityId')
+        const store = sharedHumanDisplayStore()
+        const liveSourceHash =
+          typeof rawArgs.liveSourceHash === 'string' && rawArgs.liveSourceHash.trim()
+            ? rawArgs.liveSourceHash.trim()
+            : null
+        // When liveSourceHash is supplied, evaluate freshness against it only.
+        // Full pin bindings are on the stored record; do not demote with a mismatched
+        // live board pin boardRev/snapshot from envelope when caller only asked hash.
+        const got = await store.get(
+          boardId,
+          entityKind,
+          entityId,
+          liveSourceHash ? { liveSourceHash } : null,
+        )
+        const data = {
+          ok: true as const,
+          boardId,
+          entityKind,
+          entityId,
+          record: got.record,
+          evaluation: got.evaluation,
+          primary: got.primary,
+          blockedShell: got.blockedShell,
+          effectiveReviewStatus: got.effectiveReviewStatus,
+          contentReviewRequired: got.contentReviewRequired,
+        }
+        return jsonText(await pinnedEnvelopeFromBoard(boardId, data))
+      } catch (e) {
+        return jsonText(typedError(e))
+      }
+    },
+  )
 
   // playbook resource — requires board:read principal (not listed unauth)
   if (principal && isToolListable(principal, 'get_conventions')) {
