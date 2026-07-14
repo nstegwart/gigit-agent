@@ -2606,6 +2606,58 @@ describe('LIFECYCLE V3 product wiring (advance_task → advanceTaskV3)', () => {
     ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
   })
 
+  it('legacy rail skip denied: allowSkip=true refused on pure-legacy board (no pin)', async () => {
+    // Pure-legacy: no seedBoardRevision → getBoardState null → early path used to skip checks
+    const legacyBoard = 'legacy-allowskip-deny'
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('set_lifecycle', legacyBoard, {
+        allowSkip: true,
+        stages: [
+          { key: 'TODO', label: 'Todo' },
+          { key: 'DONE', label: 'Done' },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_TRANSITION',
+      message: expect.stringMatching(/allowSkip=true|legacy rail skip/i),
+    })
+    // allowSkip=false is still permitted on pure-legacy (rail reconfigure)
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('set_lifecycle', legacyBoard, {
+        allowSkip: false,
+        stages: [
+          { key: 'TODO', label: 'Todo' },
+          { key: 'DONE', label: 'Done' },
+        ],
+      }),
+    ).resolves.toBeUndefined()
+  })
+
+  it('init_lifecycle non-pin: only MAPPING on empty lifecycle; late stage / overwrite denied', async () => {
+    const emptyBoard = 'legacy-init-empty'
+    // Empty lifecycle (no tasks with stages) + MAPPING + onlyUninitialized → ok at gate
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('init_lifecycle', emptyBoard, {
+        stage: 'MAPPING',
+        onlyUninitialized: true,
+      }),
+    ).resolves.toBeUndefined()
+
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('init_lifecycle', emptyBoard, {
+        stage: 'BUILT',
+        onlyUninitialized: true,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('init_lifecycle', emptyBoard, {
+        stage: 'MAPPING',
+        onlyUninitialized: false,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+  })
+
   it('typedError surfaces Lifecycle V3 domain codes (not MCP_HANDLER_ERROR)', () => {
     for (const code of [
       'INVALID_TRANSITION',
@@ -3404,6 +3456,68 @@ describe('submit_stage_evidence MCP tool + WAVE_CLOSE + add_comment real MCP', (
     expect(mcpTypedErrorForTests(new McpMutationError('ACCOUNT_SYNC_SCHEDULER_MISSING', 'x')).code).toBe(
       'ACCOUNT_SYNC_SCHEDULER_MISSING',
     )
+  })
+
+  it('MCP replace_accounts fails closed ACCOUNT_SYNC_SCHEDULER_MISSING — no authority write / no rev bump', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const pin = 'c'.repeat(64)
+    const sql = (ctx.controlData as { sql?: Parameters<typeof seedBoardRevision>[0] }).sql
+    expect(sql).toBeTruthy()
+    await seedBoardRevision(sql!, {
+      boardId: BOARD,
+      boardRev: 3,
+      lifecycleRev: 1,
+      subjectHash: pin,
+      canonicalSnapshotId: 'snap-replace-sched-missing',
+      canonicalHash: pin,
+    })
+    ;(ctx as unknown as { accountSyncScheduler: null }).accountSyncScheduler = null
+    expect(
+      (await import('#/server/control-plane-runtime-context')).peekAccountSyncScheduler(),
+    ).toBeNull()
+
+    const beforeAccounts = await ctx.runtime.accounts.get(BOARD)
+    const boardBefore = await ctx.atomic.getBoardState(BOARD)
+    const entityBefore = beforeAccounts?.entityRev ?? 0
+    const sourceBefore = beforeAccounts?.sourceRevision ?? null
+    const boardRevBefore = boardBefore.boardRev
+
+    const server = new McpServer({ name: 'replace-sched-missing', version: '0.0.0' })
+    registerBoardTools(server, authRoot())
+    const res = await callToolJson(server, 'replace_accounts', {
+      boardId: BOARD,
+      ops: {
+        vault: { generatedAt: ctx.clock.nowISO(), sourceRevision: 99 },
+        accounts: [
+          {
+            id: 'mask-replace-no-sched',
+            label: 'NoSched',
+            status: 'OK',
+            usable: true,
+            slotsInUse: 0,
+            slotsCapacity: 5,
+            provider: 'GROK',
+          },
+        ],
+      },
+      entityExpectedRev: entityBefore,
+      expectedBoardRev: boardRevBefore,
+      canonicalHash: pin,
+      idempotencyKey: 'idem-replace-sched-missing-1',
+    })
+    expect(res.ok).toBe(false)
+    expect(res.code).toBe('ACCOUNT_SYNC_SCHEDULER_MISSING')
+    // Exact typed error surface (not MCP_HANDLER_ERROR / soft paraphrase)
+    expect(mcpTypedErrorForTests(new McpMutationError('ACCOUNT_SYNC_SCHEDULER_MISSING', 'x')).code).toBe(
+      'ACCOUNT_SYNC_SCHEDULER_MISSING',
+    )
+    // No durable authority write
+    const afterAccounts = await ctx.runtime.accounts.get(BOARD)
+    expect(afterAccounts?.sourceRevision ?? null).toBe(sourceBefore)
+    expect(afterAccounts?.entityRev ?? 0).toBe(entityBefore)
+    // No board revision bump on refuse
+    const boardAfter = await ctx.atomic.getBoardState(BOARD)
+    expect(boardAfter.boardRev).toBe(boardRevBefore)
   })
 
   it('add_comment REAL MCP: spoof authorType=human/author=owner → principal agent + persisted readback', async () => {

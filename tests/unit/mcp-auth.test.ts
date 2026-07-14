@@ -1611,4 +1611,116 @@ describe('submit_stage_evidence + add_comment spoof + WAVE_CLOSE (auth surface)'
     const list = await mcpRpc(rpc('tools/list'), bearerHeaders(TOKENS.ROOT))
     expect(toolNamesFromList(list.json)).toContain('sync_accounts')
   })
+
+  it('adversarial: set_lifecycle allowSkip=true → exact typed INVALID_TRANSITION; no silent skip', async () => {
+    installBearerMatrix()
+    const { assertLifecycleEvidenceBypassForbidden, McpMutationError, mcpTypedErrorForTests } =
+      await import('#/server/board-mcp')
+    // Domain gate (same path MCP handler uses before writeLifecycle)
+    await expect(
+      assertLifecycleEvidenceBypassForbidden('set_lifecycle', BOARD, {
+        allowSkip: true,
+        stages: [
+          { key: 'TODO', label: 'Todo' },
+          { key: 'DONE', label: 'Done' },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_TRANSITION' })
+
+    const typed = mcpTypedErrorForTests(
+      new McpMutationError(
+        'INVALID_TRANSITION',
+        'set_lifecycle cannot set allowSkip=true on any board (ordered V3 evidence required; legacy rail skip denied)',
+      ),
+    )
+    expect(typed.code).toBe('INVALID_TRANSITION')
+    expect(typed.error).toMatch(/allowSkip=true|legacy rail skip/i)
+
+    // Real MCP tools/call: OWNER may list set_lifecycle; payload still fails closed
+    const list = await mcpRpc(rpc('tools/list'), bearerHeaders(TOKENS.OWNER))
+    expect(toolNamesFromList(list.json)).toContain('set_lifecycle')
+    const call = await mcpRpc(
+      toolCall('set_lifecycle', {
+        boardId: BOARD,
+        stages: [
+          { key: 'TODO', label: 'Todo' },
+          { key: 'DONE', label: 'Done' },
+        ],
+        allowSkip: true,
+        entityExpectedRev: 0,
+        expectedBoardRev: 0,
+        canonicalHash: 'a'.repeat(64),
+        idempotencyKey: `idem-allowskip-deny-${Date.now()}`,
+      }),
+      bearerHeaders(TOKENS.OWNER),
+    )
+    const payload = parseToolPayload(call.json)
+    // Fail closed: ok=false + typed code (not silent coerce to allowSkip false success)
+    expect(payload?.ok).toBe(false)
+    expect(payload?.code).toBe('INVALID_TRANSITION')
+    assertNoSecretLeak(call.rawText)
+  })
+
+  it('adversarial: replace_accounts with null scheduler → ACCOUNT_SYNC_SCHEDULER_MISSING exact typed', async () => {
+    installBearerMatrix()
+    const ctx = resolveMcpRuntimeContext()
+    const pin = 'd'.repeat(64)
+    const sql = (ctx.controlData as { sql?: unknown }).sql as
+      | Parameters<typeof import('#/server/control-data-persistence').seedBoardRevision>[0]
+      | undefined
+    expect(sql).toBeTruthy()
+    const { seedBoardRevision } = await import('#/server/control-data-persistence')
+    await seedBoardRevision(sql!, {
+      boardId: BOARD,
+      boardRev: 2,
+      lifecycleRev: 0,
+      subjectHash: pin,
+      canonicalSnapshotId: 'snap-auth-replace-nosched',
+      canonicalHash: pin,
+    })
+    ;(ctx as unknown as { accountSyncScheduler: null }).accountSyncScheduler = null
+    const { peekAccountSyncScheduler } = await import('#/server/control-plane-runtime-context')
+    expect(peekAccountSyncScheduler()).toBeNull()
+
+    const before = await ctx.runtime.accounts.get(BOARD)
+    const board = await ctx.atomic.getBoardState(BOARD)
+    const entityBefore = before?.entityRev ?? 0
+    const sourceBefore = before?.sourceRevision ?? null
+    const boardRevBefore = board.boardRev
+
+    const call = await mcpRpc(
+      toolCall('replace_accounts', {
+        boardId: BOARD,
+        ops: {
+          vault: { generatedAt: new Date().toISOString(), sourceRevision: 1 },
+          accounts: [
+            {
+              id: 'mask-auth-no-sched',
+              label: 'NoSched',
+              status: 'OK',
+              usable: true,
+              slotsInUse: 0,
+              slotsCapacity: 3,
+              provider: 'GROK',
+            },
+          ],
+        },
+        entityExpectedRev: entityBefore,
+        expectedBoardRev: boardRevBefore,
+        canonicalHash: pin,
+        idempotencyKey: `idem-auth-replace-nosched-${Date.now()}`,
+      }),
+      bearerHeaders(TOKENS.ROOT),
+    )
+    const payload = parseToolPayload(call.json)
+    expect(payload?.ok).toBe(false)
+    expect(payload?.code).toBe('ACCOUNT_SYNC_SCHEDULER_MISSING')
+    // No authority write / no rev bump
+    const after = await ctx.runtime.accounts.get(BOARD)
+    expect(after?.sourceRevision ?? null).toBe(sourceBefore)
+    expect(after?.entityRev ?? 0).toBe(entityBefore)
+    const boardAfter = await ctx.atomic.getBoardState(BOARD)
+    expect(boardAfter.boardRev).toBe(boardRevBefore)
+    assertNoSecretLeak(call.rawText)
+  })
 })

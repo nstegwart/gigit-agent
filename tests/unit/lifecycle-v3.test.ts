@@ -7,8 +7,10 @@ import {
   createMemoryLifecycleV3Storage,
   createMemoryStageEvidenceStore,
   evaluateLifecycleEnumMapping,
+  initLifecycleStage,
   planLifecycleEnumMigration,
   submitStageEvidence,
+  writeLifecycle,
   LifecycleV3Error,
   LIFECYCLE_MAPPING_TYPES,
   V3_IDENTITY_LIFECYCLE_CONFIG,
@@ -205,6 +207,27 @@ describe('V3 lifecycle rail identity + legacy compatibility', () => {
     ])
     expect(V3_IDENTITY_LIFECYCLE_CONFIG.allowSkip).toBe(false)
     expect(V3_IDENTITY_LIFECYCLE_CONFIG.stages.map((s) => s.key)).toEqual([...V3_LIFECYCLE_RAIL])
+  })
+
+  it('writeLifecycle refuses allowSkip=true before persist (legacy rail skip denied)', async () => {
+    // Throws before readDoc/writeDoc — no DB required
+    await expect(
+      writeLifecycle(
+        'life-v3-allowskip-deny',
+        V3_IDENTITY_LIFECYCLE_CONFIG.stages,
+        { allowSkip: true },
+      ),
+    ).rejects.toThrow(/allowSkip=true|legacy rail skip/i)
+  })
+
+  it('initLifecycleStage domain: only MAPPING; late stage + overwrite denied before DB', async () => {
+    // Both fail before taskStageRows / initLifecycle
+    await expect(initLifecycleStage('life-v3-init-late', 'BUILT', true)).rejects.toThrow(
+      /MAPPING|truly empty/i,
+    )
+    await expect(initLifecycleStage('life-v3-init-overwrite', 'MAPPING', false)).rejects.toThrow(
+      /onlyUninitialized/i,
+    )
   })
 })
 

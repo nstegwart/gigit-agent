@@ -129,11 +129,9 @@ import {
 } from '#/server/revisions'
 import {
   evaluateCapacityPolicy,
-  syncAccounts,
   getSharedAccountSyncStore,
   setSharedAccountSyncStore,
   type AccountSyncStore,
-  type AccountSyncDeps,
   type AccountSyncTrigger,
   type AccountProviderKind,
   type MaskedAccountStatus,
@@ -400,15 +398,6 @@ export function defaultRunDeps(boardId?: string, boardRev = 0): RunRegistryDeps 
     getCapacity: (id) => loadCapacityForBoard(id),
   }
   return mcpRunDeps
-}
-
-function accountSyncDeps(): AccountSyncDeps {
-  return {
-    clock: systemClock(),
-    accounts: sharedAccountStore(),
-    atomic: sharedAtomic(),
-    idempotency: sharedIdempotency(),
-  }
 }
 
 function decisionDeps(): DecisionV3Deps {
@@ -1877,18 +1866,27 @@ export async function advanceTaskProduct(
 }
 
 /**
- * Canonical boards (pin-complete OR partial pin/hash authority): init_lifecycle /
- * set_lifecycle must not bypass ordered V3 evidence.
- * - set_lifecycle: refuse allowSkip=true; refuse non-identity stage keys
- * - init_lifecycle: refuse ALL seeding including MAPPING without valid V3 receipts
- * Incomplete/missing pin on a board that already has partial canonical authority
- * does NOT silently enable legacy evidence bypass.
+ * V3 safety for set_lifecycle / init_lifecycle — legacy compatibility cannot bypass.
+ * - set_lifecycle: refuse allowSkip=true on ANY board (never persist stage-skip)
+ * - set_lifecycle pin-complete: refuse non-identity stage keys
+ * - init_lifecycle pin-complete: refuse ALL seeding (MAPPING needs advance_task receipts)
+ * - init_lifecycle non-pin-complete: only first MAPPING on truly empty lifecycle
+ * Incomplete/missing pin with partial canonical authority fails closed (no silent legacy).
  */
 export async function assertLifecycleEvidenceBypassForbidden(
   toolName: 'set_lifecycle' | 'init_lifecycle',
   boardId: string,
   args: Record<string, unknown>,
 ): Promise<void> {
+  // Universal: allowSkip=true is never legal — pure-legacy early-return used to skip this.
+  if (toolName === 'set_lifecycle' && args.allowSkip === true) {
+    throw new McpMutationError(
+      'INVALID_TRANSITION',
+      'set_lifecycle cannot set allowSkip=true on any board (ordered V3 evidence required; legacy rail skip denied)',
+      { boardId, toolName, code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN' },
+    )
+  }
+
   let boardState: Awaited<
     ReturnType<ReturnType<typeof resolveMcpRuntimeContext>['controlData']['imports']['getBoardState']>
   > = null
@@ -1898,9 +1896,6 @@ export async function assertLifecycleEvidenceBypassForbidden(
   } catch {
     importReadable = false
   }
-
-  // Pure legacy boards (no import row, no pin authority) keep legacy path.
-  if (importReadable && !boardState) return
 
   const hasPartialCanonical =
     !!boardState &&
@@ -1921,16 +1916,16 @@ export async function assertLifecycleEvidenceBypassForbidden(
     )
   }
 
-  if (!pinComplete) return
+  // Pure-legacy (no import row) and non-pin-complete without partial pin: still enforce
+  // init_lifecycle empty-MAPPING-only; set_lifecycle allowSkip already checked above.
+  if (!pinComplete) {
+    if (toolName === 'init_lifecycle') {
+      await assertInitLifecycleEmptyMappingOnly(boardId, args)
+    }
+    return
+  }
 
   if (toolName === 'set_lifecycle') {
-    if (args.allowSkip === true) {
-      throw new McpMutationError(
-        'INVALID_TRANSITION',
-        'set_lifecycle cannot set allowSkip=true on a pin-complete canonical board (ordered V3 evidence required)',
-        { boardId, toolName, code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN' },
-      )
-    }
     const stages = Array.isArray(args.stages) ? args.stages : []
     const keys = stages
       .map((s) => (s && typeof s === 'object' ? String((s as { key?: string }).key ?? '') : ''))
@@ -1965,6 +1960,62 @@ export async function assertLifecycleEvidenceBypassForbidden(
         boardId,
         toolName,
         stage: typeof args.stage === 'string' ? args.stage : V3_LIFECYCLE_RAIL[0],
+        code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN',
+      },
+    )
+  }
+}
+
+/**
+ * Non-pin-complete boards: init_lifecycle may only seed first stage MAPPING when
+ * every task is still uninitialized (truly empty lifecycle). Fresh envelope is
+ * enforced by runMutationGate (entityExpectedRev + expectedBoardRev + hash + idem).
+ */
+export async function assertInitLifecycleEmptyMappingOnly(
+  boardId: string,
+  args: Record<string, unknown>,
+): Promise<void> {
+  const mapping = V3_LIFECYCLE_RAIL[0]
+  const stageRaw = args.stage
+  const stage =
+    typeof stageRaw === 'string' && stageRaw.trim() ? stageRaw.trim() : mapping
+  if (stage !== mapping) {
+    throw new McpMutationError(
+      'INVALID_TRANSITION',
+      `init_lifecycle only allows first stage ${mapping} on truly empty lifecycle; got ${stage}`,
+      {
+        boardId,
+        toolName: 'init_lifecycle',
+        stage,
+        expected: mapping,
+        code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN',
+      },
+    )
+  }
+  if (args.onlyUninitialized === false) {
+    throw new McpMutationError(
+      'INVALID_TRANSITION',
+      'init_lifecycle requires onlyUninitialized=true (cannot overwrite assigned stages)',
+      {
+        boardId,
+        toolName: 'init_lifecycle',
+        stage,
+        code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN',
+      },
+    )
+  }
+  const { taskStageRows } = await import('#/server/tasks-store')
+  const rows = await taskStageRows(boardId)
+  const assigned = rows.filter((r) => r.stage != null && String(r.stage).trim() !== '')
+  if (assigned.length > 0) {
+    throw new McpMutationError(
+      'INVALID_TRANSITION',
+      `init_lifecycle only on truly empty lifecycle; ${assigned.length} task(s) already have stages`,
+      {
+        boardId,
+        toolName: 'init_lifecycle',
+        stage,
+        assignedCount: assigned.length,
         code: 'LIFECYCLE_EVIDENCE_BYPASS_FORBIDDEN',
       },
     )
@@ -4263,25 +4314,29 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           callerRole: 'ROOT_ORCHESTRATOR' as const,
           actorId: actorIdOf(),
         }
-        let syncResult: SyncAccountsResult
+        // Shared scheduler required — same fail-closed rule as sync_accounts.
+        // Never fall back to raw syncAccounts (unverified parity / null readbackSurfaces).
         const { peekAccountSyncScheduler } = await import('#/server/control-plane-runtime-context')
         const sched = peekAccountSyncScheduler()
-        if (sched) {
-          const out = await sched.enqueue({
-            ...baseReq,
-            accounts: mapped,
-          })
-          if (!out.result) {
-            throw new McpMutationError(
-              'ACCOUNT_SYNC_STALE',
-              `replace_accounts scheduler enqueue did not publish (${out.kind})`,
-              { kind: out.kind, trigger, boardId },
-            )
-          }
-          syncResult = out.result
-        } else {
-          syncResult = await syncAccounts(accountSyncDeps(), baseReq)
+        if (!sched) {
+          throw new McpMutationError(
+            'ACCOUNT_SYNC_SCHEDULER_MISSING',
+            'account sync scheduler not installed on runtime context — refuse unverified parity publish',
+            { boardId, trigger, failClosed: true },
+          )
         }
+        const out = await sched.enqueue({
+          ...baseReq,
+          accounts: mapped,
+        })
+        if (!out.result) {
+          throw new McpMutationError(
+            'ACCOUNT_SYNC_STALE',
+            `replace_accounts scheduler enqueue did not publish (${out.kind})`,
+            { kind: out.kind, trigger, boardId },
+          )
+        }
+        const syncResult = out.result
         // Compatibility vault doc for legacy ops readers (after durable authority succeeds).
         const compatOps = legacyOpsCompatibilityPayload(opsRaw)
         await replaceAccounts(boardId, compatOps)
@@ -4445,7 +4500,18 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
   )
   secureWriteTool(
     'set_lifecycle',
-    { title: 'Set lifecycle rail', description: "Fully (re)configure this board's lifecycle: ordered stages + gate rules. gated:true = reachable only via advance_task with a program-emitted receipt; verifierRole = must be passed by a run other than the implementer. allowSkip (default false) permits forward jumps; allowRegression (default true) permits moving back for repair. Each board owns its own rail. Pin-complete canonical boards cannot set allowSkip or replace the V3 identity rail (ordered evidence via advance_task only).", inputSchema: { ...BOARD_ARG, stages: z.array(STAGE_OBJ).min(1), allowSkip: z.boolean().optional(), allowRegression: z.boolean().optional(), formulaVersion: z.string().optional() } },
+    {
+      title: 'Set lifecycle rail',
+      description:
+        "Fully (re)configure this board's lifecycle: ordered stages + gate rules. gated:true = reachable only via advance_task with a program-emitted receipt; verifierRole = must be passed by a run other than the implementer. allowSkip is always forced false (legacy rail skip denied on every board). allowRegression (default true) permits moving back for repair. Pin-complete boards must keep the V3 identity nine-stage rail (ordered evidence via advance_task only). Requires fresh mutation envelope.",
+      inputSchema: {
+        ...BOARD_ARG,
+        stages: z.array(STAGE_OBJ).min(1),
+        allowSkip: z.boolean().optional(),
+        allowRegression: z.boolean().optional(),
+        formulaVersion: z.string().optional(),
+      },
+    },
     async (args) => {
       const boardId = await bid(args.boardId)
       try {
@@ -4460,8 +4526,9 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
             requestBody: { ...args, boardId },
           },
           async () =>
+            // Domain hard-forces allowSkip=false; never pass true through.
             await writeLifecycle(boardId, args.stages as never, {
-              allowSkip: args.allowSkip,
+              allowSkip: false,
               allowRegression: args.allowRegression,
               formulaVersion: args.formulaVersion,
             }),
@@ -4817,7 +4884,16 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
   )
   secureWriteTool(
     'init_lifecycle',
-    { title: 'Bulk-init task stages', description: "Set the lifecycle stage for a board's tasks in one atomic UPDATE (default = onlyUninitialized). stage defaults to the rail's first stage. Pin-complete canonical boards may only seed MAPPING with onlyUninitialized=true — later stages require advance_task receipts.", inputSchema: { ...BOARD_ARG, stage: z.string().optional(), onlyUninitialized: z.boolean().optional() } },
+    {
+      title: 'Bulk-init task stages',
+      description:
+        "Bulk-seed task stages only for first stage MAPPING on a truly empty lifecycle (all tasks uninitialized), with onlyUninitialized=true and a fresh mutation envelope. Later stages require advance_task receipts. Pin-complete canonical boards forbid init_lifecycle entirely (MAPPING still needs V3 programmatic path). Legacy compatibility cannot bypass V3 safety.",
+      inputSchema: {
+        ...BOARD_ARG,
+        stage: z.string().optional(),
+        onlyUninitialized: z.boolean().optional(),
+      },
+    },
     async (args) => {
       const boardId = await bid(args.boardId)
       try {

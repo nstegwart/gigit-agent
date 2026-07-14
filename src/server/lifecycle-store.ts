@@ -35,6 +35,12 @@ export async function writeLifecycle(
   opts: { allowSkip?: boolean; allowRegression?: boolean; formulaVersion?: string } = {},
 ): Promise<LifecycleConfig> {
   if (!stages.length) throw new Error('lifecycle needs at least one stage')
+  // V3 safety: never persist allowSkip=true on any board (legacy rail skip denied).
+  if (opts.allowSkip === true) {
+    throw new Error(
+      'set_lifecycle cannot persist allowSkip=true (ordered V3 evidence required; legacy rail skip denied)',
+    )
+  }
   const keys = new Set<string>()
   for (const s of stages) {
     if (!s.key || !s.label) throw new Error('each stage needs a key + label')
@@ -44,7 +50,8 @@ export async function writeLifecycle(
   const prev = await readLifecycle(boardId) // preserve flags not being changed
   const cfg: LifecycleConfig = {
     stages,
-    allowSkip: opts.allowSkip ?? prev.allowSkip ?? false,
+    // Hard-false: prior allowSkip=true is cleared on every write.
+    allowSkip: false,
     allowRegression: opts.allowRegression ?? prev.allowRegression ?? true,
     formulaVersion: opts.formulaVersion ?? prev.formulaVersion ?? 'v1',
   }
@@ -197,14 +204,45 @@ export async function computeRollup(boardId: string): Promise<Rollup> {
   }
 }
 
-/** Bulk-set the stage for a board's tasks (default = the first stage). Atomic UPDATE. */
-export async function initLifecycleStage(boardId: string, stage?: string, onlyUninitialized = true): Promise<{ ok: true; stage: string; updated: number }> {
+/**
+ * Bulk-set the stage for a board's tasks. V3 safety:
+ * only first MAPPING on a truly empty lifecycle (all tasks uninitialized),
+ * onlyUninitialized must be true. Later stages require advance_task receipts.
+ * Atomic UPDATE.
+ */
+export async function initLifecycleStage(
+  boardId: string,
+  stage?: string,
+  onlyUninitialized = true,
+): Promise<{ ok: true; stage: string; updated: number }> {
+  const mapping = LIFECYCLE_STAGE_ORDER[0] // MAPPING — first V3 identity stage
+  const target = stage ?? mapping
+  if (target !== mapping) {
+    throw new Error(
+      `init_lifecycle only allows first stage ${mapping} on truly empty lifecycle; got ${target}`,
+    )
+  }
+  if (!onlyUninitialized) {
+    throw new Error('init_lifecycle requires onlyUninitialized=true (cannot overwrite assigned stages)')
+  }
+  const rows = await taskStageRows(boardId)
+  const assigned = rows.filter((r) => r.stage != null && String(r.stage).trim() !== '')
+  if (assigned.length > 0) {
+    throw new Error(
+      `init_lifecycle only on truly empty lifecycle; ${assigned.length} task(s) already have stages`,
+    )
+  }
   const cfg = await readLifecycle(boardId)
-  const target = stage ?? cfg.stages[0]?.key
-  if (!target) throw new Error('board has no lifecycle stages')
-  if (!cfg.stages.some((s) => s.key === target)) throw new Error(`unknown stage: ${target}. Rail: ${cfg.stages.map((s) => s.key).join(' → ')}`)
+  if (!cfg.stages.some((s) => s.key === target)) {
+    throw new Error(`unknown stage: ${target}. Rail: ${cfg.stages.map((s) => s.key).join(' → ')}`)
+  }
   const updated = await initLifecycle(boardId, target, onlyUninitialized)
-  await writeAudit(boardId, { ts: nowISO(), action: 'init_lifecycle', toStage: target, detail: { updated, onlyUninitialized } })
+  await writeAudit(boardId, {
+    ts: nowISO(),
+    action: 'init_lifecycle',
+    toStage: target,
+    detail: { updated, onlyUninitialized },
+  })
   return { ok: true, stage: target, updated }
 }
 

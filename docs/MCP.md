@@ -60,9 +60,10 @@ them (e.g. `ibils`, `mfs-rebuild`).
 ### Lifecycle engine (evidence-gated delivery)
 | Tool | Args | Effect |
 |---|---|---|
-| `set_lifecycle` | boardId?, stages[], allowSkip?, allowRegression?, formulaVersion? | (re)define the board's rail. Each stage: key, label, color, group, gated, requiresEvidence[], verifierRole, **readiness (0-100)**, milestone |
-| `advance_task` | boardId?, id, toStage, **byRunId (req)**, role?, evidence?, verdict?, commitSha?, deployReceipt?, blocker?, expectedRev? | move a task's stage. Gated stage → needs its receipt; verifier stage → byRunId must ≠ implementer + verdict; no stage-skipping; backward = repair/regression |
-| `init_lifecycle` | boardId?, stage?, onlyUninitialized? | bulk-set task stages in one atomic UPDATE |
+| `set_lifecycle` | boardId?, stages[], allowSkip?, allowRegression?, formulaVersion? | (re)define the board's rail. Each stage: key, label, color, group, gated, requiresEvidence[], verifierRole, **readiness (0-100)**, milestone. **`allowSkip` is always forced false** (legacy rail skip denied on every board). Pin-complete boards must keep the V3 identity nine-stage rail. Requires fresh mutation envelope. |
+| `advance_task` | boardId?, id, toStage, **byRunId (req)**, role?, evidence?, verdict?, commitSha?, deployReceipt?, blocker?, expectedRev? | move a task **one** ordered V3 stage (`allowSkip=false`). Requires registered unexpired unfenced byRunId, fresh revs/hashes, stage-specific programmatic receipt. Verifier stages enforce author≠verifier. |
+| `init_lifecycle` | boardId?, stage?, onlyUninitialized? | bulk-seed **only first stage `MAPPING`** on a **truly empty** lifecycle (all tasks uninitialized), `onlyUninitialized=true`, fresh envelope. Pin-complete boards forbid init entirely (MAPPING still needs `advance_task`). Later stages require receipts. |
+| `replace_accounts` | boardId?, ops | replace vault via durable account-sync **scheduler only**. Missing scheduler → typed `ACCOUNT_SYNC_SCHEDULER_MISSING` (no raw `syncAccounts` fallback / no authority write). |
 
 ### Task write suite
 | Tool | Args | Effect |
