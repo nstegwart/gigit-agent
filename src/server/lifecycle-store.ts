@@ -481,6 +481,26 @@ function isLifecycleStageKey(s: string): s is LifecycleStageKey {
   return (LIFECYCLE_STAGE_ORDER as ReadonlyArray<string>).includes(s)
 }
 
+/**
+ * Deterministic JSON for receipt hashing. MySQL JSON columns may reorder object
+ * keys on write/read; plain JSON.stringify(fields) then diverged on advance
+ * revalidation → permanent STALE_HASH "receipt hash mismatch / tampered receipt"
+ * even when the registry row was never mutated. Sort object keys recursively.
+ */
+function stableJsonStringify(value: unknown): string {
+  const normalize = (v: unknown): unknown => {
+    if (v === null || typeof v !== 'object') return v
+    if (Array.isArray(v)) return v.map(normalize)
+    const obj = v as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const k of Object.keys(obj).sort()) {
+      out[k] = normalize(obj[k])
+    }
+    return out
+  }
+  return JSON.stringify(normalize(value))
+}
+
 function receiptHashOf(receipt: Omit<StageReceipt, 'receiptHash'> & { receiptHash?: string }): string {
   const body = {
     receiptId: receipt.receiptId,
@@ -495,7 +515,7 @@ function receiptHashOf(receipt: Omit<StageReceipt, 'receiptHash'> & { receiptHas
     verdict: receipt.verdict ?? null,
     issuedAt: receipt.issuedAt,
   }
-  return createHash('sha256').update(JSON.stringify(body)).digest('hex')
+  return createHash('sha256').update(stableJsonStringify(body)).digest('hex')
 }
 
 export function computeStageReceiptHash(
