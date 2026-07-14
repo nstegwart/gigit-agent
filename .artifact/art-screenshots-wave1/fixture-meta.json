@@ -1,0 +1,21 @@
+{
+  "S18": {
+    "method": "Playwright document+_serverFn rewrite: SSR stale:!1\u2192stale:!0, freshnessAgeSeconds:0\u219299999, staleReason string; seroval special-ref false(s:3)\u2192true(s:2) on client refetch",
+    "payloadHash": "1ffafdda50c6c8cd580e919c9ccb0be49f42164168cb84d8c1ffd46ce28dba73",
+    "mutations": 2
+  },
+  "S20": {
+    "method": "Playwright _serverFn: force top-level result.error={code:ART_S20_FORCED_ERROR,message} + surfaceState=error (seroval object node); HTTP 200",
+    "payloadHash": "20e2cc1f04bf405b069ecca84473aadbdeb80228a7120d587ab348fb632d8cc7",
+    "mutations": 3,
+    "hashes": [
+      "16d236a09952ba028e1b7be79e3a68d6f1dd523d651eb562d9b429a666368895",
+      "adff8c48684182fe2513c9a0676f993360d5d60411f57efebdd46afabb71e4b2",
+      "d444a757ae07331a895d43846afd3f8846b8235e8246d06a075688bf7d92bde3"
+    ]
+  },
+  "S19": {
+    "method": "Playwright route: delay fetch/xhr by 15s during work navigation; screenshot at t\u22481.5s (skeleton visible)",
+    "payloadHash": "4a9aba72d91992b653a7256d6496228f0f5285cc5f6d7049168353452c6ec72f"
+  }
+}
