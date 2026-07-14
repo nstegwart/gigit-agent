@@ -1,7 +1,7 @@
 // Control-center Decisions inbox — pinned decisions envelope for CC boards.
 // Owner actions wire to authenticated DecisionV3 mutators (ack/resolve/reject/snooze).
 // Non-CC boards keep legacy collab DecidePanel / DecisionCard surfaces.
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useStore } from '@tanstack/react-store'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createServerFn } from '@tanstack/react-start'
@@ -377,6 +377,7 @@ function View() {
 function ControlCenterDecisions() {
   const boardId = useBoardId()
   const search = Route.useSearch()
+  const navigate = useNavigate({ from: '/b/$boardId/decisions' })
   const qc = useQueryClient()
   const canAct = useCanEdit()
   const fetchers = getDefaultControlCenterFetchers()
@@ -396,6 +397,15 @@ function ControlCenterDecisions() {
   const onRetry = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['control-center', 'decisions', boardId] })
   }, [qc, boardId])
+
+  const onNextPage = useCallback(() => {
+    const next = q.data?.nextCursor
+    if (!next) return
+    void navigate({
+      search: (prev) => ({ ...prev, cursor: next }),
+      replace: true,
+    })
+  }, [navigate, q.data?.nextCursor])
 
   const clearActionError = useCallback((decisionId: string) => {
     setActionErrors((prev) => {
@@ -569,6 +579,23 @@ function ControlCenterDecisions() {
         actions={canAct ? actions : undefined}
         liveMessage={liveMessage ?? props.liveMessage}
       />
+      {props.nextCursor ? (
+        <div
+          className="sec-head"
+          style={{ marginTop: 12, gap: 8, alignItems: 'center' }}
+          data-testid="decisions-next-page-bar"
+        >
+          <span className="desc">More pages available (server cursor)</span>
+          <button
+            type="button"
+            className="btn"
+            onClick={onNextPage}
+            data-testid="decisions-next-page"
+          >
+            Next page
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -35,6 +35,62 @@ function ProjectionGapDisclosure({ projectionGaps }: { projectionGaps: string[] 
   )
 }
 
+const CONTEXT_FIELDS: Array<{
+  key: keyof Pick<
+    FeatureRowView,
+    | 'pageRoutes'
+    | 'apiEndpoints'
+    | 'logicRules'
+    | 'dataContext'
+    | 'geoVariants'
+    | 'providerVariants'
+    | 'sideEffectsReadback'
+    | 'styleContext'
+  >
+  label: string
+}> = [
+  { key: 'pageRoutes', label: 'routes' },
+  { key: 'apiEndpoints', label: 'api' },
+  { key: 'logicRules', label: 'rules' },
+  { key: 'dataContext', label: 'data' },
+  { key: 'geoVariants', label: 'geo' },
+  { key: 'providerVariants', label: 'provider' },
+  { key: 'sideEffectsReadback', label: 'readback' },
+  { key: 'styleContext', label: 'style' },
+]
+
+function FeatureContextChips({ row }: { row: FeatureRowView }) {
+  const groups = CONTEXT_FIELDS.map(({ key, label }) => ({
+    key,
+    label,
+    values: row[key],
+  })).filter((g) => g.values.length > 0)
+
+  if (groups.length === 0) {
+    return (
+      <span className={styles.chip} data-testid="feature-context-empty" data-field="context">
+        no flow context
+      </span>
+    )
+  }
+
+  return (
+    <div className={styles.summaryStrip} data-testid="feature-context" data-field="context">
+      {groups.map((g) => (
+        <span
+          key={g.key}
+          className={styles.chip}
+          data-context-kind={g.key}
+          title={g.values.join(', ')}
+        >
+          {g.label} <strong>{g.values.length}</strong>
+          <span className="sr-only">: {g.values.join(', ')}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
 function FeatureCard({ row }: { row: FeatureRowView }) {
   return (
     <li
@@ -68,6 +124,7 @@ function FeatureCard({ row }: { row: FeatureRowView }) {
           </dd>
         </div>
       </dl>
+      <FeatureContextChips row={row} />
       <a className={styles.linkBtn} href={row.detailHref} data-testid="feature-detail-link">
         Open feature
       </a>
@@ -140,13 +197,13 @@ export function FeaturesScreen({
 
       <header className={styles.pageHead}>
         <div>
-          <p className={styles.eyebrow}>Mission Q5</p>
+          <p className={styles.eyebrow}>IA · Features / Flows</p>
           <h1 id="features-page-title" className={styles.pageTitle}>
             Features
           </h1>
           <p className={styles.pageSub}>
-            Server feature summaries with flow branch context (success / fail / expired / open).
-            Detail routes remain available.
+            Server feature summaries with flow branch and route/API/rule/data/geo/provider/readback
+            context when present. Detail routes remain available.
           </p>
         </div>
         <div className={styles.summaryStrip}>
@@ -230,6 +287,7 @@ export function FeaturesScreen({
                   <th scope="col">Phase</th>
                   <th scope="col">Project</th>
                   <th scope="col">Tasks</th>
+                  <th scope="col">Context</th>
                   <th scope="col">
                     <span className="sr-only">Open</span>
                   </th>
@@ -259,6 +317,9 @@ export function FeaturesScreen({
                       )}
                     </td>
                     <td className={styles.metric}>{row.taskCount}</td>
+                    <td>
+                      <FeatureContextChips row={row} />
+                    </td>
                     <td>
                       <a
                         className={styles.linkBtn}

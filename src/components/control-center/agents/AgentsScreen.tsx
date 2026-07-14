@@ -163,9 +163,57 @@ function OngoingCard({ row }: { row: AgentOngoingRowView }) {
   )
 }
 
+function RunOwnershipCell({ row }: { row: AgentRunRowView }) {
+  const locksLabel =
+    row.lockIds.length === 0 ? '—' : row.lockIds.length <= 2
+      ? row.lockIds.join(', ')
+      : `${row.lockIds.slice(0, 2).join(', ')} +${row.lockIds.length - 2}`
+  return (
+    <div
+      className={styles.metaChips}
+      data-testid="agent-run-ownership"
+      data-claim-state={row.claimState ?? 'none'}
+      data-lock-count={row.lockIds.length}
+      data-controller-run-id={row.controllerRunId ?? undefined}
+      data-parent-run-id={row.parentRunId ?? undefined}
+    >
+      <span className={styles.metaChip} data-field="claim-state" title={row.claimState ?? undefined}>
+        claim <strong>{row.claimState ?? '—'}</strong>
+      </span>
+      <span
+        className={`${styles.metaChip} ${styles.metaChipMono}`}
+        data-field="lock-ids"
+        title={row.lockIds.length ? row.lockIds.join(', ') : undefined}
+      >
+        locks {locksLabel}
+      </span>
+      <span
+        className={`${styles.metaChip} ${styles.metaChipMono}`}
+        data-field="controller-run-id"
+        title={row.controllerRunId ?? undefined}
+      >
+        ctrl {row.controllerRunId ?? '—'}
+      </span>
+      <span
+        className={`${styles.metaChip} ${styles.metaChipMono}`}
+        data-field="parent-run-id"
+        title={row.parentRunId ?? undefined}
+      >
+        parent {row.parentRunId ?? '—'}
+      </span>
+    </div>
+  )
+}
+
 function RunRowDesktop({ row }: { row: AgentRunRowView }) {
   return (
-    <tr data-testid="agent-run-row" data-run-id={row.runId}>
+    <tr
+      data-testid="agent-run-row"
+      data-run-id={row.runId}
+      data-claim-state={row.claimState ?? 'none'}
+      data-controller-run-id={row.controllerRunId ?? undefined}
+      data-parent-run-id={row.parentRunId ?? undefined}
+    >
       <td>
         <IdText value={row.runId} />
       </td>
@@ -198,6 +246,9 @@ function RunRowDesktop({ row }: { row: AgentRunRowView }) {
         <ProductiveBadge state={row.productiveSubstate} />
       </td>
       <td>
+        <RunOwnershipCell row={row} />
+      </td>
+      <td>
         <TimeText value={row.startedAt} />
       </td>
       <td>
@@ -212,7 +263,14 @@ function RunRowDesktop({ row }: { row: AgentRunRowView }) {
 
 function RunCardMobile({ row }: { row: AgentRunRowView }) {
   return (
-    <li className={styles.card} data-testid="agent-run-card" data-run-id={row.runId}>
+    <li
+      className={styles.card}
+      data-testid="agent-run-card"
+      data-run-id={row.runId}
+      data-claim-state={row.claimState ?? 'none'}
+      data-controller-run-id={row.controllerRunId ?? undefined}
+      data-parent-run-id={row.parentRunId ?? undefined}
+    >
       <IdText value={row.runId} />
       <ProductiveBadge state={row.productiveSubstate} />
       <div className={styles.metaChips}>
@@ -236,6 +294,7 @@ function RunCardMobile({ row }: { row: AgentRunRowView }) {
           {row.maskedAccount}
         </span>
       </div>
+      <RunOwnershipCell row={row} />
       <dl className={styles.cardMeta}>
         <div>
           <dt>Task</dt>
@@ -343,13 +402,14 @@ export function AgentsScreen({
 
       <header className={styles.pageHead}>
         <div>
-          <p className={styles.eyebrow}>Mission Q2 / Q6</p>
+          <p className={styles.eyebrow}>Mission Q2</p>
           <h1 id="agents-page-title" className={styles.pageTitle}>
             Agents / Runs
           </h1>
           <p className={styles.pageSub}>
-            Zero-click ONGOING ownership and run inventory from the pinned envelope. Stall order
-            is server-defined — not recomputed here.
+            Zero-click ONGOING ownership and run inventory from the pinned envelope, including
+            claim / locks / controller / parent when the server projects them. Stall order is
+            server-defined — not recomputed here.
           </p>
         </div>
         <div className={styles.summaryStrip}>
@@ -459,6 +519,7 @@ export function AgentsScreen({
                 <col className={styles.colAccount} />
                 <col className={styles.colStatus} />
                 <col className={styles.colState} />
+                <col className={styles.colOwnership} />
                 <col className={styles.colTime} />
                 <col className={styles.colTime} />
                 <col className={styles.colTime} />
@@ -474,6 +535,7 @@ export function AgentsScreen({
                   <th scope="col">Account</th>
                   <th scope="col">Status</th>
                   <th scope="col">State</th>
+                  <th scope="col">Ownership</th>
                   <th scope="col">Started</th>
                   <th scope="col">Heartbeat</th>
                   <th scope="col">Material</th>

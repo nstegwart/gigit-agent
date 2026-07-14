@@ -97,6 +97,24 @@ function pinView(
   }
 }
 
+/** Pass-through string lists from server — never invent entries. */
+export function asServerStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+}
+
+function asNullableNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function asNullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function asNullableBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
+}
+
 // ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
@@ -141,6 +159,10 @@ export function projectsEnvelopeToProps(
     taskCount: p.taskCount,
     doneCount: p.doneCount,
     blockedCount: p.blockedCount,
+    // Server enrichment only — null when no proven PRODUCT stage (never fake 0/100).
+    readinessPercent: asNullableNumber(p.readinessPercent),
+    readinessStage: asNullableString(p.readinessStage),
+    readinessEvidenceOk: asNullableBoolean(p.readinessEvidenceOk),
     detailHref: projectDetailHref(envelope.boardId, p.id),
   }))
 
@@ -154,9 +176,8 @@ export function projectsEnvelopeToProps(
     error: envelope.error
       ? { code: envelope.error.code, message: envelope.error.message }
       : null,
-    projectionGaps: [
-      'per-project readiness percent not on ProjectsData (server summary counts only)',
-    ],
+    // Readiness fields now wired from ProjectUiSummary — no false "missing" gap.
+    projectionGaps: [],
     onRetry: opts.onRetry,
     onRefresh: opts.onRefresh,
   }
@@ -216,6 +237,15 @@ export function featuresEnvelopeToProps(
     projectHref: f.projectId
       ? projectDetailHref(envelope.boardId, f.projectId)
       : null,
+    // Feature flow context — empty arrays when server omits / nulls (never invent).
+    pageRoutes: asServerStringList(f.pageRoutes),
+    apiEndpoints: asServerStringList(f.apiEndpoints),
+    logicRules: asServerStringList(f.logicRules),
+    dataContext: asServerStringList(f.dataContext),
+    geoVariants: asServerStringList(f.geoVariants),
+    providerVariants: asServerStringList(f.providerVariants),
+    sideEffectsReadback: asServerStringList(f.sideEffectsReadback),
+    styleContext: asServerStringList(f.styleContext),
   }))
 
   return {
@@ -352,6 +382,11 @@ export function agentsEnvelopeToProps(
     materialProgressAt: r.materialProgressAt,
     productiveSubstate: r.productiveSubstate,
     taskHref: r.taskId ? taskDetailHref(boardId, r.taskId) : null,
+    // Durable ownership fields from RunUiSummary — null/empty when absent.
+    claimState: asNullableString(r.claimState),
+    lockIds: asServerStringList(r.lockIds),
+    controllerRunId: asNullableString(r.controllerRunId),
+    parentRunId: asNullableString(r.parentRunId),
   }))
 
   return {

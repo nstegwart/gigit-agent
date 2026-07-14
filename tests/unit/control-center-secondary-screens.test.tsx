@@ -113,6 +113,9 @@ describe('projectsEnvelopeToProps + ProjectsScreen', () => {
         taskCount: 10,
         doneCount: 3,
         blockedCount: 1,
+        readinessPercent: 62.5,
+        readinessStage: 'G4',
+        readinessEvidenceOk: true,
       },
       {
         id: 'p-ops',
@@ -121,6 +124,9 @@ describe('projectsEnvelopeToProps + ProjectsScreen', () => {
         taskCount: 4,
         doneCount: 0,
         blockedCount: 2,
+        readinessPercent: null,
+        readinessStage: null,
+        readinessEvidenceOk: null,
       },
     ],
     productDenominator: 14,
@@ -135,9 +141,14 @@ describe('projectsEnvelopeToProps + ProjectsScreen', () => {
     expect(props.projects.map((p) => p.projectId)).toEqual(['p-sales', 'p-ops'])
     expect(props.projects[0].detailHref).toBe('/b/mfs-rebuild/projects/p-sales')
     expect(props.productDenominator).toBe(14)
+    expect(props.projects[0].readinessPercent).toBe(62.5)
+    expect(props.projects[0].readinessStage).toBe('G4')
+    expect(props.projects[0].readinessEvidenceOk).toBe(true)
+    expect(props.projects[1].readinessPercent).toBeNull()
+    expect(props.projectionGaps).toEqual([])
   })
 
-  it('renders table + pin + detail links + reflow attr', () => {
+  it('renders table + pin + detail links + reflow attr + readiness fields', () => {
     const props = projectsEnvelopeToProps(basePin(data))
     render(<ProjectsScreen {...props} />)
     const root = screen.getByTestId('control-center-projects')
@@ -154,10 +165,19 @@ describe('projectsEnvelopeToProps + ProjectsScreen', () => {
     expect(screen.getByTestId('projects-pin').getAttribute('data-board-rev')).toBe('12')
     const rows = screen.getAllByTestId('project-row')
     expect(rows.map((r) => r.getAttribute('data-project-id'))).toEqual(['p-sales', 'p-ops'])
+    expect(rows[0].getAttribute('data-readiness-percent')).toBe('62.5')
+    expect(rows[0].getAttribute('data-readiness-stage')).toBe('G4')
+    expect(rows[0].getAttribute('data-readiness-evidence-ok')).toBe('true')
+    expect(within(rows[0]).getByText('62.5%')).toBeTruthy()
+    expect(within(rows[0]).getByText('G4')).toBeTruthy()
+    expect(within(rows[0]).getByText('ok')).toBeTruthy()
     const links = screen.getAllByTestId('project-detail-link')
     expect(links.some((a) => a.getAttribute('href') === '/b/mfs-rebuild/projects/p-sales')).toBe(
       true,
     )
+    // Honest eyebrow: Projects is not Mission Q2–Q4 primary.
+    expect(root.textContent).toMatch(/IA · Projects/)
+    expect(root.textContent).not.toMatch(/Mission Q2–Q4/)
   })
 
   it('shows honest empty state', () => {
@@ -204,6 +224,14 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
         phase: 'build',
         flowBranch: 'open',
         taskCount: 5,
+        pageRoutes: ['/checkout', '/cart'],
+        apiEndpoints: ['POST /pay'],
+        logicRules: ['must-auth'],
+        dataContext: ['orders.total'],
+        geoVariants: ['US', 'ID'],
+        providerVariants: ['xendit'],
+        sideEffectsReadback: ['webhook.paid'],
+        styleContext: null,
       },
       {
         id: 'f-2',
@@ -217,25 +245,43 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
     pageSize: 50,
   }
 
-  it('preserves item order and detail links', () => {
+  it('preserves item order and detail links + flow context fields', () => {
     const props = featuresEnvelopeToProps(basePin(data, { nextCursor: 'cur-2' }))
     expect(props.features.map((f) => f.featureId)).toEqual(['f-1', 'f-2'])
     expect(props.features[0].detailHref).toBe('/b/mfs-rebuild/features/f-1')
     expect(props.nextCursor).toBe('cur-2')
+    expect(props.features[0].pageRoutes).toEqual(['/checkout', '/cart'])
+    expect(props.features[0].apiEndpoints).toEqual(['POST /pay'])
+    expect(props.features[0].logicRules).toEqual(['must-auth'])
+    expect(props.features[0].dataContext).toEqual(['orders.total'])
+    expect(props.features[0].geoVariants).toEqual(['US', 'ID'])
+    expect(props.features[0].providerVariants).toEqual(['xendit'])
+    expect(props.features[0].sideEffectsReadback).toEqual(['webhook.paid'])
+    expect(props.features[0].styleContext).toEqual([])
+    expect(props.features[1].pageRoutes).toEqual([])
   })
 
-  it('renders flow branch + responsive structure', () => {
+  it('renders flow branch + context chips + responsive structure', () => {
     render(<FeaturesScreen {...featuresEnvelopeToProps(basePin(data))} />)
     const root = screen.getByTestId('control-center-features')
     expect(root.getAttribute('data-reflow-breakpoint')).toBe('768')
     const rows = screen.getAllByTestId('feature-row')
     expect(rows[0].getAttribute('data-flow-branch')).toBe('open')
     expect(rows[1].getAttribute('data-flow-branch')).toBe('fail')
+    const ctx = within(rows[0]).getAllByTestId('feature-context')
+    expect(ctx.length).toBeGreaterThan(0)
+    expect(ctx[0].textContent).toMatch(/routes/)
+    expect(ctx[0].textContent).toMatch(/api/)
+    expect(ctx[0].textContent).toMatch(/geo/)
+    expect(within(rows[1]).getByTestId('feature-context-empty')).toBeTruthy()
     expect(
       screen.getAllByTestId('feature-detail-link').some(
         (a) => a.getAttribute('href') === '/b/mfs-rebuild/features/f-2',
       ),
     ).toBe(true)
+    // Q5 is BLOCKED; Features is IA portfolio, not Mission Q5.
+    expect(root.textContent).toMatch(/IA · Features \/ Flows/)
+    expect(root.textContent).not.toMatch(/Mission Q5/)
   })
 
   it('surfaces projection gaps via details disclosure and count', () => {
@@ -300,6 +346,10 @@ describe('agentsEnvelopeToProps + AgentsScreen', () => {
         productiveSubstate: 'STALLED',
         createdAt: '2026-07-13T11:00:00.000Z',
         id: 'run-1',
+        claimState: 'VALID_CURRENT',
+        lockIds: ['lock-a', 'lock-b'],
+        controllerRunId: 'ctrl-1',
+        parentRunId: 'parent-0',
       },
       {
         runId: 'run-2',
@@ -316,6 +366,10 @@ describe('agentsEnvelopeToProps + AgentsScreen', () => {
         productiveSubstate: 'PRODUCTIVE',
         createdAt: '2026-07-13T10:00:00.000Z',
         id: 'run-2',
+        claimState: null,
+        lockIds: null,
+        controllerRunId: null,
+        parentRunId: null,
       },
     ],
     pageSize: 50,
@@ -343,9 +397,17 @@ describe('agentsEnvelopeToProps + AgentsScreen', () => {
     ],
   }
 
-  it('does not re-sort runs (server order preserved)', () => {
+  it('does not re-sort runs (server order preserved) and maps ownership fields', () => {
     const props = agentsEnvelopeToProps(basePin(data))
     expect(props.runs.map((r) => r.runId)).toEqual(['run-1', 'run-2'])
+    expect(props.runs[0].claimState).toBe('VALID_CURRENT')
+    expect(props.runs[0].lockIds).toEqual(['lock-a', 'lock-b'])
+    expect(props.runs[0].controllerRunId).toBe('ctrl-1')
+    expect(props.runs[0].parentRunId).toBe('parent-0')
+    expect(props.runs[1].claimState).toBeNull()
+    expect(props.runs[1].lockIds).toEqual([])
+    expect(props.runs[1].controllerRunId).toBeNull()
+    expect(props.runs[1].parentRunId).toBeNull()
   })
 
   it('empty paginated items must NOT fall back to full runs list', () => {
@@ -371,10 +433,23 @@ describe('agentsEnvelopeToProps + AgentsScreen', () => {
     expect(within(ongoing).getByText(/Evidence/)).toBeTruthy()
   })
 
-  it('run rows keep server order in DOM', () => {
+  it('run rows keep server order in DOM and expose claim/locks/controller/parent', () => {
     render(<AgentsScreen {...agentsEnvelopeToProps(basePin(data))} />)
+    const root = screen.getByTestId('control-center-agents')
     const runs = screen.getAllByTestId('agent-run-row')
     expect(runs.map((r) => r.getAttribute('data-run-id'))).toEqual(['run-1', 'run-2'])
+    expect(runs[0].getAttribute('data-claim-state')).toBe('VALID_CURRENT')
+    expect(runs[0].getAttribute('data-controller-run-id')).toBe('ctrl-1')
+    expect(runs[0].getAttribute('data-parent-run-id')).toBe('parent-0')
+    const ownership = within(runs[0]).getByTestId('agent-run-ownership')
+    expect(ownership.getAttribute('data-lock-count')).toBe('2')
+    expect(ownership.textContent).toMatch(/VALID_CURRENT/)
+    expect(ownership.textContent).toMatch(/lock-a/)
+    expect(ownership.textContent).toMatch(/ctrl-1/)
+    expect(ownership.textContent).toMatch(/parent-0/)
+    // Q6 is Decisions; Agents is Mission Q2 only.
+    expect(root.textContent).toMatch(/Mission Q2/)
+    expect(root.textContent).not.toMatch(/Mission Q2 \/ Q6/)
   })
 
   it('renders projection gaps as native details with count label', () => {

@@ -38,6 +38,16 @@ export interface FeatureRowView {
   taskCount: number
   detailHref: string
   projectHref: string | null
+  /** Server-derived flow context — empty when source truth absent (never invent). */
+  pageRoutes: string[]
+  apiEndpoints: string[]
+  logicRules: string[]
+  dataContext: string[]
+  geoVariants: string[]
+  providerVariants: string[]
+  sideEffectsReadback: string[]
+  /** Always empty when projector has no style source (honest null → []). */
+  styleContext: string[]
 }
 
 export interface FeaturesScreenProps {

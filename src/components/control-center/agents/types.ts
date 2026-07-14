@@ -62,6 +62,12 @@ export interface AgentRunRowView {
   materialProgressAt: string | null
   productiveSubstate: ProductiveSubstateView
   taskHref: string | null
+  /** Server claim authority when present on RunUiSummary. */
+  claimState: string | null
+  /** Collision-scope lock ids from durable ownership (never invent). */
+  lockIds: string[]
+  controllerRunId: string | null
+  parentRunId: string | null
 }
 
 export interface AgentsScreenProps {

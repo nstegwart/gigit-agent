@@ -34,6 +34,18 @@ export interface ProjectRowView {
   taskCount: number
   doneCount: number
   blockedCount: number
+  /**
+   * Server mean readiness over PRODUCT tasks with proven stage (null = no proof).
+   * Never client-computed.
+   */
+  readinessPercent: number | null
+  /** Server highest-weight proven lifecycle stage; null without proof. */
+  readinessStage: string | null
+  /**
+   * true when every readiness-eligible PRODUCT task has pin-bound stage evidence;
+   * false when any lacks evidence; null when no eligible tasks.
+   */
+  readinessEvidenceOk: boolean | null
   /** Legacy detail route — must keep working. */
   detailHref: string
 }

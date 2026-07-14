@@ -238,7 +238,7 @@
   width: 100%;
   border-collapse: collapse;
   /* Horizontal scroll lives on .tableWrap; preserve full-width readable columns. */
-  min-width: 92rem;
+  min-width: 108rem;
   table-layout: fixed;
 }
 
@@ -277,6 +277,7 @@
 .colAccount { width: 6.5rem; }
 .colStatus { width: 6.5rem; }
 .colState { width: 7.5rem; }
+.colOwnership { width: 14rem; }
 .colTime { width: 8.5rem; }
 
 .idCell {

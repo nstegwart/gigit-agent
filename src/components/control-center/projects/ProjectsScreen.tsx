@@ -32,12 +32,27 @@ function ProjectionGapDisclosure({ projectionGaps }: { projectionGaps: string[] 
   )
 }
 
+function formatReadinessPercent(value: number | null): string {
+  return value == null ? '—' : `${value}%`
+}
+
+function formatEvidenceOk(value: boolean | null): string {
+  if (value === true) return 'ok'
+  if (value === false) return 'gap'
+  return '—'
+}
+
 function ProjectCard({ row }: { row: ProjectRowView }) {
   return (
     <li
       className={styles.card}
       data-testid="project-card"
       data-project-id={row.projectId}
+      data-readiness-percent={row.readinessPercent ?? undefined}
+      data-readiness-stage={row.readinessStage ?? undefined}
+      data-readiness-evidence-ok={
+        row.readinessEvidenceOk == null ? undefined : String(row.readinessEvidenceOk)
+      }
     >
       <div className={styles.idCell}>{row.projectId}</div>
       <div className={styles.nameCell}>{row.name}</div>
@@ -56,6 +71,22 @@ function ProjectCard({ row }: { row: ProjectRowView }) {
         <div>
           <dt>Blocked</dt>
           <dd className={styles.metric}>{row.blockedCount}</dd>
+        </div>
+        <div>
+          <dt>Ready</dt>
+          <dd className={styles.metric} data-field="readiness-percent">
+            {formatReadinessPercent(row.readinessPercent)}
+          </dd>
+        </div>
+        <div>
+          <dt>Stage</dt>
+          <dd data-field="readiness-stage">{row.readinessStage ?? '—'}</dd>
+        </div>
+        <div>
+          <dt>Evidence</dt>
+          <dd data-field="readiness-evidence-ok">
+            {formatEvidenceOk(row.readinessEvidenceOk)}
+          </dd>
         </div>
       </dl>
       <a className={styles.linkBtn} href={row.detailHref} data-testid="project-detail-link">
@@ -129,13 +160,14 @@ export function ProjectsScreen({
 
       <header className={styles.pageHead}>
         <div>
-          <p className={styles.eyebrow}>Mission Q2–Q4</p>
+          <p className={styles.eyebrow}>IA · Projects</p>
           <h1 id="projects-page-title" className={styles.pageTitle}>
             Projects
           </h1>
           <p className={styles.pageSub}>
-            Server-derived project summaries from the pinned control-center envelope. Readiness is
-            not recomputed in the browser.
+            Server-derived project summaries from the pinned control-center envelope, including
+            readiness percent / stage / evidence when the projector proves them. Not recomputed in
+            the browser.
           </p>
         </div>
         <div className={styles.summaryStrip}>
@@ -238,6 +270,9 @@ export function ProjectsScreen({
                   <th scope="col">Tasks</th>
                   <th scope="col">Done</th>
                   <th scope="col">Blocked</th>
+                  <th scope="col">Ready</th>
+                  <th scope="col">Stage</th>
+                  <th scope="col">Evidence</th>
                   <th scope="col">
                     <span className="sr-only">Open</span>
                   </th>
@@ -245,7 +280,18 @@ export function ProjectsScreen({
               </thead>
               <tbody>
                 {projects.map((row) => (
-                  <tr key={row.projectId} data-testid="project-row" data-project-id={row.projectId}>
+                  <tr
+                    key={row.projectId}
+                    data-testid="project-row"
+                    data-project-id={row.projectId}
+                    data-readiness-percent={row.readinessPercent ?? undefined}
+                    data-readiness-stage={row.readinessStage ?? undefined}
+                    data-readiness-evidence-ok={
+                      row.readinessEvidenceOk == null
+                        ? undefined
+                        : String(row.readinessEvidenceOk)
+                    }
+                  >
                     <td className={styles.idCell}>{row.projectId}</td>
                     <td className={styles.nameCell}>{row.name}</td>
                     <td>
@@ -254,6 +300,13 @@ export function ProjectsScreen({
                     <td className={styles.metric}>{row.taskCount}</td>
                     <td className={styles.metric}>{row.doneCount}</td>
                     <td className={styles.metric}>{row.blockedCount}</td>
+                    <td className={styles.metric} data-field="readiness-percent">
+                      {formatReadinessPercent(row.readinessPercent)}
+                    </td>
+                    <td data-field="readiness-stage">{row.readinessStage ?? '—'}</td>
+                    <td data-field="readiness-evidence-ok">
+                      {formatEvidenceOk(row.readinessEvidenceOk)}
+                    </td>
                     <td>
                       <a
                         className={styles.linkBtn}

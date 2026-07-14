@@ -1,6 +1,6 @@
 // Control-center Evidence / Audit — material events from pinned aggregation.
 // Existing /log remains the compatibility activity timeline.
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 
@@ -33,6 +33,7 @@ export const Route = createFileRoute('/b/$boardId/evidence')({
 function EvidenceRoute() {
   const boardId = useBoardId()
   const search = Route.useSearch()
+  const navigate = useNavigate({ from: '/b/$boardId/evidence' })
   const qc = useQueryClient()
   const fetchers = getDefaultControlCenterFetchers()
   const q = useQuery(
@@ -46,6 +47,15 @@ function EvidenceRoute() {
   const onRetry = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['control-center', 'evidence', boardId] })
   }, [qc, boardId])
+
+  const onNextPage = useCallback(() => {
+    const next = q.data?.nextCursor
+    if (!next) return
+    void navigate({
+      search: (prev) => ({ ...prev, cursor: next }),
+      replace: true,
+    })
+  }, [navigate, q.data?.nextCursor])
 
   const vm = evidenceEnvelopeToViewModel(q.data)
   const loading = q.isLoading && !q.data
@@ -142,9 +152,21 @@ function EvidenceRoute() {
         </ul>
 
         {vm.nextCursor ? (
-          <p className="desc" data-testid="evidence-next-cursor">
-            More pages available (server cursor) — deep-link with <code>?cursor=…</code>
-          </p>
+          <div
+            className="sec-head"
+            style={{ marginTop: 12, gap: 8, alignItems: 'center' }}
+            data-testid="evidence-next-cursor"
+          >
+            <span className="desc">More pages available (server cursor)</span>
+            <button
+              type="button"
+              className="btn"
+              onClick={onNextPage}
+              data-testid="evidence-next-page"
+            >
+              Next page
+            </button>
+          </div>
         ) : null}
       </section>
     </div>
