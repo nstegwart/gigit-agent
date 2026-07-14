@@ -603,6 +603,7 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
     expect(names).not.toContain('publish_dispatch_plan')
     expect(names).not.toContain('sync_accounts')
     expect(names).not.toContain('register_run')
+    expect(names).not.toContain('terminate_run')
     expect(names).not.toContain('submit_stage_evidence')
 
     // Invocation recheck: OWNER_EVIDENCE_IMPERSONATION via authorize path if registered
@@ -630,6 +631,30 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
       expect(reg.json?.error || reg.json?.result?.isError || reg.status >= 400).toBeTruthy()
     }
     assertNoSecretLeak(reg.rawText)
+
+    const term = await mcpRpc(
+      toolCall('terminate_run', {
+        boardId: BOARD,
+        runId: 'r1',
+        agentId: 'agent-x',
+        fencingToken: 'ft',
+        toState: 'SUCCEEDED',
+        reason: 'owner-deny',
+        expectedEntityRev: 0,
+        expectedBoardRev: 0,
+        idempotencyKey: 'idem-owner-term',
+      }),
+      bearerHeaders(TOKENS.OWNER),
+    )
+    const termPayload = parseToolPayload(term.json)
+    if (termPayload?.code) {
+      expect(termPayload.code).toMatch(
+        /OWNER_EVIDENCE_IMPERSONATION_DENIED|AUTHORIZATION_REQUIRED|FORBIDDEN/,
+      )
+    } else {
+      expect(term.json?.error || term.json?.result?.isError || term.status >= 400).toBeTruthy()
+    }
+    assertNoSecretLeak(term.rawText)
   })
 
   it('ROOT_ORCHESTRATOR: dispatch/sync listed; resolve_decision and set_prod denied', async () => {
@@ -667,6 +692,7 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
     const names = toolNamesFromList(list.json)
     expect(names).toContain('register_run')
     expect(names).toContain('heartbeat_run')
+    expect(names).toContain('terminate_run')
     expect(names).toContain('submit_stage_evidence')
     expect(names).not.toContain('list_accounts')
     expect(names).not.toContain('list_audit')
@@ -690,6 +716,20 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
     )
     expect(deny.ok).toBe(false)
     expect(deny.code).toBe('OWN_RUN_ONLY')
+    const denyTerm = authorizeToolCall(
+      {
+        actorId: 'agent-mcp-auth',
+        role: 'AGENT',
+        scopes: defaultScopesForRole('AGENT'),
+        channel: 'bearer',
+        boards: [],
+        agentId: 'agent-mcp-auth',
+      },
+      'terminate_run',
+      { agentId: 'other-agent' },
+    )
+    expect(denyTerm.ok).toBe(false)
+    expect(denyTerm.code).toBe('OWN_RUN_ONLY')
 
     const call = await mcpRpc(
       toolCall('list_accounts', { boardId: BOARD }),

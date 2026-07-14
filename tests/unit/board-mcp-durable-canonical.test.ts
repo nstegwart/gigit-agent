@@ -376,15 +376,15 @@ describe('legacy mutation envelope hardening (AC-API-03)', () => {
     }
   })
 
-  it('exhaustive registered-write matrix: all 41 catalog writes including 9 V3 + submit_stage_evidence', () => {
+  it('exhaustive registered-write matrix: all 42 catalog writes including 10 V3 + submit_stage_evidence', () => {
     const server = new McpServer({ name: 'write-matrix', version: '0.0.0' })
     registerBoardTools(server, authRoot())
     const writes = listRegisteredWriteToolSchemas()
     const names = new Set(writes.map((w) => w.name))
 
-    // Catalog constant must be exactly 41 (40 legacy/V3 + submit_stage_evidence)
-    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(41)
-    expect(writes).toHaveLength(41)
+    // Catalog constant must be exactly 42 (legacy/V3 + submit_stage_evidence + terminate_run)
+    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(42)
+    expect(writes).toHaveLength(42)
 
     const missing = REGISTERED_WRITE_TOOL_NAMES.filter((n) => !names.has(n))
     const extra = writes.map((w) => w.name).filter((n) => !(REGISTERED_WRITE_TOOL_NAMES as readonly string[]).includes(n))
@@ -395,6 +395,7 @@ describe('legacy mutation envelope hardening (AC-API-03)', () => {
       'publish_dispatch_plan',
       'register_run',
       'heartbeat_run',
+      'terminate_run',
       'sync_accounts',
       'reconcile_dry_run',
       'reconcile_apply',
@@ -2646,16 +2647,17 @@ describe('LIFECYCLE V3 product wiring (advance_task → advanceTaskV3)', () => {
 })
 
 /**
- * Behavioral runtime negatives for the nine V3 domain-owned write handlers.
+ * Behavioral runtime negatives for the ten V3 domain-owned write handlers.
  * Schema-only checks are insufficient — each domain path must reject missing CAS
  * fields and pin-hash mismatch without silent defaults.
  */
-describe('nine V3 handlers: runtime CAS + pin-hash negatives (not schema-only)', () => {
+describe('ten V3 handlers: runtime CAS + pin-hash negatives (not schema-only)', () => {
   const PIN = 'b'.repeat(64)
-  const V3_NINE = [
+  const V3_TEN = [
     'publish_dispatch_plan',
     'register_run',
     'heartbeat_run',
+    'terminate_run',
     'sync_accounts',
     'reconcile_dry_run',
     'reconcile_apply',
@@ -2664,20 +2666,20 @@ describe('nine V3 handlers: runtime CAS + pin-hash negatives (not schema-only)',
     'integration_lock',
   ] as const
 
-  it('catalog names the exact nine V3 handlers with full envelope schema', () => {
+  it('catalog names the exact ten V3 handlers with full envelope schema', () => {
     const server = new McpServer({ name: 'v3-neg', version: '0.0.0' })
     registerBoardTools(server, authRoot())
     const writes = listRegisteredWriteToolSchemas()
-    for (const name of V3_NINE) {
+    for (const name of V3_TEN) {
       const row = writes.find((w) => w.name === name)
       expect(row, name).toBeTruthy()
       expect(writeToolSchemaHasFullEnvelope(row!.schemaKeys), name).toBe(true)
     }
-    expect(V3_NINE).toHaveLength(9)
+    expect(V3_TEN).toHaveLength(10)
   })
 
-  it('assertMutationEnvelopeOrThrow rejects missing CAS fields and pin mismatch for all nine', async () => {
-    for (const tool of V3_NINE) {
+  it('assertMutationEnvelopeOrThrow rejects missing CAS fields and pin mismatch for all ten', async () => {
+    for (const tool of V3_TEN) {
       await expect(
         assertMutationEnvelopeOrThrow(
           { expectedBoardRev: 0, canonicalHash: PIN, idempotencyKey: `k-${tool}` },

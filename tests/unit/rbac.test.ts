@@ -656,12 +656,13 @@ describe('authorizeToolCall role/tool matrix', () => {
     )
   })
 
-  it('OWNER denied register_run / heartbeat_run / upsert_run / set_run_status / submit_stage_evidence (evidence impersonation)', () => {
+  it('OWNER denied register_run / heartbeat_run / terminate_run / upsert_run / set_run_status / submit_stage_evidence (evidence impersonation)', () => {
     // W7 / W11 / B2: cover all agent-run evidence write tools, not only register_run
     const owner = principal('OWNER')
     for (const tool of [
       'register_run',
       'heartbeat_run',
+      'terminate_run',
       'upsert_run',
       'set_run_status',
       'submit_stage_evidence',
@@ -686,6 +687,7 @@ describe('authorizeToolCall role/tool matrix', () => {
     for (const tool of [
       'register_run',
       'heartbeat_run',
+      'terminate_run',
       'upsert_run',
       'set_run_status',
       'submit_stage_evidence',
@@ -701,9 +703,11 @@ describe('authorizeToolCall role/tool matrix', () => {
     const bound = principal('AGENT', { agentId: 'agent-a' })
     expect(authorizeToolCall(bound, 'register_run', { agentId: 'agent-a' }).ok).toBe(true)
     expect(authorizeToolCall(bound, 'heartbeat_run', { agentId: 'agent-a' }).ok).toBe(true)
+    expect(authorizeToolCall(bound, 'terminate_run', { agentId: 'agent-a' }).ok).toBe(true)
     expect(authorizeToolCall(bound, 'submit_stage_evidence', { agentId: 'agent-a' }).ok).toBe(true)
     expect(authorizeToolCall(bound, 'register_run', { agentId: 'agent-b' }).ok).toBe(false)
     expect(authorizeToolCall(bound, 'heartbeat_run', { agentId: 'agent-b' }).code).toBe('OWN_RUN_ONLY')
+    expect(authorizeToolCall(bound, 'terminate_run', { agentId: 'agent-b' }).code).toBe('OWN_RUN_ONLY')
     expect(authorizeToolCall(bound, 'submit_stage_evidence', { agentId: 'agent-b' }).code).toBe(
       'OWN_RUN_ONLY',
     )

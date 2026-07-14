@@ -103,8 +103,12 @@ import {
 import {
   registerRun,
   heartbeatRun,
+  terminateRun,
+  AGENT_TERMINATE_TO_STATES,
+  ROOT_TERMINATE_TO_STATES,
   type RunRegistryDeps,
   type RunRegistryStore,
+  type TerminateToState,
 } from '#/server/run-registry'
 import {
   createSystemClock,
@@ -878,6 +882,7 @@ export const REGISTERED_WRITE_TOOL_NAMES = [
   'publish_dispatch_plan',
   'register_run',
   'heartbeat_run',
+  'terminate_run',
   'sync_accounts',
   'reconcile_dry_run',
   'reconcile_apply',
@@ -6296,6 +6301,85 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           ...result,
           accountSyncNotify: notify,
           ...(materialNotify ? { materialAccountSyncNotify: materialNotify } : {}),
+        })
+      } catch (e) {
+        return jsonText(typedError(e))
+      }
+    },
+  )
+  secureWriteTool(
+    'terminate_run',
+    {
+      title: 'Terminate run',
+      description:
+        'V3 run terminal (SUCCEEDED|FAILED|CANCELLED; ROOT may also STALE|SUPERSEDED). Releases collision locks fail-closed. Full mutation envelope + fencingToken + reason required. AGENT agentId is authenticated principal / persisted owner only — not a substitute for set_run_status (legacy board runs doc).',
+      inputSchema: {
+        ...BOARD_ARG,
+        runId: z.string(),
+        agentId: z.string().optional(),
+        fencingToken: z.string().min(1),
+        toState: z.enum(['SUCCEEDED', 'FAILED', 'CANCELLED', 'STALE', 'SUPERSEDED']),
+        reason: z.string().min(1),
+        expectedEntityRev: z.number().int(),
+        expectedBoardRev: z.number().int(),
+      },
+    },
+    async (args) => {
+      const id = await bid(args.boardId)
+      try {
+        const env = await assertMutationEnvelopeOrThrow(args as Record<string, unknown>, {
+          boardId: id,
+          checkPinHash: true,
+        })
+        const deps = defaultRunDeps(id, env.expectedBoardRev)
+        const existing = await deps.runs.get(id, args.runId)
+        if (!existing) {
+          throwNotFound(`run not found: ${args.runId}`, { runId: args.runId, boardId: id })
+        }
+        // AGENT: never trust request agentId — persisted owner + principal only.
+        authorizePersistedRunOwner(principal, existing.agentId ?? null)
+        const agentId =
+          principal?.role === 'AGENT'
+            ? (principal.agentId ?? existing.agentId)
+            : String(args.agentId ?? existing.agentId)
+
+        const toState = args.toState as TerminateToState
+        const allowedToStates: ReadonlyArray<string> =
+          principal?.role === 'ROOT_ORCHESTRATOR'
+            ? ROOT_TERMINATE_TO_STATES
+            : AGENT_TERMINATE_TO_STATES
+        if (!allowedToStates.includes(toState)) {
+          throw new McpMutationError(
+            'INVALID_INPUT',
+            `toState ${toState} not allowed for role ${principal?.role ?? 'unknown'} (AGENT: SUCCEEDED|FAILED|CANCELLED; ROOT may also STALE|SUPERSEDED)`,
+            { toState, role: principal?.role ?? null },
+          )
+        }
+
+        const result = await terminateRun(deps, {
+          boardId: id,
+          runId: args.runId,
+          agentId,
+          fencingToken: args.fencingToken,
+          toState,
+          reason: args.reason,
+          expectedEntityRev: env.entityExpectedRev,
+          expectedBoardRev: env.expectedBoardRev,
+          canonicalHash: env.subjectHash,
+          currentPinHash: env.currentPinHash ?? env.subjectHash,
+          idempotencyKey: env.idempotencyKey,
+        })
+        const historyTail =
+          result.history.length > 0 ? result.history[result.history.length - 1] : null
+        return jsonText({
+          ok: true,
+          runId: result.runId,
+          state: result.state,
+          entityRev: result.entityRev,
+          boardRev: result.boardRev,
+          fencingToken: result.fencingToken,
+          historyTail,
+          replayed: result.replayed,
         })
       } catch (e) {
         return jsonText(typedError(e))

@@ -543,6 +543,9 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   { name: 'publish_dispatch_plan', kind: 'write', scopes: ['dispatch:write'], roles: ['ROOT_ORCHESTRATOR'] },
   { name: 'register_run', kind: 'write', scopes: ['run:write'], roles: ['AGENT', 'ROOT_ORCHESTRATOR'], ownRun: true },
   { name: 'heartbeat_run', kind: 'write', scopes: ['run:write'], roles: ['AGENT', 'ROOT_ORCHESTRATOR'], ownRun: true },
+  // any-of: AGENT has run:write; ROOT default maxima include lifecycle:write but not run:write
+  // (same pattern as upsert_run / set_run_status so ROOT ops cleanup is listable/callable).
+  { name: 'terminate_run', kind: 'write', scopes: ['run:write', 'lifecycle:write'], roles: ['AGENT', 'ROOT_ORCHESTRATOR'], ownRun: true },
   { name: 'sync_accounts', kind: 'write', scopes: ['account:sync'], roles: ['ROOT_ORCHESTRATOR'] },
   { name: 'reconcile_dry_run', kind: 'write', scopes: ['reconcile:write'], roles: ['ROOT_ORCHESTRATOR'] },
   { name: 'reconcile_apply', kind: 'write', scopes: ['reconcile:write'], roles: ['ROOT_ORCHESTRATOR'] },
@@ -696,6 +699,7 @@ export function authorizeToolCall(
     principal.role === 'OWNER' &&
     (name === 'register_run' ||
       name === 'heartbeat_run' ||
+      name === 'terminate_run' ||
       name === 'upsert_run' ||
       name === 'set_run_status' ||
       name === 'submit_stage_evidence')

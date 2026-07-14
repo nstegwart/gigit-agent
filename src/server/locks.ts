@@ -114,6 +114,41 @@ export function canonicalLockId(scopeId: string): string {
 }
 
 /**
+ * Versioned opaque collision lock PK: always `clk-` + 32 hex = 36 chars ≤ VARCHAR(64).
+ * Binds scopeId + runId so long runIds (schema max 160) never overflow lock_id.
+ * Deterministic for same inputs; legacy in-flight IDs (`clk-{scopeDigest}-{runId}`) remain
+ * valid opaque PKs and are never parsed or rewritten.
+ */
+export function collisionLockId(scopeId: string, runId: string): string {
+  return (
+    'clk-' +
+    createHash('sha256')
+      .update(`clk:v1\0${scopeId.trim()}\0${runId}`)
+      .digest('hex')
+      .slice(0, 32)
+  )
+}
+
+/**
+ * Versioned opaque integration lock PK: always `ilk-` + 32 hex = 36 chars ≤ VARCHAR(64).
+ * Binds repoId + trackingBranch + runId (each may be schema-max length).
+ * Deterministic; legacy `ilk-{repo}-{branch}-{run}` strings remain valid opaque PKs.
+ */
+export function integrationLockId(
+  repoId: string,
+  trackingBranch: string,
+  runId: string,
+): string {
+  return (
+    'ilk-' +
+    createHash('sha256')
+      .update(`ilk:v1\0${repoId}\0${trackingBranch}\0${runId}`)
+      .digest('hex')
+      .slice(0, 32)
+  )
+}
+
+/**
  * Parse scope forms:
  * - repo:<repoId>:<path>
  * - path:<path>
@@ -400,7 +435,7 @@ export async function acquireCollisionLocks(
 
       const rec: CollisionLockRecord = {
         boardId: req.boardId,
-        lockId: `clk-${canonicalLockId(scopeId)}-${req.runId}`,
+        lockId: collisionLockId(scopeId, req.runId),
         scopeId,
         taskId: req.taskId,
         runId: req.runId,
@@ -548,7 +583,7 @@ export async function supersedeCollisionLock(
     }
     const next: CollisionLockRecord = {
       boardId: opts.boardId,
-      lockId: `clk-${canonicalLockId(opts.scopeId)}-${opts.newRunId}`,
+      lockId: collisionLockId(opts.scopeId, opts.newRunId),
       scopeId: opts.scopeId,
       taskId: opts.newTaskId,
       runId: opts.newRunId,
@@ -781,7 +816,7 @@ export async function acquireIntegrationLock(
       }
       const next: IntegrationLockRecord = {
         boardId: req.boardId,
-        lockId: `ilk-${req.repoId}-${req.trackingBranch}-${req.runId}`,
+        lockId: integrationLockId(req.repoId, req.trackingBranch, req.runId),
         repoId: req.repoId,
         trackingBranch: req.trackingBranch,
         runId: req.runId,

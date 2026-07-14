@@ -94,7 +94,10 @@ them (e.g. `ibils`, `mfs-rebuild`).
 | Tool | Args | Effect |
 |---|---|---|
 | `upsert_run` | boardId?, id, agent?, role?, agentType?, model?, effort?, task?, feature?, taskId?, account?, project?, status?, **targetGate?, evidencePath?, verdict?**, note? | claim/heartbeat a run. No task/gate/receipt → shows UNPRODUCTIVE |
-| `set_run_status` | boardId?, id, status | running → done |
+| `set_run_status` | boardId?, id, status | **Legacy** board `runs` doc only (`running`→`done`). Does **not** terminal a V3 registry run or release collision locks. |
+| `register_run` | boardId, runId, taskId, targetGate, agentId, model, envelope… | V3 run register (AGENT/ROOT; `run:write`; own-run) |
+| `heartbeat_run` | boardId, runId, agentId, fencingToken, heartbeatSequence, envelope… | V3 lease renew + progress |
+| `terminate_run` | boardId, runId, fencingToken, toState, reason, envelope… | V3 terminal: AGENT `SUCCEEDED\|FAILED\|CANCELLED`; ROOT may also `STALE\|SUPERSEDED`. Requires entityExpectedRev, expectedBoardRev, canonicalHash, idempotencyKey. Releases collision locks fail-closed. Principal agentId cannot be spoofed. |
 | `add_comment` / `open_decision` / `decide_decision` | see schema | collaborate on features/decisions |
 
 ## Resource
@@ -106,10 +109,10 @@ them (e.g. `ibils`, `mfs-rebuild`).
 1. `get_conventions` / `cairn://playbook` — learn the rules. `get_lifecycle` — the board's rail.
 2. `get_rollup` — board readiness; `list_tasks` (filter by stage/next-gate) — the work.
 3. `list_accounts` — capacity before spawning workers.
-4. `upsert_run` — claim your work (agent · role · account · taskId · targetGate · evidencePath).
+4. V3: `register_run` (claim + collision scopes) then `heartbeat_run` while working. Legacy: `upsert_run` for board-doc runs only.
 5. Do the work. `advance_task` with a real receipt when a gate is met
    (implementer builds; a **different** run verifies gated verifier stages with a verdict).
-6. `get_rollup` / `list_audit` — readback proof. `set_run_status` → `done` (+ verdict).
+6. `get_rollup` / `list_audit` — readback proof. V3: `terminate_run` with fencing + full envelope (`toState=SUCCEEDED|FAILED|CANCELLED`). Legacy board-doc only: `set_run_status` → `done` (does not release V3 locks).
 
 **100% = `PROD_READY`.** `LIVE_VERIFIED` is a post-100 live badge. Progress is the last
 proven gate — never a manual %, checkpoint count, or process state. Full field reference and

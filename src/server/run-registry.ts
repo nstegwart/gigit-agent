@@ -921,70 +921,268 @@ export async function heartbeatRun(
   }
 }
 
+/** Agent-allowed terminal states via MCP terminate_run (STALE/SUPERSEDED = ROOT/reconciler). */
+export const AGENT_TERMINATE_TO_STATES = ['SUCCEEDED', 'FAILED', 'CANCELLED'] as const
+export const ROOT_TERMINATE_TO_STATES = [
+  'SUCCEEDED',
+  'FAILED',
+  'CANCELLED',
+  'STALE',
+  'SUPERSEDED',
+] as const
+
+export type TerminateToState = (typeof ROOT_TERMINATE_TO_STATES)[number]
+
+/**
+ * Full-envelope terminate request (MCP / production).
+ * When all CAS/idempotency fields are present, domain enforces heartbeat-parity
+ * entity+board CAS, canonical pin, idempotent replay/conflict, and owner match.
+ * Legacy internal callers may omit envelope fields (fail-closed lock release still applies).
+ */
+export interface TerminateRunRequest {
+  boardId: string
+  runId: string
+  agentId: string
+  fencingToken: string
+  toState: TerminateToState
+  reason: string
+  expectedEntityRev?: number
+  expectedBoardRev?: number
+  canonicalHash?: string
+  idempotencyKey?: string
+  currentPinHash?: string | null
+}
+
+export type TerminateRunResult = RunRecord & { replayed: boolean }
+
+function terminateEnvelopePresent(opts: TerminateRunRequest): boolean {
+  return (
+    opts.expectedEntityRev !== undefined ||
+    opts.expectedBoardRev !== undefined ||
+    (opts.canonicalHash != null && String(opts.canonicalHash).length > 0) ||
+    (opts.idempotencyKey != null && String(opts.idempotencyKey).length > 0)
+  )
+}
+
+function assertFullTerminateEnvelope(opts: TerminateRunRequest): {
+  expectedEntityRev: number
+  expectedBoardRev: number
+  canonicalHash: string
+  idempotencyKey: string
+} {
+  if (typeof opts.expectedEntityRev !== 'number' || !Number.isInteger(opts.expectedEntityRev)) {
+    throw new RunRegistryError('INVALID_INPUT', 'expectedEntityRev is required — no silent default')
+  }
+  if (typeof opts.expectedBoardRev !== 'number' || !Number.isInteger(opts.expectedBoardRev)) {
+    throw new RunRegistryError('INVALID_INPUT', 'expectedBoardRev is required — no silent default')
+  }
+  if (!opts.canonicalHash || !String(opts.canonicalHash).trim()) {
+    throw new RunRegistryError('INVALID_INPUT', 'canonicalHash is required (current pin hash)')
+  }
+  if (!opts.idempotencyKey || !String(opts.idempotencyKey).trim()) {
+    throw new RunRegistryError('INVALID_INPUT', 'idempotencyKey is required for terminate_run')
+  }
+  if (!opts.reason || !String(opts.reason).trim()) {
+    throw new RunRegistryError('INVALID_INPUT', 'reason is required for terminate_run')
+  }
+  if (!opts.fencingToken || !String(opts.fencingToken).trim()) {
+    throw new RunRegistryError('INVALID_INPUT', 'fencingToken is required for terminate_run')
+  }
+  if (
+    opts.currentPinHash != null &&
+    opts.currentPinHash !== '' &&
+    opts.currentPinHash !== opts.canonicalHash
+  ) {
+    throw new RunRegistryError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
+      expectedCanonicalHash: opts.canonicalHash,
+      currentPinHash: opts.currentPinHash,
+    })
+  }
+  return {
+    expectedEntityRev: opts.expectedEntityRev,
+    expectedBoardRev: opts.expectedBoardRev,
+    canonicalHash: opts.canonicalHash.trim(),
+    idempotencyKey: opts.idempotencyKey.trim(),
+  }
+}
+
+async function releaseCollisionLocksFailClosed(
+  deps: RunRegistryDeps,
+  opts: { boardId: string; runId: string; fencingToken: string },
+): Promise<void> {
+  try {
+    await releaseCollisionLocks(deps.locks, deps.clock, {
+      boardId: opts.boardId,
+      runId: opts.runId,
+      fencingToken: opts.fencingToken,
+    })
+  } catch (e) {
+    if (e instanceof LockError) {
+      throw new RunRegistryError(e.code as RunErrorCode, e.message, e.details as Record<string, unknown>)
+    }
+    throw e
+  }
+}
+
+/**
+ * Terminal transition with collision-lock release.
+ * Full envelope (MCP): entity+board CAS, pin, 24h idempotency, owner match, fail-closed release.
+ * Legacy (no envelope fields): owner match + fence + fail-closed release; no CAS/idempotency store.
+ * Already-terminal: preserves first toState (does not overwrite SUCCEEDED with FAILED).
+ */
 export async function terminateRun(
   deps: RunRegistryDeps,
-  opts: {
-    boardId: string
-    runId: string
-    agentId: string
-    fencingToken: string
-    toState: 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'STALE' | 'SUPERSEDED'
-    reason: string
-  },
-): Promise<RunRecord> {
-  return deps.runs.withBoardLock(opts.boardId, async () => {
-    const rec = await deps.runs.get(opts.boardId, opts.runId)
-    if (!rec) throw new RunRegistryError('RUN_NOT_REGISTERED', `run not registered: ${opts.runId}`)
-    if (isTerminal(rec.state)) {
-      // preserve history; idempotent terminal
-      return rec
+  opts: TerminateRunRequest,
+): Promise<TerminateRunResult> {
+  const useFull = terminateEnvelopePresent(opts)
+  let envelope: ReturnType<typeof assertFullTerminateEnvelope> | null = null
+  let begin: Awaited<ReturnType<typeof beginIdempotent>> | null = null
+
+  if (useFull) {
+    envelope = assertFullTerminateEnvelope(opts)
+    try {
+      begin = await beginIdempotent(deps.idempotency, {
+        scope: {
+          actorId: opts.agentId,
+          boardId: opts.boardId,
+          endpoint: 'terminate_run',
+          key: envelope.idempotencyKey,
+        },
+        requestBody: {
+          runId: opts.runId,
+          agentId: opts.agentId,
+          fencingToken: opts.fencingToken,
+          toState: opts.toState,
+          reason: opts.reason,
+          expectedEntityRev: envelope.expectedEntityRev,
+          expectedBoardRev: envelope.expectedBoardRev,
+          canonicalHash: envelope.canonicalHash,
+        },
+        nowMs: deps.clock.nowMs(),
+      })
+    } catch (e) {
+      if (e instanceof IdempotencyError) {
+        throw new RunRegistryError('IDEMPOTENCY_CONFLICT', e.message)
+      }
+      throw e
     }
-    if (rec.fencingToken && rec.fencingToken !== opts.fencingToken) {
-      throw new RunRegistryError('FENCED', 'terminal fencing mismatch')
+    if (begin.kind === 'REPLAY' && begin.record) {
+      const body = begin.record.responseBody as TerminateRunResult
+      return { ...body, replayed: true }
     }
-    const now = deps.clock.nowMs()
-    if (rec.collisionScopeLockIds.length && rec.fencingToken) {
-      try {
-        await releaseCollisionLocks(deps.locks, deps.clock, {
+  }
+
+  try {
+    const result = await deps.runs.withBoardLock(opts.boardId, async () => {
+      const rec = await deps.runs.get(opts.boardId, opts.runId)
+      if (!rec) {
+        throw new RunRegistryError('RUN_NOT_REGISTERED', `run not registered: ${opts.runId}`, {
+          runId: opts.runId,
+        })
+      }
+      // Owning agent only (MCP forces principal/persisted agentId; ROOT uses owner id).
+      if (rec.agentId !== opts.agentId) {
+        throw new RunRegistryError('AUTHORIZATION_REQUIRED', 'terminate owning agent only', {
+          owner: rec.agentId,
+          actor: opts.agentId,
+        })
+      }
+      if (isTerminal(rec.state)) {
+        // preserve history; first terminal wins (no FAILED overwrite of SUCCEEDED)
+        return { ...rec, replayed: true }
+      }
+      if (!rec.fencingToken || rec.fencingToken !== opts.fencingToken) {
+        await deps.atomic.appendAudit({
+          boardId: opts.boardId,
+          kind: 'RUN_FENCED',
+          atMs: deps.clock.nowMs(),
+          atISO: deps.clock.nowISO(),
+          actorId: opts.agentId,
+          subjectType: 'run',
+          subjectId: opts.runId,
+          detail: { reason: 'terminal_fencing_mismatch' },
+          material: true,
+        })
+        throw new RunRegistryError('FENCED', 'terminal fencing mismatch', {
+          runId: opts.runId,
+        })
+      }
+
+      if (envelope) {
+        const board = await deps.atomic.getBoardState(opts.boardId)
+        if (envelope.expectedBoardRev !== board.boardRev) {
+          throw new RunRegistryError('STALE_REVISION', 'board rev mismatch on terminate', {
+            expectedBoardRev: envelope.expectedBoardRev,
+            currentBoardRev: board.boardRev,
+          })
+        }
+        if (envelope.expectedEntityRev !== rec.entityRev) {
+          throw new RunRegistryError('STALE_REVISION', 'entity rev mismatch on terminate', {
+            expectedEntityRev: envelope.expectedEntityRev,
+            currentEntityRev: rec.entityRev,
+          })
+        }
+      }
+
+      const now = deps.clock.nowMs()
+      // Fail-closed: never mark terminal if collision release fails.
+      if (rec.collisionScopeLockIds.length && rec.fencingToken) {
+        await releaseCollisionLocksFailClosed(deps, {
           boardId: opts.boardId,
           runId: opts.runId,
           fencingToken: rec.fencingToken,
         })
-      } catch (e) {
-        if (!(e instanceof LockError)) throw e
+      }
+
+      const next: RunRecord = {
+        ...rec,
+        state: opts.toState,
+        leaseExpiresAtMs: null,
+        entityRev: rec.entityRev + 1,
+        history: [
+          ...rec.history,
+          {
+            atMs: now,
+            atISO: deps.clock.nowISO(),
+            fromState: rec.state,
+            toState: opts.toState,
+            reason: opts.reason,
+            actorId: opts.agentId,
+          },
+        ],
+      }
+      await deps.runs.put(next)
+      await deps.atomic.appendAudit({
+        boardId: opts.boardId,
+        kind: opts.toState === 'SUPERSEDED' ? 'RUN_SUPERSEDED' : 'RUN_TERMINAL',
+        atMs: now,
+        atISO: deps.clock.nowISO(),
+        actorId: opts.agentId,
+        subjectType: 'run',
+        subjectId: opts.runId,
+        detail: { toState: opts.toState, reason: opts.reason },
+        material: true,
+      })
+      return { ...next, replayed: false }
+    })
+
+    if (begin && envelope) {
+      await completeIdempotent(deps.idempotency, begin.scopeHash, 200, result, begin.requestHash)
+    }
+    return result
+  } catch (e) {
+    if (begin) {
+      try {
+        await deps.idempotency.delete(begin.scopeHash)
+      } catch {
+        /* ignore cleanup */
       }
     }
-    const next: RunRecord = {
-      ...rec,
-      state: opts.toState,
-      leaseExpiresAtMs: null,
-      entityRev: rec.entityRev + 1,
-      history: [
-        ...rec.history,
-        {
-          atMs: now,
-          atISO: deps.clock.nowISO(),
-          fromState: rec.state,
-          toState: opts.toState,
-          reason: opts.reason,
-          actorId: opts.agentId,
-        },
-      ],
+    if (e instanceof IdempotencyError) {
+      throw new RunRegistryError('IDEMPOTENCY_CONFLICT', e.message)
     }
-    await deps.runs.put(next)
-    await deps.atomic.appendAudit({
-      boardId: opts.boardId,
-      kind: opts.toState === 'SUPERSEDED' ? 'RUN_SUPERSEDED' : 'RUN_TERMINAL',
-      atMs: now,
-      atISO: deps.clock.nowISO(),
-      actorId: opts.agentId,
-      subjectType: 'run',
-      subjectId: opts.runId,
-      detail: { toState: opts.toState, reason: opts.reason },
-      material: true,
-    })
-    return next
-  })
+    throw e
+  }
 }
 
 export function createMemoryRunRegistryStore(): RunRegistryStore & {
