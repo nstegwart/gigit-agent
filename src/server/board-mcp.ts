@@ -222,6 +222,21 @@ import {
 } from '#/server/classification-sync'
 import { createHash } from 'node:crypto'
 import type { OpsData, WorkTask } from '#/lib/types'
+import { registerDomainKnowledgeTools } from '#/server/domain-knowledge-mcp'
+import { registerExportDocumentationTool } from '#/server/mcp-register-export-documentation'
+
+// Stable aliases are exported from the live registration module so tests and
+// clients cannot drift to a second spelling of the knowledge tool ids.
+export {
+  DOMAIN_KNOWLEDGE_MCP_TOOL_NAMES as DOMAIN_KNOWLEDGE_TOOLS_WIRED,
+  search_knowledge,
+  get_domain_overview,
+  list_domain_features,
+  get_feature_documentation,
+  get_feature_flow,
+  get_related_entities,
+  get_change_history,
+} from '#/server/domain-knowledge-mcp'
 
 export interface McpAuthContext {
   principal: Principal | null
@@ -4202,6 +4217,12 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
   }
 
   const actorIdOf = () => principal?.actorId ?? principal?.agentId ?? 'mcp-actor'
+
+  // Knowledge and documentation are authenticated board reads. Keep their
+  // registration beside secureTool so tools/list and tools/call share the
+  // exact same RBAC filter as the rest of the production MCP catalog.
+  registerDomainKnowledgeTools({ secureTool: secureTool as never, jsonText })
+  registerExportDocumentationTool({ secureTool: secureTool as never, jsonText })
 
 
   // ---- boards ----

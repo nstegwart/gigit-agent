@@ -606,6 +606,15 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   // Identity-safe, board-bound CP0 metadata. Account/audit data keep dedicated scopes.
   { name: 'get_capabilities', kind: 'read', scopes: ['board:read'] },
   { name: 'get_sync_status', kind: 'read', scopes: ['board:read'] },
+  // Snapshot-pinned domain knowledge and deterministic documentation export.
+  { name: 'search_knowledge', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_domain_overview', kind: 'read', scopes: ['board:read'] },
+  { name: 'list_domain_features', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_feature_documentation', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_feature_flow', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_related_entities', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_change_history', kind: 'read', scopes: ['board:read'] },
+  { name: 'export_documentation', kind: 'read', scopes: ['board:read'] },
 
   // Legacy writes
   { name: 'create_board', kind: 'write', scopes: ['import:write', 'lifecycle:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
