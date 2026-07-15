@@ -48,6 +48,19 @@ export const RUN_HEARTBEAT_INTERVAL_MS = 15_000
 export const RUN_LEASE_MS = 60_000
 export const RUN_RECONCILIATION_GRACE_MS = 30_000
 export const RUN_STALL_MS = 10 * 60_000
+export const CP0_CONTROL_PLANE_VERSION = 'CP0_CONTROL_PLANE_V1' as const
+
+export type RunHierarchyLevel = 'L0' | 'L1' | 'L2'
+export type ControlPlaneAckType = 'REGISTRATION' | 'SPAWN_BUDGET' | 'LEASE_RENEWAL' | 'TERMINAL' | 'RELEASE'
+export interface ControlPlaneAck {
+  version: typeof CP0_CONTROL_PLANE_VERSION
+  ackType: ControlPlaneAckType
+  ackId: string
+  runId: string
+  at: string
+  entityRev: number
+  boardRev: number
+}
 
 export type RunState =
   | 'QUEUED'
@@ -133,6 +146,14 @@ export interface RunRecord {
   lastHeartbeatResponse: HeartbeatRunResult | null
   controllerRunId: string | null
   parentRunId: string | null
+  controlPlaneVersion?: typeof CP0_CONTROL_PLANE_VERSION | 'LEGACY_V3'
+  hierarchyLevel?: RunHierarchyLevel | null
+  spawnBudgetMax?: number
+  spawnAuthorizationId?: string | null
+  registrationAck?: ControlPlaneAck | null
+  budgetAck?: ControlPlaneAck | null
+  terminalAck?: ControlPlaneAck | null
+  releaseAck?: ControlPlaneAck | null
   idempotencyKey: string | null
 }
 
@@ -259,6 +280,12 @@ export interface RegisterRunRequest {
   /** Initial state: QUEUED (no lease) or RESERVED/STARTING (with lease). Default STARTING. */
   initialState?: 'QUEUED' | 'RESERVED' | 'STARTING' | 'RUNNING'
   actorRole?: 'AGENT' | 'ROOT_ORCHESTRATOR' | string
+  controlPlaneVersion?: typeof CP0_CONTROL_PLANE_VERSION
+  hierarchyLevel?: RunHierarchyLevel
+  controllerRunId?: string | null
+  parentRunId?: string | null
+  spawnBudgetMax?: number
+  spawnAuthorizationId?: string | null
 }
 
 export interface RegisterRunResult {
@@ -271,6 +298,13 @@ export interface RegisterRunResult {
   boardRev: number
   replayed: boolean
   visibleWithinMs: number
+  controlPlaneVersion: typeof CP0_CONTROL_PLANE_VERSION | 'LEGACY_V3'
+  hierarchyLevel: RunHierarchyLevel | null
+  controllerRunId: string | null
+  parentRunId: string | null
+  spawnBudgetMax: number
+  registrationAck: ControlPlaneAck | null
+  budgetAck: ControlPlaneAck | null
 }
 
 export interface HeartbeatRunRequest {
@@ -300,6 +334,7 @@ export interface HeartbeatRunResult {
   materialProgressAt: string | null
   entityRev: number
   boardRev: number
+  leaseAck?: ControlPlaneAck
 }
 
 /**
@@ -394,6 +429,20 @@ function requestHash(body: unknown): string {
   return createHash('sha256').update(stable(body)).digest('hex')
 }
 
+function controlPlaneAck(
+  ackType: ControlPlaneAckType,
+  runId: string,
+  at: string,
+  entityRev: number,
+  boardRev: number,
+): ControlPlaneAck {
+  const ackId = `ack-${createHash('sha256')
+    .update(`${CP0_CONTROL_PLANE_VERSION}\0${ackType}\0${runId}\0${entityRev}\0${boardRev}`)
+    .digest('hex')
+    .slice(0, 32)}`
+  return { version: CP0_CONTROL_PLANE_VERSION, ackType, ackId, runId, at, entityRev, boardRev }
+}
+
 /**
  * Canonical idempotency request body for register_run.
  * Covers every material request/envelope field except idempotencyKey itself.
@@ -423,6 +472,12 @@ export function canonicalRegisterRunRequestBody(req: RegisterRunRequest): Record
     expectedBoardRev: req.expectedBoardRev,
     initialState: req.initialState ?? 'STARTING',
     actorRole: req.actorRole ?? null,
+    controlPlaneVersion: req.controlPlaneVersion ?? null,
+    hierarchyLevel: req.hierarchyLevel ?? null,
+    controllerRunId: req.controllerRunId ?? null,
+    parentRunId: req.parentRunId ?? null,
+    spawnBudgetMax: req.spawnBudgetMax ?? null,
+    spawnAuthorizationId: req.spawnAuthorizationId ?? null,
   }
 }
 
@@ -581,6 +636,34 @@ async function authorizeRegisterCapacity(
   return capacitySource
 }
 
+function assertCp0HierarchyRequest(req: RegisterRunRequest): void {
+  if (req.controlPlaneVersion !== CP0_CONTROL_PLANE_VERSION) return
+  const level = req.hierarchyLevel
+  if (!level) throw new RunRegistryError('INVALID_INPUT', 'CP0 hierarchyLevel is required')
+  const max = req.spawnBudgetMax ?? 0
+  if (!Number.isInteger(max) || max < 0 || max > 20) {
+    throw new RunRegistryError('INVALID_INPUT', 'spawnBudgetMax must be an integer from 0 to 20')
+  }
+  if (level === 'L0') {
+    if (req.actorRole !== 'ROOT_ORCHESTRATOR') {
+      throw new RunRegistryError('AUTHORIZATION_REQUIRED', 'L0 registration requires ROOT_ORCHESTRATOR')
+    }
+    if ((req.controllerRunId ?? req.runId) !== req.runId || req.parentRunId) {
+      throw new RunRegistryError('INVALID_INPUT', 'L0 must self-control and have no parent')
+    }
+    return
+  }
+  if (!req.controllerRunId || !req.parentRunId || !req.spawnAuthorizationId) {
+    throw new RunRegistryError(
+      'AUTHORIZATION_REQUIRED',
+      'L1/L2 registration requires controllerRunId, parentRunId, and spawnAuthorizationId',
+    )
+  }
+  if (level === 'L2' && max !== 0) {
+    throw new RunRegistryError('INVALID_INPUT', 'L2 cannot receive a descendant spawn budget')
+  }
+}
+
 export async function registerRun(
   deps: RunRegistryDeps,
   req: RegisterRunRequest,
@@ -621,6 +704,7 @@ export async function registerRun(
       { expectedEntityRev: req.expectedEntityRev, currentEntityRev: 0 },
     )
   }
+  assertCp0HierarchyRequest(req)
 
   // Provider assignment authorization BEFORE idempotency / board lock / claim / audit (R5-02).
   // Missing/stale/null/NaN/non-finite/negative usable → fail closed; no optional bypass.
@@ -689,6 +773,33 @@ export async function registerRun(
         })
       }
 
+      if (req.controlPlaneVersion === CP0_CONTROL_PLANE_VERSION && req.hierarchyLevel !== 'L0') {
+        const parent = await deps.runs.get(req.boardId, req.parentRunId!)
+        const controller = await deps.runs.get(req.boardId, req.controllerRunId!)
+        const expectedParentLevel: RunHierarchyLevel = req.hierarchyLevel === 'L1' ? 'L0' : 'L1'
+        if (
+          !parent ||
+          !controller ||
+          parent.controlPlaneVersion !== CP0_CONTROL_PLANE_VERSION ||
+          controller.hierarchyLevel !== 'L0' ||
+          parent.hierarchyLevel !== expectedParentLevel ||
+          parent.controllerRunId !== controller.runId
+        ) {
+          throw new RunRegistryError('AUTHORIZATION_REQUIRED', 'invalid CP0 parent/controller lineage')
+        }
+        const siblings = (await deps.runs.list(req.boardId)).filter(
+          (r) => r.parentRunId === parent.runId && !isTerminal(r.state),
+        )
+        const parentBudget = parent.spawnBudgetMax ?? 0
+        if (siblings.length >= parentBudget) {
+          throw new RunRegistryError('DISPATCH_BLOCKED', 'parent spawn budget exhausted', {
+            parentRunId: parent.runId,
+            spawnBudgetMax: parentBudget,
+            activeChildren: siblings.length,
+          })
+        }
+      }
+
       const now = deps.clock.nowMs()
       const initial: RunState = req.initialState ?? 'STARTING'
       const leased = isLeased(initial)
@@ -724,6 +835,22 @@ export async function registerRun(
       }
 
       // QUEUED: no lease, no claim
+      const controlPlaneVersion =
+        req.controlPlaneVersion === CP0_CONTROL_PLANE_VERSION
+          ? CP0_CONTROL_PLANE_VERSION
+          : ('LEGACY_V3' as const)
+      const hierarchyLevel = controlPlaneVersion === CP0_CONTROL_PLANE_VERSION ? req.hierarchyLevel! : null
+      const controllerRunId =
+        hierarchyLevel === 'L0' ? req.runId : (req.controllerRunId ?? null)
+      const parentRunId = hierarchyLevel === 'L0' ? null : (req.parentRunId ?? null)
+      const registrationAck =
+        controlPlaneVersion === CP0_CONTROL_PLANE_VERSION
+          ? controlPlaneAck('REGISTRATION', req.runId, deps.clock.nowISO(), 1, board.boardRev)
+          : null
+      const budgetAck =
+        controlPlaneVersion === CP0_CONTROL_PLANE_VERSION
+          ? controlPlaneAck('SPAWN_BUDGET', req.runId, deps.clock.nowISO(), 1, board.boardRev)
+          : null
       const rec: RunRecord = {
         boardId: req.boardId,
         runId: req.runId,
@@ -762,8 +889,16 @@ export async function registerRun(
           },
         ],
         lastHeartbeatResponse: null,
-        controllerRunId: null,
-        parentRunId: null,
+        controllerRunId,
+        parentRunId,
+        controlPlaneVersion,
+        hierarchyLevel,
+        spawnBudgetMax: req.spawnBudgetMax ?? 0,
+        spawnAuthorizationId: req.spawnAuthorizationId ?? null,
+        registrationAck,
+        budgetAck,
+        terminalAck: null,
+        releaseAck: null,
         idempotencyKey: req.idempotencyKey,
       }
 
@@ -782,6 +917,12 @@ export async function registerRun(
           planId: req.planId ?? null,
           model: req.model,
           maskedAccountRef: req.maskedAccountRef ?? null,
+          controlPlaneVersion,
+          hierarchyLevel,
+          controllerRunId,
+          parentRunId,
+          spawnBudgetMax: rec.spawnBudgetMax,
+          registrationAckId: registrationAck?.ackId ?? null,
         },
         material: true,
       })
@@ -809,6 +950,13 @@ export async function registerRun(
         boardRev: rec.boardRev,
         replayed: false,
         visibleWithinMs: RUN_VISIBLE_SLA_MS,
+        controlPlaneVersion,
+        hierarchyLevel,
+        controllerRunId,
+        parentRunId,
+        spawnBudgetMax: rec.spawnBudgetMax ?? 0,
+        registrationAck,
+        budgetAck,
       } satisfies RegisterRunResult
     })
 
@@ -1134,6 +1282,17 @@ export async function heartbeatRun(
         materialProgressAtMs != null ? new Date(materialProgressAtMs).toISOString() : null,
       entityRev: rec.entityRev + 1,
       boardRev: board.boardRev,
+      ...(rec.controlPlaneVersion === CP0_CONTROL_PLANE_VERSION
+        ? {
+            leaseAck: controlPlaneAck(
+              'LEASE_RENEWAL',
+              rec.runId,
+              deps.clock.nowISO(),
+              rec.entityRev + 1,
+              board.boardRev,
+            ),
+          }
+        : {}),
     }
 
     const next: RunRecord = {
@@ -1256,13 +1415,14 @@ function assertFullTerminateEnvelope(opts: TerminateRunRequest): {
 async function releaseCollisionLocksFailClosed(
   deps: RunRegistryDeps,
   opts: { boardId: string; runId: string; fencingToken: string },
-): Promise<void> {
+): Promise<number> {
   try {
-    await releaseCollisionLocks(deps.locks, deps.clock, {
+    const released = await releaseCollisionLocks(deps.locks, deps.clock, {
       boardId: opts.boardId,
       runId: opts.runId,
       fencingToken: opts.fencingToken,
     })
+    return released.length
   } catch (e) {
     if (e instanceof LockError) {
       throw new RunRegistryError(e.code as RunErrorCode, e.message, e.details as Record<string, unknown>)
@@ -1372,9 +1532,10 @@ export async function terminateRun(
       }
 
       const now = deps.clock.nowMs()
+      let releasedLockCount = 0
       // Fail-closed: never mark terminal if collision release fails.
       if (rec.collisionScopeLockIds.length && rec.fencingToken) {
-        await releaseCollisionLocksFailClosed(deps, {
+        releasedLockCount = await releaseCollisionLocksFailClosed(deps, {
           boardId: opts.boardId,
           runId: opts.runId,
           fencingToken: rec.fencingToken,
@@ -1397,6 +1558,26 @@ export async function terminateRun(
             actorId: opts.agentId,
           },
         ],
+        terminalAck:
+          rec.controlPlaneVersion === CP0_CONTROL_PLANE_VERSION
+            ? controlPlaneAck(
+                'TERMINAL',
+                rec.runId,
+                deps.clock.nowISO(),
+                rec.entityRev + 1,
+                rec.boardRev,
+              )
+            : null,
+        releaseAck:
+          rec.controlPlaneVersion === CP0_CONTROL_PLANE_VERSION
+            ? controlPlaneAck(
+                'RELEASE',
+                rec.runId,
+                deps.clock.nowISO(),
+                rec.entityRev + 1,
+                rec.boardRev,
+              )
+            : null,
       }
       await deps.runs.put(next)
       await deps.atomic.appendAudit({
@@ -1407,7 +1588,13 @@ export async function terminateRun(
         actorId: opts.agentId,
         subjectType: 'run',
         subjectId: opts.runId,
-        detail: { toState: opts.toState, reason: opts.reason },
+        detail: {
+          toState: opts.toState,
+          reason: opts.reason,
+          releasedLockCount,
+          terminalAckId: next.terminalAck?.ackId ?? null,
+          releaseAckId: next.releaseAck?.ackId ?? null,
+        },
         material: true,
       })
       return { ...next, replayed: false }

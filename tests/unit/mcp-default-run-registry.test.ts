@@ -20,6 +20,7 @@ import {
 } from '#/server/board-mcp'
 import {
   createMemoryRunRegistryStore,
+  CP0_CONTROL_PLANE_VERSION,
   hashRegisterBody,
   heartbeatRun,
   registerRun,
@@ -344,5 +345,85 @@ describe('register_run idempotency hash matrix (material fields)', () => {
     // idempotencyKey alone must not be part of request hash
     const e = hashRegisterBody(baseRegister({ idempotencyKey: 'other-key-only' }))
     expect(e).toBe(a)
+  })
+})
+
+describe('CP0 hierarchy registration contract', () => {
+  function cp0Deps(): RunRegistryDeps {
+    return {
+      clock: createFakeClock(Date.parse('2026-07-15T12:00:00.000Z')),
+      runs: createMemoryRunRegistryStore(),
+      locks: createMemoryLockStore(),
+      atomic: createMemoryControlPlaneAtomicStore([
+        { boardId: BOARD_A, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null },
+      ]),
+      idempotency: createMemoryIdempotencyStorage(),
+      getCapacity: async () => openCapacity(),
+    }
+  }
+
+  it('persists lineage, returns versioned ACKs, and hashes all six CP0 fields', async () => {
+    const deps = cp0Deps()
+    const l0 = await registerRun(deps, {
+      boardId: BOARD_A,
+      runId: 'cp0-l0',
+      taskId: 'task-controller',
+      targetGate: 'CP0_READY',
+      agentId: 'root-controller',
+      model: 'gpt-5',
+      canonicalHash: 'cp0-pin',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'cp0-l0-register',
+      actorRole: 'ROOT_ORCHESTRATOR',
+      controlPlaneVersion: CP0_CONTROL_PLANE_VERSION,
+      hierarchyLevel: 'L0',
+      controllerRunId: 'cp0-l0',
+      parentRunId: null,
+      spawnBudgetMax: 2,
+      spawnAuthorizationId: null,
+    })
+    expect(l0.registrationAck?.ackType).toBe('REGISTRATION')
+    expect(l0.budgetAck?.ackType).toBe('SPAWN_BUDGET')
+
+    const req: RegisterRunRequest = {
+      boardId: BOARD_A,
+      runId: 'cp0-l1',
+      taskId: 'task-shard',
+      targetGate: 'MAP_VERIFIED',
+      agentId: 'agent-cp0',
+      model: 'grok-4',
+      canonicalHash: 'cp0-pin',
+      expectedEntityRev: 0,
+      expectedBoardRev: 0,
+      idempotencyKey: 'cp0-l1-register',
+      actorRole: 'AGENT',
+      controlPlaneVersion: CP0_CONTROL_PLANE_VERSION,
+      hierarchyLevel: 'L1',
+      controllerRunId: 'cp0-l0',
+      parentRunId: 'cp0-l0',
+      spawnBudgetMax: 1,
+      spawnAuthorizationId: 'spawn-auth-1',
+    }
+    const first = await registerRun(deps, req)
+    expect(first).toMatchObject({
+      controlPlaneVersion: CP0_CONTROL_PLANE_VERSION,
+      hierarchyLevel: 'L1',
+      controllerRunId: 'cp0-l0',
+      parentRunId: 'cp0-l0',
+      spawnBudgetMax: 1,
+    })
+    expect(first.registrationAck?.version).toBe(CP0_CONTROL_PLANE_VERSION)
+    expect(first.budgetAck?.version).toBe(CP0_CONTROL_PLANE_VERSION)
+    expect(await deps.runs.get(BOARD_A, 'cp0-l1')).toMatchObject({
+      spawnAuthorizationId: 'spawn-auth-1',
+      hierarchyLevel: 'L1',
+      controllerRunId: 'cp0-l0',
+      parentRunId: 'cp0-l0',
+    })
+    expect((await registerRun(deps, req)).replayed).toBe(true)
+    await expect(
+      registerRun(deps, { ...req, spawnAuthorizationId: 'spawn-auth-2' }),
+    ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
   })
 })

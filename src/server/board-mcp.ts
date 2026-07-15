@@ -115,6 +115,7 @@ import {
   terminateRun,
   AGENT_TERMINATE_TO_STATES,
   ROOT_TERMINATE_TO_STATES,
+  CP0_CONTROL_PLANE_VERSION,
   type RunRegistryDeps,
   type RunRegistryRetentionAsyncBinding,
   type RunRegistryRetentionBinding,
@@ -4622,6 +4623,14 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         verdict?: string | null
         evidencePath?: string | null
         targetGate?: string | null
+        controlPlaneVersion?: string | null
+        hierarchyLevel?: string | null
+        controllerRunId?: string | null
+        parentRunId?: string | null
+        spawnBudgetMax?: number
+        spawnAuthorizationId?: string | null
+        registrationAck?: unknown
+        budgetAck?: unknown
       }
       const mapped: ListRunRow[] = rows.map((r) => ({
         id: r.runId,
@@ -4639,6 +4648,14 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         boardRev: r.boardRev,
         stalled: r.stalled,
         source: 'durable_registry' as const,
+        controlPlaneVersion: r.controlPlaneVersion ?? 'LEGACY_V3',
+        hierarchyLevel: r.hierarchyLevel ?? null,
+        controllerRunId: r.controllerRunId,
+        parentRunId: r.parentRunId,
+        spawnBudgetMax: r.spawnBudgetMax ?? 0,
+        spawnAuthorizationId: r.spawnAuthorizationId ?? null,
+        registrationAck: r.registrationAck ?? null,
+        budgetAck: r.budgetAck ?? null,
       }))
       // Dual-read: fleet still writes via upsert_run → board_docs.runs while
       // register_run/list_runs used control_plane_runs. Merge legacy rows so
@@ -7570,6 +7587,12 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         subjectHash: z.string().optional(),
         collisionScopeLockIds: z.array(z.string()).optional(),
         initialState: z.enum(['QUEUED', 'RESERVED', 'STARTING', 'RUNNING']).optional(),
+        controlPlaneVersion: z.literal(CP0_CONTROL_PLANE_VERSION).optional(),
+        hierarchyLevel: z.enum(['L0', 'L1', 'L2']).optional(),
+        controllerRunId: z.string().optional(),
+        parentRunId: z.string().optional(),
+        spawnBudgetMax: z.number().int().min(0).max(20).optional(),
+        spawnAuthorizationId: z.string().optional(),
       },
     },
     async (args) => {
@@ -7607,6 +7630,13 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           currentPinHash: env.currentPinHash ?? env.subjectHash,
           collisionScopeLockIds: args.collisionScopeLockIds,
           initialState: args.initialState,
+          actorRole: principal?.role ?? 'AGENT',
+          controlPlaneVersion: args.controlPlaneVersion,
+          hierarchyLevel: args.hierarchyLevel,
+          controllerRunId: args.controllerRunId,
+          parentRunId: args.parentRunId,
+          spawnBudgetMax: args.spawnBudgetMax,
+          spawnAuthorizationId: args.spawnAuthorizationId,
         })
         const notify = await notifyAccountSchedulerTrigger(id, 'AGENT_LAUNCH', {
           expectedBoardRev: result.boardRev,
@@ -7771,6 +7801,8 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           fencingToken: result.fencingToken,
           historyTail,
           replayed: result.replayed,
+          terminalAck: result.terminalAck ?? null,
+          releaseAck: result.releaseAck ?? null,
         })
       } catch (e) {
         return jsonText(typedError(e))

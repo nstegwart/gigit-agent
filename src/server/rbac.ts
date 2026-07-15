@@ -647,8 +647,8 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
 
   // V3 control-plane writes
   { name: 'publish_dispatch_plan', kind: 'write', scopes: ['dispatch:write'], roles: ['ROOT_ORCHESTRATOR'] },
-  { name: 'register_run', kind: 'write', scopes: ['run:write'], roles: ['AGENT', 'ROOT_ORCHESTRATOR'], ownRun: true },
-  { name: 'heartbeat_run', kind: 'write', scopes: ['run:write'], roles: ['AGENT', 'ROOT_ORCHESTRATOR'], ownRun: true },
+  { name: 'register_run', kind: 'write', scopes: ['run:write', 'lifecycle:write'], roles: ['AGENT', 'ROOT_ORCHESTRATOR'], ownRun: true },
+  { name: 'heartbeat_run', kind: 'write', scopes: ['run:write', 'lifecycle:write'], roles: ['AGENT', 'ROOT_ORCHESTRATOR'], ownRun: true },
   // any-of: AGENT has run:write; ROOT default maxima include lifecycle:write but not run:write
   // (same pattern as upsert_run / set_run_status so ROOT ops cleanup is listable/callable).
   { name: 'terminate_run', kind: 'write', scopes: ['run:write', 'lifecycle:write'], roles: ['AGENT', 'ROOT_ORCHESTRATOR'], ownRun: true },

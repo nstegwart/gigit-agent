@@ -145,6 +145,25 @@ beforeEach(() => {
   setTestControlPlaneRuntimeContext(mem)
 })
 
+describe('CP0 register_run MCP schema', () => {
+  it('exposes the six hierarchy fields required by the live coordinator', () => {
+    const server = new McpServer({ name: 'cp0-register-schema', version: '0.0.0' })
+    registerBoardTools(server, authRoot())
+    const row = listRegisteredWriteToolSchemas().find((entry) => entry.name === 'register_run')
+    expect(row).toBeTruthy()
+    expect(row!.schemaKeys).toEqual(
+      expect.arrayContaining([
+        'controlPlaneVersion',
+        'hierarchyLevel',
+        'controllerRunId',
+        'parentRunId',
+        'spawnBudgetMax',
+        'spawnAuthorizationId',
+      ]),
+    )
+  })
+})
+
 afterEach(() => {
   resetMcpControlPlaneDeps()
   resetControlPlaneRuntimeContextForTests()
