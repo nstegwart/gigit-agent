@@ -1031,6 +1031,14 @@ export function createAccountSyncScheduler(
         reason: a.reason ?? null,
         statusChangedAt: a.statusChangedAt ?? null,
         tombstone: a.status === 'REMOVED',
+        expiresAt: a.expiresAt ?? null,
+        quotaRemaining: a.quotaRemaining ?? null,
+        quotaVerdict: a.quotaVerdict ?? 'UNKNOWN',
+        chatVerdict: a.chatVerdict ?? 'UNKNOWN',
+        probedAt: a.probedAt ?? null,
+        probeAgeSeconds: a.probeAgeSeconds ?? null,
+        adaptiveCap: Math.min(20, Math.max(0, a.adaptiveCap ?? a.effectiveCap)),
+        quarantineReason: a.quarantineReason ?? null,
       }))
 
     const envelope: AccountSyncSurfacePublishEnvelope = {

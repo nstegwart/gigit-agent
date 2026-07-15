@@ -845,7 +845,7 @@ export type AccountSchedulerNotifyResult =
   | { ok: true; kind: string; trigger: AccountSyncTrigger }
   | { ok: false; code: string; message: string; trigger: AccountSyncTrigger; failClosed: true }
 
-async function notifyAccountSchedulerTrigger(
+export async function notifyAccountSchedulerTrigger(
   boardId: string,
   trigger: AccountSyncTrigger,
   opts: {
@@ -889,6 +889,14 @@ async function notifyAccountSchedulerTrigger(
       adaptiveQuotaState: a.adaptiveQuotaState,
       reason: a.reason,
       statusChangedAt: a.statusChangedAt,
+      expiresAt: a.expiresAt,
+      quotaRemaining: a.quotaRemaining,
+      quotaVerdict: a.quotaVerdict,
+      chatVerdict: a.chatVerdict,
+      probedAt: a.probedAt,
+      probeAgeSeconds: a.probeAgeSeconds,
+      adaptiveCap: a.adaptiveCap,
+      quarantineReason: a.quarantineReason,
     }))
     const out = await sched.enqueue({
       boardId,
@@ -2927,6 +2935,32 @@ export function mapLegacyOpsAccountsToSync(
           : typeof clean.exhaustedAt === 'string'
             ? clean.exhaustedAt
             : null,
+      expiresAt: typeof clean.expiresAt === 'string' ? clean.expiresAt : null,
+      quotaRemaining:
+        typeof clean.quotaRemaining === 'number' ? clean.quotaRemaining : null,
+      quotaVerdict:
+        clean.quotaVerdict === 'PASS' ||
+        clean.quotaVerdict === 'FAIL' ||
+        clean.quotaVerdict === 'SKIP' ||
+        clean.quotaVerdict === 'UNKNOWN'
+          ? clean.quotaVerdict
+          : 'UNKNOWN',
+      chatVerdict:
+        clean.chatVerdict === 'PASS' ||
+        clean.chatVerdict === 'FAIL' ||
+        clean.chatVerdict === 'SKIP' ||
+        clean.chatVerdict === 'UNKNOWN'
+          ? clean.chatVerdict
+          : 'UNKNOWN',
+      probedAt: typeof clean.probedAt === 'string' ? clean.probedAt : null,
+      probeAgeSeconds:
+        typeof clean.probeAgeSeconds === 'number' ? clean.probeAgeSeconds : null,
+      adaptiveCap:
+        typeof clean.adaptiveCap === 'number'
+          ? Math.min(20, Math.max(0, clean.adaptiveCap))
+          : Math.min(20, Math.max(0, cap)),
+      quarantineReason:
+        typeof clean.quarantineReason === 'string' ? clean.quarantineReason : null,
     }
   })
 }

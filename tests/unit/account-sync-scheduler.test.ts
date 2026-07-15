@@ -81,6 +81,12 @@ function baseAccounts(
       effectiveInUse: status === 'REMOVED' || status === 'LIMIT' ? 0 : 1,
       effectiveCap: status === 'REMOVED' ? 0 : 5,
       physicalSlotsDisplay: '1/20',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      quotaRemaining: 100,
+      quotaVerdict: 'PASS',
+      chatVerdict: 'PASS',
+      probedAt: new Date().toISOString(),
+      quarantineReason: null,
       ...over,
     },
   ]
@@ -241,7 +247,7 @@ describe('account-sync-scheduler foundation (AC-ACCOUNT SLA)', () => {
     expect(sched.peekFailSafeIntents(BOARD)).toEqual([])
     expect(sched.getBoardState(BOARD).pendingFailSafeIntents).toEqual([])
 
-    // CPU>=90 → STOP_NEW_DISPATCH + BOUNDED_DRAIN_REDUCE intents
+    // CPU>95 → STOP_NEW_DISPATCH + BOUNDED_DRAIN_REDUCE intents
     const board = await d.atomic.getBoardState(BOARD)
     const prev = await d.accounts.get(BOARD)
     const cpuOut = await sched.enqueue({
@@ -251,19 +257,15 @@ describe('account-sync-scheduler foundation (AC-ACCOUNT SLA)', () => {
       entityExpectedRev: prev!.entityRev,
       expectedBoardRev: board.boardRev,
       canonicalHash: 'canon-sched-pin',
-      accounts: [
-        {
-          maskedAccountId: 'g1',
-          status: 'OK',
-          providerKind: 'GROK',
-          effectiveInUse: 5,
-          effectiveCap: 5,
-        },
-      ],
+      accounts: baseAccounts('OK', {
+        maskedAccountId: 'g1',
+        effectiveInUse: 5,
+        effectiveCap: 5,
+      }),
       trigger: 'PERIODIC_HEALTH',
       idempotencyKey: 'm4-cpu-drain',
       callerRole: 'ROOT_ORCHESTRATOR',
-      health: { cpuPercent: 95 },
+      health: { cpuPercent: 96, cpuOver95Samples: 3 },
     })
     expect(cpuOut.kind).toBe('PUBLISHED')
     expect(cpuOut.usableCapacity).toBe(0)
@@ -598,13 +600,11 @@ describe('account-sync-scheduler foundation (AC-ACCOUNT SLA)', () => {
         sourceRevision: 1,
         accounts: [
           ...baseAccounts('REMOVED', { maskedAccountId: 'acct-gone' }),
-          {
+          ...baseAccounts('OK', {
             maskedAccountId: 'acct-mask-002',
-            status: 'OK',
-            providerKind: 'GROK',
             effectiveInUse: 0,
             effectiveCap: 5,
-          },
+          }),
         ],
         idempotencyKey: 'tomb-1',
       }),
@@ -639,6 +639,99 @@ describe('account-sync-scheduler foundation (AC-ACCOUNT SLA)', () => {
     )
     expect(authorityCalls).toBe(1)
     expect(sched.snapshot()[BOARD]?.publishCount).toBe(1)
+  })
+
+  it('CP0 eligibility proof survives scheduler fallback projection', async () => {
+    const d = makeDeps()
+    const surfaces = createMemoryAccountSyncSurfacePublisher()
+    const proof = {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      quotaRemaining: 77,
+      quotaVerdict: 'PASS' as const,
+      chatVerdict: 'PASS' as const,
+      probedAt: new Date().toISOString(),
+      probeAgeSeconds: 0,
+      adaptiveCap: 9,
+      quarantineReason: null,
+    }
+    const sched = createAccountSyncScheduler({
+      clock: d.clock,
+      accountSync: d.accountSync,
+      surfacePublisher: surfaces,
+      // Deliberately return authority metadata without populating the local store,
+      // exercising the intent fallback before readback fails closed.
+      authorityPublisher: async (req) => ({
+        sourceRevision: req.sourceRevision,
+        generatedAt: req.generatedAt,
+        acceptedCount: req.accounts.length,
+        usableCapacity: 9,
+        stale: false,
+        staleReason: null,
+        capacity: {} as never,
+        boardRev: req.expectedBoardRev + 1,
+        replayed: false,
+      }),
+    })
+    await expect(
+      sched.enqueue(
+        await intent(d, {
+          trigger: 'ORCHESTRATOR_LAUNCH',
+          sourceRevision: 50,
+          idempotencyKey: 'fallback-proof-1',
+          accounts: baseAccounts('OK', proof),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+    expect(surfaces.log).toHaveLength(4)
+    for (const row of surfaces.log) {
+      expect(row.envelope.accounts[0]).toMatchObject(proof)
+    }
+  })
+
+  it('fresh PASS proof yields capacity and invalid proof remains fail closed', async () => {
+    const d = makeDeps()
+    const surfaces = createMemoryAccountSyncSurfacePublisher()
+    const sched = createAccountSyncScheduler({
+      clock: d.clock,
+      accountSync: d.accountSync,
+      surfacePublisher: surfaces,
+    })
+    const proof = {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      quotaRemaining: 42,
+      quotaVerdict: 'PASS' as const,
+      chatVerdict: 'PASS' as const,
+      probedAt: new Date().toISOString(),
+      probeAgeSeconds: 0,
+      adaptiveCap: 8,
+      quarantineReason: null,
+    }
+    const fresh = await sched.enqueue(
+      await intent(d, {
+        trigger: 'ORCHESTRATOR_LAUNCH',
+        sourceRevision: 60,
+        idempotencyKey: 'fresh-proof-1',
+        accounts: baseAccounts('OK', { ...proof, effectiveInUse: 0, effectiveCap: 10 }),
+      }),
+    )
+    expect(fresh.usableCapacity).toBe(8)
+    expect((await d.accounts.get(BOARD))?.accounts[0]).toMatchObject(proof)
+
+    const invalid = await sched.enqueue(
+      await intent(d, {
+        trigger: 'STATUS_TRANSITION',
+        sourceRevision: 61,
+        idempotencyKey: 'invalid-proof-1',
+        accounts: baseAccounts('OK', {
+          ...proof,
+          effectiveInUse: 0,
+          effectiveCap: 10,
+          quotaVerdict: 'FAIL',
+        }),
+      }),
+    )
+    expect(invalid.usableCapacity).toBe(0)
+    expect(invalid.result?.capacity.healthyGrokUsableCapacity).toBe(0)
   })
 
   it('missing surface publication fails closed (no partial silent success)', async () => {

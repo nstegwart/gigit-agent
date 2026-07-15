@@ -38,6 +38,7 @@ import {
   mapCanonicalTasksToListRows,
   mapCanonicalTasksToWorkRows,
   mapLegacyOpsAccountsToSync,
+  notifyAccountSchedulerTrigger,
   mcpTypedErrorForTests,
   McpMutationError,
   parseAdvanceStageReceipt,
@@ -906,6 +907,14 @@ describe('P1 replace_accounts → durable sync ingestion', () => {
           slotsInUse: 1,
           slotsCapacity: 5,
           provider: 'GROK',
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          quotaRemaining: 88,
+          quotaVerdict: 'PASS',
+          chatVerdict: 'PASS',
+          probedAt: '2026-07-13T10:00:00.000Z',
+          probeAgeSeconds: 0,
+          adaptiveCap: 7,
+          quarantineReason: null,
           token: 'SECRET_SHOULD_STRIP',
           apiKey: 'also-strip',
         },
@@ -927,9 +936,71 @@ describe('P1 replace_accounts → durable sync ingestion', () => {
       providerKind: 'GROK',
       effectiveInUse: 1,
       effectiveCap: 5,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      quotaRemaining: 88,
+      quotaVerdict: 'PASS',
+      chatVerdict: 'PASS',
+      probedAt: '2026-07-13T10:00:00.000Z',
+      probeAgeSeconds: 0,
+      adaptiveCap: 7,
+      quarantineReason: null,
     })
     expect(JSON.stringify(mapped)).not.toMatch(/SECRET_SHOULD_STRIP|also-strip/)
     expect(mapped[1]?.status).toBe('LIMIT')
+  })
+
+  it('scheduler notify rebuild preserves all CP0 eligibility fields and usable capacity', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const generatedAt = ctx.clock.nowISO()
+    const proof = {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      quotaRemaining: 66,
+      quotaVerdict: 'PASS' as const,
+      chatVerdict: 'PASS' as const,
+      probedAt: generatedAt,
+      probeAgeSeconds: 0,
+      adaptiveCap: 7,
+      quarantineReason: null,
+    }
+    await ctx.runtime.accounts.put({
+      boardId: BOARD,
+      sourceRevision: 10,
+      generatedAt,
+      generatedAtMs: Date.parse(generatedAt),
+      accounts: [
+        {
+          maskedAccountId: 'mask-notify-proof',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 10,
+          physicalSlotsDisplay: '0/20',
+          adaptiveQuotaState: null,
+          reason: null,
+          statusChangedAt: null,
+          tombstone: false,
+          ...proof,
+        },
+      ],
+      readbackSurfaces: { mcp: null, api: null, ui: null, ops: null },
+      publishedAtMs: ctx.clock.nowMs(),
+      lastPeriodicHealthAtMs: null,
+      stale: false,
+      staleReason: null,
+      usableCapacity: 7,
+      capacity: {} as never,
+      entityRev: 1,
+    })
+
+    const notified = await notifyAccountSchedulerTrigger(BOARD, 'STATUS_TRANSITION', {
+      canonicalHash: 'notify-proof-pin',
+      idempotencyKey: 'notify-proof-1',
+      actorId: 'root-notify-proof',
+    })
+    expect(notified).toMatchObject({ ok: true, kind: 'PUBLISHED' })
+    const after = await ctx.runtime.accounts.get(BOARD)
+    expect(after?.accounts[0]).toMatchObject(proof)
+    expect(after?.usableCapacity).toBe(7)
   })
 
   it('mapLegacyOpsAccountsToSync fails closed on secret-like id and missing accounts', () => {
