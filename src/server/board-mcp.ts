@@ -69,10 +69,17 @@ import {
   authErrorEnvelope,
   authorizeToolCall,
   isToolListable,
+  listHumanSafeToolNames,
   RbacError,
   type AuthMechanismState,
   type Principal,
 } from '#/server/rbac'
+import {
+  buildCp0CapabilitiesReadback,
+  buildCp0SyncStatusReadback,
+  resolveCp0ReadBoardId,
+  type Cp0SyncStatusRow,
+} from '#/server/cp0-mcp-metadata'
 import {
   getSharedPublicSnapshotService,
   resetPublicSnapshotServiceForTests,
@@ -4201,6 +4208,71 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     'list_boards',
     { title: 'List boards', description: 'List all boards (each board is its own scope).', inputSchema: {} },
     async () => jsonText({ boards: await listBoards() }),
+  )
+  secureTool(
+    'get_capabilities',
+    {
+      title: 'Get authenticated CP0 capabilities',
+      description:
+        'Identity-safe capability names available to the authenticated board-bound principal.',
+      inputSchema: {
+        boardId: z.string().optional().describe('Board id; defaults to the authenticated board binding.'),
+      },
+    },
+    async (args) => {
+      const id = resolveCp0ReadBoardId(args.boardId, principal)
+      if (!id) throw new RbacError('FORBIDDEN_SCOPE', 'boardId required for CP0 metadata read')
+      const pin = await resolveBoardPin(id)
+      return jsonText(
+        buildCp0CapabilitiesReadback({
+          principal,
+          capabilities: listHumanSafeToolNames(principal),
+          pin: {
+            boardRev: pin.boardRev,
+            lifecycleRev: pin.lifecycleRev,
+            canonicalHash: pin.canonicalHash,
+            generatedAt: pin.generatedAt,
+            stale: pin.stale,
+          },
+        }),
+      )
+    },
+  )
+  secureTool(
+    'get_sync_status',
+    {
+      title: 'Get fail-closed CP0 sync status',
+      description:
+        'Current-pin schema-008 sync/backlog readback; missing, stale, malformed, or off-pin evidence never proves zero.',
+      inputSchema: {
+        boardId: z.string().optional().describe('Board id; defaults to the authenticated board binding.'),
+      },
+    },
+    async (args) => {
+      const id = resolveCp0ReadBoardId(args.boardId, principal)
+      if (!id) throw new RbacError('FORBIDDEN_SCOPE', 'boardId required for CP0 metadata read')
+      const pin = boardPinToMcpReadPin(await resolveBoardPin(id))
+      let row: Cp0SyncStatusRow | null = null
+      let schemaAvailable = true
+      try {
+        const [rows] = await db().query(
+          `SELECT status, outbox_pending, legacy_unreplayed, effective_backlog,
+                  board_rev, lifecycle_rev, canonical_hash, last_ack_revision,
+                  freshness_at, entity_rev
+             FROM control_plane_sync_status
+            WHERE board_id=?
+            LIMIT 1`,
+          [id],
+        )
+        row = (rows as Array<Cp0SyncStatusRow>)[0] ?? null
+      } catch {
+        schemaAvailable = false
+      }
+      return jsonText({
+        ...buildCp0SyncStatusReadback(row, pin),
+        schemaAvailable,
+      })
+    },
   )
   secureWriteTool(
     'create_board',

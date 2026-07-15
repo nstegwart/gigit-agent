@@ -603,6 +603,9 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   { name: 'get_dispatch_next', kind: 'read', scopes: ['board:read'], aliasOf: 'get_next' },
   // Owner humanDisplay projection (versioned; fail-closed CONTENT_REVIEW_REQUIRED when missing).
   { name: 'get_human_display', kind: 'read', scopes: ['board:read'] },
+  // Identity-safe, board-bound CP0 metadata. Account/audit data keep dedicated scopes.
+  { name: 'get_capabilities', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_sync_status', kind: 'read', scopes: ['board:read'] },
 
   // Legacy writes
   { name: 'create_board', kind: 'write', scopes: ['import:write', 'lifecycle:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },

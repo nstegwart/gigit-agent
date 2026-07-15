@@ -1318,12 +1318,6 @@ export function buildControlCenterAggregationFromSources(
   const generatedAt = src.now ?? new Date().toISOString()
   const nowMs = Date.parse(generatedAt)
   const nowMsSafe = Number.isFinite(nowMs) ? nowMs : Date.now()
-  const taskHash = sha256Hex(
-    src.tasks
-      .map((t) => t.id)
-      .sort()
-      .join('|') || 'empty-tasks',
-  )
   // Authoritative pin: complete board_revisions subject_hash + snapshot wins over live boardHash.
   // Do not synthesize/rewrite classification receipts to match either pin.
   const pinAuthorityComplete = Boolean(
@@ -1336,6 +1330,17 @@ export function buildControlCenterAggregationFromSources(
   const canonicalHash = pinAuthorityComplete
     ? (src.authorityCanonicalHash as string)
     : src.boardContentHash
+  // Classification sync binds CANONICAL_PIN receipts with taskHash=canonicalHash.
+  // Reuse that authoritative alias under a complete pin; an ids-only hash would
+  // invalidate every durable row and make public /work falsely UNCLASSIFIED.
+  const taskHash = pinAuthorityComplete
+    ? canonicalHash
+    : sha256Hex(
+        src.tasks
+          .map((t) => t.id)
+          .sort()
+          .join('|') || 'empty-tasks',
+      )
   const canonicalSnapshotId = pinAuthorityComplete
     ? (src.authorityCanonicalSnapshotId as string)
     : `cc-${src.boardId}-${src.boardContentHash.slice(0, 16)}`
