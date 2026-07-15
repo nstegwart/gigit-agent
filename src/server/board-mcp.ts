@@ -6840,7 +6840,8 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     'list_accounts',
     {
       title: 'List agent accounts',
-      description: 'Durable account-sync snapshot (masked only; never tokens). Cursor/pageSize filters.',
+      description:
+        'Durable account-sync snapshot (masked only; never tokens), including the current account entityRev required for ROOT sync_accounts CAS. Cursor/pageSize filters.',
       inputSchema: {
         ...BOARD_ARG,
         status: z.string().optional(),
@@ -6897,10 +6898,16 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           schema: projected?.schema ?? null,
           stale: projected?.stale ?? true,
           capacity: projected?.capacity ?? null,
+          entityRev: projected?.entityRev ?? null,
         },
         { method: 'list_accounts', nextCursor: page.nextCursor },
       )
-      return jsonText({ ...env, accounts: page.items })
+      return jsonText({
+        ...env,
+        accounts: page.items,
+        // Compatibility top-level for runtime clients; identical to data.entityRev.
+        entityRev: projected?.entityRev ?? null,
+      })
     },
   )
   secureTool(

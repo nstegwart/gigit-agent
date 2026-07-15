@@ -126,6 +126,7 @@ describe('account surface API + product services', () => {
       expect(p?.generatedAt).toBe(GEN)
     }
     expect(mcp?.schema).toBe(ACCOUNT_SURFACE_SCHEMA.mcp)
+    expect(mcp?.entityRev).toBe(2)
     expect(api?.schema).toBe(ACCOUNT_SURFACE_SCHEMA.api)
     expect(ui?.schema).toBe(ACCOUNT_SURFACE_SCHEMA.ui)
     expect(ops?.schema).toBe(ACCOUNT_SURFACE_SCHEMA.ops)

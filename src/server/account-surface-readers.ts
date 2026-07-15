@@ -184,6 +184,8 @@ export interface McpListAccountsProjection extends AccountSurfaceIdentity {
   stale: boolean
   capacity: AccountSyncSnapshot['capacity'] | null
   usableCapacity: number
+  /** Current durable account-snapshot CAS revision for the next ROOT sync_accounts write. */
+  entityRev: number
 }
 
 /**
@@ -251,6 +253,7 @@ export function projectMcpListAccounts(
     stale: snap.stale,
     capacity: snap.capacity ?? null,
     usableCapacity: snap.usableCapacity,
+    entityRev: snap.entityRev,
   }
 }
 

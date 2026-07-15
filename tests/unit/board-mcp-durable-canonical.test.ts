@@ -3599,6 +3599,133 @@ describe('submit_stage_evidence MCP tool + WAVE_CLOSE + add_comment real MCP', (
     expect(ACCOUNT_SYNC_EXTERNAL_ADAPTER_TRIGGERS).toEqual([])
   })
 
+  it('list_accounts exposes masked pinned CAS rev for stale-safe idempotent ROOT sync readback', async () => {
+    const ctx = resolveMcpRuntimeContext()
+    const pin = 'd'.repeat(64)
+    const sql = (ctx.controlData as { sql?: Parameters<typeof seedBoardRevision>[0] }).sql
+    expect(sql).toBeTruthy()
+    await seedBoardRevision(sql!, {
+      boardId: BOARD,
+      boardRev: 0,
+      lifecycleRev: 1,
+      subjectHash: pin,
+      canonicalSnapshotId: 'snap-account-cas-readback',
+      canonicalHash: pin,
+    })
+    const generatedAt = ctx.clock.nowISO()
+    await ctx.runtime.accounts.put({
+      boardId: BOARD,
+      sourceRevision: 10,
+      generatedAt,
+      generatedAtMs: Date.parse(generatedAt),
+      accounts: [
+        {
+          maskedAccountId: 'mask-cas-1',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+          physicalSlotsDisplay: '0/20',
+          adaptiveQuotaState: null,
+          reason: null,
+          statusChangedAt: null,
+          tombstone: false,
+          token: 'must-not-leak',
+        } as never,
+      ],
+      readbackSurfaces: {
+        mcp: { sourceRevision: 10, generatedAt },
+        api: { sourceRevision: 10, generatedAt },
+        ui: { sourceRevision: 10, generatedAt },
+        ops: { sourceRevision: 10, generatedAt },
+      },
+      publishedAtMs: ctx.clock.nowMs(),
+      lastPeriodicHealthAtMs: null,
+      stale: false,
+      staleReason: null,
+      usableCapacity: 5,
+      capacity: {} as never,
+      entityRev: 5,
+    })
+
+    const server = new McpServer({ name: 'account-cas-readback', version: '0.0.0' })
+    registerBoardTools(server, authRoot())
+    const before = await callToolJson(server, 'list_accounts', { boardId: BOARD })
+    expect(before).toMatchObject({
+      schemaVersion: 'TM_PINNED_ENVELOPE_V1',
+      method: 'list_accounts',
+      boardRev: 0,
+      lifecycleRev: 1,
+      canonicalHash: pin,
+      stale: false,
+      entityRev: 5,
+    })
+    expect(Number(before.freshnessAgeSeconds)).toBeGreaterThanOrEqual(0)
+    expect((before.data as { entityRev: number }).entityRev).toBe(5)
+    expect(JSON.stringify(before)).not.toMatch(/must-not-leak|"token"|"secret"|"password"/i)
+
+    const syncBody = {
+      boardId: BOARD,
+      sourceRevision: 11,
+      generatedAt: ctx.clock.nowISO(),
+      expectedBoardRev: 0,
+      canonicalHash: pin,
+      idempotencyKey: 'idem-account-cas-readback',
+      trigger: 'ORCHESTRATOR_LAUNCH',
+      accounts: [
+        {
+          maskedAccountId: 'mask-cas-1',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+          quotaVerdict: 'PASS',
+          chatVerdict: 'PASS',
+        },
+      ],
+    }
+    const stale = await callToolJson(server, 'sync_accounts', {
+      ...syncBody,
+      entityExpectedRev: 4,
+      idempotencyKey: 'idem-account-cas-stale',
+    })
+    expect(stale.ok).toBe(false)
+    expect(stale.code).toBe('STALE_REVISION')
+    expect((await ctx.atomic.getBoardState(BOARD)).boardRev).toBe(0)
+    const afterStale = await callToolJson(server, 'list_accounts', { boardId: BOARD })
+    const reboundEntityRev = Number(afterStale.entityRev)
+    expect(reboundEntityRev).toBeGreaterThan(5)
+    expect((afterStale.data as { entityRev: number }).entityRev).toBe(reboundEntityRev)
+
+    const write = { ...syncBody, entityExpectedRev: reboundEntityRev }
+    const first = await callToolJson(server, 'sync_accounts', write)
+    expect(first.ok).toBe(true)
+    expect(first.replayed).toBe(false)
+    const replay = await callToolJson(server, 'sync_accounts', write)
+    expect(replay.ok).toBe(true)
+    expect(replay.replayed).toBe(true)
+    expect(replay.boardRev).toBe(first.boardRev)
+
+    const boardAfter = await ctx.atomic.getBoardState(BOARD)
+    const snapshotAfter = await ctx.runtime.accounts.get(BOARD)
+    expect(snapshotAfter?.entityRev).toBeGreaterThan(5)
+    await seedBoardRevision(sql!, {
+      boardId: BOARD,
+      boardRev: boardAfter.boardRev,
+      lifecycleRev: 1,
+      subjectHash: pin,
+      canonicalSnapshotId: 'snap-account-cas-readback',
+      canonicalHash: pin,
+    })
+    const readback = await callToolJson(server, 'list_accounts', { boardId: BOARD })
+    expect(readback.entityRev).toBe(snapshotAfter?.entityRev)
+    expect((readback.data as { entityRev: number }).entityRev).toBe(snapshotAfter?.entityRev)
+    expect(readback.canonicalHash).toBe(pin)
+    expect(readback.boardRev).toBe(boardAfter.boardRev)
+    const audit = await ctx.atomic.listAudit(BOARD)
+    expect(audit.some((row) => row.kind === 'ACCOUNT_SYNC')).toBe(true)
+  })
+
   it('MCP sync_accounts fails closed with ACCOUNT_SYNC_SCHEDULER_MISSING when scheduler absent', async () => {
     const ctx = resolveMcpRuntimeContext()
     const pin = 'b'.repeat(64)
