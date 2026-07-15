@@ -44,15 +44,19 @@ export function WorkList({
         <table className={styles.table} data-testid="work-table">
           <thead>
             <tr>
-              <th scope="col">Judul pekerjaan</th>
-              <th scope="col">Bucket / overlay</th>
-              <th scope="col">Tahap / proyek</th>
+              <th scope="col">Hasil dan langkah berikutnya</th>
+              <th scope="col">Status pekerjaan</th>
+              <th scope="col">Tahap dan proyek</th>
               <th scope="col">Kesiapan</th>
             </tr>
           </thead>
           <tbody>
             {items.map((item) => (
-              <WorkRow key={item.taskId} item={item} onActivate={onRowActivate} />
+              <WorkRow
+                key={item.taskId}
+                item={item}
+                onActivate={onRowActivate}
+              />
             ))}
           </tbody>
         </table>

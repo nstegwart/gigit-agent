@@ -13,10 +13,22 @@ import { describe, expect, it } from 'vitest'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const stylesSrc = readFileSync(join(root, 'src/styles.css'), 'utf8')
-const appShellSrc = readFileSync(join(root, 'src/components/AppShell.tsx'), 'utf8')
-const userMenuSrc = readFileSync(join(root, 'src/components/UserMenu.tsx'), 'utf8')
-const tasksTableSrc = readFileSync(join(root, 'src/components/TasksTable.tsx'), 'utf8')
-const featuresTableSrc = readFileSync(join(root, 'src/components/FeaturesTable.tsx'), 'utf8')
+const appShellSrc = readFileSync(
+  join(root, 'src/components/AppShell.tsx'),
+  'utf8',
+)
+const userMenuSrc = readFileSync(
+  join(root, 'src/components/UserMenu.tsx'),
+  'utf8',
+)
+const tasksTableSrc = readFileSync(
+  join(root, 'src/components/TasksTable.tsx'),
+  'utf8',
+)
+const featuresTableSrc = readFileSync(
+  join(root, 'src/components/FeaturesTable.tsx'),
+  'utf8',
+)
 const decisionsCss = readFileSync(
   join(root, 'src/components/control-center/decisions/decisions.module.css'),
   'utf8',
@@ -63,7 +75,8 @@ function relativeLuminance(hex: string): number {
   const r = parseInt(c.slice(0, 2), 16) / 255
   const g = parseInt(c.slice(2, 4), 16) / 255
   const b = parseInt(c.slice(4, 6), 16) / 255
-  const f = (x: number) => (x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4))
+  const f = (x: number) =>
+    x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4)
   return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
 }
 
@@ -129,9 +142,7 @@ describe('C3-R2A light semantic tokens — computed AA (≥4.5:1)', () => {
   })
 
   it('chip-admin uses accent color on soft (token path)', () => {
-    expect(stylesSrc).toMatch(
-      /\.chip-admin\s*\{[^}]*color:\s*var\(--accent\)/s,
-    )
+    expect(stylesSrc).toMatch(/\.chip-admin\s*\{[^}]*color:\s*var\(--accent\)/s)
   })
 })
 
@@ -200,7 +211,7 @@ describe('C3-R2A module AA hard-locals (no var pass-through trap)', () => {
 describe('C3-R2A shell scroll + legacy table a11y markup', () => {
   it('main content region is named + keyboard focusable', () => {
     expect(appShellSrc).toMatch(/id="view"/)
-    expect(appShellSrc).toMatch(/role="region"/)
+    expect(appShellSrc).toMatch(/<main/)
     expect(appShellSrc).toMatch(/aria-label="Main content"/)
     expect(appShellSrc).toMatch(/tabIndex=\{0\}/)
   })
@@ -221,8 +232,12 @@ describe('C3-R2A shell scroll + legacy table a11y markup', () => {
   })
 
   it('UserMenu exposes full account name via aria-label/title', () => {
-    expect(userMenuSrc).toMatch(/aria-label=\{`Account menu: \$\{me\.username\}, \$\{me\.role\}`\}/)
-    expect(userMenuSrc).toMatch(/title=\{`\$\{me\.username\} \(\$\{me\.role\}\)`\}/)
+    expect(userMenuSrc).toMatch(
+      /aria-label=\{`Account menu: \$\{me\.username\}, \$\{me\.role\}`\}/,
+    )
+    expect(userMenuSrc).toMatch(
+      /title=\{`\$\{me\.username\} \(\$\{me\.role\}\)`\}/,
+    )
   })
 })
 
@@ -236,8 +251,8 @@ describe('C3-R2A visual density / empty-filter contracts', () => {
   it('work empty state can reflect active bucket + stale filter truth', () => {
     expect(workStatesSrc).toMatch(/activeBucket/)
     expect(workStatesSrc).toMatch(/staleOverlayActive/)
-    expect(workStatesSrc).toMatch(/Clear STALE filter/)
-    expect(workStatesSrc).toMatch(/Switch to Ongoing/)
+    expect(workStatesSrc).toMatch(/Hapus filter BASI/)
+    expect(workStatesSrc).toMatch(/Pindah ke Sedang dikerjakan/)
   })
 
   it('overview banners support compact + technical details disclosure', () => {
@@ -263,7 +278,10 @@ describe('C3-R4V agents density + enum label + mobile chrome contracts', () => {
     join(root, 'src/components/control-center/agents/AgentsScreen.tsx'),
     'utf8',
   )
-  const displayLabelSrc = readFileSync(join(root, 'src/lib/display-label.ts'), 'utf8')
+  const displayLabelSrc = readFileSync(
+    join(root, 'src/lib/display-label.ts'),
+    'utf8',
+  )
   const priorityCardSrc = readFileSync(
     join(root, 'src/components/control-center/overview/PriorityCard.tsx'),
     'utf8',
@@ -295,12 +313,18 @@ describe('C3-R4V agents density + enum label + mobile chrome contracts', () => {
     expect(priorityCardSrc).toMatch(/data-frontier-raw/)
     expect(priorityCardSrc).toMatch(/data-portfolio-raw/)
     expect(overviewCss).toMatch(/\.metricValueEnum/)
-    expect(overviewCss).not.toMatch(/\.metricValue\s*\{[^}]*overflow-wrap:\s*anywhere/s)
+    expect(overviewCss).not.toMatch(
+      /\.metricValue\s*\{[^}]*overflow-wrap:\s*anywhere/s,
+    )
   })
 
   it('UserMenu keeps full identity in aria-label/title; compact mobile hides name', () => {
-    expect(userMenuSrc).toMatch(/aria-label=\{`Account menu: \$\{me\.username\}, \$\{me\.role\}`\}/)
-    expect(userMenuSrc).toMatch(/title=\{`\$\{me\.username\} \(\$\{me\.role\}\)`\}/)
+    expect(userMenuSrc).toMatch(
+      /aria-label=\{`Account menu: \$\{me\.username\}, \$\{me\.role\}`\}/,
+    )
+    expect(userMenuSrc).toMatch(
+      /title=\{`\$\{me\.username\} \(\$\{me\.role\}\)`\}/,
+    )
     expect(userMenuSrc).toMatch(/usermenu-role/)
     expect(stylesSrc).toMatch(/\.usermenu-name\s*\{\s*display:\s*none/)
     expect(stylesSrc).toMatch(/app--control-center/)

@@ -96,10 +96,10 @@ function domainHarness() {
 }
 
 describe('terminate_run catalog + RBAC', () => {
-  it('catalog integrity includes terminate_run once; write count 43', () => {
+  it('catalog integrity includes terminate_run once; write count 44', () => {
     expect(() => assertMcpToolCatalogIntegrity()).not.toThrow()
     expect(REGISTERED_WRITE_TOOL_NAMES).toContain('terminate_run')
-    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(43)
+    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(44)
     expect(REGISTERED_WRITE_TOOL_NAMES.filter((n) => n === 'terminate_run')).toHaveLength(1)
 
     const server = new McpServer({ name: 'term-cat', version: '0.0.0' })

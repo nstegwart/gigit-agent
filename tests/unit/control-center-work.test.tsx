@@ -16,10 +16,12 @@ import {
   WORK_PRIMARY_BUCKETS,
   formatAgeSeconds,
   STALE_FAMILY_OVERLAYS,
-  type WorkItemRow,
-  type WorkPageState,
-  type WorkScreenProps,
-  type PinnedRevisionTuple,
+} from '#/components/control-center/work'
+import type {
+  WorkItemRow,
+  WorkPageState,
+  WorkScreenProps,
+  PinnedRevisionTuple,
 } from '#/components/control-center/work'
 
 const PIN: PinnedRevisionTuple = {
@@ -40,7 +42,10 @@ const PAGE: WorkPageState = {
   hasPrev: false,
 }
 
-function row(partial: Partial<WorkItemRow> & Pick<WorkItemRow, 'taskId' | 'title' | 'bucket'>): WorkItemRow {
+function row(
+  partial: Partial<WorkItemRow> &
+    Pick<WorkItemRow, 'taskId' | 'title' | 'bucket'>,
+): WorkItemRow {
   // Default reviewed owner primary for existing display fixtures (happy path).
   // Explicit contentReviewRequired:true / missing owner fields covered by owner-display tests.
   const forceShell = partial.contentReviewRequired === true
@@ -157,13 +162,15 @@ describe('deep-link helpers', () => {
     expect(encoded.stale).toBe('1')
     expect(encoded.overlay).toBe('STALE_CLAIM')
     expect(encoded.cursor).toBe('abc')
-    expect(workDeepLinkPath({
-      boardId: 'mfs-rebuild',
-      bucket: 'QUEUED',
-      staleOverlay: false,
-      cursor: null,
-      pinned: null,
-    })).toBe('/b/mfs-rebuild/work?bucket=QUEUED')
+    expect(
+      workDeepLinkPath({
+        boardId: 'mfs-rebuild',
+        bucket: 'QUEUED',
+        staleOverlay: false,
+        cursor: null,
+        pinned: null,
+      }),
+    ).toBe('/b/mfs-rebuild/work?bucket=QUEUED')
   })
 
   it('invalid bucket falls back to default ONGOING', () => {
@@ -200,7 +207,9 @@ describe('BucketTabs', () => {
     )
     const tabs = screen.getAllByRole('tab')
     expect(tabs).toHaveLength(6)
-    expect(screen.getByTestId('work-tab-DONE').getAttribute('aria-selected')).toBe('true')
+    expect(
+      screen.getByTestId('work-tab-DONE').getAttribute('aria-selected'),
+    ).toBe('true')
     fireEvent.click(screen.getByTestId('work-tab-NEXT'))
     expect(onChange).toHaveBeenCalledWith('NEXT')
   })
@@ -239,7 +248,13 @@ describe('WorkScreen tab/panel relationship', () => {
 describe('StaleOverlayFilter', () => {
   it('is a switch chip, not a primary tab', () => {
     const onChange = vi.fn()
-    render(<StaleOverlayFilter active={false} summary={{ total: 5 }} onChange={onChange} />)
+    render(
+      <StaleOverlayFilter
+        active={false}
+        summary={{ total: 5 }}
+        onChange={onChange}
+      />,
+    )
     const chip = screen.getByTestId('work-stale-overlay')
     expect(chip.getAttribute('role')).toBe('switch')
     expect(chip.getAttribute('aria-checked')).toBe('false')
@@ -277,11 +292,15 @@ describe('WorkRow display rules', () => {
     )
     const badge = screen.getByTestId('work-row-bucket')
     expect(badge.getAttribute('data-bucket')).toBe('DONE')
-    expect(screen.getByTestId('work-row-overlays').querySelectorAll('[data-overlay]')).toHaveLength(2)
+    expect(
+      screen
+        .getByTestId('work-row-overlays')
+        .querySelectorAll('[data-overlay]'),
+    ).toHaveLength(2)
     const recon = screen.getByTestId('work-row-reconciliation')
     expect(recon.textContent).toContain('run-9')
     expect(recon.textContent).toContain('RECLAIM')
-    expect(recon.textContent).toContain('dry-run')
+    expect(recon.textContent).toContain('simulasi')
     expect(recon.textContent).toContain('agent-z')
   })
 
@@ -317,7 +336,7 @@ describe('WorkRow display rules', () => {
     expect(recon.textContent).toMatch(/c1/)
     expect(recon.textContent).toMatch(/l1/)
     expect(recon.textContent).toMatch(/RELEASE/)
-    expect(recon.textContent).toMatch(/\(live\)/)
+    expect(recon.textContent).toMatch(/\(aktif\)/)
     expect(recon.textContent).toMatch(/12m/)
     expect(recon.textContent).toMatch(/a1/)
   })
@@ -351,7 +370,9 @@ describe('WorkRow display rules', () => {
     expect(block.textContent).toContain('FUNCTIONAL')
     expect(block.textContent).toContain('ag-1')
     expect(block.textContent).toContain('Macet')
-    expect(screen.getByTestId('work-row-evidence').getAttribute('href')).toBe('/e/2')
+    expect(screen.getByTestId('work-row-evidence').getAttribute('href')).toBe(
+      '/e/2',
+    )
   })
 
   it('native detailHref link is present for accessible drilldown', () => {
@@ -376,7 +397,7 @@ describe('WorkRow display rules', () => {
     expect(link.getAttribute('href')).toBe('/b/mfs-rebuild/tasks/t-link')
     fireEvent.click(link)
     expect(onActivate).toHaveBeenCalled()
-    expect(onActivate.mock.calls[0]![0].taskId).toBe('t-link')
+    expect(onActivate.mock.calls[0][0].taskId).toBe('t-link')
   })
 
   it('card mode uses native title anchor when detailHref set (no nested <a>)', () => {
@@ -399,11 +420,15 @@ describe('WorkRow display rules', () => {
     const card = screen.getByTestId('work-row-t-card')
     // Outer shell is div/group so title + evidence <a> are not nested anchors.
     expect(card.tagName).toBe('DIV')
-    expect(card.getAttribute('data-detail-href')).toBe('/b/mfs-rebuild/tasks/t-card')
+    expect(card.getAttribute('data-detail-href')).toBe(
+      '/b/mfs-rebuild/tasks/t-card',
+    )
     const link = screen.getByTestId('work-row-link-t-card')
     expect(link.tagName).toBe('A')
     expect(link.getAttribute('href')).toBe('/b/mfs-rebuild/tasks/t-card')
-    expect(screen.getByTestId('work-row-evidence').getAttribute('href')).toBe('/evidence/e-card')
+    expect(screen.getByTestId('work-row-evidence').getAttribute('href')).toBe(
+      '/evidence/e-card',
+    )
   })
 
   it('displays server blockReason + reason text only', () => {
@@ -454,17 +479,29 @@ describe('WorkRow display rules', () => {
     const link = screen.getByTestId('work-row-link-t-hd-ok')
     expect(link.textContent).toBe('Selesaikan list work human display')
     expect(link.textContent).not.toContain('[FC-77]')
-    expect(screen.getByTestId('work-row-technical-title').textContent).toContain('[FC-77]')
-    expect(screen.getByTestId('work-row-status').textContent).toMatch(/Sedang dikerjakan/)
-    expect(screen.getByTestId('work-row-why').textContent).toMatch(/salinan manusia/)
-    expect(screen.getByTestId('work-row-next').textContent).toMatch(/Tutup AC/)
-    expect(screen.getByTestId('work-row-blocker').textContent).toMatch(/Tidak ada/)
-    expect(screen.getByTestId('work-row-action').textContent).toMatch(/Pantau/)
-    expect(screen.getByTestId('work-row-citations').textContent).toMatch(/humanDisplay\.title/)
-    expect(screen.queryByTestId('work-row-review-badge')).toBeNull()
-    expect(screen.getByTestId('work-row-t-hd-ok').getAttribute('data-content-review-required')).toBe(
-      'false',
+    expect(
+      screen.getByTestId('work-row-technical-title').textContent,
+    ).toContain('[FC-77]')
+    expect(screen.getByTestId('work-row-status').textContent).toMatch(
+      /Sedang dikerjakan/,
     )
+    expect(screen.getByTestId('work-row-why').textContent).toMatch(
+      /salinan manusia/,
+    )
+    expect(screen.getByTestId('work-row-next').textContent).toMatch(/Tutup AC/)
+    expect(screen.getByTestId('work-row-blocker').textContent).toMatch(
+      /Tidak ada/,
+    )
+    expect(screen.getByTestId('work-row-action').textContent).toMatch(/Pantau/)
+    expect(screen.getByTestId('work-row-citations').textContent).toMatch(
+      /humanDisplay\.title/,
+    )
+    expect(screen.queryByTestId('work-row-review-badge')).toBeNull()
+    expect(
+      screen
+        .getByTestId('work-row-t-hd-ok')
+        .getAttribute('data-content-review-required'),
+    ).toBe('false')
   })
 
   it('owner humanDisplay: missing projection → CONTENT_REVIEW_REQUIRED shell, never technical primary', () => {
@@ -485,12 +522,18 @@ describe('WorkRow display rules', () => {
     )
     const rowEl = screen.getByTestId('work-row-t-hd-shell')
     expect(rowEl.getAttribute('data-content-review-required')).toBe('true')
-    expect(screen.getByTestId('work-row-owner-title').textContent).toBe('CONTENT_REVIEW_REQUIRED')
-    expect(screen.getByTestId('work-row-owner-title').textContent).not.toContain('[FC-99]')
-    expect(screen.getByTestId('work-row-review-badge').textContent).toMatch(
-      /CONTENT_REVIEW_REQUIRED/,
+    expect(screen.getByTestId('work-row-owner-title').textContent).toBe(
+      'Konten perlu ditinjau',
     )
-    expect(screen.getByTestId('work-row-technical-title').textContent).toContain('[FC-99]')
+    expect(
+      screen.getByTestId('work-row-owner-title').textContent,
+    ).not.toContain('[FC-99]')
+    expect(screen.getByTestId('work-row-review-badge').textContent).toMatch(
+      /Perlu tinjauan konten/,
+    )
+    expect(
+      screen.getByTestId('work-row-technical-title').textContent,
+    ).toContain('[FC-99]')
   })
 
   it('owner humanDisplay: blocked shell title preferred over technical when contentReviewRequired', () => {
@@ -506,8 +549,10 @@ describe('WorkRow display rules', () => {
               effectiveReviewStatus: 'CONTENT_REVIEW_REQUIRED',
               ownerPrimaryTitle: 'Konten pemilik memerlukan peninjauan',
               statusSentence: 'Status peninjauan: CONTENT_REVIEW_REQUIRED.',
-              ownerAction: 'Tinjau atau tugaskan peninjauan salinan manusia untuk item ini.',
-              whyItMatters: 'Salinan teknis mentah tidak boleh menjadi teks utama bagi pemilik.',
+              ownerAction:
+                'Tinjau atau tugaskan peninjauan salinan manusia untuk item ini.',
+              whyItMatters:
+                'Salinan teknis mentah tidak boleh menjadi teks utama bagi pemilik.',
             })}
           />
         </tbody>
@@ -516,7 +561,9 @@ describe('WorkRow display rules', () => {
     expect(screen.getByTestId('work-row-owner-title').textContent).toBe(
       'Konten pemilik memerlukan peninjauan',
     )
-    expect(screen.getByTestId('work-row-owner-title').textContent).not.toContain('tech-run-title')
+    expect(
+      screen.getByTestId('work-row-owner-title').textContent,
+    ).not.toContain('tech-run-title')
     expect(screen.getByTestId('work-row-review-badge')).toBeTruthy()
     expect(screen.getByTestId('work-row-action').textContent).toMatch(/Tinjau/)
   })
@@ -552,9 +599,9 @@ describe('WorkRow display rules', () => {
       const rowEl = screen.getByTestId(`work-row-t-adv-${status}`)
       expect(rowEl.getAttribute('data-content-review-required')).toBe('true')
       expect(screen.getByTestId('work-row-review-badge')).toBeTruthy()
-      expect(screen.getByTestId('work-row-owner-title').textContent).not.toContain(
-        `[TECH-${status}]`,
-      )
+      expect(
+        screen.getByTestId('work-row-owner-title').textContent,
+      ).not.toContain(`[TECH-${status}]`)
       expect(screen.getByTestId('work-row-owner-title').textContent).toBe(
         `Generated work title ${status}`,
       )
@@ -580,12 +627,21 @@ describe('WorkScreen states (UI_CONTRACT §5)', () => {
   it.each(states)('renders state=%s surface marker', (state) => {
     const props = baseProps({
       state,
-      items: state === 'populated' || state === 'partial' || state === 'stale' || state === 'needs-human'
-        ? baseProps().items
-        : [],
+      items:
+        state === 'populated' ||
+        state === 'partial' ||
+        state === 'stale' ||
+        state === 'needs-human'
+          ? baseProps().items
+          : [],
       error:
         state === 'error' || state === 'forbidden'
-          ? { code: 'FORBIDDEN', message: 'no access', field: 'filters.cursor', retryable: true }
+          ? {
+              code: 'FORBIDDEN',
+              message: 'no access',
+              field: 'filters.cursor',
+              retryable: true,
+            }
           : null,
       partialMessage: state === 'partial' ? 'section X failed' : null,
       envelopeStale: state === 'stale',
@@ -593,20 +649,32 @@ describe('WorkScreen states (UI_CONTRACT §5)', () => {
       needsHumanMessage: state === 'needs-human' ? 'Decide on D-1' : null,
     })
     render(<WorkScreen {...props} />)
-    expect(screen.getByTestId('work-screen').getAttribute('data-state')).toBe(state)
+    expect(screen.getByTestId('work-screen').getAttribute('data-state')).toBe(
+      state,
+    )
 
-    if (state === 'loading') expect(screen.getByTestId('work-state-loading')).toBeTruthy()
-    if (state === 'empty') expect(screen.getByTestId('work-state-empty')).toBeTruthy()
-    if (state === 'zero-results') expect(screen.getByTestId('work-state-zero-results')).toBeTruthy()
-    if (state === 'partial') expect(screen.getByTestId('work-state-partial')).toBeTruthy()
-    if (state === 'stale') expect(screen.getByTestId('work-state-stale')).toBeTruthy()
-    if (state === 'disconnected') expect(screen.getByTestId('work-state-disconnected')).toBeTruthy()
+    if (state === 'loading')
+      expect(screen.getByTestId('work-state-loading')).toBeTruthy()
+    if (state === 'empty')
+      expect(screen.getByTestId('work-state-empty')).toBeTruthy()
+    if (state === 'zero-results')
+      expect(screen.getByTestId('work-state-zero-results')).toBeTruthy()
+    if (state === 'partial')
+      expect(screen.getByTestId('work-state-partial')).toBeTruthy()
+    if (state === 'stale')
+      expect(screen.getByTestId('work-state-stale')).toBeTruthy()
+    if (state === 'disconnected')
+      expect(screen.getByTestId('work-state-disconnected')).toBeTruthy()
     if (state === 'error') {
       expect(screen.getByTestId('work-state-error')).toBeTruthy()
-      expect(screen.getByTestId('work-field-error').textContent).toContain('filters.cursor')
+      expect(screen.getByTestId('work-field-error').textContent).toContain(
+        'filters.cursor',
+      )
     }
-    if (state === 'forbidden') expect(screen.getByTestId('work-state-forbidden')).toBeTruthy()
-    if (state === 'needs-human') expect(screen.getByTestId('work-state-needs-human')).toBeTruthy()
+    if (state === 'forbidden')
+      expect(screen.getByTestId('work-state-forbidden')).toBeTruthy()
+    if (state === 'needs-human')
+      expect(screen.getByTestId('work-state-needs-human')).toBeTruthy()
   })
 
   it('populated shows pinned revision, pagination cursor state, dual reflow trees', () => {
@@ -616,7 +684,9 @@ describe('WorkScreen states (UI_CONTRACT §5)', () => {
     const pag = screen.getByTestId('work-pagination')
     expect(pag.getAttribute('data-page-size')).toBe('50')
     expect(pag.getAttribute('data-next-cursor')).toBe('opaque-next')
-    expect(screen.getByTestId('work-list').getAttribute('data-reflow-breakpoint')).toBe('768')
+    expect(
+      screen.getByTestId('work-list').getAttribute('data-reflow-breakpoint'),
+    ).toBe('768')
     expect(screen.getByTestId('work-table')).toBeTruthy()
     expect(screen.getByTestId('work-card-list')).toBeTruthy()
     // same task appears as table row + card (dual presentation)
@@ -644,13 +714,17 @@ describe('WorkScreen states (UI_CONTRACT §5)', () => {
     fireEvent.click(screen.getByTestId('work-page-next'))
     expect(onNextPage).toHaveBeenCalled()
     // activate first of dual rows
-    fireEvent.click(screen.getAllByTestId('work-row-t-ongoing-1')[0]!)
+    fireEvent.click(screen.getAllByTestId('work-row-t-ongoing-1')[0])
     expect(onRowActivate).toHaveBeenCalled()
-    expect(onRowActivate.mock.calls[0]![0].bucket).toBe('ONGOING')
+    expect(onRowActivate.mock.calls[0][0].bucket).toBe('ONGOING')
   })
 
   it('loading does not render list or fake counts from items', () => {
-    render(<WorkScreen {...baseProps({ state: 'loading', items: baseProps().items })} />)
+    render(
+      <WorkScreen
+        {...baseProps({ state: 'loading', items: baseProps().items })}
+      />,
+    )
     expect(screen.queryByTestId('work-list')).toBeNull()
     expect(screen.getByTestId('work-state-loading')).toBeTruthy()
     // tabs still show server counts when provided

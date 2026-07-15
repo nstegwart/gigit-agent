@@ -245,7 +245,7 @@ afterEach(() => {
 describe('upsert_human_display catalog', () => {
   it('is registered write with full mutation envelope; not a definition mutator', () => {
     expect(REGISTERED_WRITE_TOOL_NAMES).toContain('upsert_human_display')
-    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(43)
+    expect(REGISTERED_WRITE_TOOL_NAMES).toHaveLength(44)
     expect(DEFINITION_MUTATOR_TOOL_NAMES as readonly string[]).not.toContain(
       'upsert_human_display',
     )

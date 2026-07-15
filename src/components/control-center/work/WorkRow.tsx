@@ -12,7 +12,10 @@ import styles from './work.module.css'
 import { resolveOwnerDisplay } from './ownerDisplay'
 import { OwnerHumanFields } from './OwnerHumanFields'
 
-const BADGE_CLASS: Record<(typeof BUCKET_SEMANTICS)[PrimaryBucket]['tone'], string> = {
+const BADGE_CLASS: Record<
+  (typeof BUCKET_SEMANTICS)[PrimaryBucket]['tone'],
+  string
+> = {
   done: styles.badgeDone,
   recon: styles.badgeRecon,
   ongoing: styles.badgeOngoing,
@@ -47,9 +50,13 @@ function OverlayBadges({ overlays }: { overlays: WorkItemRow['overlays'] }) {
   return (
     <div className={styles.badgeStack} data-testid="work-row-overlays">
       {overlays.map((o) => (
-        <span key={o} className={`${styles.badge} ${styles.badgeOverlay}`} data-overlay={o}>
+        <span
+          key={o}
+          className={`${styles.badge} ${styles.badgeOverlay}`}
+          data-overlay={o}
+        >
           <Icon name="alert" size={11} />
-          {OVERLAY_LABELS[o] ?? o}
+          {OVERLAY_LABELS[o]}
         </span>
       ))}
     </div>
@@ -67,13 +74,14 @@ function ReconciliationBlock({ item }: { item: WorkItemRow }) {
   if (!show || !r) return null
 
   const age =
-    r.age ?? (typeof r.ageSeconds === 'number' ? formatAgeSeconds(r.ageSeconds) : '')
+    r.age ??
+    (typeof r.ageSeconds === 'number' ? formatAgeSeconds(r.ageSeconds) : '')
 
   return (
     <dl className={styles.reconGrid} data-testid="work-row-reconciliation">
       {r.runId ? (
         <>
-          <dt>Run</dt>
+          <dt>Proses</dt>
           <dd>{r.runId}</dd>
         </>
       ) : null}
@@ -106,7 +114,11 @@ function ReconciliationBlock({ item }: { item: WorkItemRow }) {
           <dt>Tindakan</dt>
           <dd>
             {r.action}
-            {r.dryRun === true ? ' (dry-run)' : r.dryRun === false ? ' (live)' : ''}
+            {r.dryRun === true
+              ? ' (simulasi)'
+              : r.dryRun === false
+                ? ' (aktif)'
+                : ''}
           </dd>
         </>
       ) : null}
@@ -120,7 +132,9 @@ function ReconciliationBlock({ item }: { item: WorkItemRow }) {
         <>
           <dt>Pemilik</dt>
           <dd>
-            {[r.ownerAgentId, r.ownerRole, r.ownerMaskedAccount].filter(Boolean).join(' · ')}
+            {[r.ownerAgentId, r.ownerRole, r.ownerMaskedAccount]
+              .filter(Boolean)
+              .join(' · ')}
           </dd>
         </>
       ) : null}
@@ -135,7 +149,9 @@ function OngoingBlock({ item }: { item: WorkItemRow }) {
   const productive = live === 'PRODUCTIVE'
   const started =
     o.startedAge ??
-    (typeof o.startedAgeSeconds === 'number' ? formatAgeSeconds(o.startedAgeSeconds) : '')
+    (typeof o.startedAgeSeconds === 'number'
+      ? formatAgeSeconds(o.startedAgeSeconds)
+      : '')
   const heartbeat =
     o.heartbeatAge ??
     (typeof o.heartbeatAgeSeconds === 'number'
@@ -149,18 +165,17 @@ function OngoingBlock({ item }: { item: WorkItemRow }) {
 
   return (
     <div className={styles.ongoingMeta} data-testid="work-row-ongoing">
-      {o.targetGate ? <span>Gate {o.targetGate}</span> : null}
-      {o.agentId ? <span>Agen {o.agentId}</span> : null}
-      {o.role ? <span>{o.role}</span> : null}
-      {o.model || o.effort ? <span>{[o.model, o.effort].filter(Boolean).join(' / ')}</span> : null}
-      {o.maskedAccount ? <span>Akun {o.maskedAccount}</span> : null}
+      {o.targetGate ? <span>Target tahap {o.targetGate}</span> : null}
+      {o.role ? <span>Peran {o.role}</span> : null}
       {started ? <span>Dimulai {started}</span> : null}
-      {heartbeat ? <span>HB {heartbeat}</span> : null}
-      {material ? <span>Progres {material}</span> : null}
+      {heartbeat ? <span>Aktivitas terakhir {heartbeat}</span> : null}
+      {material ? <span>Progres material {material}</span> : null}
       {o.liveness ? (
         <span className={styles.liveness} data-liveness={live}>
           <span
-            className={productive ? styles.livenessPulse : styles.livenessHollow}
+            className={
+              productive ? styles.livenessPulse : styles.livenessHollow
+            }
             aria-hidden="true"
           />
           {livenessLabel(o.liveness)}
@@ -172,8 +187,18 @@ function OngoingBlock({ item }: { item: WorkItemRow }) {
           onClick={(e) => e.stopPropagation()}
           data-testid="work-row-evidence"
         >
-          Evidence
+          Bukti
         </a>
+      ) : null}
+      {o.agentId || o.model || o.effort || o.maskedAccount ? (
+        <details className={styles.executionDisclosure}>
+          <summary>Detail eksekusi</summary>
+          <span>
+            {[o.agentId, o.model, o.effort, o.maskedAccount]
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
+        </details>
       ) : null}
     </div>
   )
@@ -232,7 +257,11 @@ function TitleBlock({
       {display.primaryTitle}
     </a>
   ) : (
-    <div className={titleClass} data-testid="work-row-owner-title" data-field="ownerPrimaryTitle">
+    <div
+      className={titleClass}
+      data-testid="work-row-owner-title"
+      data-field="ownerPrimaryTitle"
+    >
       {display.primaryTitle}
     </div>
   )
@@ -241,25 +270,36 @@ function TitleBlock({
     <div
       className={styles.titleBlock}
       data-testid="work-row-title-block"
-      data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
+      data-content-review-required={
+        display.contentReviewRequired ? 'true' : 'false'
+      }
       data-owner-primary-title={display.primaryTitle}
     >
-      {/* Human title is primary visual; technical id is quiet secondary metadata. */}
+      {/* Human title is primary visual; technical truth stays available on demand. */}
       {titleNode}
-      <div className={styles.taskId} data-testid="work-row-task-id" data-field="taskId" title={item.taskId}>
-        {item.taskId}
-      </div>
-      {display.technicalTitle && display.technicalTitle !== display.primaryTitle ? (
-        <div
-          className={styles.technicalSecondary}
-          data-testid="work-row-technical-title"
-          data-field="technicalTitle"
-          title={display.technicalTitle}
-        >
-          {display.technicalTitle}
-        </div>
-      ) : null}
       <OwnerHumanFields display={display} testIdPrefix="work-row" />
+      <details className={styles.technicalDisclosure}>
+        <summary>Detail teknis</summary>
+        <div
+          className={styles.taskId}
+          data-testid="work-row-task-id"
+          data-field="taskId"
+          title={item.taskId}
+        >
+          {item.taskId}
+        </div>
+        {display.technicalTitle &&
+        display.technicalTitle !== display.primaryTitle ? (
+          <div
+            className={styles.technicalSecondary}
+            data-testid="work-row-technical-title"
+            data-field="technicalTitle"
+            title={display.technicalTitle}
+          >
+            {display.technicalTitle}
+          </div>
+        ) : null}
+      </details>
     </div>
   )
 }
@@ -310,7 +350,9 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
         data-task-id={item.taskId}
         data-bucket={item.bucket}
         data-detail-href={href ?? undefined}
-        data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
+        data-content-review-required={
+          display.contentReviewRequired ? 'true' : 'false'
+        }
         tabIndex={0}
         onClick={(e) => {
           if ((e.target as HTMLElement).closest('a')) return
@@ -357,7 +399,9 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
       data-task-id={item.taskId}
       data-bucket={item.bucket}
       data-detail-href={href ?? undefined}
-      data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
+      data-content-review-required={
+        display.contentReviewRequired ? 'true' : 'false'
+      }
       tabIndex={0}
       onClick={() => handleActivate(item, onActivate)}
       onKeyDown={(e) => {

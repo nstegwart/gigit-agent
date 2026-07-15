@@ -21,7 +21,9 @@ export function StaleOverlayFilter({
 }: StaleOverlayFilterProps) {
   const total = summary?.total
   const label =
-    typeof total === 'number' ? `Stale overlay (${total})` : 'Stale overlay'
+    typeof total === 'number'
+      ? `Tampilkan data basi (${total})`
+      : 'Tampilkan data basi'
 
   return (
     <button
@@ -37,7 +39,7 @@ export function StaleOverlayFilter({
       onClick={() => onChange?.(!active)}
     >
       <Icon name="alert" size={14} />
-      <span>STALE</span>
+      <span>Data basi</span>
       {typeof total === 'number' ? (
         <span className={styles.tabCount} aria-hidden="true">
           {total}

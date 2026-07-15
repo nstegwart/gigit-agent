@@ -112,6 +112,15 @@ export interface ClassificationReceipt {
   boardRev: number
   lifecycleRev: number
   issuedAt: string
+  /**
+   * CANONICAL_PIN binds classification validity to immutable canonical identity
+   * plus lifecycle revision. Volatile boardRev remains provenance/lower-bound,
+   * so heartbeats and run telemetry do not invalidate every task classification.
+   * Older receipts omit this and retain strict full-revision matching.
+   */
+  bindingMode?: 'FULL_REVISION' | 'CANONICAL_PIN'
+  /** Board revision observed before the atomic classification publication. */
+  canonicalBoardRev?: number | null
   /** Optional expiry; if present and past `now`, receipt is stale. */
   expiresAt?: string | null
 }

@@ -1,12 +1,19 @@
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useStore } from '@tanstack/react-store'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 
 import { BoardLink } from '#/components/BoardLink'
 import { UserMenu } from '#/components/UserMenu'
-import { BrandMark, Icon, type IconName } from '#/lib/icons'
-import { useBoard, useBoardId, useBoardViews, useBoards } from '#/lib/board-query'
+import { BrandMark, Icon } from '#/lib/icons'
+import type { IconName } from '#/lib/icons'
+import {
+  useBoard,
+  useBoardId,
+  useBoardViews,
+  useBoards,
+} from '#/lib/board-query'
 import { fmtDate } from '#/lib/format'
 import {
   featuresQueryOptions,
@@ -14,8 +21,8 @@ import {
   isControlCenterBoard,
   overviewQueryOptions,
 } from '#/lib/control-center-query'
-import type { FeaturesData, OverviewData, PinnedEnvelope } from '#/server/control-center-ui'
-import { initTheme, resolvedIsDark, setSearch, setTheme, uiStore } from '#/store/ui'
+import { initTheme, setSearch, uiStore } from '#/store/ui'
+import '#/components/control-center/control-center-shell.css'
 
 export const BRAND = 'Cairn'
 
@@ -37,18 +44,83 @@ interface NavCounts {
 
 /** Classic adaptive nav (non control-center boards). */
 const NAV: Array<NavItem | { sep: true; label: string }> = [
-  { id: 'board', label: 'Board', icon: 'board', to: '/', match: (p) => p === '/' },
-  { id: 'agents', label: 'Agents', icon: 'agents', to: '/agents', match: (p) => p.startsWith('/agents'), count: (n) => n.agents },
+  {
+    id: 'board',
+    label: 'Board',
+    icon: 'board',
+    to: '/',
+    match: (p) => p === '/',
+  },
+  {
+    id: 'agents',
+    label: 'Agents',
+    icon: 'agents',
+    to: '/agents',
+    match: (p) => p.startsWith('/agents'),
+    count: (n) => n.agents,
+  },
   { sep: true, label: 'Plan' },
-  { id: 'projects', label: 'Projects', icon: 'projects', to: '/projects', match: (p) => p.startsWith('/projects'), count: (n) => n.projects },
-  { id: 'features', label: 'Features', icon: 'features', to: '/features', match: (p) => p.startsWith('/features'), count: (n) => n.features },
-  { id: 'tasks', label: 'Tasks', icon: 'check', to: '/tasks', match: (p) => p.startsWith('/tasks') },
-  { id: 'map', label: 'Map', icon: 'branch', to: '/map', match: (p) => p.startsWith('/map') },
-  { id: 'design', label: 'Design', icon: 'layers', to: '/design', match: (p) => p.startsWith('/design') },
-  { id: 'decisions', label: 'Decisions', icon: 'decisions', to: '/decisions', match: (p) => p.startsWith('/decisions'), count: (n) => n.decisions },
-  { id: 'log', label: 'Log', icon: 'log', to: '/log', match: (p) => p.startsWith('/log'), count: (n) => n.log },
+  {
+    id: 'projects',
+    label: 'Projects',
+    icon: 'projects',
+    to: '/projects',
+    match: (p) => p.startsWith('/projects'),
+    count: (n) => n.projects,
+  },
+  {
+    id: 'features',
+    label: 'Features',
+    icon: 'features',
+    to: '/features',
+    match: (p) => p.startsWith('/features'),
+    count: (n) => n.features,
+  },
+  {
+    id: 'tasks',
+    label: 'Tasks',
+    icon: 'check',
+    to: '/tasks',
+    match: (p) => p.startsWith('/tasks'),
+  },
+  {
+    id: 'map',
+    label: 'Map',
+    icon: 'branch',
+    to: '/map',
+    match: (p) => p.startsWith('/map'),
+  },
+  {
+    id: 'design',
+    label: 'Design',
+    icon: 'layers',
+    to: '/design',
+    match: (p) => p.startsWith('/design'),
+  },
+  {
+    id: 'decisions',
+    label: 'Decisions',
+    icon: 'decisions',
+    to: '/decisions',
+    match: (p) => p.startsWith('/decisions'),
+    count: (n) => n.decisions,
+  },
+  {
+    id: 'log',
+    label: 'Log',
+    icon: 'log',
+    to: '/log',
+    match: (p) => p.startsWith('/log'),
+    count: (n) => n.log,
+  },
   { sep: true, label: 'Ops' },
-  { id: 'ops', label: 'Accounts', icon: 'users', to: '/ops', match: (p) => p.startsWith('/ops') },
+  {
+    id: 'ops',
+    label: 'Accounts',
+    icon: 'users',
+    to: '/ops',
+    match: (p) => p.startsWith('/ops'),
+  },
 ]
 
 /**
@@ -98,7 +170,8 @@ const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
     label: 'Work',
     icon: 'check',
     to: '/work',
-    match: (p) => p === '/work' || p.startsWith('/work?') || p.startsWith('/work/'),
+    match: (p) =>
+      p === '/work' || p.startsWith('/work?') || p.startsWith('/work/'),
   },
   {
     id: 'priority',
@@ -271,17 +344,18 @@ export function AppShell({ children }: { children: ReactNode }) {
         log: m.log.length,
       }
     }
-    const overviewEnv = overviewQ.data as PinnedEnvelope<OverviewData> | undefined
-    const featuresEnv = featuresQ.data as PinnedEnvelope<FeaturesData> | undefined
-    const overviewData = overviewEnv?.data
-    const featuresData = featuresEnv?.data
+    const overviewData = overviewQ.isSuccess ? overviewQ.data.data : undefined
+    const featuresData = featuresQ.isSuccess ? featuresQ.data.data : undefined
     return {
-      agents: overviewData?.ongoing?.length ?? 0,
-      projects: overviewData?.projects?.length ?? 0,
+      agents: overviewData ? overviewData.ongoing.length : 0,
+      projects: overviewData ? overviewData.projects.length : 0,
       features: featuresData
-        ? (featuresData.items?.length ? featuresData.items : featuresData.features)?.length ?? 0
+        ? (featuresData.items.length
+            ? featuresData.items
+            : featuresData.features
+          ).length
         : 0,
-      decisions: overviewData?.decisionCount ?? 0,
+      decisions: overviewData ? overviewData.decisionCount : 0,
       log: m.log.length,
     }
   }, [
@@ -295,24 +369,29 @@ export function AppShell({ children }: { children: ReactNode }) {
     featuresQ.data,
   ])
 
+  const navItems = navSource.filter((item): item is NavItem => !('sep' in item))
   const activeItem =
-    (navSource.find(
-      (n) => !('sep' in n) && (n as NavItem).match(subForMatch),
-    ) as NavItem | undefined) ??
-    (navSource.find((n) => !('sep' in n)) as NavItem)
-  let section = activeItem?.id ?? (controlCenter ? 'overview' : 'board')
+    navItems.find((item) => item.match(subForMatch)) ?? navItems[0]
+  let section = activeItem.id
   // Knowledge / search / documentation are ART drill-downs (not 10th nav items).
   if (subForMatch.startsWith('/knowledge')) section = 'knowledge'
   else if (subForMatch.startsWith('/search')) section = 'search'
   else if (subForMatch.startsWith('/documentation')) section = 'documentation'
-  else if (subForMatch.startsWith('/work/') && subForMatch !== '/work') section = 'work'
+  else if (subForMatch.startsWith('/work/') && subForMatch !== '/work')
+    section = 'work'
 
   let crumb = ''
   const projMatch = sub.match(/^\/projects\/(.+)$/)
   const featMatch = sub.match(/^\/features\/(.+)$/)
-  if (projMatch) crumb = m.projById[decodeURIComponent(projMatch[1])]?.nama ?? 'Project'
-  else if (featMatch) crumb = m.featById[decodeURIComponent(featMatch[1])]?.nama ?? 'Feature'
-  const baseTitleEn = SECTION_TITLE[section] ?? (controlCenter ? 'Overview' : 'Board')
+  if (projMatch) {
+    const projectId = decodeURIComponent(projMatch[1])
+    crumb = projectId in m.projById ? m.projById[projectId].nama : 'Project'
+  } else if (featMatch) {
+    const featureId = decodeURIComponent(featMatch[1])
+    crumb = featureId in m.featById ? m.featById[featureId].nama : 'Feature'
+  }
+  const baseTitleEn =
+    SECTION_TITLE[section] ?? (controlCenter ? 'Overview' : 'Board')
   const baseTitleId = SECTION_TITLE_ID[section]
   const baseTitle = baseTitleId
     ? `${baseTitleEn} · ${baseTitleId}`
@@ -323,9 +402,17 @@ export function AppShell({ children }: { children: ReactNode }) {
       className={controlCenter ? 'app app--control-center' : 'app'}
       data-control-center={controlCenter ? 'true' : 'false'}
     >
-      <aside className="sidebar" data-control-center={controlCenter ? 'true' : 'false'}>
+      <aside
+        className="sidebar"
+        data-control-center={controlCenter ? 'true' : 'false'}
+      >
         <div className="sidebar-chrome">
-          <Link to="/" className="brand" title="All boards" aria-label={`${BRAND} — all boards`}>
+          <Link
+            to="/"
+            className="brand"
+            title="All boards"
+            aria-label={`${BRAND} — all boards`}
+          >
             <BrandMark />
             <div className="brand-text">
               <div className="brand-name">{BRAND}</div>
@@ -343,7 +430,11 @@ export function AppShell({ children }: { children: ReactNode }) {
         >
           {visible.map((n, i) =>
             'sep' in n ? (
-              <div key={`sep-${i}`} className="nav-sep-block" aria-hidden="true">
+              <div
+                key={`sep-${i}`}
+                className="nav-sep-block"
+                aria-hidden="true"
+              >
                 <div className="nav-sep" />
                 <div className="nav-label">{n.label}</div>
               </div>
@@ -370,9 +461,8 @@ export function AppShell({ children }: { children: ReactNode }) {
               >
                 <Icon name={n.icon} size={17} className="nav-ico" />
                 <span className="nav-text">
-                  <span className="lbl">{n.label}</span>
                   {controlCenter && n.label in CONTROL_CENTER_NAV_LABELS_ID ? (
-                    <span className="nav-lbl-id" aria-hidden="true">
+                    <span className="nav-lbl-id">
                       {
                         CONTROL_CENTER_NAV_LABELS_ID[
                           n.label as keyof typeof CONTROL_CENTER_NAV_LABELS_ID
@@ -380,9 +470,13 @@ export function AppShell({ children }: { children: ReactNode }) {
                       }
                     </span>
                   ) : null}
+                  <span className="lbl">{n.label}</span>
                 </span>
                 {n.count ? (
-                  <span className="nav-count" aria-label={`${n.count(counts)} items`}>
+                  <span
+                    className="nav-count"
+                    aria-label={`${n.count(counts)} items`}
+                  >
                     {n.count(counts)}
                   </span>
                 ) : null}
@@ -420,23 +514,23 @@ export function AppShell({ children }: { children: ReactNode }) {
               }
               autoComplete="off"
               aria-label={
-                controlCenter ? 'Cari fitur dan agen' : 'Search features and agents'
+                controlCenter
+                  ? 'Cari fitur dan agen'
+                  : 'Search features and agents'
               }
             />
           </div>
-          <ThemeButton />
           <UserMenu />
         </header>
-        <div
+        <main
           className="content"
           id="view"
-          role="region"
           aria-label="Main content"
           tabIndex={0}
           data-testid="app-main-content"
         >
           {children}
-        </div>
+        </main>
       </div>
     </div>
   )
@@ -480,28 +574,15 @@ function BoardSwitcher({ boardId }: { boardId: string }) {
             </Link>
           ))}
           <div className="nav-sep" aria-hidden="true" />
-          <a href="/?boards=1" className="switcher-item" onClick={() => setOpen(false)}>
+          <a
+            href="/?boards=1"
+            className="switcher-item"
+            onClick={() => setOpen(false)}
+          >
             <Icon name="layers" size={14} /> All boards
           </a>
         </div>
       ) : null}
     </div>
-  )
-}
-
-function ThemeButton() {
-  useStore(uiStore, (s) => s.theme)
-  const dark = resolvedIsDark()
-  return (
-    <button
-      type="button"
-      className="icon-btn"
-      id="theme-btn"
-      title={dark ? 'Switch to light theme' : 'Switch to dark theme'}
-      aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
-      onClick={() => setTheme(dark ? 'light' : 'dark')}
-    >
-      <Icon name={dark ? 'sun' : 'moon'} size={16} />
-    </button>
   )
 }

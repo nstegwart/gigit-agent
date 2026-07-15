@@ -70,10 +70,14 @@ function trimOrNull(v: string | null | undefined): string | null {
  * contentReviewRequired flag is inconsistently false.
  * Primary never falls back to technicalTitle.
  */
-export function resolveOwnerDisplay(input: OwnerDisplayInput): OwnerDisplayResolved {
+export function resolveOwnerDisplay(
+  input: OwnerDisplayInput,
+): OwnerDisplayResolved {
   const nested = input.ownerHumanDisplay
   const technicalTitle = input.technicalTitle
-  const ownerPrimary = trimOrNull(input.ownerPrimaryTitle ?? nested?.ownerPrimaryTitle)
+  const ownerPrimary = trimOrNull(
+    input.ownerPrimaryTitle ?? nested?.ownerPrimaryTitle,
+  )
   const statusRaw = trimOrNull(
     input.effectiveReviewStatus ?? nested?.effectiveReviewStatus,
   )
@@ -82,15 +86,14 @@ export function resolveOwnerDisplay(input: OwnerDisplayInput): OwnerDisplayResol
   // Strict REVIEWED only — never trust inconsistent contentReviewRequired=false
   // when status is GENERATED_NEEDS_REVIEW / BLOCKED / CONFLICT / other.
   const ready =
-    reviewFlag === false &&
-    ownerPrimary != null &&
-    statusRaw === 'REVIEWED'
+    reviewFlag === false && ownerPrimary != null && statusRaw === 'REVIEWED'
 
   const contentReviewRequired = !ready
   // Prefer projected shell/primary title; never technical title as primary.
-  const primaryTitle = ownerPrimary ?? 'CONTENT_REVIEW_REQUIRED'
+  const primaryTitle = ownerPrimary ?? 'Konten perlu ditinjau'
   const effectiveReviewStatus =
-    statusRaw ?? (contentReviewRequired ? 'CONTENT_REVIEW_REQUIRED' : 'REVIEWED')
+    statusRaw ??
+    (contentReviewRequired ? 'Konten perlu ditinjau' : 'Sudah ditinjau')
 
   return {
     primaryTitle,

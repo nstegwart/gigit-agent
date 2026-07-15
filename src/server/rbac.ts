@@ -624,6 +624,7 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   { name: 'set_guide', kind: 'write', scopes: ['import:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
   { name: 'replace_accounts', kind: 'write', scopes: ['account:sync'], roles: ['ROOT_ORCHESTRATOR'] },
   { name: 'replace_board_snapshot', kind: 'write', scopes: ['import:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
+  { name: 'sync_task_classifications', kind: 'write', scopes: ['import:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
   { name: 'set_lifecycle', kind: 'write', scopes: ['lifecycle:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
   { name: 'advance_task', kind: 'write', scopes: ['lifecycle:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR', 'AGENT'] },
   // Stage evidence program-emit — AGENT own registered run only; ROOT may accept via advance_task but must not impersonate.

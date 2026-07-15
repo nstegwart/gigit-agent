@@ -37,7 +37,7 @@ export function OwnerHumanFields({
           data-testid={`${testIdPrefix}-review-badge`}
           role="status"
         >
-          CONTENT_REVIEW_REQUIRED
+          Perlu tinjauan konten
         </span>
       ) : null}
 
@@ -64,7 +64,11 @@ export function OwnerHumanFields({
       ) : null}
 
       {next ? (
-        <p className={styles.ownerField} data-testid={`${testIdPrefix}-next`} data-field="next">
+        <p
+          className={styles.ownerField}
+          data-testid={`${testIdPrefix}-next`}
+          data-field="next"
+        >
           <span className={styles.ownerFieldLabel}>Berikutnya</span>
           {next}
         </p>
@@ -93,26 +97,31 @@ export function OwnerHumanFields({
       ) : null}
 
       {citations.length > 0 ? (
-        <ul
-          className={styles.ownerCitations}
-          data-testid={`${testIdPrefix}-citations`}
-          aria-label="Kutipan sumber"
-        >
-          {citations.map((c, i) => (
-            <li
-              key={`${c.field}:${c.path}:${i}`}
-              className={styles.ownerCitationItem}
-              data-field={c.field}
-              data-path={c.path}
-            >
-              <span className={styles.citationMono}>
-                {c.field}
-                {c.path ? ` · ${c.path}` : ''}
-              </span>
-              {c.note ? <span className={styles.citationNote}> — {c.note}</span> : null}
-            </li>
-          ))}
-        </ul>
+        <details className={styles.citationDisclosure}>
+          <summary>{citations.length} sumber pendukung</summary>
+          <ul
+            className={styles.ownerCitations}
+            data-testid={`${testIdPrefix}-citations`}
+            aria-label="Kutipan sumber"
+          >
+            {citations.map((c, i) => (
+              <li
+                key={`${c.field}:${c.path}:${i}`}
+                className={styles.ownerCitationItem}
+                data-field={c.field}
+                data-path={c.path}
+              >
+                <span className={styles.citationMono}>
+                  {c.field}
+                  {c.path ? ` · ${c.path}` : ''}
+                </span>
+                {c.note ? (
+                  <span className={styles.citationNote}> — {c.note}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </details>
       ) : null}
     </div>
   )

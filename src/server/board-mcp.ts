@@ -207,6 +207,11 @@ import {
   sanitizeClassificationRecordForPersistence,
   stripSelfAssertedMembershipFields,
 } from '#/server/classification'
+import {
+  buildClassificationSyncPlan,
+  ClassificationSyncError,
+  projectClassificationSyncAuditActivity,
+} from '#/server/classification-sync'
 import { createHash } from 'node:crypto'
 import type { OpsData, WorkTask } from '#/lib/types'
 
@@ -1245,6 +1250,7 @@ export const REGISTERED_WRITE_TOOL_NAMES = [
   'set_guide',
   'replace_accounts',
   'replace_board_snapshot',
+  'sync_task_classifications',
   'set_lifecycle',
   'advance_task',
   'submit_stage_evidence',
@@ -5485,6 +5491,145 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     },
   )
 
+  secureWriteTool(
+    'sync_task_classifications',
+    {
+      title: 'Publish complete V3 task classifications',
+      description:
+        'ROOT/OWNER-only schema-007-compatible complete-set classification publication. The server generates pin-bound receipts for the single post-write board revision; partial, duplicate, extra, missing, or UNCLASSIFIED batches fail closed.',
+      inputSchema: {
+        ...BOARD_ARG,
+        items: z
+          .array(
+            z.object({
+              taskId: z.string().min(1),
+              taskClass: z.enum(['PRODUCT', 'CONTROL_PLANE']),
+              disposition: z.enum(['ACTIVE', 'HOLD', 'EXCLUDE']),
+              controlPlaneTargetGate: z.string().min(1).optional(),
+            }),
+          )
+          .min(1)
+          .max(2_000),
+      },
+    },
+    async (args) => {
+      const boardId = await bid(args.boardId)
+      try {
+        const parsedEnvelope = parseMutationEnvelope(args)
+        const ctx = resolveMcpRuntimeContext()
+        const begin = await beginIdempotent(ctx.idempotency, {
+          scope: {
+            actorId: actorIdOf(),
+            boardId,
+            endpoint: 'sync_task_classifications',
+            key: parsedEnvelope.idempotencyKey,
+          },
+          requestBody: args,
+          nowMs: ctx.clock.nowMs(),
+        })
+        if (begin.kind === 'REPLAY' && begin.record) {
+          return jsonText({
+            ...(begin.record.responseBody as Record<string, unknown>),
+            replayed: true,
+          })
+        }
+        try {
+          const envelope = await assertMutationEnvelopeOrThrow(args, {
+            boardId,
+            checkPinHash: true,
+          })
+          const authority = await resolveBoardDefinitionAuthority(boardId)
+          if (authority.mode !== 'canonical') {
+            throw new McpMutationError(
+              'DATA_INTEGRITY',
+              'classification sync requires a complete canonical definition pin',
+              { boardId, mode: authority.mode },
+            )
+          }
+          const plan = buildClassificationSyncPlan({
+            items: args.items,
+            canonicalTaskIds: authority.definition.projection.distinctTaskIds,
+            pin: authority.pin,
+            issuedAt: systemClock().nowISO(),
+          })
+          const receiptSetHash = createHash('sha256')
+            .update(plan.records.map((record) => record.receipt?.receiptHash ?? '').join('\n'))
+            .digest('hex')
+          const auditId = `classification-sync-${receiptSetHash.slice(0, 40)}`
+          const store = ctx.controlData.classification
+          if (typeof store.replaceAll !== 'function') {
+            throw new McpMutationError(
+              'DATA_INTEGRITY',
+              'durable transactional classification replacement is unavailable',
+              { boardId },
+            )
+          }
+          const persisted = await store.replaceAll(boardId, plan.records, {
+            expectedBoardRev: envelope.expectedBoardRev,
+            expectedEntityRev: envelope.entityExpectedRev,
+            outputBoardRev: plan.outputBoardRev,
+            outputEntityRev: envelope.entityExpectedRev + 1,
+            lifecycleRev: plan.lifecycleRev,
+            canonicalHash: plan.canonicalHash,
+            actorId: actorIdOf(),
+            auditId,
+            receiptSetHash,
+            issuedAt: plan.records[0]?.receipt?.issuedAt ?? systemClock().nowISO(),
+          })
+          const result = {
+            ok: true as const,
+            schemaVersion: plan.schemaVersion,
+            boardId,
+            inputBoardRev: plan.inputBoardRev,
+            boardRev: persisted.boardRev,
+            entityRev: persisted.entityRev,
+            lifecycleRev: plan.lifecycleRev,
+            canonicalSnapshotId: plan.canonicalSnapshotId,
+            canonicalHash: plan.canonicalHash,
+            counts: plan.counts,
+            receiptSetHash,
+            auditId: persisted.auditId,
+            readbackRequired: [
+              'get_rollup',
+              'list_tasks',
+              'get_lifecycle',
+              'list_audit',
+              'list_activity',
+              'get_board_hash',
+            ],
+          }
+          await completeIdempotent(
+            ctx.idempotency,
+            begin.scopeHash,
+            200,
+            result,
+            begin.requestHash,
+          )
+          return jsonText(result)
+        } catch (error) {
+          try {
+            await ctx.idempotency.delete(begin.scopeHash)
+          } catch {
+            // Preserve the primary typed failure; a retry remains fail-closed.
+          }
+          throw error
+        }
+      } catch (error) {
+        if (error instanceof ClassificationSyncError) {
+          return jsonText(
+            typedError(
+              new McpMutationError('DATA_INTEGRITY', error.message, {
+                classificationCode: error.code,
+                ...error.details,
+              }),
+            ),
+          )
+        }
+        return asErr(error)
+      }
+    },
+  )
+
   // ---- lifecycle engine (per-board configurable rail + evidence-gated transitions) ----
   const STAGE_OBJ = z.object({
     key: z.string(), label: z.string(), color: z.string().optional(), group: z.string().optional(),
@@ -5871,7 +6016,21 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           // No-pin / incomplete: legacy lifecycle-table rollup (stale honesty on pin).
           rollup = (await computeRollup(id)) as unknown as Record<string, unknown>
         }
-        const data = { rollup, ...rollup }
+        const classificationSyncRevision = await resolveMcpRuntimeContext().revisions.getEntity({
+          boardId: id,
+          entityType: 'classification_sync',
+          entityId: id,
+        })
+        const data = {
+          rollup,
+          ...rollup,
+          controlPlane: {
+            classificationSync: {
+              entityRev: classificationSyncRevision?.entityRev ?? 0,
+              subjectHash: classificationSyncRevision?.subjectHash ?? null,
+            },
+          },
+        }
         const env = buildPinnedReadEnvelope(boardPinToMcpReadPin(pin), data, {
           method: 'get_rollup',
           nextCursor: null,
@@ -6298,12 +6457,25 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         pageSize: rawArgs.pageSize ?? rawArgs.limit,
       })
       const pin = await resolveBoardPin(id)
-      const activity = (await modelOf(id)).activity
+      const [model, durableAudit] = await Promise.all([
+        modelOf(id),
+        readAudit(id, { limit: 200 }),
+      ])
+      const classificationActivity = projectClassificationSyncAuditActivity(
+        durableAudit as unknown as Array<Record<string, unknown>>,
+        pin.generatedAt,
+      )
+      const activity = [...model.activity, ...classificationActivity]
       const mapped = activity.map((a, idx) => {
         const ts = a.ts || pin.generatedAt
+        const subjectId =
+          ('featureId' in a && typeof a.featureId === 'string' ? a.featureId : null) ??
+          ('projectId' in a && typeof a.projectId === 'string' ? a.projectId : null) ??
+          ('auditId' in a && typeof a.auditId === 'string' ? a.auditId : null) ??
+          idx
         return {
           ...a,
-          id: `${ts}#${a.kind ?? 'event'}#${a.featureId ?? a.projectId ?? idx}`,
+          id: `${ts}#${a.kind ?? 'event'}#${subjectId}`,
           createdAt: ts,
         }
       })

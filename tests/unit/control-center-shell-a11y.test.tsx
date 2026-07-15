@@ -15,7 +15,10 @@ import { CONTROL_CENTER_NAV_LABELS } from '#/components/AppShell'
 import { CONTROL_CENTER_PRIMARY_NAV_IDS } from '#/lib/control-center-query'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
-const appShellSrc = readFileSync(join(root, 'src/components/AppShell.tsx'), 'utf8')
+const appShellSrc = readFileSync(
+  join(root, 'src/components/AppShell.tsx'),
+  'utf8',
+)
 const stylesSrc = readFileSync(join(root, 'src/styles.css'), 'utf8')
 const rootRouteSrc = readFileSync(join(root, 'src/routes/__root.tsx'), 'utf8')
 
@@ -51,8 +54,8 @@ describe('control-center shell a11y — nav order + names', () => {
     const labels: string[] = []
     let m: RegExpExecArray | null
     while ((m = labelRe.exec(body))) {
-      // Skip separator labels Structure / Ops
-      if (m[1] === 'Structure' || m[1] === 'Ops') continue
+      // Skip separator labels in either supported locale.
+      if (['Structure', 'Ops', 'Struktur', 'Operasi'].includes(m[1])) continue
       labels.push(m[1])
     }
     expect(labels).toEqual([...EXPECTED_CC_LABELS])
@@ -73,19 +76,23 @@ describe('control-center shell a11y — nav order + names', () => {
     expect(appShellSrc).toMatch(/m\.decisions\.length/)
   })
 
-  it('main scroll region is named and keyboard-focusable (scrollable-region-focusable)', () => {
+  it('main scroll landmark is named and keyboard-focusable', () => {
     expect(appShellSrc).toMatch(/id="view"/)
-    expect(appShellSrc).toMatch(/role="region"/)
+    expect(appShellSrc).toMatch(/<main/)
     expect(appShellSrc).toMatch(/aria-label="Main content"/)
     expect(appShellSrc).toMatch(/tabIndex=\{0\}/)
   })
 
-  it('theme control has an accessible name (not icon-only unnamed)', () => {
-    expect(appShellSrc).toMatch(/aria-label=\{dark \? 'Switch to light theme' : 'Switch to dark theme'\}/)
+  it('does not expose an incomplete dark-theme control', () => {
+    expect(appShellSrc).not.toMatch(/id="theme-btn"/)
+    expect(appShellSrc).not.toMatch(/Switch to dark theme/)
+    expect(appShellSrc).not.toMatch(/setTheme\(/)
   })
 
   it('board switcher button has aria-label including current board name', () => {
-    expect(appShellSrc).toMatch(/aria-label=\{`Switch board, current: \$\{boardName\}`\}/)
+    expect(appShellSrc).toMatch(
+      /aria-label=\{`Switch board, current: \$\{boardName\}`\}/,
+    )
   })
 
   it('brand link has an accessible name', () => {
@@ -127,14 +134,19 @@ describe('control-center shell a11y — mobile target sizing contract', () => {
   it('usermenu-btn mobile 44px wins cascade after base min-height:36 (C3-R3A)', () => {
     // Probe c3-r2-preintegration: Ssynth…admin button was 247×37 because base
     // .usermenu-btn { min-height:36 } lived AFTER the shell ≤900 media block.
-    const baseMatch = /\.usermenu-btn\s*\{[^}]*min-height:\s*36px[^}]*\}/.exec(stylesSrc)
+    const baseMatch = /\.usermenu-btn\s*\{[^}]*min-height:\s*36px[^}]*\}/.exec(
+      stylesSrc,
+    )
     expect(baseMatch, 'desktop base .usermenu-btn min-height:36').toBeTruthy()
     const baseEnd = baseMatch!.index + baseMatch![0].length
     const afterBase = stylesSrc.slice(baseEnd)
     const mediaAfter = afterBase.match(
       /@media\s*\(\s*max-width:\s*900px\s*\)\s*\{[\s\S]*?\.usermenu-btn\s*\{([^}]+)\}/,
     )
-    expect(mediaAfter?.[1], 'mobile usermenu rule must appear AFTER base .usermenu-btn').toBeTruthy()
+    expect(
+      mediaAfter?.[1],
+      'mobile usermenu rule must appear AFTER base .usermenu-btn',
+    ).toBeTruthy()
     expect(mediaAfter![1]).toMatch(/min-height:\s*44px/)
   })
 
@@ -142,16 +154,24 @@ describe('control-center shell a11y — mobile target sizing contract', () => {
     const mobileBlock = extractMediaBlock(stylesSrc, 'max-width: 900px')
     expect(mobileBlock).toBeTruthy()
     // Forbidden pattern that caused link-name axe fails
-    expect(mobileBlock!).not.toMatch(/\.nav-item\s+span\.lbl\s*\{\s*display:\s*none/)
-    expect(mobileBlock!).not.toMatch(/\.nav-item\s+\.lbl\s*\{\s*display:\s*none/)
+    expect(mobileBlock!).not.toMatch(
+      /\.nav-item\s+span\.lbl\s*\{\s*display:\s*none/,
+    )
+    expect(mobileBlock!).not.toMatch(
+      /\.nav-item\s+\.lbl\s*\{\s*display:\s*none/,
+    )
     // Clip / visually-hidden contract instead
-    expect(mobileBlock!).toMatch(/\.nav-item\s+\.lbl\s*\{[^}]*clip:\s*rect\(0,\s*0,\s*0,\s*0\)/s)
+    expect(mobileBlock!).toMatch(
+      /\.nav-item\s+\.lbl\s*\{[^}]*clip:\s*rect\(0,\s*0,\s*0,\s*0\)/s,
+    )
   })
 
   it('mobile shell uses stacked chrome + horizontal nav (not single cramped row)', () => {
     const mobileBlock = extractMediaBlock(stylesSrc, 'max-width: 900px')
     expect(mobileBlock!).toMatch(/\.sidebar\s*\{[^}]*flex-direction:\s*column/s)
-    expect(mobileBlock!).toMatch(/\.sidebar-chrome\s*\{[^}]*flex-direction:\s*row/s)
+    expect(mobileBlock!).toMatch(
+      /\.sidebar-chrome\s*\{[^}]*flex-direction:\s*row/s,
+    )
     expect(mobileBlock!).toMatch(/\.nav\s*\{[^}]*flex-direction:\s*row/s)
     expect(mobileBlock!).toMatch(/\.nav\s*\{[^}]*overflow-x:\s*auto/s)
   })
@@ -164,12 +184,24 @@ describe('control-center shell a11y — contrast tokens (shell chrome)', () => {
       stylesSrc.indexOf('/* ---------- app shell ---------- */'),
       stylesSrc.indexOf('/* ---------- KPI strip ---------- */'),
     )
-    expect(shellSlice).toMatch(/\.brand-sub\s*\{[^}]*color:\s*var\(--text-dim\)/s)
-    expect(shellSlice).toMatch(/\.nav-label\s*\{[^}]*color:\s*var\(--text-dim\)/s)
-    expect(shellSlice).toMatch(/\.sidebar-foot\s*\{[^}]*color:\s*var\(--text-dim\)/s)
-    expect(shellSlice).not.toMatch(/\.brand-sub\s*\{[^}]*color:\s*var\(--text-faint\)/s)
-    expect(shellSlice).not.toMatch(/\.nav-label\s*\{[^}]*color:\s*var\(--text-faint\)/s)
-    expect(shellSlice).not.toMatch(/\.sidebar-foot\s*\{[^}]*color:\s*var\(--text-faint\)/s)
+    expect(shellSlice).toMatch(
+      /\.brand-sub\s*\{[^}]*color:\s*var\(--text-dim\)/s,
+    )
+    expect(shellSlice).toMatch(
+      /\.nav-label\s*\{[^}]*color:\s*var\(--text-dim\)/s,
+    )
+    expect(shellSlice).toMatch(
+      /\.sidebar-foot\s*\{[^}]*color:\s*var\(--text-dim\)/s,
+    )
+    expect(shellSlice).not.toMatch(
+      /\.brand-sub\s*\{[^}]*color:\s*var\(--text-faint\)/s,
+    )
+    expect(shellSlice).not.toMatch(
+      /\.nav-label\s*\{[^}]*color:\s*var\(--text-faint\)/s,
+    )
+    expect(shellSlice).not.toMatch(
+      /\.sidebar-foot\s*\{[^}]*color:\s*var\(--text-faint\)/s,
+    )
   })
 
   it('light --text-dim contrast on white meets WCAG AA (≥4.5)', () => {
@@ -182,12 +214,14 @@ describe('control-center shell a11y — contrast tokens (shell chrome)', () => {
 })
 
 describe('document title + html lang', () => {
-  it('root document sets lang="en"', () => {
-    expect(rootRouteSrc).toMatch(/<html\s+lang="en">/)
+  it('root document sets lang="id"', () => {
+    expect(rootRouteSrc).toMatch(/<html\s+lang="id">/)
   })
 
   it('root head meta includes a meaningful non-empty title', () => {
-    expect(rootRouteSrc).toMatch(/\{\s*title:\s*'Cairn — agent work board'\s*\}/)
+    expect(rootRouteSrc).toMatch(
+      /\{\s*title:\s*'Cairn — papan kerja agen'\s*\}/,
+    )
   })
 })
 
@@ -198,20 +232,42 @@ describe('legacy adaptive nav compatibility (non-CC boards)', () => {
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
     const classic = appShellSrc.slice(start, end)
-    for (const id of ['board', 'agents', 'projects', 'features', 'tasks', 'map', 'design', 'decisions', 'log', 'ops']) {
+    for (const id of [
+      'board',
+      'agents',
+      'projects',
+      'features',
+      'tasks',
+      'map',
+      'design',
+      'decisions',
+      'log',
+      'ops',
+    ]) {
       expect(classic).toContain(`id: '${id}'`)
     }
   })
 
   it('control-center boards force full nine nav; others filter by views', () => {
-    expect(appShellSrc).toMatch(/const controlCenter = isControlCenterBoard\(boardId\)/)
+    expect(appShellSrc).toMatch(
+      /const controlCenter = isControlCenterBoard\(boardId\)/,
+    )
     expect(appShellSrc).toMatch(/const visible = controlCenter/)
     expect(appShellSrc).toMatch(/\? navSource/)
     expect(appShellSrc).toMatch(/navSource\.filter\(/)
   })
 
   it('legacy drill-down paths remain in SECTION_TITLE (tasks/map/design/log)', () => {
-    for (const key of ['tasks', 'map', 'design', 'log', 'evidence', 'overview', 'work', 'priority']) {
+    for (const key of [
+      'tasks',
+      'map',
+      'design',
+      'log',
+      'evidence',
+      'overview',
+      'work',
+      'priority',
+    ]) {
       expect(appShellSrc).toMatch(new RegExp(`${key}:\\s*'`))
     }
   })
@@ -222,11 +278,15 @@ describe('focus + reduced motion shell contracts', () => {
     expect(stylesSrc).toMatch(/\.nav-item:focus-visible/)
     expect(stylesSrc).toMatch(/\.icon-btn:focus-visible/)
     expect(stylesSrc).toMatch(/\.switcher-btn:focus-visible/)
-    expect(stylesSrc).toMatch(/box-shadow:\s*0 0 0 2px var\(--surface\),\s*0 0 0 4px var\(--accent\)/)
+    expect(stylesSrc).toMatch(
+      /box-shadow:\s*0 0 0 2px var\(--surface\),\s*0 0 0 4px var\(--accent\)/,
+    )
   })
 
   it('honors prefers-reduced-motion for shell transitions', () => {
-    expect(stylesSrc).toMatch(/@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)/)
+    expect(stylesSrc).toMatch(
+      /@media\s*\(\s*prefers-reduced-motion:\s*reduce\s*\)/,
+    )
     const block = extractMediaBlock(stylesSrc, 'prefers-reduced-motion: reduce')
     expect(block).toBeTruthy()
     expect(block!).toMatch(/\.nav-item/)
@@ -273,7 +333,8 @@ function relativeLuminance(hex: string): number {
   const r = parseInt(c.slice(0, 2), 16) / 255
   const g = parseInt(c.slice(2, 4), 16) / 255
   const b = parseInt(c.slice(4, 6), 16) / 255
-  const f = (x: number) => (x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4))
+  const f = (x: number) =>
+    x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4)
   return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
 }
 

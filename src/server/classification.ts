@@ -594,7 +594,19 @@ function pinMatches(
   if (receipt.taskHash !== pin.taskHash) {
     reasons.push('STALE_TASK_HASH')
   }
-  if (receipt.boardRev !== pin.boardRev) {
+  if (receipt.bindingMode === 'CANONICAL_PIN') {
+    const canonicalBoardRev = receipt.canonicalBoardRev
+    // Canonical-bound receipts are valid across later volatile board mutations,
+    // but never before their atomic publication and never with malformed lineage.
+    if (
+      !Number.isSafeInteger(canonicalBoardRev) ||
+      Number(canonicalBoardRev) < 0 ||
+      receipt.boardRev !== Number(canonicalBoardRev) + 1 ||
+      pin.boardRev < receipt.boardRev
+    ) {
+      reasons.push('STALE_BOARD_REV')
+    }
+  } else if (receipt.boardRev !== pin.boardRev) {
     reasons.push('STALE_BOARD_REV')
   }
   if (receipt.lifecycleRev !== pin.lifecycleRev) {

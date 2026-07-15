@@ -18,12 +18,12 @@ export function WorkPagination({
   const canPrev = page.hasPrev === true && !!onPrev
   const canNext = page.hasMore && !!onNext
   const totalPart =
-    typeof page.totalCount === 'number' ? ` · ${page.totalCount} total` : ''
+    typeof page.totalCount === 'number' ? ` · ${page.totalCount} pekerjaan` : ''
   const pagePart =
-    typeof page.pageIndex === 'number' ? `Page ${page.pageIndex}` : 'Page'
+    typeof page.pageIndex === 'number' ? `Halaman ${page.pageIndex}` : 'Halaman'
   const cursorHint = page.cursor
-    ? `cursor ${page.cursor.length > 12 ? `${page.cursor.slice(0, 10)}…` : page.cursor}`
-    : 'first page'
+    ? `posisi ${page.cursor.length > 12 ? `${page.cursor.slice(0, 10)}…` : page.cursor}`
+    : 'halaman pertama'
 
   return (
     <nav
@@ -41,7 +41,7 @@ export function WorkPagination({
         </span>
         <span aria-hidden="true"> · </span>
         <span>
-          size {page.pageSize}
+          {page.pageSize} per halaman
           {' · '}
           {cursorHint}
         </span>
@@ -54,7 +54,7 @@ export function WorkPagination({
           onClick={() => onPrev?.()}
           data-testid="work-page-prev"
         >
-          Previous
+          Sebelumnya
         </button>
         <button
           type="button"
@@ -63,7 +63,7 @@ export function WorkPagination({
           onClick={() => onNext?.()}
           data-testid="work-page-next"
         >
-          Next
+          Berikutnya
         </button>
       </div>
     </nav>

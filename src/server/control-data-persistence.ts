@@ -104,6 +104,26 @@ export interface ClassificationDataStore {
   ): Promise<void>
   putReceipt(boardId: string, receipt: ClassificationReceipt): Promise<void>
   getReceipt(boardId: string, receiptId: string): Promise<ClassificationReceipt | null>
+  /**
+   * Transactional complete-set publication used by ROOT classification sync.
+   * Optional so memory/test stores remain compatible; production MySQL provides it.
+   */
+  replaceAll?(
+    boardId: string,
+    records: ReadonlyArray<TaskClassificationRecord>,
+    pins: {
+      expectedBoardRev: number
+      expectedEntityRev: number
+      outputBoardRev: number
+      outputEntityRev: number
+      lifecycleRev: number
+      canonicalHash: string
+      actorId: string
+      auditId: string
+      receiptSetHash: string
+      issuedAt: string
+    },
+  ): Promise<{ boardRev: number; entityRev: number; auditId: string }>
 }
 
 /** Immutable material audit row for canonical import (board-isolated). */
@@ -209,6 +229,7 @@ export type ControlDataPersistenceErrorCode =
   | 'DATA_INTEGRITY'
   | 'IDEMPOTENCY_CONFLICT'
   | 'INVALID_INPUT'
+  | 'STALE_REVISION'
 
 export class ControlDataPersistenceError extends Error {
   readonly code: ControlDataPersistenceErrorCode
@@ -1924,6 +1945,260 @@ export function createMysqlClassificationStore(client: ControlDataSqlClient): Cl
       const r = asRows<RowDataPacket>(rows)[0]
       return r ? mapReceipt(r) : null
     },
+
+    async replaceAll(boardId, records, pins) {
+      return withTx(client, async (conn) => {
+        const [boardRows] = await conn.query(
+          `SELECT board_rev, lifecycle_rev, canonical_hash
+             FROM board_revisions WHERE board_id=? FOR UPDATE`,
+          [boardId],
+        )
+        const board = asRows<RowDataPacket>(boardRows)[0]
+        if (!board) {
+          throw new ControlDataPersistenceError('DATA_INTEGRITY', 'classification board pin missing', {
+            boardId,
+          })
+        }
+        const currentBoardRev = Number(board.board_rev ?? 0)
+        const currentLifecycleRev = Number(board.lifecycle_rev ?? 0)
+        const currentCanonicalHash = String(board.canonical_hash ?? '')
+        if (
+          currentBoardRev !== pins.expectedBoardRev ||
+          currentLifecycleRev !== pins.lifecycleRev ||
+          currentCanonicalHash !== pins.canonicalHash ||
+          pins.outputBoardRev !== pins.expectedBoardRev + 1
+        ) {
+          throw new ControlDataPersistenceError(
+            'STALE_REVISION',
+            'classification sync board pin changed',
+            {
+              boardId,
+              currentBoardRev,
+              currentLifecycleRev,
+              currentCanonicalHash,
+            },
+          )
+        }
+
+        const [entityRows] = await conn.query(
+          `SELECT entity_rev FROM entity_revisions
+            WHERE board_id=? AND entity_type='classification_sync' AND entity_id=?
+            FOR UPDATE`,
+          [boardId, boardId],
+        )
+        const entity = asRows<RowDataPacket>(entityRows)[0]
+        const currentEntityRev = Number(entity?.entity_rev ?? 0)
+        if (
+          currentEntityRev !== pins.expectedEntityRev ||
+          pins.outputEntityRev !== pins.expectedEntityRev + 1
+        ) {
+          throw new ControlDataPersistenceError(
+            'STALE_REVISION',
+            'classification sync entity revision changed',
+            { boardId, currentEntityRev },
+          )
+        }
+
+        for (const record of records) {
+          const sanitized = sanitizeClassificationRecordForPersistence(record)
+          const receipt = sanitized.receipt
+          if (!receipt) {
+            throw new ControlDataPersistenceError(
+              'INVALID_INPUT',
+              'classification replacement requires a programmatic receipt for every row',
+              { taskId: sanitized.taskId },
+            )
+          }
+
+          const [existingRows] = await conn.query(
+            `SELECT receipt_hash, canonical_hash
+               FROM control_plane_classification_receipts
+              WHERE board_id=? AND receipt_id=? LIMIT 1`,
+            [boardId, receipt.receiptId],
+          )
+          const existing = asRows<RowDataPacket>(existingRows)[0]
+          if (existing) {
+            assertImmutableReplay({
+              kind: 'control_plane_classification_receipts',
+              key: `${boardId}::${receipt.receiptId}`,
+              existingHash: String(existing.receipt_hash ?? ''),
+              nextHash: receipt.receiptHash,
+            })
+            if (String(existing.canonical_hash ?? '') !== receipt.canonicalHash) {
+              throw new ControlDataPersistenceError(
+                'IDEMPOTENCY_CONFLICT',
+                'classification receipt replay changed canonical_hash',
+                { taskId: sanitized.taskId, receiptId: receipt.receiptId },
+              )
+            }
+          } else {
+            await conn.query(
+              `INSERT INTO control_plane_classification_receipts (
+                 board_id, receipt_id, task_id, receipt_hash, task_class, disposition,
+                 membership_portfolio_id, membership_proof_hash, canonical_snapshot_id,
+                 canonical_hash, task_hash, board_rev, lifecycle_rev, issued_at, expires_at,
+                 receipt_json
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+              [
+                boardId,
+                receipt.receiptId,
+                receipt.taskId,
+                receipt.receiptHash,
+                receipt.taskClass,
+                receipt.disposition,
+                receipt.membershipPortfolioId ?? null,
+                receipt.membershipProofHash ?? null,
+                receipt.canonicalSnapshotId,
+                receipt.canonicalHash,
+                receipt.taskHash,
+                receipt.boardRev,
+                receipt.lifecycleRev,
+                toMysqlDateTime(receipt.issuedAt),
+                toMysqlDateTime(receipt.expiresAt ?? null),
+                jsonParam(receipt),
+              ],
+            )
+          }
+
+          await conn.query(
+            `INSERT INTO control_plane_classification (
+               board_id, task_id, task_class, disposition,
+               classification_receipt_id, classification_receipt_hash, proof_source,
+               board_rev, entity_rev, receipt_json, canonical_snapshot_id, canonical_hash,
+               task_hash, lifecycle_rev, control_plane_target_gate,
+               control_plane_gate_verified_pass, control_plane_root_accepted
+             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ON DUPLICATE KEY UPDATE
+               task_class=VALUES(task_class), disposition=VALUES(disposition),
+               classification_receipt_id=VALUES(classification_receipt_id),
+               classification_receipt_hash=VALUES(classification_receipt_hash),
+               board_rev=VALUES(board_rev), entity_rev=VALUES(entity_rev),
+               receipt_json=VALUES(receipt_json), canonical_snapshot_id=VALUES(canonical_snapshot_id),
+               canonical_hash=VALUES(canonical_hash), task_hash=VALUES(task_hash),
+               lifecycle_rev=VALUES(lifecycle_rev),
+               control_plane_target_gate=VALUES(control_plane_target_gate),
+               control_plane_gate_verified_pass=VALUES(control_plane_gate_verified_pass),
+               control_plane_root_accepted=VALUES(control_plane_root_accepted)`,
+            [
+              boardId,
+              sanitized.taskId,
+              sanitized.taskClass,
+              sanitized.disposition,
+              receipt.receiptId,
+              receipt.receiptHash,
+              receipt.membershipPortfolioId ?? null,
+              pins.outputBoardRev,
+              pins.outputEntityRev,
+              jsonParam(receipt),
+              receipt.canonicalSnapshotId,
+              receipt.canonicalHash,
+              receipt.taskHash,
+              pins.lifecycleRev,
+              sanitized.controlPlaneTargetGate ?? null,
+              sanitized.controlPlaneGateVerifiedPass ? 1 : 0,
+              sanitized.controlPlaneRootAccepted ? 1 : 0,
+            ],
+          )
+        }
+
+        // Exact-set materialization: current canonical tasks are all present in
+        // `records`; remove overlay orphans while immutable receipt history remains.
+        const taskIds = records.map((record) => record.taskId)
+        if (taskIds.length === 0) {
+          throw new ControlDataPersistenceError(
+            'INVALID_INPUT',
+            'classification replacement refuses an empty exact set',
+          )
+        }
+        await conn.query(
+          `DELETE FROM control_plane_classification
+            WHERE board_id=? AND task_id NOT IN (${taskIds.map(() => '?').join(',')})`,
+          [boardId, ...taskIds],
+        )
+
+        const auditDetail = {
+          eventId: pins.auditId,
+          schemaVersion: 'TM_CLASSIFICATION_SYNC_SCHEMA_007_V1',
+          canonicalHash: pins.canonicalHash,
+          inputBoardRev: pins.expectedBoardRev,
+          outputBoardRev: pins.outputBoardRev,
+          lifecycleRev: pins.lifecycleRev,
+          taskCount: records.length,
+          receiptSetHash: pins.receiptSetHash,
+        }
+        const [auditRows] = await conn.query(
+          `SELECT detail FROM audit_log
+            WHERE board_id=?
+              AND JSON_UNQUOTE(JSON_EXTRACT(detail, '$.eventId'))=?
+            LIMIT 1`,
+          [boardId, pins.auditId],
+        )
+        const existingAudit = asRows<RowDataPacket>(auditRows)[0]
+        if (existingAudit) {
+          const existingDetail = parseJson<Record<string, unknown>>(existingAudit.detail, {})
+          if (JSON.stringify(existingDetail) !== JSON.stringify(auditDetail)) {
+            throw new ControlDataPersistenceError(
+              'IDEMPOTENCY_CONFLICT',
+              'classification audit event rewrite is forbidden',
+              { boardId, auditId: pins.auditId },
+            )
+          }
+        } else {
+          await conn.query(
+            `INSERT INTO audit_log
+               (board_id, ts, actor, action, task_id, from_stage, to_stage, detail)
+             VALUES (?,?,?,?,?,?,?,?)`,
+            [
+              boardId,
+              toMysqlDateTime(pins.issuedAt),
+              pins.actorId,
+              'CLASSIFICATION_SYNC',
+              null,
+              null,
+              null,
+              jsonParam(auditDetail),
+            ],
+          )
+        }
+
+        await conn.query(
+          `INSERT INTO entity_revisions
+             (board_id, entity_type, entity_id, entity_rev, subject_hash)
+           VALUES (?, 'classification_sync', ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             entity_rev=VALUES(entity_rev), subject_hash=VALUES(subject_hash)`,
+          [boardId, boardId, pins.outputEntityRev, pins.canonicalHash],
+        )
+        const [update] = await conn.query(
+          `UPDATE board_revisions SET board_rev=?
+            WHERE board_id=? AND board_rev=? AND lifecycle_rev=? AND canonical_hash=?`,
+          [
+            pins.outputBoardRev,
+            boardId,
+            pins.expectedBoardRev,
+            pins.lifecycleRev,
+            pins.canonicalHash,
+          ],
+        )
+        const affected = Number(
+          (update as { affectedRows?: number }).affectedRows ??
+            (update as { rowsAffected?: number }).rowsAffected ??
+            0,
+        )
+        if (affected !== 1) {
+          throw new ControlDataPersistenceError(
+            'STALE_REVISION',
+            'classification sync board revision CAS failed',
+            { boardId },
+          )
+        }
+        return {
+          boardRev: pins.outputBoardRev,
+          entityRev: pins.outputEntityRev,
+          auditId: pins.auditId,
+        }
+      })
+    },
   }
 }
 
@@ -2095,6 +2370,7 @@ interface MemTables {
   control_plane_classification: Map<string, MemRow>
   control_plane_classification_receipts: Map<string, MemRow>
   control_plane_stage_evidence_receipts: Map<string, MemRow>
+  audit_log: Map<string, MemRow>
 }
 
 function emptyTables(): MemTables {
@@ -2110,6 +2386,7 @@ function emptyTables(): MemTables {
     control_plane_classification: new Map(),
     control_plane_classification_receipts: new Map(),
     control_plane_stage_evidence_receipts: new Map(),
+    audit_log: new Map(),
   }
 }
 
@@ -2238,8 +2515,37 @@ export function createMemoryControlDataSql(): ControlDataSqlClient & {
       })
       return [{ affectedRows: 1 } as ResultSetHeader, []]
     }
+    if (/^UPDATE board_revisions SET board_rev=\? WHERE board_id=\?/i.test(s)) {
+      const boardId = String(p[1])
+      const row = tables.board_revisions.get(boardId)
+      const matches =
+        row &&
+        Number(row.board_rev ?? 0) === Number(p[2]) &&
+        Number(row.lifecycle_rev ?? 0) === Number(p[3]) &&
+        String(row.canonical_hash ?? '') === String(p[4] ?? '')
+      if (matches) {
+        tables.board_revisions.set(boardId, { ...row, board_rev: p[0] })
+      }
+      return [{ affectedRows: matches ? 1 : 0 } as ResultSetHeader, []]
+    }
 
     // ---- entity_revisions ----
+    if (/^SELECT entity_rev FROM entity_revisions/i.test(s) && /entity_type='classification_sync'/i.test(s)) {
+      const key = `${p[0]}::classification_sync::${p[1]}`
+      const row = tables.entity_revisions.get(key)
+      return [row ? [row as RowDataPacket] : [], []]
+    }
+    if (/^INSERT INTO entity_revisions/i.test(s) && /'classification_sync'/i.test(s)) {
+      const key = `${p[0]}::classification_sync::${p[1]}`
+      tables.entity_revisions.set(key, {
+        board_id: p[0],
+        entity_type: 'classification_sync',
+        entity_id: p[1],
+        entity_rev: p[2],
+        subject_hash: p[3],
+      })
+      return [{ affectedRows: 1 } as ResultSetHeader, []]
+    }
     if (/FROM entity_revisions/i.test(s) && /^SELECT/i.test(s)) {
       const key = `${p[0]}::${p[1]}::${p[2]}`
       const row = tables.entity_revisions.get(key)
@@ -2588,6 +2894,18 @@ export function createMemoryControlDataSql(): ControlDataSqlClient & {
       })
       return [{ affectedRows: 1 } as ResultSetHeader, []]
     }
+    if (/^DELETE FROM control_plane_classification WHERE board_id=\? AND task_id NOT IN/i.test(s)) {
+      const boardId = String(p[0])
+      const keep = new Set(p.slice(1).map(String))
+      let affectedRows = 0
+      for (const [key, row] of tables.control_plane_classification) {
+        if (String(row.board_id) === boardId && !keep.has(String(row.task_id))) {
+          tables.control_plane_classification.delete(key)
+          affectedRows += 1
+        }
+      }
+      return [{ affectedRows } as ResultSetHeader, []]
+    }
     if (/FROM control_plane_classification_receipts/i.test(s) && /^SELECT/i.test(s)) {
       const key = `${p[0]}::${p[1]}`
       const row = tables.control_plane_classification_receipts.get(key)
@@ -2625,6 +2943,31 @@ export function createMemoryControlDataSql(): ControlDataSqlClient & {
         issued_at: p[13],
         expires_at: p[14],
         receipt_json: parseJson(p[15], null),
+      })
+      return [{ affectedRows: 1 } as ResultSetHeader, []]
+    }
+    if (/^SELECT detail FROM audit_log/i.test(s)) {
+      for (const row of tables.audit_log.values()) {
+        const detail = parseJson<Record<string, unknown>>(row.detail, {})
+        if (row.board_id === p[0] && detail.eventId === p[1]) {
+          return [[{ detail: row.detail } as RowDataPacket], []]
+        }
+      }
+      return [[], []]
+    }
+    if (/^INSERT INTO audit_log/i.test(s)) {
+      const detail = parseJson<Record<string, unknown>>(p[7], {})
+      const key = `${p[0]}::${String(detail.eventId ?? tables.audit_log.size + 1)}`
+      tables.audit_log.set(key, {
+        id: tables.audit_log.size + 1,
+        board_id: p[0],
+        ts: p[1],
+        actor: p[2],
+        action: p[3],
+        task_id: p[4],
+        from_stage: p[5],
+        to_stage: p[6],
+        detail: p[7],
       })
       return [{ affectedRows: 1 } as ResultSetHeader, []]
     }

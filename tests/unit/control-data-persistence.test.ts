@@ -365,6 +365,194 @@ describe('control-data-persistence MySQL adapters (memory SQL)', () => {
   })
 
   describe('ClassificationDataStore', () => {
+    it('replaceAll publishes receipt archive and classification rows together', async () => {
+      const replaceAll = store.classification.replaceAll
+      expect(replaceAll).toBeTypeOf('function')
+      await seedBoardRevision(store.sql, {
+        boardId: 'b-bulk',
+        boardRev: 11,
+        lifecycleRev: 3,
+        canonicalSnapshotId: 'snap-bulk',
+        canonicalHash: 'b'.repeat(64),
+      })
+      await store.classification.put('b-bulk', {
+        taskId: 't-orphan',
+        taskClass: 'PRODUCT',
+        disposition: 'ACTIVE',
+        receipt: null,
+      })
+      await replaceAll!('b-bulk', [
+        {
+          taskId: 't-product',
+          taskClass: 'PRODUCT',
+          disposition: 'ACTIVE',
+          receipt: {
+            receiptId: 'class-v3-product',
+            receiptHash: 'a'.repeat(64),
+            taskId: 't-product',
+            taskClass: 'PRODUCT',
+            disposition: 'ACTIVE',
+            canonicalSnapshotId: 'snap-bulk',
+            canonicalHash: 'b'.repeat(64),
+            taskHash: 'b'.repeat(64),
+            boardRev: 12,
+            lifecycleRev: 3,
+            issuedAt: '2026-07-15T10:00:00.000Z',
+          },
+        },
+        {
+          taskId: 't-control',
+          taskClass: 'CONTROL_PLANE',
+          disposition: 'ACTIVE',
+          receipt: {
+            receiptId: 'class-v3-control',
+            receiptHash: 'c'.repeat(64),
+            taskId: 't-control',
+            taskClass: 'CONTROL_PLANE',
+            disposition: 'ACTIVE',
+            canonicalSnapshotId: 'snap-bulk',
+            canonicalHash: 'b'.repeat(64),
+            taskHash: 'b'.repeat(64),
+            boardRev: 12,
+            lifecycleRev: 3,
+            issuedAt: '2026-07-15T10:00:00.000Z',
+          },
+          controlPlaneTargetGate: 'CONTROL_PLANE_WORK_PENDING',
+          controlPlaneGateVerifiedPass: false,
+          controlPlaneRootAccepted: false,
+        },
+      ], {
+        expectedBoardRev: 11,
+        expectedEntityRev: 0,
+        outputBoardRev: 12,
+        outputEntityRev: 1,
+        lifecycleRev: 3,
+        canonicalHash: 'b'.repeat(64),
+        actorId: 'root-sync-test',
+        auditId: 'classification-sync-test-1',
+        receiptSetHash: 'd'.repeat(64),
+        issuedAt: '2026-07-15T10:00:00.000Z',
+      })
+
+      expect(await store.classification.get('b-bulk', 't-product')).toMatchObject({
+        taskClass: 'PRODUCT',
+        disposition: 'ACTIVE',
+        receipt: { receiptId: 'class-v3-product', boardRev: 12 },
+      })
+      expect(await store.classification.getReceipt('b-bulk', 'class-v3-control')).toMatchObject({
+        taskId: 't-control',
+        receiptHash: 'c'.repeat(64),
+      })
+      expect(await store.classification.get('b-bulk', 't-orphan')).toBeNull()
+      expect([...store.sql.tables.audit_log.values()]).toHaveLength(1)
+      expect([...store.sql.tables.audit_log.values()][0]).toMatchObject({
+        actor: 'root-sync-test',
+        action: 'CLASSIFICATION_SYNC',
+      })
+      const before = await store.classification.list('b-bulk')
+      await expect(
+        replaceAll!('b-bulk', [], {
+          expectedBoardRev: 11,
+          expectedEntityRev: 0,
+          outputBoardRev: 12,
+          outputEntityRev: 1,
+          lifecycleRev: 3,
+          canonicalHash: 'b'.repeat(64),
+          actorId: 'root-sync-test',
+          auditId: 'classification-sync-test-1',
+          receiptSetHash: 'e'.repeat(64),
+          issuedAt: '2026-07-15T10:00:00.000Z',
+        }),
+      ).rejects.toMatchObject({ code: 'STALE_REVISION' })
+      expect(await store.classification.list('b-bulk')).toEqual(before)
+      expect([...store.sql.tables.audit_log.values()]).toHaveLength(1)
+    })
+
+    it('replaceAll rolls back every row, receipt, audit, and revision on mid-transaction failure', async () => {
+      const sql = createMemoryControlDataSql()
+      let failAuditInsert = false
+      const failingClient = {
+        query: sql.query.bind(sql),
+        async getConnection() {
+          const connection = await sql.getConnection!()
+          return {
+            query: async (statement: string, params?: ReadonlyArray<unknown>) => {
+              if (failAuditInsert && /^INSERT INTO audit_log/i.test(statement.trim())) {
+                throw new Error('injected classification audit failure')
+              }
+              return connection.query(statement, params ? [...params] : undefined)
+            },
+            beginTransaction: () => connection.beginTransaction(),
+            commit: () => connection.commit(),
+            rollback: () => connection.rollback(),
+            release: () => connection.release(),
+          }
+        },
+      }
+      const isolated = createMysqlControlDataPersistence({
+        client: failingClient,
+        requireInjected: true,
+      })
+      await seedBoardRevision(sql, {
+        boardId: 'b-rollback',
+        boardRev: 5,
+        lifecycleRev: 2,
+        canonicalSnapshotId: 'snap-rollback',
+        canonicalHash: 'f'.repeat(64),
+      })
+      await isolated.classification.put('b-rollback', {
+        taskId: 't-original',
+        taskClass: 'PRODUCT',
+        disposition: 'ACTIVE',
+        receipt: null,
+      })
+      failAuditInsert = true
+
+      await expect(
+        isolated.classification.replaceAll!('b-rollback', [
+          {
+            taskId: 't-replacement',
+            taskClass: 'PRODUCT',
+            disposition: 'ACTIVE',
+            receipt: {
+              receiptId: 'rollback-receipt',
+              receiptHash: 'e'.repeat(64),
+              taskId: 't-replacement',
+              taskClass: 'PRODUCT',
+              disposition: 'ACTIVE',
+              canonicalSnapshotId: 'snap-rollback',
+              canonicalHash: 'f'.repeat(64),
+              taskHash: 'f'.repeat(64),
+              boardRev: 6,
+              lifecycleRev: 2,
+              issuedAt: '2026-07-15T10:00:00.000Z',
+            },
+          },
+        ], {
+          expectedBoardRev: 5,
+          expectedEntityRev: 0,
+          outputBoardRev: 6,
+          outputEntityRev: 1,
+          lifecycleRev: 2,
+          canonicalHash: 'f'.repeat(64),
+          actorId: 'root-rollback-test',
+          auditId: 'classification-sync-rollback',
+          receiptSetHash: 'e'.repeat(64),
+          issuedAt: '2026-07-15T10:00:00.000Z',
+        }),
+      ).rejects.toThrow('injected classification audit failure')
+
+      expect(await isolated.classification.list('b-rollback')).toEqual([
+        expect.objectContaining({ taskId: 't-original' }),
+      ])
+      expect(
+        await isolated.classification.getReceipt('b-rollback', 'rollback-receipt'),
+      ).toBeNull()
+      expect([...sql.tables.audit_log.values()]).toHaveLength(0)
+      expect([...sql.tables.entity_revisions.values()]).toHaveLength(0)
+      expect((await isolated.imports.getBoardState('b-rollback'))?.boardRev).toBe(5)
+    })
+
     it('put receipt + record; evaluateClassification validates pin', async () => {
       const pin = {
         canonicalSnapshotId: 'snap-1',
