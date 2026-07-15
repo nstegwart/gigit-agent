@@ -16,9 +16,10 @@ import {
   requireApprovalBundle,
   requireMigrateApplyAuthority,
 } from '../lib/gates.mjs'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 
 let failed = 0
 function check(name, cond, detail = '') {
@@ -133,12 +134,32 @@ check(
 check(
   'requireMigrateApplyAuthority ok',
   requireMigrateApplyAuthority(
-    {
+    (() => {
+      const env = {
       APPROVED_FULL_SHA: goodSha,
       PRODUCTION_APPROVAL_ID: 'ticket-apply',
       BACKUP_RECEIPT: receipt,
       MIGRATE_APPLY_APPROVED: '1',
-    },
+      MIGRATION_APPROVED_VERSION: '008',
+      MIGRATION_APPROVED_SHA256: 'a'.repeat(64),
+      MIGRATION_TARGET_HOST: '127.0.0.1',
+      MIGRATION_TARGET_DATABASE: 'cairn_taskmanager',
+      CAIRN_DB_HOST: '127.0.0.1',
+      CAIRN_DB_NAME: 'cairn_taskmanager',
+      }
+      env.MIGRATION_APPROVAL_BINDING = createHash('sha256')
+        .update([
+          env.APPROVED_FULL_SHA,
+          env.PRODUCTION_APPROVAL_ID,
+          env.MIGRATION_APPROVED_VERSION,
+          env.MIGRATION_APPROVED_SHA256,
+          env.MIGRATION_TARGET_HOST,
+          env.MIGRATION_TARGET_DATABASE,
+          createHash('sha256').update(readFileSync(receipt)).digest('hex'),
+        ].join('\0'))
+        .digest('hex')
+      return env
+    })(),
     { maxAgeHours: 24 },
   ).ok,
 )

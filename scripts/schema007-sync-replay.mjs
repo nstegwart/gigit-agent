@@ -6,6 +6,7 @@ import { basename, resolve } from 'node:path'
 const args = new Set(process.argv.slice(2))
 const applyRuns = args.has('--apply-runs')
 const applyClassifications = args.has('--apply-classifications')
+const applySyncStatus = args.has('--apply-sync-status')
 const endpoint =
   process.env.CAIRN_MCP_URL || 'https://task-manager.mfsdev.net/mcp'
 const boardId = process.env.CAIRN_BOARD_ID || 'mfs-rebuild'
@@ -26,6 +27,11 @@ if (!token) {
     applyClassifications
       ? 'CAIRN_ROOT_WRITE_TOKEN is required for explicit ROOT/OWNER apply mode'
       : 'CAIRN_WRITE_TOKEN is required (value is never printed)',
+  )
+}
+if (applySyncStatus && (!applyClassifications || !applyRuns)) {
+  throw new Error(
+    '--apply-sync-status requires --apply-classifications and --apply-runs',
   )
 }
 
@@ -574,6 +580,73 @@ if (applyRuns) {
     classificationAuditId: finalAuditId,
     classificationActivitySeen: finalActivitySeen,
   }
+}
+
+if (applySyncStatus) {
+  const final = report.finalReadback
+  if (
+    !final?.pinsMatch ||
+    !final?.classificationsStillValid ||
+    final?.unclassified !== 0 ||
+    !final?.exactTaskSet ||
+    !final?.runReadbacks?.every((row) => row.visible)
+  ) {
+    throw new Error('SYNC_STATUS_ZERO_REQUIRES_FINAL_REPLAY_PARITY')
+  }
+  const mysql = await import('mysql2/promise')
+  const connection = await mysql.createConnection({
+    host: process.env.CAIRN_DB_HOST,
+    port: Number(process.env.CAIRN_DB_PORT || 3306),
+    user: process.env.CAIRN_DB_USER,
+    password: process.env.CAIRN_DB_PASSWORD,
+    database: process.env.CAIRN_DB_NAME,
+    connectTimeout: 10_000,
+  })
+  try {
+    const record = {
+      schemaVersion: 'CP0_SYNC_STATUS_V1',
+      status: 'IN_SYNC',
+      outboxPending: 0,
+      legacyUnreplayed: 0,
+      effectiveBacklog: 0,
+      boardRev: final.boardRev,
+      lifecycleRev: final.lifecycleRev,
+      canonicalHash: final.canonicalHash,
+    }
+    await connection.execute(
+      `INSERT INTO control_plane_sync_status
+       (board_id, status, outbox_pending, legacy_unreplayed, effective_backlog,
+        board_rev, lifecycle_rev, canonical_hash, last_ack_revision,
+        freshness_at, entity_rev, record_json)
+       VALUES (?, 'IN_SYNC', 0, 0, 0, ?, ?, ?, ?, NOW(3), 1, ?)
+       ON DUPLICATE KEY UPDATE
+         status=VALUES(status), outbox_pending=0, legacy_unreplayed=0,
+         effective_backlog=0, board_rev=VALUES(board_rev),
+         lifecycle_rev=VALUES(lifecycle_rev), canonical_hash=VALUES(canonical_hash),
+         last_ack_revision=VALUES(last_ack_revision), freshness_at=NOW(3),
+         entity_rev=entity_rev+1, record_json=VALUES(record_json)`,
+      [
+        boardId,
+        final.boardRev,
+        final.lifecycleRev,
+        final.canonicalHash,
+        final.boardRev,
+        JSON.stringify(record),
+      ],
+    )
+  } finally {
+    await connection.end()
+  }
+  const sync = await mcp('get_sync_status', { boardId })
+  if (
+    sync?.status !== 'IN_SYNC' ||
+    sync?.effectiveBacklog !== 0 ||
+    sync?.zeroBacklogProven !== true ||
+    sync?.parity !== true
+  ) {
+    throw new Error('SYNC_STATUS_READBACK_FAILED')
+  }
+  report.syncStatus = sync
 }
 
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)

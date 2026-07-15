@@ -300,13 +300,24 @@ export function assertBackupAuthority(input) {
       ageMs,
     }
   }
-  // Content fingerprint without printing dump body
+  // Content digest without printing dump body.
   let fingerprint = ''
+  let sha256 = ''
   try {
-    const head = readFileSync(path).subarray(0, Math.min(st.size, 64 * 1024))
+    const contents = readFileSync(path)
+    const head = contents.subarray(0, Math.min(st.size, 64 * 1024))
     fingerprint = createHash('sha256').update(head).digest('hex').slice(0, 16)
+    sha256 = createHash('sha256').update(contents).digest('hex')
   } catch {
     fingerprint = 'unreadable'
+    sha256 = ''
+  }
+  if (!/^[0-9a-f]{64}$/.test(sha256)) {
+    return {
+      ok: false,
+      code: 'BACKUP_RECEIPT_UNREADABLE',
+      message: 'BACKUP_RECEIPT full digest could not be computed',
+    }
   }
   return {
     ok: true,
@@ -314,6 +325,7 @@ export function assertBackupAuthority(input) {
     size: st.size,
     mtimeMs: st.mtimeMs,
     fingerprint16: fingerprint,
+    sha256,
   }
 }
 
@@ -354,6 +366,26 @@ export function requireMigrateApplyAuthority(env = {}, opts = {}) {
       message: 'migrate apply refuse: set MIGRATE_APPLY_APPROVED=1 only after owner approval + dump',
     }
   }
+  const approvedVersion = String(env.MIGRATION_APPROVED_VERSION || '').trim()
+  const approvedSha256 = String(env.MIGRATION_APPROVED_SHA256 || '').trim()
+  const targetHost = String(env.MIGRATION_TARGET_HOST || '').trim()
+  const targetDatabase = String(env.MIGRATION_TARGET_DATABASE || '').trim()
+  const configuredHost = String(env.CAIRN_DB_HOST || '').trim()
+  const configuredDatabase = String(env.CAIRN_DB_NAME || '').trim()
+  if (!/^\d{3}$/.test(approvedVersion) || !/^[0-9a-f]{64}$/.test(approvedSha256)) {
+    return {
+      ok: false,
+      code: 'MIGRATION_ARTIFACT_BINDING_REQUIRED',
+      message: 'migration apply requires exact MIGRATION_APPROVED_VERSION and lowercase MIGRATION_APPROVED_SHA256',
+    }
+  }
+  if (!targetHost || !targetDatabase || targetHost !== configuredHost || targetDatabase !== configuredDatabase) {
+    return {
+      ok: false,
+      code: 'MIGRATION_DB_TARGET_MISMATCH',
+      message: 'migration target host/database must exactly match CAIRN_DB_HOST/CAIRN_DB_NAME',
+    }
+  }
   const dumpPath = opts.dumpPath || env.DB_DUMP_PATH || env.BACKUP_RECEIPT
   const backup = assertBackupAuthority({
     receiptPath: dumpPath,
@@ -368,11 +400,33 @@ export function requireMigrateApplyAuthority(env = {}, opts = {}) {
       backup,
     }
   }
+  const expectedBinding = createHash('sha256')
+    .update([
+      String(env.APPROVED_FULL_SHA),
+      String(env.PRODUCTION_APPROVAL_ID),
+      approvedVersion,
+      approvedSha256,
+      targetHost,
+      targetDatabase,
+      backup.sha256,
+    ].join('\0'))
+    .digest('hex')
+  if (String(env.MIGRATION_APPROVAL_BINDING || '').trim() !== expectedBinding) {
+    return {
+      ok: false,
+      code: 'MIGRATION_APPROVAL_BINDING_MISMATCH',
+      message: 'migration approval binding does not match release/artifact/database target',
+    }
+  }
   return {
     ok: true,
     code: 'MIGRATE_APPLY_AUTHORITY_OK',
     approvedFullSha: bundle.approvedFullSha,
     productionApprovalId: bundle.productionApprovalId,
+    approvedVersion,
+    approvedSha256,
+    targetHost,
+    targetDatabase,
     backup,
   }
 }

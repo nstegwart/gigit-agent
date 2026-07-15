@@ -6,6 +6,7 @@ import {
 } from '#/server/board-store'
 import {
   ACCOUNT_PERIODIC_HEALTH_MS,
+  ACCOUNT_PROBE_MAX_AGE_SECONDS,
   ACCOUNT_PUBLISH_SLA_MS,
   ACCOUNT_SYNC_READBACK_SURFACES,
   AccountSyncError,
@@ -14,12 +15,12 @@ import {
   CAP_REASON_GROK_NO_REMAINING,
   CAP_REASON_GROK_ONLY_RECOVERY,
   CAP_REASON_NON_GROK_DENIED_GROK_ONLY,
-  CAP_REASON_OTHER_NO_REMAINING,
-  CAP_REASON_SOL_NO_REMAINING,
   CAP_REASON_FAMILY_REMAINING_REQUIRED,
   CAP_REASON_FAIL_SAFE_STOP_DISPATCH,
   CAP_REASON_FAIL_SAFE_STOP_LIMIT,
-  CAP_REASON_SPARK_NO_REMAINING,
+  CAP_REASON_OTHER_NO_REMAINING,
+  CAP_REASON_SOL_NO_REMAINING,
+  CPU_BOUNDED_DRAIN_FRACTION,
   CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS,
   createMemoryAccountSyncStore,
   evaluateAccountSyncFreshness,
@@ -32,6 +33,7 @@ import {
   isCoalescableAccountSyncTrigger,
   isFailClosedStable,
   isImmediateAccountSyncTrigger,
+  isAccountEligible,
   isMaterialAccountSyncTransition,
   projectAccountSyncCcReadModel,
   readLatestAccountSyncSnapshot,
@@ -43,26 +45,29 @@ import {
   surfacesHaveParity,
   syncAccounts,
   syncAccountsIdempotencyBody,
-  type AccountSyncDeps,
-  type MaskedAccountRecord,
-  type SyncAccountsRequest,
+} from '#/server/account-sync'
+import type {
+  AccountSyncDeps,
+  MaskedAccountRecord,
+  SyncAccountsRequest,
 } from '#/server/account-sync'
 import {
   resetMcpControlPlaneDeps,
   setMcpAccountStore,
 } from '#/server/board-mcp'
-import {
-  buildControlCenterAggregationFromSources,
-} from '#/server/control-center-ui-adapter'
+import { buildControlCenterAggregationFromSources } from '#/server/control-center-ui-adapter'
 import { projectOps } from '#/server/control-center-ui'
-import { createMemoryIdempotencyStorage, requestHashOf } from '#/server/idempotency'
+import {
+  createMemoryIdempotencyStorage,
+  requestHashOf,
+} from '#/server/idempotency'
 import {
   createMemoryDispatchPlanStore,
   computePlanHash,
   DISPATCH_CALLER_ROOT,
   publishDispatchPlan,
-  type DispatchPlanItem,
 } from '#/server/control-plane-ingest'
+import type { DispatchPlanItem } from '#/server/control-plane-ingest'
 import {
   createMemoryRunRegistryStore,
   registerRun,
@@ -71,9 +76,26 @@ import { createMemoryLockStore } from '#/server/locks'
 
 const BOARD = 'mfs-rebuild'
 
+function eligibleEvidence(nowMs = Date.now()) {
+  return {
+    expiresAt: new Date(nowMs + 3_600_000).toISOString(),
+    quotaRemaining: 1,
+    quotaVerdict: 'PASS' as const,
+    chatVerdict: 'PASS' as const,
+    probedAt: new Date(nowMs).toISOString(),
+    probeAgeSeconds: 0,
+    quarantineReason: null,
+  }
+}
+
 function deps(clock = createFakeClock()) {
   const atomic = createMemoryControlPlaneAtomicStore([
-    { boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null },
+    {
+      boardId: BOARD,
+      boardRev: 0,
+      dispatchBlocked: false,
+      dispatchBlockedReason: null,
+    },
   ])
   const accounts = createMemoryAccountSyncStore()
   const idempotency = createMemoryIdempotencyStorage()
@@ -86,7 +108,10 @@ function deps(clock = createFakeClock()) {
   return d
 }
 
-function grok(id: string, over: Partial<MaskedAccountRecord> = {}): MaskedAccountRecord {
+function grok(
+  id: string,
+  over: Partial<MaskedAccountRecord> = {},
+): MaskedAccountRecord {
   return {
     maskedAccountId: id,
     status: 'OK',
@@ -98,11 +123,15 @@ function grok(id: string, over: Partial<MaskedAccountRecord> = {}): MaskedAccoun
     reason: null,
     statusChangedAt: null,
     tombstone: false,
+    ...eligibleEvidence(),
     ...over,
   }
 }
 
-function spark(id: string, over: Partial<MaskedAccountRecord> = {}): MaskedAccountRecord {
+function spark(
+  id: string,
+  over: Partial<MaskedAccountRecord> = {},
+): MaskedAccountRecord {
   return {
     maskedAccountId: id,
     status: 'OK',
@@ -114,11 +143,15 @@ function spark(id: string, over: Partial<MaskedAccountRecord> = {}): MaskedAccou
     reason: null,
     statusChangedAt: null,
     tombstone: false,
+    ...eligibleEvidence(),
     ...over,
   }
 }
 
-function sol(id: string, over: Partial<MaskedAccountRecord> = {}): MaskedAccountRecord {
+function sol(
+  id: string,
+  over: Partial<MaskedAccountRecord> = {},
+): MaskedAccountRecord {
   return {
     maskedAccountId: id,
     status: 'OK',
@@ -130,12 +163,13 @@ function sol(id: string, over: Partial<MaskedAccountRecord> = {}): MaskedAccount
     reason: null,
     statusChangedAt: null,
     tombstone: false,
+    ...eligibleEvidence(),
     ...over,
   }
 }
 
 describe('AC-CAP capacity policy', () => {
-  it('AC-CAP-01: Spark<=10 SOL<=10 Grok 5-10/account majority combined<=200', () => {
+  it('AC-CAP-01: Spark<=10 SOL=0 Grok soft/hard 10/20 combined<=400', () => {
     const accounts: Array<MaskedAccountRecord> = [
       {
         maskedAccountId: 's1',
@@ -148,6 +182,7 @@ describe('AC-CAP capacity policy', () => {
         reason: null,
         statusChangedAt: null,
         tombstone: false,
+        ...eligibleEvidence(),
       },
       {
         maskedAccountId: 'sol1',
@@ -160,9 +195,9 @@ describe('AC-CAP capacity policy', () => {
         reason: null,
         statusChangedAt: null,
         tombstone: false,
+        ...eligibleEvidence(),
       },
-      // Grok majority of safe live capacity: after Spark/SOL clamp to 10+10,
-      // need Grok live > 20 (e.g. 5 accounts × 5).
+      // SOL contributes zero worker capacity; Grok remains the strict live majority.
       grok('g1', { effectiveInUse: 5, effectiveCap: 5 }),
       grok('g2', { effectiveInUse: 5, effectiveCap: 8 }),
       grok('g3', { effectiveInUse: 5, effectiveCap: 10 }),
@@ -171,19 +206,25 @@ describe('AC-CAP capacity policy', () => {
     ]
     const r = evaluateCapacityPolicy({ accounts })
     expect(r.sparkLive).toBe(10)
-    expect(r.solLive).toBe(10)
+    expect(r.solLive).toBe(0)
     expect(r.policy.sparkMax).toBe(10)
-    expect(r.policy.solMax).toBe(10)
-    expect(r.policy.grokStartPerAccount).toBe(5)
-    expect(r.policy.grokMaxPerAccount).toBe(10)
-    expect(r.combinedLive).toBeLessThanOrEqual(200)
+    expect(r.policy.solMax).toBe(0)
+    expect(r.policy.grokSoftPerAccount).toBe(10)
+    expect(r.policy.grokStartPerAccount).toBe(10)
+    expect(r.policy.grokMaxPerAccount).toBe(20)
+    expect(r.policy.combinedMax).toBe(400)
+    expect(r.combinedLive).toBeLessThanOrEqual(400)
     expect(r.grokLive).toBe(25)
     expect(r.grokMajority).toBe(true)
     expect(r.dispatchMode).toBe('OPEN')
     expect(r.nonGrokAssignmentAllowed).toBe(false) // Spark/SOL over-cap, no remaining non-Grok
     expect(r.grokAssignmentAllowed).toBe(true) // g2+g3 have spare
-    expect(r.limitingReasons.some((x) => x.startsWith('SPARK_OVER_CAP'))).toBe(true)
-    expect(r.limitingReasons.some((x) => x.startsWith('SOL_OVER_CAP'))).toBe(true)
+    expect(r.limitingReasons.some((x) => x.startsWith('SPARK_OVER_CAP'))).toBe(
+      true,
+    )
+    expect(r.limitingReasons.some((x) => x.startsWith('SOL_OVER_CAP'))).toBe(
+      true,
+    )
   })
 
   it('AC-CAP-02: floor >=60 only with genuine packets + health; else BELOW_FLOOR', () => {
@@ -197,9 +238,9 @@ describe('AC-CAP capacity policy', () => {
     expect(below.belowFloorReason).toMatch(/BELOW_FLOOR/)
     expect(below.floorMet).toBe(false)
 
-    // Many grok accounts to reach floor live if packets ok — still may be below live count
+    // Many Grok accounts reach the live floor and retain assignable headroom.
     const many = Array.from({ length: 20 }, (_, i) =>
-      grok(`g${i}`, { effectiveInUse: 5, effectiveCap: 5 }),
+      grok(`g${i}`, { effectiveInUse: 5, effectiveCap: 10 }),
     )
     const met = evaluateCapacityPolicy({
       accounts: many,
@@ -212,15 +253,24 @@ describe('AC-CAP capacity policy', () => {
     expect(met.grokMajority).toBe(true)
     expect(met.dispatchMode).toBe('OPEN')
 
-    const cpuBlock = evaluateCapacityPolicy({
+    const cpuAtBoundary = evaluateCapacityPolicy({
       accounts: many,
       genuineReadyPacketCount: 60,
       health: { cpuPercent: 95 },
     })
+    expect(cpuAtBoundary.dispatchMode).toBe('OPEN')
+    expect(cpuAtBoundary.dispatchAllowed).toBe(true)
+    expect(cpuAtBoundary.limitingReasons).not.toContain('CPU_GT_95')
+
+    const cpuBlock = evaluateCapacityPolicy({
+      accounts: many,
+      genuineReadyPacketCount: 60,
+      health: { cpuPercent: 95.01 },
+    })
     expect(cpuBlock.usableCapacity).toBe(0)
     expect(cpuBlock.dispatchAllowed).toBe(false)
     expect(cpuBlock.dispatchMode).toBe('BLOCKED')
-    expect(cpuBlock.limitingReasons).toContain('CPU_GTE_90')
+    expect(cpuBlock.limitingReasons).toContain('CPU_GT_95')
   })
 
   it('AC-CAP-03: LIMIT/quarantine/tombstone/physical20/accounts-all/filler', () => {
@@ -228,9 +278,18 @@ describe('AC-CAP capacity policy', () => {
       grok('ok', { status: 'OK', effectiveInUse: 1, effectiveCap: 5 }),
       grok('lim', { status: 'LIMIT', effectiveInUse: 3, effectiveCap: 5 }),
       grok('ban', { status: 'BAN', effectiveInUse: 2, effectiveCap: 5 }),
-      grok('auth', { status: 'AUTH_EXPIRED', effectiveInUse: 1, effectiveCap: 5 }),
+      grok('auth', {
+        status: 'AUTH_EXPIRED',
+        effectiveInUse: 1,
+        effectiveCap: 5,
+      }),
       grok('q', { status: 'quarantine', effectiveInUse: 1, effectiveCap: 5 }),
-      grok('rm', { status: 'REMOVED', effectiveInUse: 1, effectiveCap: 5, tombstone: true }),
+      grok('rm', {
+        status: 'REMOVED',
+        effectiveInUse: 1,
+        effectiveCap: 5,
+        tombstone: true,
+      }),
     ]
     const r = evaluateCapacityPolicy({ accounts })
     // only OK contributes
@@ -257,6 +316,75 @@ describe('AC-CAP capacity policy', () => {
     expect(force.usableCapacity).toBe(0)
     expect(force.dispatchMode).toBe('BLOCKED')
     expect(force.limitingReasons).toContain('ACCOUNT_SYNC_STALE')
+  })
+
+  it('eligibility fails closed unless both probes pass, are fresh, unexpired, and usable', () => {
+    const nowMs = Date.parse('2030-01-01T00:00:00.000Z')
+    const eligible = grok('eligible', eligibleEvidence(nowMs))
+    expect(isAccountEligible(eligible, nowMs)).toBe(true)
+
+    const ineligible: Array<[string, MaskedAccountRecord]> = [
+      [
+        'missing probe evidence',
+        grok('missing', {
+          quotaVerdict: undefined,
+          chatVerdict: undefined,
+          probedAt: null,
+          expiresAt: null,
+        }),
+      ],
+      [
+        'quota probe failed',
+        grok('quota-fail', {
+          ...eligibleEvidence(nowMs),
+          quotaVerdict: 'FAIL',
+        }),
+      ],
+      [
+        'chat probe failed',
+        grok('chat-fail', { ...eligibleEvidence(nowMs), chatVerdict: 'FAIL' }),
+      ],
+      [
+        'probe stale',
+        grok('stale', {
+          ...eligibleEvidence(nowMs),
+          probedAt: new Date(
+            nowMs - (ACCOUNT_PROBE_MAX_AGE_SECONDS + 1) * 1_000,
+          ).toISOString(),
+        }),
+      ],
+      [
+        'expiry not in future',
+        grok('expired', {
+          ...eligibleEvidence(nowMs),
+          expiresAt: new Date(nowMs).toISOString(),
+        }),
+      ],
+      ['LIMIT', grok('limit', { ...eligibleEvidence(nowMs), status: 'LIMIT' })],
+      [
+        'quarantined',
+        grok('quarantined', {
+          ...eligibleEvidence(nowMs),
+          quarantineReason: 'manual quarantine',
+        }),
+      ],
+      [
+        'tombstone',
+        grok('removed', {
+          ...eligibleEvidence(nowMs),
+          status: 'REMOVED',
+          tombstone: true,
+        }),
+      ],
+    ]
+
+    for (const [name, account] of ineligible) {
+      expect(isAccountEligible(account, nowMs), name).toBe(false)
+      const capacity = evaluateCapacityPolicy({ accounts: [account], nowMs })
+      expect(capacity.grokLive, name).toBe(0)
+      expect(capacity.usableCapacity, name).toBe(0)
+      expect(capacity.dispatchMode, name).toBe('BLOCKED')
+    }
   })
 
   it('zero-live bootstrap: healthy Grok usable → GROK_ONLY (no deadlock)', () => {
@@ -286,7 +414,7 @@ describe('AC-CAP capacity policy', () => {
     expect(solAuth.providerKind).toBe('SOL')
   })
 
-  it('non-Grok denial while Grok recovery: Spark/SOL live without majority', () => {
+  it('non-Grok denial while Grok recovery: Spark live without majority; SOL stays zero', () => {
     const r = evaluateCapacityPolicy({
       accounts: [
         spark('s1', { effectiveInUse: 5, effectiveCap: 10 }),
@@ -294,18 +422,26 @@ describe('AC-CAP capacity policy', () => {
         grok('g1', { effectiveInUse: 1, effectiveCap: 5 }),
       ],
     })
-    // live: spark 5 + sol 3 + grok 1 = 9; grok not majority
+    // SOL is root-only and contributes zero worker live capacity.
     expect(r.sparkLive).toBe(5)
-    expect(r.solLive).toBe(3)
+    expect(r.solLive).toBe(0)
     expect(r.grokLive).toBe(1)
     expect(r.grokMajority).toBe(false)
     expect(r.dispatchMode).toBe('GROK_ONLY')
     expect(r.usableCapacity).toBe(4) // only Grok remaining (5-1)
     expect(r.nonGrokAssignmentAllowed).toBe(false)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(false)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(false)
-    expect(authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { model: 'grok-4.5' }).allowed).toBe(true)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed,
+    ).toBe(true)
+    expect(authorizeProviderAssignment(r, { model: 'grok-4.5' }).allowed).toBe(
+      true,
+    )
   })
 
   it('Grok recovery continues until majority; OPEN once grokLive > nonGrok', () => {
@@ -321,8 +457,12 @@ describe('AC-CAP capacity policy', () => {
     expect(majority.grokMajority).toBe(true)
     expect(majority.dispatchMode).toBe('OPEN')
     expect(majority.nonGrokAssignmentAllowed).toBe(true)
-    expect(authorizeProviderAssignment(majority, { providerKind: 'SPARK' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(majority, { providerKind: 'GROK' }).allowed).toBe(true)
+    expect(
+      authorizeProviderAssignment(majority, { providerKind: 'SPARK' }).allowed,
+    ).toBe(true)
+    expect(
+      authorizeProviderAssignment(majority, { providerKind: 'GROK' }).allowed,
+    ).toBe(true)
     expect(authorizeProviderAssignment(majority, {}).providerKind).toBe('OTHER')
 
     // Equal live is NOT majority → GROK_ONLY if Grok spare exists
@@ -336,8 +476,12 @@ describe('AC-CAP capacity policy', () => {
     expect(tied.sparkLive).toBe(4)
     expect(tied.grokMajority).toBe(false)
     expect(tied.dispatchMode).toBe('GROK_ONLY')
-    expect(authorizeProviderAssignment(tied, { providerKind: 'SPARK' }).allowed).toBe(false)
-    expect(authorizeProviderAssignment(tied, { providerKind: 'GROK' }).allowed).toBe(true)
+    expect(
+      authorizeProviderAssignment(tied, { providerKind: 'SPARK' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(tied, { providerKind: 'GROK' }).allowed,
+    ).toBe(true)
   })
 
   it('healthy majority OPEN mode allows non-Grok when remaining slots exist', () => {
@@ -345,7 +489,7 @@ describe('AC-CAP capacity policy', () => {
       accounts: [
         spark('s1', { effectiveInUse: 1, effectiveCap: 10 }),
         sol('sol1', { effectiveInUse: 1, effectiveCap: 10 }),
-        // grok live 5 > nonGrok 2
+        // grok live 5 > nonGrok 1; SOL contributes zero.
         grok('g1', { effectiveInUse: 5, effectiveCap: 5 }),
         grok('g2', { effectiveInUse: 0, effectiveCap: 5 }),
       ],
@@ -355,12 +499,22 @@ describe('AC-CAP capacity policy', () => {
     expect(r.nonGrokAssignmentAllowed).toBe(true)
     expect(r.grokAssignmentAllowed).toBe(true)
     expect(r.usableCapacity).toBeGreaterThan(0)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { model: 'gpt-5.3-codex-spark' }).providerKind).toBe(
-      'SPARK',
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed,
+    ).toBe(true)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed,
+    ).toBe(false)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).reason).toBe(
+      CAP_REASON_SOL_NO_REMAINING,
     )
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed,
+    ).toBe(true)
+    expect(
+      authorizeProviderAssignment(r, { model: 'gpt-5.3-codex-spark' })
+        .providerKind,
+    ).toBe('SPARK')
   })
 
   it('loss of all healthy Grok recovery capacity → BLOCKED usable=0 exact reason', () => {
@@ -378,12 +532,18 @@ describe('AC-CAP capacity policy', () => {
     expect(noGrok.dispatchMode).toBe('BLOCKED')
     expect(noGrok.usableCapacity).toBe(0)
     expect(noGrok.dispatchAllowed).toBe(false)
-    expect(noGrok.limitingReasons).toContain(CAP_REASON_GROK_MAJORITY_NO_RECOVERY)
-    expect(authorizeProviderAssignment(noGrok, { providerKind: 'SPARK' }).allowed).toBe(false)
-    expect(authorizeProviderAssignment(noGrok, { providerKind: 'GROK' }).allowed).toBe(false)
-    expect(authorizeProviderAssignment(noGrok, { providerKind: 'GROK' }).reason).toBe(
+    expect(noGrok.limitingReasons).toContain(
       CAP_REASON_GROK_MAJORITY_NO_RECOVERY,
     )
+    expect(
+      authorizeProviderAssignment(noGrok, { providerKind: 'SPARK' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(noGrok, { providerKind: 'GROK' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(noGrok, { providerKind: 'GROK' }).reason,
+    ).toBe(CAP_REASON_GROK_MAJORITY_NO_RECOVERY)
 
     // Healthy Grok fully saturated + equal non-Grok live → no recovery capacity
     const fullGrok = evaluateCapacityPolicy({
@@ -398,7 +558,9 @@ describe('AC-CAP capacity policy', () => {
     expect(fullGrok.healthyGrokUsableCapacity).toBe(0)
     expect(fullGrok.dispatchMode).toBe('BLOCKED')
     expect(fullGrok.usableCapacity).toBe(0)
-    expect(fullGrok.limitingReasons).toContain(CAP_REASON_GROK_MAJORITY_NO_RECOVERY)
+    expect(fullGrok.limitingReasons).toContain(
+      CAP_REASON_GROK_MAJORITY_NO_RECOVERY,
+    )
   })
 
   it('resolveProviderKindFromModel uses exact supported identities only (no substring)', () => {
@@ -422,35 +584,45 @@ describe('AC-CAP capacity policy', () => {
     expect(resolveProviderKindFromModel('')).toBe('OTHER')
   })
 
-  it('AC-CAP floor/caps 5–10/account preserved under exact model mapping', () => {
-    // Clamp semantics + OPEN majority (grok live 6 > nonGrok live 2)
+  it('AC-CAP Grok soft/hard 10/20 and SOL=0 preserved under exact model mapping', () => {
+    // Clamp semantics + OPEN majority (Grok live 6 > Spark live 1; SOL live zero).
     const r = evaluateCapacityPolicy({
       accounts: [
-        grok('g1', { effectiveInUse: 3, effectiveCap: 3 }), // floor healthy cap to start 5; live min(3,5)=3
-        grok('g2', { effectiveInUse: 3, effectiveCap: 15 }), // clamp cap to max 10; live 3
+        grok('g1', { effectiveInUse: 3, effectiveCap: 3 }),
+        grok('g2', { effectiveInUse: 3, effectiveCap: 25, adaptiveCap: 25 }),
         spark('s1', { effectiveInUse: 1, effectiveCap: 10 }),
         sol('sol1', { effectiveInUse: 1, effectiveCap: 10 }),
       ],
     })
-    expect(r.policy.grokStartPerAccount).toBe(5)
-    expect(r.policy.grokMaxPerAccount).toBe(10)
+    expect(r.policy.grokSoftPerAccount).toBe(10)
+    expect(r.policy.grokStartPerAccount).toBe(10)
+    expect(r.policy.grokMaxPerAccount).toBe(20)
     expect(r.policy.sparkMax).toBe(10)
-    expect(r.policy.solMax).toBe(10)
+    expect(r.policy.solMax).toBe(0)
     expect(r.policy.floorMin).toBe(60)
-    expect(r.policy.combinedMax).toBe(200)
+    expect(r.policy.combinedMax).toBe(400)
     const g1 = r.grokPerAccount.find((g) => g.maskedAccountId === 'g1')
     const g2 = r.grokPerAccount.find((g) => g.maskedAccountId === 'g2')
-    expect(g1?.cap).toBe(5)
-    expect(g2?.cap).toBe(10)
+    expect(g1?.cap).toBe(3)
+    expect(g2?.cap).toBe(20)
     expect(r.grokLive).toBe(6)
-    expect(r.sparkLive + r.solLive).toBe(2)
+    expect(r.sparkLive + r.solLive).toBe(1)
     expect(r.grokMajority).toBe(true)
     expect(r.dispatchMode).toBe('OPEN')
-    expect(r.healthyGrokUsableCapacity).toBe((5 - 3) + (10 - 3))
-    expect(authorizeProviderAssignment(r, { model: 'grok-4.5' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { model: 'gpt-5.3-codex-spark' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { model: 'gpt-5.6-sol' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { model: 'not-a-grok-model' }).providerKind).toBe('OTHER')
+    expect(r.healthyGrokUsableCapacity).toBe(20 - 3)
+    expect(authorizeProviderAssignment(r, { model: 'grok-4.5' }).allowed).toBe(
+      true,
+    )
+    expect(
+      authorizeProviderAssignment(r, { model: 'gpt-5.3-codex-spark' }).allowed,
+    ).toBe(true)
+    expect(
+      authorizeProviderAssignment(r, { model: 'gpt-5.6-sol' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { model: 'not-a-grok-model' })
+        .providerKind,
+    ).toBe('OTHER')
   })
 
   it('AC-CAP-01 assignment: multi-SPARK remaining clamped to global sparkMax=10', () => {
@@ -472,20 +644,27 @@ describe('AC-CAP capacity policy', () => {
     expect(r.sparkUsableCapacity).toBe(10)
     expect(r.solUsableCapacity).toBe(0)
     expect(r.nonGrokAssignmentAllowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(true)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed,
+    ).toBe(true)
     // SOL-only headroom is zero — cannot borrow SPARK remaining
-    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed,
+    ).toBe(false)
     expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).reason).toBe(
       CAP_REASON_SOL_NO_REMAINING,
     )
-    expect(r.limitingReasons.some((x) => x.startsWith('SPARK_REMAINING_CLAMP'))).toBe(true)
+    expect(
+      r.limitingReasons.some((x) => x.startsWith('SPARK_REMAINING_CLAMP')),
+    ).toBe(true)
   })
 
-  it('AC-CAP-01 assignment: multi-SOL remaining clamped to global solMax=10', () => {
+  it('AC-CAP-01 assignment: SOL worker cap is zero across multiple accounts', () => {
     const r = evaluateCapacityPolicy({
       accounts: [
         sol('sol1', { effectiveInUse: 0, effectiveCap: 10 }),
         sol('sol2', { effectiveInUse: 0, effectiveCap: 10 }),
+        spark('s1', { effectiveInUse: 0, effectiveCap: 10 }),
         grok('g1', { effectiveInUse: 5, effectiveCap: 5 }),
         grok('g2', { effectiveInUse: 5, effectiveCap: 5 }),
         grok('g3', { effectiveInUse: 5, effectiveCap: 5 }),
@@ -493,37 +672,45 @@ describe('AC-CAP capacity policy', () => {
     })
     expect(r.solLive).toBe(0)
     expect(r.usableCapacity).toBe(10)
-    expect(r.solUsableCapacity).toBe(10)
-    expect(r.sparkUsableCapacity).toBe(0)
-    expect(r.limitingReasons.some((x) => x.startsWith('SOL_REMAINING_CLAMP'))).toBe(true)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(true)
-    // SPARK must not consume SOL-only remaining after global clamp
-    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(false)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).reason).toBe(
-      CAP_REASON_SPARK_NO_REMAINING,
+    expect(r.solUsableCapacity).toBe(0)
+    expect(r.sparkUsableCapacity).toBe(10)
+    expect(r.policy.solMax).toBe(0)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed,
+    ).toBe(false)
+    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).reason).toBe(
+      CAP_REASON_SOL_NO_REMAINING,
     )
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed,
+    ).toBe(true)
   })
 
-  it('AC-CAP-01 assignment: combined remaining clamped so live+usable <=200', () => {
-    // 39×5=195 live + spare cap10 would raw-remain 10 → clamp to 5
+  it('AC-CAP-01 assignment: combined remaining clamped so live+usable <=400', () => {
+    // 39×10=390 live + spare cap20 would raw-remain 20 → clamp to 10.
     const near = evaluateCapacityPolicy({
       accounts: [
         ...Array.from({ length: 39 }, (_, i) =>
-          grok(`g${i}`, { effectiveInUse: 5, effectiveCap: 5 }),
+          grok(`g${i}`, { effectiveInUse: 10, effectiveCap: 10 }),
         ),
-        grok('spare', { effectiveInUse: 0, effectiveCap: 10 }),
+        grok('spare', { effectiveInUse: 0, effectiveCap: 20, adaptiveCap: 20 }),
       ],
     })
-    expect(near.combinedLive).toBe(195)
-    expect(near.healthyGrokUsableCapacity).toBe(5)
-    expect(near.usableCapacity).toBe(5)
-    expect(near.combinedLive + near.usableCapacity).toBeLessThanOrEqual(200)
-    expect(near.limitingReasons.some((x) => x.startsWith('COMBINED_REMAINING_CLAMP'))).toBe(true)
-    expect(authorizeProviderAssignment(near, { providerKind: 'GROK' }).allowed).toBe(true)
+    expect(near.combinedLive).toBe(390)
+    expect(near.healthyGrokUsableCapacity).toBe(10)
+    expect(near.usableCapacity).toBe(10)
+    expect(near.combinedLive + near.usableCapacity).toBeLessThanOrEqual(400)
+    expect(
+      near.limitingReasons.some((x) =>
+        x.startsWith('COMBINED_REMAINING_CLAMP'),
+      ),
+    ).toBe(true)
+    expect(
+      authorizeProviderAssignment(near, { providerKind: 'GROK' }).allowed,
+    ).toBe(true)
   })
 
-  it('AC-CAP authorize: SPARK cannot consume SOL-only remaining headroom', () => {
-    // SPARK full at global 10; SOL has spare; Grok majority so OPEN + nonGrokAllowed
+  it('AC-CAP authorize: SOL remains denied and cannot create non-Grok headroom', () => {
     const r = evaluateCapacityPolicy({
       accounts: [
         spark('s1', { effectiveInUse: 10, effectiveCap: 10 }),
@@ -536,19 +723,24 @@ describe('AC-CAP capacity policy', () => {
     expect(r.grokMajority).toBe(true)
     expect(r.dispatchMode).toBe('OPEN')
     expect(r.sparkUsableCapacity).toBe(0)
-    expect(r.solUsableCapacity).toBe(8)
-    expect(r.nonGrokAssignmentAllowed).toBe(true)
-    // Residual attack: coarse nonGrok flag would wrongly allow SPARK
+    expect(r.solUsableCapacity).toBe(0)
+    expect(r.nonGrokAssignmentAllowed).toBe(false)
     const sparkAuth = authorizeProviderAssignment(r, { providerKind: 'SPARK' })
     expect(sparkAuth.allowed).toBe(false)
-    expect(sparkAuth.reason).toBe(CAP_REASON_SPARK_NO_REMAINING)
-    expect(authorizeProviderAssignment(r, { model: 'gpt-5.3-codex-spark' }).allowed).toBe(false)
+    expect(sparkAuth.reason).toBe('SOL_OVER_CAP:2>0')
+    expect(
+      authorizeProviderAssignment(r, { model: 'gpt-5.3-codex-spark' }).allowed,
+    ).toBe(false)
     const solAuth = authorizeProviderAssignment(r, { providerKind: 'SOL' })
-    expect(solAuth.allowed).toBe(true)
-    expect(solAuth.reason).toBeNull()
-    expect(authorizeProviderAssignment(r, { model: 'gpt-5.6-sol' }).allowed).toBe(true)
+    expect(solAuth.allowed).toBe(false)
+    expect(solAuth.reason).toBe('SOL_OVER_CAP:2>0')
+    expect(
+      authorizeProviderAssignment(r, { model: 'gpt-5.6-sol' }).allowed,
+    ).toBe(false)
     // Grok accounts full → grokAssignmentAllowed false (family flag)
-    expect(authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed,
+    ).toBe(false)
     expect(r.grokAssignmentAllowed).toBe(false)
     expect(r.healthyGrokUsableCapacity).toBe(0)
   })
@@ -567,19 +759,25 @@ describe('AC-CAP capacity policy', () => {
     expect(r.sparkUsableCapacity).toBe(9)
     expect(r.solUsableCapacity).toBe(0)
     expect(r.nonGrokAssignmentAllowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed,
+    ).toBe(false)
     expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).reason).toBe(
       CAP_REASON_SOL_NO_REMAINING,
     )
-    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(true)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed,
+    ).toBe(true)
     // OTHER has zero remaining under pure SPARK/SOL fleet
-    expect(authorizeProviderAssignment(r, { providerKind: 'OTHER' }).allowed).toBe(false)
-    expect(authorizeProviderAssignment(r, { providerKind: 'OTHER' }).reason).toBe(
-      CAP_REASON_OTHER_NO_REMAINING,
-    )
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'OTHER' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'OTHER' }).reason,
+    ).toBe(CAP_REASON_OTHER_NO_REMAINING)
   })
 
-  it('AC-CAP authorize: both SPARK and SOL remaining still provider-specific under OPEN', () => {
+  it('AC-CAP authorize: SPARK remains available while SOL worker capacity stays zero', () => {
     const r = evaluateCapacityPolicy({
       accounts: [
         spark('s1', { effectiveInUse: 3, effectiveCap: 10 }),
@@ -590,41 +788,112 @@ describe('AC-CAP capacity policy', () => {
     })
     expect(r.dispatchMode).toBe('OPEN')
     expect(r.sparkUsableCapacity).toBe(7)
-    expect(r.solUsableCapacity).toBe(6)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed).toBe(false)
+    expect(r.solUsableCapacity).toBe(0)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed,
+    ).toBe(true)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SOL' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed,
+    ).toBe(false)
   })
 
-  it('AC-CAP-03 failSafe: CPU>=90 emits STOP_NEW_DISPATCH + BOUNDED_DRAIN_REDUCE', () => {
+  it('AC-CAP-03 failSafe: CPU stops dispatch only above 95%; sustained breach drains 25%', () => {
     const many = Array.from({ length: 20 }, (_, i) =>
-      grok(`g${i}`, { effectiveInUse: 5, effectiveCap: 5 }),
+      grok(`g${i}`, { effectiveInUse: 5, effectiveCap: 10 }),
     )
-    const r = evaluateCapacityPolicy({
+    const boundary = evaluateCapacityPolicy({
       accounts: many,
       genuineReadyPacketCount: 60,
       health: { cpuPercent: 95 },
     })
+    expect(boundary.dispatchMode).toBe('OPEN')
+    expect(boundary.usableCapacity).toBeGreaterThan(0)
+    expect(boundary.failSafeActions).toEqual([])
+
+    const stopped = evaluateCapacityPolicy({
+      accounts: many,
+      genuineReadyPacketCount: 60,
+      health: { cpuPercent: 95.01 },
+    })
+    expect(stopped.dispatchMode).toBe('BLOCKED')
+    expect(stopped.usableCapacity).toBe(0)
+    expect(stopped.limitingReasons).toContain('CPU_GT_95')
+    expect(stopped.failSafeActions).toEqual([
+      { action: 'STOP_NEW_DISPATCH', reason: 'CPU_GT_95', failClosed: true },
+    ])
+
+    const exactly98 = evaluateCapacityPolicy({
+      accounts: many,
+      genuineReadyPacketCount: 60,
+      health: { cpuPercent: 98, cpuOver95Samples: 1 },
+    })
+    expect(exactly98.dispatchMode).toBe('BLOCKED')
+    expect(exactly98.failSafeActions).toEqual([
+      { action: 'STOP_NEW_DISPATCH', reason: 'CPU_GT_95', failClosed: true },
+    ])
+    expect(
+      exactly98.failSafeActions.some(
+        (action) => action.action === 'BOUNDED_DRAIN_REDUCE',
+      ),
+    ).toBe(false)
+
+    const twoSamples = evaluateCapacityPolicy({
+      accounts: many,
+      genuineReadyPacketCount: 60,
+      health: { cpuPercent: 96, cpuOver95Samples: 2 },
+    })
+    expect(twoSamples.dispatchMode).toBe('BLOCKED')
+    expect(twoSamples.failSafeActions).toEqual([
+      { action: 'STOP_NEW_DISPATCH', reason: 'CPU_GT_95', failClosed: true },
+    ])
+    expect(
+      twoSamples.failSafeActions.some(
+        (action) => action.action === 'BOUNDED_DRAIN_REDUCE',
+      ),
+    ).toBe(false)
+
+    const r = evaluateCapacityPolicy({
+      accounts: many,
+      genuineReadyPacketCount: 60,
+      health: { cpuPercent: 96, cpuOver95Samples: 3 },
+    })
     expect(r.dispatchMode).toBe('BLOCKED')
     expect(r.usableCapacity).toBe(0)
-    expect(r.limitingReasons).toContain('CPU_GTE_90')
-    expect(r.policy.cpuBoundedDrainMaxReduceSlots).toBe(CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS)
+    expect(r.limitingReasons).toContain('CPU_GT_95')
+    expect(r.policy.cpuDrainFraction).toBe(CPU_BOUNDED_DRAIN_FRACTION)
+    expect(r.policy.cpuBoundedDrainMaxReduceSlots).toBe(
+      CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS,
+    )
+    expect(r.policy.cpuBoundedDrainMaxReduceSlots).toBeNull()
 
     const stop = r.failSafeActions.find((a) => a.action === 'STOP_NEW_DISPATCH')
-    const drain = r.failSafeActions.find((a) => a.action === 'BOUNDED_DRAIN_REDUCE')
+    const drain = r.failSafeActions.find(
+      (a) => a.action === 'BOUNDED_DRAIN_REDUCE',
+    )
     expect(stop).toEqual({
       action: 'STOP_NEW_DISPATCH',
-      reason: 'CPU_GTE_90',
+      reason: 'CPU_GT_95',
       failClosed: true,
     })
-    expect(drain?.reason).toBe('CPU_GTE_90')
+    expect(drain?.reason).toBe('CPU_GT_95')
     expect(drain?.failClosed).toBe(true)
-    expect(drain?.maxReduceSlots).toBe(CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS)
-    expect(drain?.targetLiveSlots).toBe(r.combinedLive - CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS)
+    expect(drain?.maxReduceSlots).toBe(
+      Math.ceil(r.combinedLive * CPU_BOUNDED_DRAIN_FRACTION),
+    )
+    expect(drain?.targetLiveSlots).toBe(
+      r.combinedLive - Math.ceil(r.combinedLive * CPU_BOUNDED_DRAIN_FRACTION),
+    )
     // Pure hooks never invent runner mutation fields beyond fail-closed descriptors
     expect(drain && 'runnerMutation' in drain).toBe(false)
-    expect(authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed).toBe(false)
-    expect(authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'GROK' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(r, { providerKind: 'SPARK' }).allowed,
+    ).toBe(false)
   })
 
   it('AC-CAP-03 failSafe: LIMIT emits stop + preserve-requeue + rotate without runner mutation', () => {
@@ -632,7 +901,11 @@ describe('AC-CAP capacity policy', () => {
       accounts: [
         grok('ok', { status: 'OK', effectiveInUse: 1, effectiveCap: 5 }),
         grok('lim', { status: 'LIMIT', effectiveInUse: 3, effectiveCap: 5 }),
-        spark('s-lim', { status: 'LIMIT', effectiveInUse: 2, effectiveCap: 10 }),
+        spark('s-lim', {
+          status: 'LIMIT',
+          effectiveInUse: 2,
+          effectiveCap: 10,
+        }),
       ],
     })
     // LIMIT does not contribute live/usable
@@ -640,22 +913,24 @@ describe('AC-CAP capacity policy', () => {
     const limitActions = r.failSafeActions.filter((a) => a.reason === 'LIMIT')
     expect(limitActions.length).toBe(6) // 3 actions × 2 LIMIT accounts
     for (const id of ['lim', 's-lim']) {
-      expect(
-        limitActions.some(
-          (a) => a.action === 'STOP_LIMIT_ASSIGNMENT' && a.maskedAccountId === id && a.failClosed,
-        ),
-      ).toBe(true)
-      expect(
-        limitActions.some(
-          (a) =>
-            a.action === 'PRESERVE_REQUEUE_UNFINISHED' && a.maskedAccountId === id && a.failClosed,
-        ),
-      ).toBe(true)
-      expect(
-        limitActions.some(
-          (a) => a.action === 'ROTATE_LIMIT_ACCOUNT' && a.maskedAccountId === id && a.failClosed,
-        ),
-      ).toBe(true)
+      expect(limitActions).toContainEqual({
+        action: 'STOP_LIMIT_ASSIGNMENT',
+        reason: 'LIMIT',
+        maskedAccountId: id,
+        failClosed: true,
+      })
+      expect(limitActions).toContainEqual({
+        action: 'PRESERVE_REQUEUE_UNFINISHED',
+        reason: 'LIMIT',
+        maskedAccountId: id,
+        failClosed: true,
+      })
+      expect(limitActions).toContainEqual({
+        action: 'ROTATE_LIMIT_ACCOUNT',
+        reason: 'LIMIT',
+        maskedAccountId: id,
+        failClosed: true,
+      })
     }
     // Standalone pure hook matches evaluateCapacityPolicy emission
     const standalone = evaluateCapacityFailSafeActions({
@@ -671,7 +946,9 @@ describe('AC-CAP capacity policy', () => {
       dispatchMode: r.dispatchMode,
     })
     expect(standalone.filter((a) => a.reason === 'LIMIT').length).toBe(6)
-    expect(standalone.some((a) => a.action === 'BOUNDED_DRAIN_REDUCE')).toBe(false)
+    expect(standalone.some((a) => a.action === 'BOUNDED_DRAIN_REDUCE')).toBe(
+      false,
+    )
   })
 
   it('M2 authorize: dispatchAllowed without complete family remainings fails closed', () => {
@@ -684,42 +961,53 @@ describe('AC-CAP capacity policy', () => {
       limitingReasons: [] as string[],
     }
     expect(hasCompleteFamilyRemainings(partial)).toBe(false)
-    expect(authorizeProviderAssignment(partial, { providerKind: 'SPARK' }).allowed).toBe(false)
-    expect(authorizeProviderAssignment(partial, { providerKind: 'SPARK' }).reason).toBe(
-      CAP_REASON_FAMILY_REMAINING_REQUIRED,
-    )
-    expect(authorizeProviderAssignment(partial, { providerKind: 'SOL' }).reason).toBe(
-      CAP_REASON_FAMILY_REMAINING_REQUIRED,
-    )
-    expect(authorizeProviderAssignment(partial, { providerKind: 'GROK' }).reason).toBe(
-      CAP_REASON_FAMILY_REMAINING_REQUIRED,
-    )
+    expect(
+      authorizeProviderAssignment(partial, { providerKind: 'SPARK' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(partial, { providerKind: 'SPARK' }).reason,
+    ).toBe(CAP_REASON_FAMILY_REMAINING_REQUIRED)
+    expect(
+      authorizeProviderAssignment(partial, { providerKind: 'SOL' }).reason,
+    ).toBe(CAP_REASON_FAMILY_REMAINING_REQUIRED)
+    expect(
+      authorizeProviderAssignment(partial, { providerKind: 'GROK' }).reason,
+    ).toBe(CAP_REASON_FAMILY_REMAINING_REQUIRED)
 
     const full = {
       ...partial,
       sparkUsableCapacity: 5,
-      solUsableCapacity: 5,
+      solUsableCapacity: 0,
       otherUsableCapacity: 0,
       healthyGrokUsableCapacity: 5,
     }
     expect(hasCompleteFamilyRemainings(full)).toBe(true)
-    expect(authorizeProviderAssignment(full, { providerKind: 'SPARK' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(full, { providerKind: 'SOL' }).allowed).toBe(true)
-    expect(authorizeProviderAssignment(full, { providerKind: 'GROK' }).allowed).toBe(true)
+    expect(
+      authorizeProviderAssignment(full, { providerKind: 'SPARK' }).allowed,
+    ).toBe(true)
+    expect(
+      authorizeProviderAssignment(full, { providerKind: 'SOL' }).allowed,
+    ).toBe(false)
+    expect(
+      authorizeProviderAssignment(full, { providerKind: 'SOL' }).reason,
+    ).toBe(CAP_REASON_SOL_NO_REMAINING)
+    expect(
+      authorizeProviderAssignment(full, { providerKind: 'GROK' }).allowed,
+    ).toBe(true)
 
     // Explicit zero remaining still denies even when nonGrok flag true
     expect(
       authorizeProviderAssignment(
-        { ...full, sparkUsableCapacity: 0, solUsableCapacity: 5 },
+        { ...full, sparkUsableCapacity: 0 },
         { providerKind: 'SPARK' },
       ).allowed,
     ).toBe(false)
     expect(
       authorizeProviderAssignment(
-        { ...full, sparkUsableCapacity: 0, solUsableCapacity: 5 },
+        { ...full, sparkUsableCapacity: 0 },
         { providerKind: 'SOL' },
       ).allowed,
-    ).toBe(true)
+    ).toBe(false)
     // Present zero Grok remaining denies even when grokAssignmentAllowed true
     const grokZero = authorizeProviderAssignment(
       { ...full, healthyGrokUsableCapacity: 0 },
@@ -743,10 +1031,14 @@ describe('AC-CAP capacity policy', () => {
         grok('ok', { status: 'OK', effectiveInUse: 1, effectiveCap: 5 }),
         grok('lim', { status: 'LIMIT', effectiveInUse: 2, effectiveCap: 5 }),
       ],
-      health: { cpuPercent: 95 },
+      health: { cpuPercent: 96, cpuOver95Samples: 3 },
     })
     const intents = planCapacityFailSafeIntents(r.failSafeActions)
-    expect(intents.some((i) => i.action === 'STOP_NEW_DISPATCH' && i.blocksAssignment)).toBe(true)
+    expect(
+      intents.some(
+        (i) => i.action === 'STOP_NEW_DISPATCH' && i.blocksAssignment,
+      ),
+    ).toBe(true)
     expect(
       intents.some(
         (i) =>
@@ -808,38 +1100,49 @@ describe('AC-CAP capacity policy', () => {
       grokAssignmentAllowed: true,
       limitingReasons: [] as string[],
       sparkUsableCapacity: 5,
-      solUsableCapacity: 5,
+      solUsableCapacity: 0,
       otherUsableCapacity: 0,
       healthyGrokUsableCapacity: 5,
       failSafeActions: [
-        { action: 'STOP_NEW_DISPATCH' as const, reason: 'CPU_GTE_90', failClosed: true as const },
+        {
+          action: 'STOP_NEW_DISPATCH' as const,
+          reason: 'CPU_GT_95',
+          failClosed: true as const,
+        },
       ],
     }
-    expect(authorizeProviderAssignment(openWithStop, { providerKind: 'GROK' }).reason).toBe(
-      'CPU_GTE_90',
-    )
+    expect(
+      authorizeProviderAssignment(openWithStop, { providerKind: 'GROK' })
+        .reason,
+    ).toBe('CPU_GT_95')
     void CAP_REASON_FAIL_SAFE_STOP_DISPATCH
     void CAP_REASON_FAIL_SAFE_STOP_LIMIT
   })
 
-  it('AC-CAP-03 failSafe: CPU drain is bounded (maxReduceSlots <= combinedLive and policy cap)', () => {
+  it('AC-CAP-03 failSafe: CPU drain is bounded to 25% and absent at the 95% boundary', () => {
     const lowLive = evaluateCapacityPolicy({
       accounts: [grok('g1', { effectiveInUse: 3, effectiveCap: 5 })],
       health: { cpuPercent: 99 },
     })
     expect(lowLive.dispatchMode).toBe('BLOCKED')
-    const drain = lowLive.failSafeActions.find((a) => a.action === 'BOUNDED_DRAIN_REDUCE')
-    expect(drain?.maxReduceSlots).toBe(3) // combinedLive=3 < CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS
-    expect(drain?.targetLiveSlots).toBe(0)
-    expect(drain?.maxReduceSlots).toBeLessThanOrEqual(CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS)
+    const drain = lowLive.failSafeActions.find(
+      (a) => a.action === 'BOUNDED_DRAIN_REDUCE',
+    )
+    expect(drain?.maxReduceSlots).toBe(1)
+    expect(drain?.targetLiveSlots).toBe(2)
+    expect(drain?.maxReduceSlots).toBe(
+      Math.ceil(lowLive.combinedLive * CPU_BOUNDED_DRAIN_FRACTION),
+    )
 
     const idle = evaluateCapacityPolicy({
       accounts: [grok('g1', { effectiveInUse: 0, effectiveCap: 5 })],
       health: { cpuPercent: 90 },
     })
-    const idleDrain = idle.failSafeActions.find((a) => a.action === 'BOUNDED_DRAIN_REDUCE')
-    expect(idleDrain?.maxReduceSlots).toBe(0)
-    expect(idleDrain?.targetLiveSlots).toBe(0)
+    const idleDrain = idle.failSafeActions.find(
+      (a) => a.action === 'BOUNDED_DRAIN_REDUCE',
+    )
+    expect(idle.dispatchMode).toBe('GROK_ONLY')
+    expect(idleDrain).toBeUndefined()
   })
 })
 
@@ -915,7 +1218,9 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       d.clock.advance(1000)
     }
     const audit = await d.atomic.listAudit(BOARD)
-    expect(audit.filter((a) => a.kind === 'ACCOUNT_SYNC').length).toBe(triggers.length)
+    expect(audit.filter((a) => a.kind === 'ACCOUNT_SYNC').length).toBe(
+      triggers.length,
+    )
   })
 
   it('AC-ACCOUNT-06: periodic health tracked; miss after 60s → stale', async () => {
@@ -927,7 +1232,15 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       entityExpectedRev: 0,
       canonicalHash: 'canon-test-pin',
       expectedBoardRev: 0,
-      accounts: [{ maskedAccountId: 'a1', status: 'OK', providerKind: 'GROK', effectiveInUse: 0, effectiveCap: 5 }],
+      accounts: [
+        {
+          maskedAccountId: 'a1',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+      ],
       trigger: 'PERIODIC_HEALTH',
       idempotencyKey: 'ph-1',
       callerRole: 'MFS_SYNC',
@@ -953,7 +1266,15 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       entityExpectedRev: prevEntityRev,
       canonicalHash: 'canon-test-pin',
       expectedBoardRev: (await d.atomic.getBoardState(BOARD)).boardRev,
-      accounts: [{ maskedAccountId: 'a1', status: 'OK', providerKind: 'GROK', effectiveInUse: 0, effectiveCap: 5 }],
+      accounts: [
+        {
+          maskedAccountId: 'a1',
+          status: 'OK',
+          providerKind: 'GROK',
+          effectiveInUse: 0,
+          effectiveCap: 5,
+        },
+      ],
       trigger: 'PERIODIC_HEALTH',
       idempotencyKey: 'ph-2',
       callerRole: 'MFS_SYNC',
@@ -994,6 +1315,7 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
           providerKind: 'GROK',
           effectiveInUse: 0,
           effectiveCap: 5,
+          ...eligibleEvidence(),
         },
       ],
       trigger: 'AGENT_LAUNCH',
@@ -1083,8 +1405,8 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
     // Stale zero capacity → AUTHORIZATION_REQUIRED (fail closed); board remains dispatchBlocked.
     await expect(
       registerRun(runDeps, {
-      canonicalHash: 'canon-run',
-      boardId: BOARD,
+        canonicalHash: 'canon-run',
+        boardId: BOARD,
         runId: 'r1',
         taskId: 'T-1',
         targetGate: 'FUNCTIONAL',
@@ -1121,6 +1443,7 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
           providerKind: 'GROK',
           effectiveInUse: 0,
           effectiveCap: 5,
+          ...eligibleEvidence(),
         },
       ],
       trigger: 'ORCHESTRATOR_LAUNCH',
@@ -1160,6 +1483,7 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
           providerKind: 'GROK',
           effectiveInUse: 0,
           effectiveCap: 5,
+          ...eligibleEvidence(d.clock.nowMs()),
         },
       ],
       trigger: 'ORCHESTRATOR_LAUNCH',
@@ -1193,10 +1517,12 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
 
     const third = await evaluateAccountSyncFreshness(d, BOARD)
     expect(third?.entityRev).toBe(2)
-    expect(isMaterialAccountSyncTransition(
-      { stale: true, usableCapacity: 0 },
-      { stale: true, usableCapacity: 0 },
-    )).toBe(false)
+    expect(
+      isMaterialAccountSyncTransition(
+        { stale: true, usableCapacity: 0 },
+        { stale: true, usableCapacity: 0 },
+      ),
+    ).toBe(false)
   })
 
   it('churn: coalesced four-surface readback is at most +1 entityRev; preserves parity', async () => {
@@ -1216,6 +1542,7 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
           providerKind: 'GROK',
           effectiveInUse: 0,
           effectiveCap: 5,
+          ...eligibleEvidence(),
         },
       ],
       trigger: 'ORCHESTRATOR_LAUNCH',
@@ -1239,10 +1566,22 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
     expect(coalesced.stale).toBe(false)
     expect(coalesced.usableCapacity).toBe(5)
     expect(surfacesHaveParity(coalesced.readbackSurfaces, 77, gen)).toBe(true)
-    expect(coalesced.readbackSurfaces.mcp).toEqual({ sourceRevision: 77, generatedAt: gen })
-    expect(coalesced.readbackSurfaces.api).toEqual({ sourceRevision: 77, generatedAt: gen })
-    expect(coalesced.readbackSurfaces.ui).toEqual({ sourceRevision: 77, generatedAt: gen })
-    expect(coalesced.readbackSurfaces.ops).toEqual({ sourceRevision: 77, generatedAt: gen })
+    expect(coalesced.readbackSurfaces.mcp).toEqual({
+      sourceRevision: 77,
+      generatedAt: gen,
+    })
+    expect(coalesced.readbackSurfaces.api).toEqual({
+      sourceRevision: 77,
+      generatedAt: gen,
+    })
+    expect(coalesced.readbackSurfaces.ui).toEqual({
+      sourceRevision: 77,
+      generatedAt: gen,
+    })
+    expect(coalesced.readbackSurfaces.ops).toEqual({
+      sourceRevision: 77,
+      generatedAt: gen,
+    })
 
     // Exact same readback again → no entityRev bump
     const noop = await recordAccountReadbacks(d, {
@@ -1266,6 +1605,7 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       providerKind: 'GROK' as const,
       effectiveInUse: 0,
       effectiveCap: 5,
+      ...eligibleEvidence(d.clock.nowMs()),
     }
     await syncAccounts(d, {
       boardId: BOARD,
@@ -1339,6 +1679,7 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
           providerKind: 'GROK' as const,
           effectiveInUse: 0,
           effectiveCap: 5,
+          ...eligibleEvidence(d.clock.nowMs()),
         },
       ],
       trigger: 'ORCHESTRATOR_LAUNCH' as const,
@@ -1392,7 +1733,10 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       'acct-mask-002',
     ])
     expect(JSON.stringify(snap)).not.toMatch(/password|token|secret/i)
-    expect(snap?.accounts.find((a) => a.maskedAccountId === 'acct-mask-002')?.tombstone).toBe(true)
+    expect(
+      snap?.accounts.find((a) => a.maskedAccountId === 'acct-mask-002')
+        ?.tombstone,
+    ).toBe(true)
   })
 
   it('rejects unauthorized caller and --accounts all', async () => {
@@ -1403,8 +1747,8 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
         sourceRevision: 1,
         generatedAt: d.clock.nowISO(),
         entityExpectedRev: 0,
-      canonicalHash: 'canon-test-pin',
-      expectedBoardRev: 0,
+        canonicalHash: 'canon-test-pin',
+        expectedBoardRev: 0,
         accounts: [],
         trigger: 'HEARTBEAT',
         idempotencyKey: 'bad',
@@ -1418,8 +1762,8 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
         sourceRevision: 1,
         generatedAt: d.clock.nowISO(),
         entityExpectedRev: 0,
-      canonicalHash: 'canon-test-pin',
-      expectedBoardRev: 0,
+        canonicalHash: 'canon-test-pin',
+        expectedBoardRev: 0,
         accounts: [],
         trigger: 'HEARTBEAT',
         idempotencyKey: 'all',
@@ -1543,22 +1887,37 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
       // Previously omitted capacity inputs (must now change hash):
       {
         name: 'health.cpuPercent',
-        patch: { health: { cpuPercent: 80, ramHealthy: true, loadHealthy: true } },
+        patch: {
+          health: { cpuPercent: 80, ramHealthy: true, loadHealthy: true },
+        },
       },
       {
         name: 'health.ramHealthy',
-        patch: { health: { cpuPercent: 15, ramHealthy: false, loadHealthy: true } },
+        patch: {
+          health: { cpuPercent: 15, ramHealthy: false, loadHealthy: true },
+        },
       },
       {
         name: 'health.loadHealthy',
-        patch: { health: { cpuPercent: 15, ramHealthy: true, loadHealthy: false } },
+        patch: {
+          health: { cpuPercent: 15, ramHealthy: true, loadHealthy: false },
+        },
       },
-      { name: 'genuineReadyPacketCount', patch: { genuineReadyPacketCount: 60 } },
+      {
+        name: 'genuineReadyPacketCount',
+        patch: { genuineReadyPacketCount: 60 },
+      },
       { name: 'health null vs present', patch: { health: undefined } },
-      { name: 'genuineReadyPacketCount null', patch: { genuineReadyPacketCount: undefined } },
+      {
+        name: 'genuineReadyPacketCount null',
+        patch: { genuineReadyPacketCount: undefined },
+      },
       // Remaining material fields affecting capacity/result:
       { name: 'sourceRevision', patch: { sourceRevision: 4 } },
-      { name: 'generatedAt', patch: { generatedAt: '2026-07-13T12:00:01.000Z' } },
+      {
+        name: 'generatedAt',
+        patch: { generatedAt: '2026-07-13T12:00:01.000Z' },
+      },
       { name: 'entityExpectedRev', patch: { entityExpectedRev: 1 } },
       { name: 'expectedBoardRev', patch: { expectedBoardRev: 2 } },
       { name: 'canonicalHash', patch: { canonicalHash: 'other-pin' } },
@@ -1641,7 +2000,9 @@ describe('AC-ACCOUNT sync SLA + fail-closed', () => {
     for (const c of cases) {
       const mutated = { ...base, ...c.patch }
       const h = requestHashOf(syncAccountsIdempotencyBody(mutated))
-      expect(h, `field ${c.name} must change idempotency hash`).not.toBe(baseHash)
+      expect(h, `field ${c.name} must change idempotency hash`).not.toBe(
+        baseHash,
+      )
     }
 
     // Exact clone → same hash.
@@ -1706,7 +2067,12 @@ describe('shared account-sync store (MCP ↔ control-center parity)', () => {
   it('authorized sync via shared deps is read back identically by CC helpers', async () => {
     const clock = createFakeClock()
     const atomic = createMemoryControlPlaneAtomicStore([
-      { boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null },
+      {
+        boardId: BOARD,
+        boardRev: 0,
+        dispatchBlocked: false,
+        dispatchBlockedReason: null,
+      },
     ])
     const idempotency = createMemoryIdempotencyStorage()
     // Exact shared deps shape used by board-mcp accountSyncDeps():
@@ -1771,7 +2137,9 @@ describe('shared account-sync store (MCP ↔ control-center parity)', () => {
       'acc_shared_ok',
     ])
     // No token/raw identity keys on snapshot
-    expect(JSON.stringify(snap)).not.toMatch(/password|token|secret|apiKey|authorization/i)
+    expect(JSON.stringify(snap)).not.toMatch(
+      /password|token|secret|apiKey|authorization/i,
+    )
 
     // Store identity: MCP setter/getter and shared store are the same instance
     const viaSetter = createMemoryAccountSyncStore()
@@ -1809,7 +2177,9 @@ describe('shared account-sync store (MCP ↔ control-center parity)', () => {
       boardId: BOARD,
       raw,
       tasks: [],
-      opsAccounts: [{ id: 'legacy-should-not-drive-capacity', cap: 999, usable: true }],
+      opsAccounts: [
+        { id: 'legacy-should-not-drive-capacity', cap: 999, usable: true },
+      ],
       runs: [],
       boardContentHash: 'hash_shared_store_parity',
       boardRev: 99, // must NOT become sourceRevision
@@ -1881,7 +2251,12 @@ describe('shared account-sync store (MCP ↔ control-center parity)', () => {
         clock,
         accounts: getSharedAccountSyncStore(),
         atomic: createMemoryControlPlaneAtomicStore([
-          { boardId: BOARD, boardRev: 0, dispatchBlocked: false, dispatchBlockedReason: null },
+          {
+            boardId: BOARD,
+            boardRev: 0,
+            dispatchBlocked: false,
+            dispatchBlockedReason: null,
+          },
         ]),
         idempotency: createMemoryIdempotencyStorage(),
       },

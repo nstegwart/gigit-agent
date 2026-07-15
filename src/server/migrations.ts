@@ -225,6 +225,14 @@ export const MIGRATION_MANIFEST: ReadonlyArray<MigrationEntry> = [
     description:
       'Greenfield/DR gap fix: create globals key-value table (readGlobal/readConventions) if absent; no-op where it already exists',
   },
+  {
+    version: '008',
+    filename: '008_cp0_control_plane.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '008_cp0_control_plane.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'CP0 additive hierarchy budgets, versioned ACKs, masked account probes, and fail-closed sync status; production apply remains wrapper-authority gated',
+  },
 ] as const
 
 export function sha256Hex(content: string | Buffer): string {
@@ -295,6 +303,66 @@ export interface PlanOptions {
    * - Optional for plan/dry-run/status; when supplied, SPLIT/MERGE/UNMAPPED/malformed/duplicate block.
    */
   lifecycleMapping?: LifecycleMappingDocument | ReadonlyArray<LifecycleMappingRow> | null
+  /** Exact owner-approved production override; invalid/drifted evidence is ignored. */
+  productionAuthority?: ProductionMigrationAuthority | null
+  /** DB name bound by productionAuthority. */
+  database?: string
+}
+
+export interface ProductionMigrationAuthority {
+  releaseSha: string
+  approvalId: string
+  migrationVersion: '008'
+  migrationSha256: string
+  targetHost: string
+  targetDatabase: string
+  backupReceiptPath: string
+  backupSha256: string
+  approvalBinding: string
+  maxBackupAgeHours: number
+}
+
+/** Narrow production/unknown-remote override. Every bound input is re-proven locally. */
+export function validateProductionMigrationAuthority(
+  authority: ProductionMigrationAuthority | null | undefined,
+  input: {
+    host: string
+    database: string
+    migration: MigrationManifestEntry | undefined
+    nowMs?: number
+  },
+): boolean {
+  if (!authority || authority.migrationVersion !== '008') return false
+  if (!/^[0-9a-f]{40}$/.test(authority.releaseSha)) return false
+  if (!authority.approvalId.trim()) return false
+  if (!/^[0-9a-f]{64}$/.test(authority.migrationSha256)) return false
+  if (!/^[0-9a-f]{64}$/.test(authority.backupSha256)) return false
+  if (authority.targetHost !== input.host || authority.targetDatabase !== input.database) return false
+  if (
+    input.migration?.version !== authority.migrationVersion ||
+    input.migration.sha256 !== authority.migrationSha256
+  ) return false
+  try {
+    const stat = fs.statSync(authority.backupReceiptPath)
+    const maxAgeMs = authority.maxBackupAgeHours * 3_600_000
+    if (!stat.isFile() || stat.size <= 0 || maxAgeMs <= 0) return false
+    const ageMs = (input.nowMs ?? Date.now()) - stat.mtimeMs
+    if (ageMs < -5_000 || ageMs > maxAgeMs) return false
+    const backupSha = sha256Hex(fs.readFileSync(authority.backupReceiptPath))
+    if (backupSha !== authority.backupSha256) return false
+  } catch {
+    return false
+  }
+  const binding = sha256Hex([
+    authority.releaseSha,
+    authority.approvalId,
+    authority.migrationVersion,
+    authority.migrationSha256,
+    authority.targetHost,
+    authority.targetDatabase,
+    authority.backupSha256,
+  ].join('\0'))
+  return binding === authority.approvalBinding
 }
 
 /**
@@ -389,10 +457,16 @@ export function planMigrations(opts: PlanOptions = {}): MigrationPlanResult {
   const cwd = opts.cwd ?? process.cwd()
   const host = opts.host ?? configuredDbHost()
   const hostClass = opts.hostClass ?? classifyDbHost(host)
-  const applyAllowed = migrationApplyAllowed(hostClass)
   const mode = opts.mode ?? 'plan'
   const loaded = loadMigrationManifest(cwd)
   assertManifestOrder(loaded)
+  const applyAllowed =
+    migrationApplyAllowed(hostClass) ||
+    validateProductionMigrationAuthority(opts.productionAuthority, {
+      host,
+      database: opts.database ?? '',
+      migration: loaded.find((entry) => entry.version === '008'),
+    })
 
   const appliedMap = new Map((opts.applied ?? []).map((r) => [r.version, r]))
   const orderedVersions = loaded.map((m) => m.version)

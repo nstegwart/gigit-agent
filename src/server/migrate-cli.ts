@@ -1,6 +1,7 @@
 /**
  * Migration CLI — plan / dry-run / apply / status for Control Plane V3 (TM-P0).
- * Authority: LOCAL|STAGING only for apply; remote requires CAIRN_ALLOW_REMOTE_DB=1.
+ * Authority: LOCAL|STAGING DB endpoints only; production-host apply is separately
+ * gated by deploy/production/scripts/migrate-apply.sh before this runner executes.
  * Lifecycle mapping required for apply (g0 identity or JSON path).
  * No destructive down migration. Never guesses PRODUCT classification.
  *
@@ -18,10 +19,12 @@ import {
   migrationStatusAsync,
   planMigrations,
   readMigrationSchemaState,
+  sha256Hex,
   type MigrationMode,
   type MigrationPlanResult,
   type MigrationApplyResult,
   type MigrationSchemaReadback,
+  type ProductionMigrationAuthority,
 } from './migrations'
 import {
   createMysqlMigrationExecutor,
@@ -165,7 +168,7 @@ function helpText(): string {
   return `Usage: pnpm migrate <command> [options]
 
 Commands:
-  plan       Plan migrations 000..007 (no SQL)
+  plan       Plan migrations 000..008 (no SQL)
   dry-run    Plan + parse statements; load history from MySQL; no apply
   apply      Apply pending migrations (LOCAL|STAGING only; mapping required)
   status     Report applied versions + plan status (schema readback for healthz)
@@ -191,6 +194,32 @@ function exitForPlan(plan: MigrationPlanResult): number {
   if (plan.status === 'CHECKSUM_MISMATCH') return 2
   if (plan.status === 'BLOCKED') return 1
   return 0
+}
+
+/** Build the narrow production authority object; migrations.ts revalidates every field. */
+export function productionMigrationAuthorityFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): ProductionMigrationAuthority | null {
+  if (env.MIGRATE_APPLY_APPROVED !== '1') return null
+  const backupReceiptPath = env.DB_DUMP_PATH || env.BACKUP_RECEIPT || ''
+  let backupSha256 = ''
+  try {
+    backupSha256 = sha256Hex(fs.readFileSync(backupReceiptPath))
+  } catch {
+    return null
+  }
+  return {
+    releaseSha: String(env.APPROVED_FULL_SHA || ''),
+    approvalId: String(env.PRODUCTION_APPROVAL_ID || ''),
+    migrationVersion: String(env.MIGRATION_APPROVED_VERSION || '') as '008',
+    migrationSha256: String(env.MIGRATION_APPROVED_SHA256 || ''),
+    targetHost: String(env.MIGRATION_TARGET_HOST || ''),
+    targetDatabase: String(env.MIGRATION_TARGET_DATABASE || ''),
+    backupReceiptPath,
+    backupSha256,
+    approvalBinding: String(env.MIGRATION_APPROVAL_BINDING || ''),
+    maxBackupAgeHours: Number(env.BACKUP_MAX_AGE_HOURS || 24),
+  }
 }
 
 function formatHumanPlan(plan: MigrationPlanResult): string {
@@ -270,6 +299,8 @@ export async function runMigrateCli(
     return { exitCode: 1, command: args.command, error: msg, stdout: '' }
   }
 
+  let productionAuthority: ProductionMigrationAuthority | null = null
+
   if (args.command === 'apply' && lifecycleMapping === undefined) {
     const msg =
       'apply requires lifecycle mapping evidence: pass --lifecycle-mapping g0 (or path to JSON) or set CAIRN_LIFECYCLE_MAPPING'
@@ -298,7 +329,18 @@ export async function runMigrateCli(
         host: args.host,
         database: args.database,
       })
-      if (!cfg.applyAllowed) {
+      productionAuthority = productionMigrationAuthorityFromEnv()
+      const authorityPlan = planMigrations({
+        cwd: args.cwd,
+        host: cfg.host,
+        hostClass: cfg.hostClass,
+        database: cfg.database,
+        mode: 'apply',
+        lifecycleMapping,
+        productionAuthority,
+        applied: [],
+      })
+      if (!cfg.applyAllowed && !authorityPlan.applyAllowed) {
         const msg = `Migration apply refused for hostClass=${cfg.hostClass} host=${cfg.host}`
         logErr(msg)
         const plan = planMigrations({
@@ -307,6 +349,8 @@ export async function runMigrateCli(
           hostClass: cfg.hostClass,
           mode: 'apply',
           lifecycleMapping,
+          database: cfg.database,
+          productionAuthority,
           applied: [],
         })
         const stdout = args.json ? JSON.stringify({ plan, error: msg }, null, 2) : formatHumanPlan(plan)
@@ -358,8 +402,10 @@ export async function runMigrateCli(
         cwd: args.cwd,
         host: executor.host,
         hostClass: executor.hostClass,
+        database: executor.database,
         executor,
         lifecycleMapping,
+        productionAuthority,
       })
       const stdout = args.json ? JSON.stringify({ plan }, null, 2) : formatHumanPlan(plan)
       log(stdout)
@@ -392,8 +438,10 @@ export async function runMigrateCli(
         cwd: args.cwd,
         host: executor.host,
         hostClass: executor.hostClass,
+        database: executor.database,
         executor,
         lifecycleMapping,
+        productionAuthority,
       })
       const schema = result.ok
         ? await readMigrationSchemaState({

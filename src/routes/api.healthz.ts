@@ -37,6 +37,10 @@ import {
   resolveIncomingRequestId,
   withRequestIdResponse,
 } from '#/server/observability-integration'
+import {
+  buildCp0SyncStatusReadback,
+  type Cp0SyncStatusRow,
+} from '#/server/cp0-sync-status'
 
 function parseCookie(header: string | null, name: string): string | undefined {
   if (!header) return undefined
@@ -152,6 +156,12 @@ export const REQUIRED_TABLES_BY_MIGRATION: Readonly<Record<string, ReadonlyArray
   ],
   '006': ['control_plane_stage_evidence_receipts'],
   '007': ['globals'],
+  '008': [
+    'control_plane_spawn_budgets',
+    'control_plane_control_acks',
+    'control_plane_account_probes',
+    'control_plane_sync_status',
+  ],
 }
 
 /** Tables required given applied migration versions (004/005/006 probes). */
@@ -239,6 +249,28 @@ export type HealthzSnapshotPinRow = {
   payloadSha256: string | null
   boardRev: number | null
   lifecycleRev: number | null
+}
+
+/**
+ * Resolve the board represented by the process-wide health endpoint.
+ * Explicit health configuration wins, then the board binding already required
+ * by the legacy write token. Database discovery is safe only when exactly one
+ * board exists; multi-board ambiguity fails closed instead of selecting the
+ * oldest unrelated board.
+ */
+export function resolveHealthBoardId(args: {
+  configuredBoardId?: string | null
+  writeTokenBoardId?: string | null
+  discoveredBoardIds?: ReadonlyArray<string>
+}): string {
+  const configured = String(args.configuredBoardId ?? '').trim()
+  if (configured) return configured
+  const tokenBound = String(args.writeTokenBoardId ?? '').trim()
+  if (tokenBound) return tokenBound
+  const discovered = [...new Set(
+    (args.discoveredBoardIds ?? []).map((id) => String(id).trim()).filter(Boolean),
+  )]
+  return discovered.length === 1 ? discovered[0]! : ''
 }
 
 /**
@@ -342,6 +374,12 @@ async function loadObserved(): Promise<HealthObserved> {
   let controlPlaneStatus: DependencyHealth['status'] = 'unknown'
   let requiredTablesStatus: DependencyHealth['status'] = 'unknown'
   let missingRequiredTables: Array<string> = []
+  let syncStatus: HealthObserved['sync'] = {
+    status: 'UNKNOWN',
+    effectiveBacklog: null,
+    zeroBacklogProven: false,
+    freshnessAt: null,
+  }
 
   try {
     // Bounded connectivity probe — no credentials in result.
@@ -413,13 +451,16 @@ async function loadObserved(): Promise<HealthObserved> {
     }
 
     // board_revisions + optional latest snapshot (explicit null when absent)
-    const preferredBoard = (envVar('CAIRN_HEALTH_BOARD_ID') || '').trim()
-    let boardId = preferredBoard
+    let boardId = resolveHealthBoardId({
+      configuredBoardId: envVar('CAIRN_HEALTH_BOARD_ID'),
+      writeTokenBoardId: envVar('CAIRN_WRITE_TOKEN_BOARD_ID'),
+    })
     if (!boardId) {
       try {
-        const [boards] = await db().query('SELECT id FROM boards ORDER BY created_at ASC LIMIT 1')
-        const first = (boards as Array<{ id: string }>)[0]
-        boardId = first?.id ? String(first.id) : ''
+        const [boards] = await db().query('SELECT id FROM boards ORDER BY created_at ASC LIMIT 2')
+        boardId = resolveHealthBoardId({
+          discoveredBoardIds: (boards as Array<{ id: string }>).map((board) => String(board.id)),
+        })
       } catch {
         boardId = ''
       }
@@ -524,6 +565,34 @@ async function loadObserved(): Promise<HealthObserved> {
       lifecycleRev = pin.lifecycleRev
       canonicalSnapshotId = pin.canonicalSnapshotId
       canonicalHash = pin.canonicalHash
+      try {
+        const [syncRows] = await db().query(
+          `SELECT status, outbox_pending, legacy_unreplayed, effective_backlog,
+                  board_rev, lifecycle_rev, canonical_hash, last_ack_revision,
+                  freshness_at, entity_rev
+           FROM control_plane_sync_status WHERE board_id=? LIMIT 1`,
+          [boardId],
+        )
+        const sync = (syncRows as Array<Cp0SyncStatusRow>)[0] ?? null
+        if (sync) {
+          const readback = buildCp0SyncStatusReadback(
+            sync,
+            {
+              boardRev: boardRev ?? -1,
+              lifecycleRev: lifecycleRev ?? -1,
+              canonicalHash: canonicalHash ?? '',
+            },
+          )
+          syncStatus = {
+            status: readback.status,
+            effectiveBacklog: readback.effectiveBacklog,
+            zeroBacklogProven: readback.zeroBacklogProven,
+            freshnessAt: readback.observedAt,
+          }
+        }
+      } catch {
+        /* schema 007 app-only compatibility: sync stays explicit UNKNOWN */
+      }
     } else {
       // No board id — cannot assert control-plane pin identity
       controlPlaneStatus = 'unknown'
@@ -578,6 +647,7 @@ async function loadObserved(): Promise<HealthObserved> {
     },
     dependencies,
     serviceName: 'cairn-task-manager',
+    sync: syncStatus,
   }
 }
 

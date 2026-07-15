@@ -62,6 +62,12 @@ export interface HealthObserved {
   snapshot: HealthSnapshotInfo
   dependencies: ReadonlyArray<DependencyHealth>
   serviceName?: string
+  sync?: {
+    status: string
+    effectiveBacklog: number | null
+    zeroBacklogProven: boolean
+    freshnessAt: string | null
+  }
 }
 
 export interface HealthzPayload {
@@ -98,6 +104,12 @@ export interface HealthzPayload {
   }>
   unhealthyReasons: Array<string>
   checkedAt: string
+  sync: {
+    status: string
+    effectiveBacklog: number | null
+    zeroBacklogProven: boolean
+    freshnessAt: string | null
+  }
 }
 
 export interface HealthzHandlerResult {
@@ -205,6 +217,12 @@ export function buildHealthzPayload(
     })),
     unhealthyReasons: evaled.unhealthyReasons,
     checkedAt,
+    sync: observed.sync ?? {
+      status: 'UNKNOWN',
+      effectiveBacklog: null,
+      zeroBacklogProven: false,
+      freshnessAt: null,
+    },
   }
   return stripSecretsFromHealth(payload) as HealthzPayload
 }

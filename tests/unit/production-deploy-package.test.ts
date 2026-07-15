@@ -5,6 +5,7 @@
  * Does NOT deploy or contact production.
  */
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
@@ -226,12 +227,41 @@ describe('production gates.mjs', () => {
       BACKUP_RECEIPT: path,
     }
     expect(gates.requireMigrateApplyAuthority(base).ok).toBe(false)
+    const bound = {
+      ...base,
+      MIGRATE_APPLY_APPROVED: '1',
+      MIGRATION_APPROVED_VERSION: '008',
+      MIGRATION_APPROVED_SHA256: 'a'.repeat(64),
+      MIGRATION_TARGET_HOST: '127.0.0.1',
+      MIGRATION_TARGET_DATABASE: 'cairn_taskmanager',
+      CAIRN_DB_HOST: '127.0.0.1',
+      CAIRN_DB_NAME: 'cairn_taskmanager',
+      MIGRATION_APPROVAL_BINDING: '',
+    }
+    bound.MIGRATION_APPROVAL_BINDING = createHash('sha256')
+      .update([
+        bound.APPROVED_FULL_SHA,
+        bound.PRODUCTION_APPROVAL_ID,
+        bound.MIGRATION_APPROVED_VERSION,
+        bound.MIGRATION_APPROVED_SHA256,
+        bound.MIGRATION_TARGET_HOST,
+        bound.MIGRATION_TARGET_DATABASE,
+        createHash('sha256').update(readFileSync(path)).digest('hex'),
+      ].join('\0'))
+      .digest('hex')
+    expect(gates.requireMigrateApplyAuthority(bound).ok).toBe(true)
     expect(
       gates.requireMigrateApplyAuthority({
-        ...base,
-        MIGRATE_APPLY_APPROVED: '1',
+        ...bound,
+        MIGRATION_TARGET_HOST: 'other-db',
       }).ok,
-    ).toBe(true)
+    ).toBe(false)
+    expect(
+      gates.requireMigrateApplyAuthority({
+        ...bound,
+        MIGRATION_APPROVED_SHA256: 'b'.repeat(64),
+      }).ok,
+    ).toBe(false)
   })
 
   it('classifyRollback covers app-only / forward-fix / dump restore', () => {

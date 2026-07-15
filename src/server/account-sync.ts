@@ -7,12 +7,13 @@ import type { ControlPlaneAtomicStore, ControlPlaneClock } from './board-store'
 import {
   beginIdempotent,
   completeIdempotent,
-  type IdempotencyStorage,
   IdempotencyError,
 } from './idempotency'
+import type { IdempotencyStorage } from './idempotency'
 
 export const ACCOUNT_PUBLISH_SLA_MS = 30_000
 export const ACCOUNT_PERIODIC_HEALTH_MS = 60_000
+export const ACCOUNT_PROBE_MAX_AGE_SECONDS = 300
 
 export type MaskedAccountStatus =
   | 'ACTIVE'
@@ -55,6 +56,15 @@ export interface MaskedAccountRecord {
   statusChangedAt: string | null
   /** True when tombstone/REMOVED. */
   tombstone: boolean
+  /** CP0 eligibility evidence. Identity remains masked. */
+  expiresAt?: string | null
+  quotaRemaining?: number | null
+  quotaVerdict?: 'PASS' | 'FAIL' | 'SKIP' | 'UNKNOWN'
+  chatVerdict?: 'PASS' | 'FAIL' | 'SKIP' | 'UNKNOWN'
+  probedAt?: string | null
+  probeAgeSeconds?: number | null
+  adaptiveCap?: number
+  quarantineReason?: string | null
 }
 
 export interface AccountSyncSnapshot {
@@ -103,6 +113,14 @@ export interface SyncAccountsRequest {
     adaptiveQuotaState?: string | null
     reason?: string | null
     statusChangedAt?: string | null
+    expiresAt?: string | null
+    quotaRemaining?: number | null
+    quotaVerdict?: 'PASS' | 'FAIL' | 'SKIP' | 'UNKNOWN'
+    chatVerdict?: 'PASS' | 'FAIL' | 'SKIP' | 'UNKNOWN'
+    probedAt?: string | null
+    probeAgeSeconds?: number | null
+    adaptiveCap?: number
+    quarantineReason?: string | null
   }>
   trigger: AccountSyncTrigger
   idempotencyKey: string
@@ -132,6 +150,15 @@ export interface CapacityHealthInput {
   cpuPercent: number
   ramHealthy?: boolean
   loadHealthy?: boolean
+  memAvailableGiB?: number
+  observedWorkerRssP95MiB?: number
+  cpuOver95Samples?: number
+  hostLoad1m?: number
+  pidCount?: number
+  acceptedTerminalYieldPercent?: number
+  missingHeartbeatPercent?: number
+  infrastructureFailurePercent?: number
+  collisionDetected?: boolean
 }
 
 /**
@@ -170,8 +197,14 @@ export interface CapacityFailSafeAction {
   failClosed: true
 }
 
-/** Max live slots reduced per CPU drain evaluation (bounded step-down). */
-export const CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS = 10 as const
+/** Exact fraction of controller-owned live slots reduced by a qualifying CPU drain. */
+export const CPU_BOUNDED_DRAIN_FRACTION = 0.25 as const
+
+/**
+ * @deprecated CPU drains have no absolute slot cap; use CPU_BOUNDED_DRAIN_FRACTION.
+ * Null is retained as an explicit compatibility value for legacy policy readers.
+ */
+export const CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS = null
 
 /**
  * Internal schedule-able fail-safe intent derived from CapacityFailSafeAction.
@@ -209,7 +242,14 @@ export interface CapacityPolicyResult {
   solLive: number
   solCap: number
   grokLive: number
-  grokPerAccount: Array<{ maskedAccountId: string; inUse: number; cap: number; healthy: boolean }>
+  grokPerAccount: Array<{
+    maskedAccountId: string
+    inUse: number
+    cap: number
+    healthy: boolean
+  }>
+  /** Eligible Grok placement order: nearest program-emitted expiry, then masked id. */
+  grokPlacementOrder?: Array<string>
   /** True when grokLive > sparkLive + solLive (strict majority of safe live). */
   grokMajority: boolean
   /** Remaining assignable slots on healthy Grok accounts only. */
@@ -240,6 +280,8 @@ export interface CapacityPolicyResult {
    */
   dispatchAllowed: boolean
   dispatchMode: CapacityDispatchMode
+  /** Host launch-batch pacing. RSS is telemetry only and never derives capacity. */
+  launchBatchFraction?: 0 | 0.25 | 0.5 | 1
   /** True only in OPEN mode when fail-safes permit and some non-Grok family remaining > 0. */
   nonGrokAssignmentAllowed: boolean
   /** True in OPEN or GROK_ONLY when fail-safes permit and healthy Grok usable remains (or OPEN). */
@@ -252,17 +294,21 @@ export interface CapacityPolicyResult {
   failSafeActions: Array<CapacityFailSafeAction>
   /** Policy constants (versioned). */
   policy: {
-    sparkMax: 10
-    solMax: 10
-    grokStartPerAccount: 5
-    grokMaxPerAccount: 10
-    combinedMax: 200
-    floorMin: 60
-    physicalSlotsDisplayOnly: true
-    neverAccountsAll: true
-    neverFiller: true
-    /** Bounded CPU drain step size (exact constant; matches CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS). */
-    cpuBoundedDrainMaxReduceSlots: 10
+    sparkMax: number
+    solMax: number
+    grokSoftPerAccount?: number
+    /** Deprecated name retained for typed legacy readers; equals the soft cap. */
+    grokStartPerAccount: number
+    grokMaxPerAccount: number
+    combinedMax: number
+    floorMin: number
+    physicalSlotsDisplayOnly: boolean
+    neverAccountsAll: boolean
+    neverFiller: boolean
+    /** Exact fraction of controller-owned live slots reduced by a qualifying CPU drain. */
+    cpuDrainFraction?: number
+    /** @deprecated Null means no absolute slot cap; dispatch uses cpuDrainFraction. */
+    cpuBoundedDrainMaxReduceSlots: number | null
   }
 }
 
@@ -302,7 +348,11 @@ export type AccountSyncErrorCode =
 export class AccountSyncError extends Error {
   readonly code: AccountSyncErrorCode
   readonly details: Readonly<Record<string, unknown>>
-  constructor(code: AccountSyncErrorCode, message: string, details: Record<string, unknown> = {}) {
+  constructor(
+    code: AccountSyncErrorCode,
+    message: string,
+    details: Record<string, unknown> = {},
+  ) {
     super(message)
     this.name = 'AccountSyncError'
     this.code = code
@@ -311,9 +361,9 @@ export class AccountSyncError extends Error {
 }
 
 export interface AccountSyncStore {
-  get(boardId: string): Promise<AccountSyncSnapshot | null>
-  put(snap: AccountSyncSnapshot): Promise<void>
-  withBoardLock<T>(boardId: string, fn: () => Promise<T> | T): Promise<T>
+  get: (boardId: string) => Promise<AccountSyncSnapshot | null>
+  put: (snap: AccountSyncSnapshot) => Promise<void>
+  withBoardLock: <T>(boardId: string, fn: () => Promise<T> | T) => Promise<T>
 }
 
 export interface AccountSyncDeps {
@@ -323,7 +373,10 @@ export interface AccountSyncDeps {
   idempotency: IdempotencyStorage
 }
 
-const USABLE_STATUSES: ReadonlySet<MaskedAccountStatus> = new Set(['ACTIVE', 'OK'])
+const USABLE_STATUSES: ReadonlySet<MaskedAccountStatus> = new Set([
+  'ACTIVE',
+  'OK',
+])
 const QUARANTINE_STATUSES: ReadonlySet<MaskedAccountStatus> = new Set([
   'BAN',
   '403',
@@ -336,11 +389,53 @@ export function isTombstone(status: MaskedAccountStatus): boolean {
   return status === 'REMOVED'
 }
 
-export function contributesUsableCapacity(status: MaskedAccountStatus): boolean {
+export function contributesUsableCapacity(
+  status: MaskedAccountStatus,
+): boolean {
   if (isTombstone(status)) return false
   if (QUARANTINE_STATUSES.has(status)) return false
   if (status === 'LIMIT') return false // LIMIT stops assignment
   return USABLE_STATUSES.has(status)
+}
+
+/** Status alone is insufficient: every Grok placement needs fresh quota + chat proof. */
+export function isAccountEligible(
+  account: MaskedAccountRecord,
+  nowMs = Date.now(),
+): boolean {
+  if (!contributesUsableCapacity(account.status)) return false
+  if (account.quotaVerdict !== 'PASS' || account.chatVerdict !== 'PASS')
+    return false
+  if (!account.probedAt || !account.expiresAt || account.quarantineReason)
+    return false
+  const probedAtMs = Date.parse(account.probedAt)
+  const expiresAtMs = Date.parse(account.expiresAt)
+  if (!Number.isFinite(probedAtMs) || !Number.isFinite(expiresAtMs))
+    return false
+  const ageSeconds = Math.max(0, (nowMs - probedAtMs) / 1000)
+  return ageSeconds <= ACCOUNT_PROBE_MAX_AGE_SECONDS && expiresAtMs > nowMs
+}
+
+/**
+ * Fail-closed placement frontier for Grok. The owner's expiry preference is an
+ * authorization contract, not a UI sort: only currently eligible rows appear,
+ * ordered by nearest future expiry and then stable masked account id.
+ */
+export function eligibleGrokAccountsForPlacement(
+  accounts: ReadonlyArray<MaskedAccountRecord>,
+  nowMs = Date.now(),
+): Array<MaskedAccountRecord> {
+  return accounts
+    .filter(
+      (account) =>
+        account.providerKind === 'GROK' && isAccountEligible(account, nowMs),
+    )
+    .sort((left, right) => {
+      const leftExpiry = Date.parse(left.expiresAt ?? '')
+      const rightExpiry = Date.parse(right.expiresAt ?? '')
+      if (leftExpiry !== rightExpiry) return leftExpiry - rightExpiry
+      return left.maskedAccountId.localeCompare(right.maskedAccountId)
+    })
 }
 
 /**
@@ -356,17 +451,22 @@ export function evaluateCapacityPolicy(input: {
   forceZero?: boolean
   /** Fabricated filler work indicator — forbidden. */
   fillerDetected?: boolean
+  /** Deterministic eligibility clock for tests/readback. */
+  nowMs?: number
 }): CapacityPolicyResult {
+  const nowMs = input.nowMs ?? Date.now()
   const policy = {
     sparkMax: 10 as const,
-    solMax: 10 as const,
-    grokStartPerAccount: 5 as const,
-    grokMaxPerAccount: 10 as const,
-    combinedMax: 200 as const,
+    solMax: 0 as const,
+    grokSoftPerAccount: 10 as const,
+    grokStartPerAccount: 10 as const,
+    grokMaxPerAccount: 20 as const,
+    combinedMax: 400 as const,
     floorMin: 60 as const,
     physicalSlotsDisplayOnly: true as const,
     neverAccountsAll: true as const,
     neverFiller: true as const,
+    cpuDrainFraction: CPU_BOUNDED_DRAIN_FRACTION,
     cpuBoundedDrainMaxReduceSlots: CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS,
   }
   const limitingReasons: Array<string> = []
@@ -384,7 +484,7 @@ export function evaluateCapacityPolicy(input: {
   const grokPerAccount: CapacityPolicyResult['grokPerAccount'] = []
 
   for (const a of input.accounts) {
-    const usable = contributesUsableCapacity(a.status)
+    const usable = isAccountEligible(a, nowMs)
     const inUse = usable ? Math.max(0, a.effectiveInUse) : 0
     if (a.providerKind === 'SPARK') {
       sparkLive += inUse
@@ -392,11 +492,14 @@ export function evaluateCapacityPolicy(input: {
       solLive += inUse
     } else if (a.providerKind === 'GROK') {
       const healthy = usable
-      // Grok starts 5, remains 5–10 per healthy account
-      let cap = a.effectiveCap
+      // Soft cap 10; adaptive placement may explicitly open slots 11-20.
+      let cap = Math.min(
+        a.effectiveCap,
+        a.adaptiveCap ?? a.effectiveCap,
+        policy.grokMaxPerAccount,
+      )
       if (healthy) {
-        if (cap < policy.grokStartPerAccount) cap = policy.grokStartPerAccount
-        if (cap > policy.grokMaxPerAccount) cap = policy.grokMaxPerAccount
+        if (cap < 0) cap = 0
       } else {
         cap = 0
       }
@@ -410,6 +513,23 @@ export function evaluateCapacityPolicy(input: {
       })
     }
   }
+  const grokPlacementOrder = eligibleGrokAccountsForPlacement(
+    input.accounts,
+    nowMs,
+  ).map((account) => account.maskedAccountId)
+  const grokPlacementRank = new Map(
+    grokPlacementOrder.map((maskedAccountId, rank) => [maskedAccountId, rank]),
+  )
+  grokPerAccount.sort((left, right) => {
+    const leftRank = grokPlacementRank.get(left.maskedAccountId)
+    const rightRank = grokPlacementRank.get(right.maskedAccountId)
+    if (leftRank != null || rightRank != null) {
+      if (leftRank == null) return 1
+      if (rightRank == null) return -1
+      return leftRank - rightRank
+    }
+    return left.maskedAccountId.localeCompare(right.maskedAccountId)
+  })
 
   if (sparkLive > policy.sparkMax) {
     limitingReasons.push(`SPARK_OVER_CAP:${sparkLive}>${policy.sparkMax}`)
@@ -422,7 +542,9 @@ export function evaluateCapacityPolicy(input: {
 
   let combinedLive = sparkLive + solLive + grokLive
   if (combinedLive > policy.combinedMax) {
-    limitingReasons.push(`COMBINED_OVER_CAP:${combinedLive}>${policy.combinedMax}`)
+    limitingReasons.push(
+      `COMBINED_OVER_CAP:${combinedLive}>${policy.combinedMax}`,
+    )
     combinedLive = policy.combinedMax
   }
 
@@ -433,17 +555,20 @@ export function evaluateCapacityPolicy(input: {
   // Floor >=60 iff genuine unique ready collision-safe packets + health permit
   const packets = input.genuineReadyPacketCount ?? 0
   const cpu = input.health?.cpuPercent ?? 0
-  const ramOk = input.health?.ramHealthy !== false
+  const memAvailableGiB = input.health?.memAvailableGiB
+  const ramOk =
+    input.health?.ramHealthy !== false &&
+    (memAvailableGiB == null || memAvailableGiB >= 12)
   const loadOk = input.health?.loadHealthy !== false
   let floorMet = false
   let belowFloor = false
   let belowFloorReason: string | null = null
 
-  if (cpu >= 90) {
-    limitingReasons.push('CPU_GTE_90')
+  if (cpu > 95) {
+    limitingReasons.push('CPU_GT_95')
   }
 
-  if (packets >= policy.floorMin && ramOk && loadOk && cpu < 90) {
+  if (packets >= policy.floorMin && ramOk && loadOk && cpu <= 95) {
     floorMet = combinedLive >= policy.floorMin
     if (!floorMet) {
       belowFloor = true
@@ -456,7 +581,7 @@ export function evaluateCapacityPolicy(input: {
       belowFloor = true
       belowFloorReason = `BELOW_FLOOR packets=${packets}<${policy.floorMin}`
       limitingReasons.push(belowFloorReason)
-    } else if (cpu >= 90) {
+    } else if (cpu > 95) {
       belowFloor = true
       belowFloorReason = `BELOW_FLOOR cpu=${cpu}`
       limitingReasons.push(belowFloorReason)
@@ -475,9 +600,11 @@ export function evaluateCapacityPolicy(input: {
   let solUsableCapacity = 0
   let otherUsableCapacity = 0
   for (const a of input.accounts) {
-    if (!contributesUsableCapacity(a.status)) continue
+    if (!isAccountEligible(a, nowMs)) continue
     if (a.providerKind === 'GROK') {
-      const row = grokPerAccount.find((g) => g.maskedAccountId === a.maskedAccountId)
+      const row = grokPerAccount.find(
+        (g) => g.maskedAccountId === a.maskedAccountId,
+      )
       if (row) healthyGrokUsableCapacity += Math.max(0, row.cap - row.inUse)
     } else if (a.providerKind === 'SPARK') {
       sparkUsableCapacity += Math.max(
@@ -508,9 +635,12 @@ export function evaluateCapacityPolicy(input: {
     )
     solUsableCapacity = solGlobalRemaining
   }
-  let nonGrokUsableCapacity = sparkUsableCapacity + solUsableCapacity + otherUsableCapacity
+  let nonGrokUsableCapacity =
+    sparkUsableCapacity + solUsableCapacity + otherUsableCapacity
 
   // Combined assignment remaining: live + new must not exceed combinedMax.
+  // observedWorkerRssP95MiB is retained in telemetry/idempotency only. Current
+  // authority explicitly forbids deriving or reducing Grok capacity from RSS.
   const combinedRemaining = Math.max(0, policy.combinedMax - combinedLive)
   if (healthyGrokUsableCapacity + nonGrokUsableCapacity > combinedRemaining) {
     limitingReasons.push(
@@ -530,17 +660,15 @@ export function evaluateCapacityPolicy(input: {
 
   // Keep family remainings consistent with post-combined nonGrok budget so SPARK
   // cannot claim SOL-only residual (and vice versa) after the combined clamp.
-  ;({
-    sparkUsableCapacity,
-    solUsableCapacity,
-    otherUsableCapacity,
-  } = clampFamilyRemainingsToNonGrokBudget(
-    sparkUsableCapacity,
-    solUsableCapacity,
-    otherUsableCapacity,
-    nonGrokUsableCapacity,
-  ))
-  nonGrokUsableCapacity = sparkUsableCapacity + solUsableCapacity + otherUsableCapacity
+  ;({ sparkUsableCapacity, solUsableCapacity, otherUsableCapacity } =
+    clampFamilyRemainingsToNonGrokBudget(
+      sparkUsableCapacity,
+      solUsableCapacity,
+      otherUsableCapacity,
+      nonGrokUsableCapacity,
+    ))
+  nonGrokUsableCapacity =
+    sparkUsableCapacity + solUsableCapacity + otherUsableCapacity
 
   const rawUsableOpen = healthyGrokUsableCapacity + nonGrokUsableCapacity
 
@@ -549,7 +677,32 @@ export function evaluateCapacityPolicy(input: {
     Boolean(input.forceZero) ||
     Boolean(input.accountsAllFlag) ||
     Boolean(input.fillerDetected) ||
-    cpu >= 90
+    cpu > 95 ||
+    (memAvailableGiB != null && memAvailableGiB < 12) ||
+    (input.health?.acceptedTerminalYieldPercent != null &&
+      input.health.acceptedTerminalYieldPercent < 50) ||
+    (input.health?.missingHeartbeatPercent != null &&
+      input.health.missingHeartbeatPercent > 20) ||
+    (input.health?.infrastructureFailurePercent != null &&
+      input.health.infrastructureFailurePercent > 15) ||
+    input.health?.collisionDetected === true
+
+  const cpuBatchFraction: 0 | 0.25 | 0.5 | 1 =
+    cpu > 95 ? 0 : cpu >= 92 ? 0.25 : cpu >= 85 ? 0.5 : 1
+  const memoryBatchFraction: 0 | 0.25 | 0.5 | 1 =
+    memAvailableGiB == null
+      ? 1
+      : memAvailableGiB < 12
+        ? 0
+        : memAvailableGiB < 16
+          ? 0.25
+          : memAvailableGiB < 24
+            ? 0.5
+            : 1
+  const launchBatchFraction = Math.min(
+    cpuBatchFraction,
+    memoryBatchFraction,
+  ) as 0 | 0.25 | 0.5 | 1
 
   if (input.forceZero) {
     limitingReasons.push('ACCOUNT_SYNC_STALE')
@@ -625,6 +778,8 @@ export function evaluateCapacityPolicy(input: {
     cpuPercent: cpu,
     combinedLive,
     dispatchMode,
+    memAvailableGiB,
+    cpuOver95Samples: input.health?.cpuOver95Samples,
   })
 
   return {
@@ -634,6 +789,7 @@ export function evaluateCapacityPolicy(input: {
     solCap: policy.solMax,
     grokLive,
     grokPerAccount,
+    grokPlacementOrder,
     grokMajority,
     healthyGrokUsableCapacity: finalGrokUsable,
     sparkUsableCapacity: finalSparkUsable,
@@ -648,6 +804,7 @@ export function evaluateCapacityPolicy(input: {
     usableCapacity,
     dispatchAllowed: dispatchAllowedFinal,
     dispatchMode,
+    launchBatchFraction,
     nonGrokAssignmentAllowed,
     grokAssignmentAllowed,
     limitingReasons,
@@ -665,17 +822,29 @@ export function clampFamilyRemainingsToNonGrokBudget(
   sol: number,
   other: number,
   nonGrokBudget: number,
-): { sparkUsableCapacity: number; solUsableCapacity: number; otherUsableCapacity: number } {
+): {
+  sparkUsableCapacity: number
+  solUsableCapacity: number
+  otherUsableCapacity: number
+} {
   const budget = Math.max(0, Math.floor(nonGrokBudget))
   const s0 = Math.max(0, Math.floor(spark))
   const l0 = Math.max(0, Math.floor(sol))
   const o0 = Math.max(0, Math.floor(other))
   const sum = s0 + l0 + o0
   if (sum <= budget) {
-    return { sparkUsableCapacity: s0, solUsableCapacity: l0, otherUsableCapacity: o0 }
+    return {
+      sparkUsableCapacity: s0,
+      solUsableCapacity: l0,
+      otherUsableCapacity: o0,
+    }
   }
   if (budget === 0 || sum === 0) {
-    return { sparkUsableCapacity: 0, solUsableCapacity: 0, otherUsableCapacity: 0 }
+    return {
+      sparkUsableCapacity: 0,
+      solUsableCapacity: 0,
+      otherUsableCapacity: 0,
+    }
   }
   // Integer proportional scale; distribute leftover by original rank (SPARK → SOL → OTHER).
   let s = Math.floor((s0 * budget) / sum)
@@ -688,7 +857,7 @@ export function clampFamilyRemainingsToNonGrokBudget(
   if (o0 > 0) order.push('o')
   let i = 0
   while (leftover > 0 && order.length > 0) {
-    const k = order[i % order.length]!
+    const k = order[i % order.length]
     if (k === 's' && s < s0) {
       s += 1
       leftover -= 1
@@ -705,41 +874,58 @@ export function clampFamilyRemainingsToNonGrokBudget(
     }
     i += 1
   }
-  return { sparkUsableCapacity: s, solUsableCapacity: l, otherUsableCapacity: o }
+  return {
+    sparkUsableCapacity: s,
+    solUsableCapacity: l,
+    otherUsableCapacity: o,
+  }
 }
 
 /**
- * Pure fail-closed policy hooks for CPU>=90 bounded drain/reduce and LIMIT
+ * Pure fail-closed policy hooks for CPU/memory bounded drain/reduce and LIMIT
  * requeue/rotation. Does not mutate runners, accounts, or external systems —
  * only emits exact actions consumers must honor or stay blocked.
  */
 export function evaluateCapacityFailSafeActions(input: {
-  accounts: Array<Pick<MaskedAccountRecord, 'maskedAccountId' | 'status' | 'effectiveInUse'>>
+  accounts: Array<
+    Pick<MaskedAccountRecord, 'maskedAccountId' | 'status' | 'effectiveInUse'>
+  >
   cpuPercent: number
   combinedLive: number
   dispatchMode: CapacityDispatchMode
+  memAvailableGiB?: number
+  cpuOver95Samples?: number
 }): Array<CapacityFailSafeAction> {
   const actions: Array<CapacityFailSafeAction> = []
   const cpu = input.cpuPercent
 
-  if (cpu >= 90) {
+  if (
+    cpu > 95 ||
+    (input.memAvailableGiB != null && input.memAvailableGiB < 12)
+  ) {
+    const reason = cpu > 95 ? 'CPU_GT_95' : 'MEM_AVAILABLE_LT_12_GIB'
     actions.push({
       action: 'STOP_NEW_DISPATCH',
-      reason: 'CPU_GTE_90',
+      reason,
       failClosed: true,
     })
-    const maxReduce = Math.min(
-      CPU_BOUNDED_DRAIN_MAX_REDUCE_SLOTS,
-      Math.max(0, input.combinedLive),
-    )
-    const targetLiveSlots = Math.max(0, input.combinedLive - maxReduce)
-    actions.push({
-      action: 'BOUNDED_DRAIN_REDUCE',
-      reason: 'CPU_GTE_90',
-      maxReduceSlots: maxReduce,
-      targetLiveSlots,
-      failClosed: true,
-    })
+    const drain =
+      cpu > 98 ||
+      (cpu > 95 && (input.cpuOver95Samples ?? 0) >= 3) ||
+      (input.memAvailableGiB != null && input.memAvailableGiB < 8)
+    if (drain) {
+      const maxReduce = Math.ceil(
+        Math.max(0, input.combinedLive) * CPU_BOUNDED_DRAIN_FRACTION,
+      )
+      const targetLiveSlots = Math.max(0, input.combinedLive - maxReduce)
+      actions.push({
+        action: 'BOUNDED_DRAIN_REDUCE',
+        reason,
+        maxReduceSlots: maxReduce,
+        targetLiveSlots,
+        failClosed: true,
+      })
+    }
   }
 
   for (const a of input.accounts) {
@@ -952,16 +1138,20 @@ export function authorizeProviderAssignment(
 ): ProviderAssignmentDecision {
   const providerKind =
     request.providerKind ??
-    (request.model != null ? resolveProviderKindFromModel(request.model) : 'OTHER')
+    (request.model != null
+      ? resolveProviderKindFromModel(request.model)
+      : 'OTHER')
 
   if (capacity.dispatchMode === 'BLOCKED' || !capacity.dispatchAllowed) {
     const preferred =
-      capacity.limitingReasons.find((r) => r === CAP_REASON_GROK_MAJORITY_NO_RECOVERY) ??
-      capacity.limitingReasons.find((r) => r === 'CPU_GTE_90') ??
-      capacity.limitingReasons.find((r) => r === 'ACCOUNT_SYNC_STALE') ??
-      capacity.limitingReasons.find((r) => r === 'ACCOUNTS_ALL_FORBIDDEN') ??
-      capacity.limitingReasons.find((r) => r === 'FILLER_FORBIDDEN') ??
-      capacity.limitingReasons[0] ??
+      [
+        CAP_REASON_GROK_MAJORITY_NO_RECOVERY,
+        'CPU_GT_95',
+        'ACCOUNT_SYNC_STALE',
+        'ACCOUNTS_ALL_FORBIDDEN',
+        'FILLER_FORBIDDEN',
+      ].find((reason) => capacity.limitingReasons.includes(reason)) ||
+      capacity.limitingReasons[0] ||
       CAP_REASON_ASSIGNMENT_BLOCKED
     return {
       allowed: false,
@@ -972,9 +1162,12 @@ export function authorizeProviderAssignment(
   }
 
   // Fail-safe assignment gate (STOP_NEW_DISPATCH / BOUNDED_DRAIN / STOP_LIMIT).
-  const failSafeGate = evaluateFailSafeAssignmentGate(capacity.failSafeActions, {
-    maskedAccountRef: request.maskedAccountRef,
-  })
+  const failSafeGate = evaluateFailSafeAssignmentGate(
+    capacity.failSafeActions,
+    {
+      maskedAccountRef: request.maskedAccountRef,
+    },
+  )
   if (failSafeGate.blocked) {
     return {
       allowed: false,
@@ -983,7 +1176,7 @@ export function authorizeProviderAssignment(
       reason:
         failSafeGate.action === 'STOP_LIMIT_ASSIGNMENT'
           ? CAP_REASON_FAIL_SAFE_STOP_LIMIT
-          : failSafeGate.reason ?? CAP_REASON_FAIL_SAFE_STOP_DISPATCH,
+          : (failSafeGate.reason ?? CAP_REASON_FAIL_SAFE_STOP_DISPATCH),
     }
   }
 
@@ -1023,12 +1216,18 @@ export function authorizeProviderAssignment(
       allowed: true,
       providerKind,
       dispatchMode: capacity.dispatchMode,
-      reason: capacity.dispatchMode === 'GROK_ONLY' ? CAP_REASON_GROK_ONLY_RECOVERY : null,
+      reason:
+        capacity.dispatchMode === 'GROK_ONLY'
+          ? CAP_REASON_GROK_ONLY_RECOVERY
+          : null,
     }
   }
 
   // Spark / SOL / OTHER — GROK_ONLY or family flag still coarse-deny first.
-  if (capacity.dispatchMode === 'GROK_ONLY' || !capacity.nonGrokAssignmentAllowed) {
+  if (
+    capacity.dispatchMode === 'GROK_ONLY' ||
+    !capacity.nonGrokAssignmentAllowed
+  ) {
     return {
       allowed: false,
       providerKind,
@@ -1109,14 +1308,18 @@ function readOptionalRemaining(value: unknown): number | null {
  *   grok-4.5, gpt-5.3-codex-spark, gpt-5.6-sol
  * Any other string (including names containing "grok"/"spark"/"sol") → OTHER.
  */
-export const SUPPORTED_MODEL_PROVIDER: Readonly<Record<string, AccountProviderKind>> = {
+export const SUPPORTED_MODEL_PROVIDER: Readonly<
+  Record<string, AccountProviderKind>
+> = {
   'grok-4.5': 'GROK',
   'gpt-5.3-codex-spark': 'SPARK',
   'gpt-5.6-sol': 'SOL',
 }
 
 /** Exact model → provider mapping; unknown/partial/substring names never become Grok. */
-export function resolveProviderKindFromModel(model: string): AccountProviderKind {
+export function resolveProviderKindFromModel(
+  model: string,
+): AccountProviderKind {
   if (typeof model !== 'string') return 'OTHER'
   const key = model.trim()
   return SUPPORTED_MODEL_PROVIDER[key] ?? 'OTHER'
@@ -1127,7 +1330,10 @@ function normalizeAccount(
 ): MaskedAccountRecord {
   // Reject secret-like fields if sneaked into reason (masked only contract)
   if (a.maskedAccountId && /token|password|secret/i.test(a.maskedAccountId)) {
-    throw new AccountSyncError('DATA_INTEGRITY', 'maskedAccountId must not look like a secret')
+    throw new AccountSyncError(
+      'DATA_INTEGRITY',
+      'maskedAccountId must not look like a secret',
+    )
   }
   const status = a.status
   return {
@@ -1141,6 +1347,14 @@ function normalizeAccount(
     reason: a.reason ?? null,
     statusChangedAt: a.statusChangedAt ?? null,
     tombstone: isTombstone(status),
+    expiresAt: a.expiresAt ?? null,
+    quotaRemaining: a.quotaRemaining ?? null,
+    quotaVerdict: a.quotaVerdict ?? 'UNKNOWN',
+    chatVerdict: a.chatVerdict ?? 'UNKNOWN',
+    probedAt: a.probedAt ?? null,
+    probeAgeSeconds: a.probeAgeSeconds ?? null,
+    adaptiveCap: Math.min(20, Math.max(0, a.adaptiveCap ?? a.effectiveCap)),
+    quarantineReason: a.quarantineReason ?? null,
   }
 }
 
@@ -1164,6 +1378,14 @@ export function normalizeMaskedAccountForHash(
     reason: a.reason ?? null,
     statusChangedAt: a.statusChangedAt ?? null,
     tombstone: isTombstone(status),
+    expiresAt: a.expiresAt ?? null,
+    quotaRemaining: a.quotaRemaining ?? null,
+    quotaVerdict: a.quotaVerdict ?? 'UNKNOWN',
+    chatVerdict: a.chatVerdict ?? 'UNKNOWN',
+    probedAt: a.probedAt ?? null,
+    probeAgeSeconds: a.probeAgeSeconds ?? null,
+    adaptiveCap: Math.min(20, Math.max(0, a.adaptiveCap ?? a.effectiveCap)),
+    quarantineReason: a.quarantineReason ?? null,
   }
 }
 
@@ -1184,15 +1406,29 @@ export function syncAccountsIdempotencyBody(
           cpuPercent: req.health.cpuPercent,
           ramHealthy: req.health.ramHealthy !== false,
           loadHealthy: req.health.loadHealthy !== false,
+          memAvailableGiB: req.health.memAvailableGiB ?? null,
+          observedWorkerRssP95MiB: req.health.observedWorkerRssP95MiB ?? null,
+          cpuOver95Samples: req.health.cpuOver95Samples ?? null,
+          hostLoad1m: req.health.hostLoad1m ?? null,
+          pidCount: req.health.pidCount ?? null,
+          acceptedTerminalYieldPercent:
+            req.health.acceptedTerminalYieldPercent ?? null,
+          missingHeartbeatPercent: req.health.missingHeartbeatPercent ?? null,
+          infrastructureFailurePercent:
+            req.health.infrastructureFailurePercent ?? null,
+          collisionDetected: req.health.collisionDetected === true,
         }
+  const compatibilityReq: Partial<SyncAccountsRequest> = req
   return {
     boardId: req.boardId,
     sourceRevision: req.sourceRevision,
     generatedAt: req.generatedAt,
     entityExpectedRev: req.entityExpectedRev,
     expectedBoardRev: req.expectedBoardRev,
-    canonicalHash: String(req.canonicalHash ?? '').trim(),
-    accounts: (req.accounts ?? []).map(normalizeMaskedAccountForHash),
+    canonicalHash: String(compatibilityReq.canonicalHash ?? '').trim(),
+    accounts: (compatibilityReq.accounts ?? []).map(
+      normalizeMaskedAccountForHash,
+    ),
     trigger: req.trigger,
     callerRole: req.callerRole,
     actorId: req.actorId ?? null,
@@ -1222,11 +1458,16 @@ export function isMaterialAccountSyncTransition(
   prev: { stale: boolean; usableCapacity: number },
   next: { stale: boolean; usableCapacity: number },
 ): boolean {
-  return prev.stale !== next.stale || prev.usableCapacity !== next.usableCapacity
+  return (
+    prev.stale !== next.stale || prev.usableCapacity !== next.usableCapacity
+  )
 }
 
 export type AccountReadbackSurfaceMap = Partial<
-  Record<'mcp' | 'api' | 'ui' | 'ops', { sourceRevision: number; generatedAt: string }>
+  Record<
+    'mcp' | 'api' | 'ui' | 'ops',
+    { sourceRevision: number; generatedAt: string }
+  >
 >
 
 /**
@@ -1244,7 +1485,10 @@ export async function recordAccountReadbacks(
   return deps.accounts.withBoardLock(opts.boardId, async () => {
     const snap = await deps.accounts.get(opts.boardId)
     if (!snap) {
-      throw new AccountSyncError('INVALID_INPUT', 'no account snapshot to read back')
+      throw new AccountSyncError(
+        'INVALID_INPUT',
+        'no account snapshot to read back',
+      )
     }
 
     const nextSurfaces = { ...snap.readbackSurfaces }
@@ -1267,7 +1511,11 @@ export async function recordAccountReadbacks(
       surfacesChanged = true
     }
 
-    const parity = surfacesHaveParity(nextSurfaces, snap.sourceRevision, snap.generatedAt)
+    const parity = surfacesHaveParity(
+      nextSurfaces,
+      snap.sourceRevision,
+      snap.generatedAt,
+    )
     const now = deps.clock.nowMs()
     // Fail-closed only after SLA window without full multi-surface parity (AC-ACCOUNT-07).
     // Within 30s, incomplete readback is still warming — not stale yet.
@@ -1353,25 +1601,36 @@ export function surfacesHaveParity(
   for (const k of keys) {
     const s = surfaces[k]
     if (!s) return false
-    if (s.sourceRevision !== sourceRevision || s.generatedAt !== generatedAt) return false
+    if (s.sourceRevision !== sourceRevision || s.generatedAt !== generatedAt)
+      return false
   }
   return true
 }
 
 /** Canonical readback surface order for MCP/API/UI/Ops publication. */
-export const ACCOUNT_SYNC_READBACK_SURFACES = ['mcp', 'api', 'ui', 'ops'] as const
-export type AccountSyncReadbackSurface = (typeof ACCOUNT_SYNC_READBACK_SURFACES)[number]
+export const ACCOUNT_SYNC_READBACK_SURFACES = [
+  'mcp',
+  'api',
+  'ui',
+  'ops',
+] as const
+export type AccountSyncReadbackSurface =
+  (typeof ACCOUNT_SYNC_READBACK_SURFACES)[number]
 
 /**
  * Triggers that may be coalesced by the publication scheduler.
  * Only HEARTBEAT may coalesce; newest must still publish within ACCOUNT_PUBLISH_SLA_MS.
  */
-export function isCoalescableAccountSyncTrigger(trigger: AccountSyncTrigger): boolean {
+export function isCoalescableAccountSyncTrigger(
+  trigger: AccountSyncTrigger,
+): boolean {
   return trigger === 'HEARTBEAT'
 }
 
 /** Immediate (non-coalesced) mandatory publication triggers. */
-export function isImmediateAccountSyncTrigger(trigger: AccountSyncTrigger): boolean {
+export function isImmediateAccountSyncTrigger(
+  trigger: AccountSyncTrigger,
+): boolean {
   return !isCoalescableAccountSyncTrigger(trigger)
 }
 
@@ -1381,7 +1640,7 @@ async function applyDispatchBlock(
   snap: AccountSyncSnapshot,
 ): Promise<void> {
   const board = await deps.atomic.getBoardState(boardId)
-  if (snap.stale || snap.usableCapacity === 0 && snap.staleReason) {
+  if (snap.stale || (snap.usableCapacity === 0 && snap.staleReason)) {
     await deps.atomic.setBoardState({
       ...board,
       dispatchBlocked: snap.stale,
@@ -1389,7 +1648,7 @@ async function applyDispatchBlock(
         ? `ACCOUNT_SYNC_STALE: ${snap.staleReason}`
         : board.dispatchBlockedReason,
     })
-  } else if (!snap.stale) {
+  } else {
     await deps.atomic.setBoardState({
       ...board,
       dispatchBlocked: false,
@@ -1418,22 +1677,41 @@ export async function syncAccounts(
 
   const generatedAtMs = Date.parse(req.generatedAt)
   if (!Number.isFinite(generatedAtMs)) {
-    throw new AccountSyncError('INVALID_INPUT', 'generatedAt must be ISO timestamp')
+    throw new AccountSyncError(
+      'INVALID_INPUT',
+      'generatedAt must be ISO timestamp',
+    )
   }
   if (!Number.isInteger(req.sourceRevision) || req.sourceRevision < 0) {
-    throw new AccountSyncError('INVALID_INPUT', 'sourceRevision must be non-negative integer')
+    throw new AccountSyncError(
+      'INVALID_INPUT',
+      'sourceRevision must be non-negative integer',
+    )
   }
-  if (typeof req.entityExpectedRev !== 'number' || !Number.isInteger(req.entityExpectedRev) || req.entityExpectedRev < 0) {
+  if (
+    typeof req.entityExpectedRev !== 'number' ||
+    !Number.isInteger(req.entityExpectedRev) ||
+    req.entityExpectedRev < 0
+  ) {
     throw new AccountSyncError(
       'INVALID_INPUT',
       'entityExpectedRev is required (create=0, update=current) — no silent default',
     )
   }
-  if (typeof req.expectedBoardRev !== 'number' || !Number.isInteger(req.expectedBoardRev)) {
-    throw new AccountSyncError('INVALID_INPUT', 'expectedBoardRev is required — no silent default')
+  if (
+    typeof req.expectedBoardRev !== 'number' ||
+    !Number.isInteger(req.expectedBoardRev)
+  ) {
+    throw new AccountSyncError(
+      'INVALID_INPUT',
+      'expectedBoardRev is required — no silent default',
+    )
   }
   if (!req.canonicalHash || !String(req.canonicalHash).trim()) {
-    throw new AccountSyncError('INVALID_INPUT', 'canonicalHash is required (current pin hash)')
+    throw new AccountSyncError(
+      'INVALID_INPUT',
+      'canonicalHash is required (current pin hash)',
+    )
   }
   if (!req.idempotencyKey || !String(req.idempotencyKey).trim()) {
     throw new AccountSyncError('INVALID_INPUT', 'idempotencyKey is required')
@@ -1443,10 +1721,14 @@ export async function syncAccounts(
     req.currentPinHash !== '' &&
     req.currentPinHash !== req.canonicalHash
   ) {
-    throw new AccountSyncError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
-      expectedCanonicalHash: req.canonicalHash,
-      currentPinHash: req.currentPinHash,
-    })
+    throw new AccountSyncError(
+      'STALE_REVISION',
+      'canonical hash mismatch vs current pin',
+      {
+        expectedCanonicalHash: req.canonicalHash,
+        currentPinHash: req.currentPinHash,
+      },
+    )
   }
 
   const accounts = req.accounts.map(normalizeAccount)
@@ -1473,7 +1755,10 @@ export async function syncAccounts(
   }
 
   if (begin.kind === 'REPLAY' && begin.record) {
-    return { ...(begin.record.responseBody as SyncAccountsResult), replayed: true }
+    return {
+      ...(begin.record.responseBody as SyncAccountsResult),
+      replayed: true,
+    }
   }
 
   const board = await deps.atomic.getBoardState(req.boardId)
@@ -1504,10 +1789,14 @@ export async function syncAccounts(
           )
         }
       } else if (req.entityExpectedRev !== prev.entityRev) {
-        throw new AccountSyncError('STALE_REVISION', 'entity rev mismatch on sync_accounts', {
-          entityExpectedRev: req.entityExpectedRev,
-          currentEntityRev: prev.entityRev,
-        })
+        throw new AccountSyncError(
+          'STALE_REVISION',
+          'entity rev mismatch on sync_accounts',
+          {
+            entityExpectedRev: req.entityExpectedRev,
+            currentEntityRev: prev.entityRev,
+          },
+        )
       }
 
       // Fresh publish: readbacks reset; parity not yet proven → temporarily not stale
@@ -1521,6 +1810,7 @@ export async function syncAccounts(
         genuineReadyPacketCount: req.genuineReadyPacketCount,
         accountsAllFlag: false,
         forceZero: false,
+        nowMs: generatedAtMs,
       })
 
       const snap: AccountSyncSnapshot = {
@@ -1531,8 +1821,7 @@ export async function syncAccounts(
         accounts,
         readbackSurfaces: { mcp: null, api: null, ui: null, ops: null },
         publishedAtMs: now,
-        lastPeriodicHealthAtMs:
-          req.trigger === 'PERIODIC_HEALTH' ? now : null,
+        lastPeriodicHealthAtMs: req.trigger === 'PERIODIC_HEALTH' ? now : null,
         stale: false,
         staleReason: null,
         usableCapacity: capacity.usableCapacity,
@@ -1586,7 +1875,13 @@ export async function syncAccounts(
       } satisfies SyncAccountsResult
     })
 
-    await completeIdempotent(deps.idempotency, begin.scopeHash, 200, result, begin.requestHash)
+    await completeIdempotent(
+      deps.idempotency,
+      begin.scopeHash,
+      200,
+      result,
+      begin.requestHash,
+    )
     return result
   } catch (e) {
     try {
@@ -1692,7 +1987,7 @@ export async function evaluateAccountSyncFreshness(
 }
 
 export function createMemoryAccountSyncStore(): AccountSyncStore & {
-  snapshot(): Array<AccountSyncSnapshot>
+  snapshot: () => Array<AccountSyncSnapshot>
 } {
   const map = new Map<string, AccountSyncSnapshot>()
   const chains = new Map<string, Promise<unknown>>()
@@ -1726,7 +2021,10 @@ export function createMemoryAccountSyncStore(): AccountSyncStore & {
       const gate = new Promise<void>((r) => {
         release = r
       })
-      chains.set(boardId, prev.then(() => gate))
+      chains.set(
+        boardId,
+        prev.then(() => gate),
+      )
       await prev
       try {
         return await fn()
@@ -1751,7 +2049,9 @@ export function getSharedAccountSyncStore(): AccountSyncStore {
   return sharedAccountSyncStore
 }
 
-export function setSharedAccountSyncStore(store: AccountSyncStore | null): void {
+export function setSharedAccountSyncStore(
+  store: AccountSyncStore | null,
+): void {
   sharedAccountSyncStore = store
 }
 
