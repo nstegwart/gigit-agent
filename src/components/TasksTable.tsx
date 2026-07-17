@@ -1,7 +1,8 @@
 // Tasks table — same look as the Features table (.ftable). Columns:
-// Task (title + id) · Group · Phase · Project · Progress · Checkpoints · Impact · Updated.
+// Task (title + id) · Stage · Next gate · Project · Run · Readiness · Impact · Last receipt.
 // Self-contained: project/scope filter chips + global search + sortable rows.
-import { useMemo, useState } from 'react'
+// W-FIX-PROJECTS: human titles, stage chip labels, domain/theme grouping, pageSize 20.
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import {
   createColumnHelper,
@@ -16,6 +17,7 @@ import { useStore } from '@tanstack/react-store'
 
 import { useBoardId } from '#/lib/board-query'
 import { MiniAgent, ProgressBar } from '#/components/primitives'
+import { formatLifecycleStageLabel } from '#/lib/display-label'
 import { fmtDate } from '#/lib/format'
 import { Icon } from '#/lib/icons'
 import { nextStage, rowReadiness } from '#/lib/readiness'
@@ -25,8 +27,156 @@ import { uiStore } from '#/store/ui'
 
 const col = createColumnHelper<TaskView>()
 
-/** Bucket tasks are grouped under: explicit group → feature contract → Other. */
-const groupKeyOf = (t: TaskView) => t.group || t.featureContractId || 'Other'
+/** Default rows per page on project/task lists (W-FIX-PROJECTS / V1.2 G-B). */
+export const TASKS_TABLE_PAGE_SIZE = 20
+
+/** Known domain tokens derived from featureContractId segments (presentation only). */
+const DOMAIN_HINTS: Readonly<Record<string, string>> = {
+  AUTH: 'Auth',
+  PAY: 'Payment',
+  PAYMENT: 'Payment',
+  RC: 'Payment',
+  IAP: 'Payment',
+  PREMIUM: 'Payment',
+  XENDIT: 'Payment',
+  CLEENG: 'Payment',
+  REVENUECAT: 'Payment',
+  WELLNESS: 'Wellness',
+  WELL: 'Wellness',
+  MEDITATION: 'Wellness',
+  FASTING: 'Wellness',
+  PERIOD: 'Wellness',
+  CONTENT: 'Content',
+  MEAL: 'Content',
+  RECIPE: 'Content',
+  BOOKMARK: 'Content',
+  CHALLENGE: 'Challenge',
+  GAMIFY: 'Challenge',
+  BADGE: 'Challenge',
+  CORP: 'Corporate',
+  AFF: 'Affiliate',
+  AFFILIATE: 'Affiliate',
+  REFERRAL: 'Affiliate',
+  FIT: 'Fitness',
+  JOURNEY: 'Fitness',
+  WORKOUT: 'Fitness',
+  SALES: 'Sales',
+  PLATFORM: 'Platform',
+  ADMIN: 'Platform',
+  ONBOARD: 'Auth',
+  LOGIN: 'Auth',
+  REGISTER: 'Auth',
+  SHELL: 'Shell',
+  OFFLINE: 'Shell',
+  NOTIF: 'Notifications',
+  NOTIFICATION: 'Notifications',
+  TEAM: 'Teams',
+  TEAMS: 'Teams',
+}
+
+const PLATFORM_SKIP = new Set(['RN', 'BE', 'WEB', 'AFF', 'SALES', 'FIRM', 'API', 'CORE', 'MFS'])
+
+function titleCaseToken(p: string): string {
+  if (!p) return p
+  if (/^\d+$/.test(p)) return p
+  if (p.length <= 3 && p === p.toUpperCase()) return p
+  return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()
+}
+
+/** Strip bracket FC tags / T-* / FC-* tokens; light normalize for owner scan. */
+export function cleanTaskTitle(raw: string): string {
+  let s = raw.trim()
+  if (!s) return s
+  s = s.replace(/\[[^\]]*\]\s*/g, '')
+  s = s.replace(/\b(?:T|FC|BE|WEB|RN|AFF|SALES)-[A-Z0-9._-]+\b/gi, '')
+  s = s.replace(/[_/]+/g, ' ')
+  s = s.replace(/\s+/g, ' ').trim()
+  if (!s) return raw.trim()
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+function isPlaceholderTitle(value: string | null | undefined): boolean {
+  const t = (value ?? '').trim()
+  if (!t) return true
+  const lower = t.toLowerCase()
+  if (lower === 'konten pemilik memerlukan peninjauan') return true
+  if (lower === 'konten perlu ditinjau') return true
+  if (lower === 'content_review_required') return true
+  return false
+}
+
+/**
+ * Owner-facing task title: humanTitle / ownerPrimary → cleaned title → id.
+ * Never surfaces raw run-id or placeholder as sole primary.
+ */
+export function resolveTaskDisplayTitle(t: {
+  id: string
+  title: string
+  humanTitle?: string | null
+  ownerPrimaryTitle?: string | null
+  humanDisplay?: { ownerPrimaryTitle?: string | null; title?: string | null } | null
+}): string {
+  const extras = t as {
+    humanTitle?: string | null
+    ownerPrimaryTitle?: string | null
+    humanDisplay?: { ownerPrimaryTitle?: string | null; title?: string | null } | null
+  }
+  const candidates = [
+    extras.humanTitle,
+    extras.ownerPrimaryTitle,
+    extras.humanDisplay?.ownerPrimaryTitle,
+    extras.humanDisplay?.title,
+  ]
+  for (const c of candidates) {
+    const v = (c ?? '').trim()
+    if (v && !isPlaceholderTitle(v) && !/^T-[A-Z0-9._-]+$/i.test(v)) return v
+  }
+  const cleaned = cleanTaskTitle(t.title ?? '')
+  if (cleaned && !isPlaceholderTitle(cleaned)) return cleaned
+  if ((t.title ?? '').trim() && !isPlaceholderTitle(t.title)) return t.title.trim()
+  return t.id
+}
+
+/** Readable label from raw FC-* id (never used as primary if domain map hits). */
+export function formatFeatureContractLabel(fc: string): string {
+  const parts = fc.replace(/^FC-/i, '').split(/[-_]/).filter(Boolean)
+  const meaningful = parts.filter((p) => !PLATFORM_SKIP.has(p.toUpperCase()))
+  const src = meaningful.length ? meaningful : parts
+  return src.map(titleCaseToken).join(' ') || fc
+}
+
+/**
+ * Group key for TasksTable: human domain/theme, not raw featureContractId.
+ * Prefer explicit non-technical `group`, else domain hint from FC tokens,
+ * else readable FC label, else "Lainnya".
+ */
+export function domainGroupKeyOf(t: {
+  group?: string | null
+  featureContractId?: string | null
+}): string {
+  const g = (t.group ?? '').trim()
+  if (g && !/^(FC|T|FEAT)-/i.test(g)) return g
+
+  const fc = (t.featureContractId ?? '').trim()
+  if (!fc) return 'Lainnya'
+
+  const parts = fc.replace(/^FC-/i, '').split(/[-_]/).filter(Boolean)
+  const meaningful = parts.filter((p) => !PLATFORM_SKIP.has(p.toUpperCase()))
+
+  // Collect domain hits; prefer the last (more specific) token — e.g. CORP+WELLNESS → Wellness
+  const hits: Array<string> = []
+  for (const p of meaningful) {
+    const hit = DOMAIN_HINTS[p.toUpperCase()]
+    if (hit) hits.push(hit)
+  }
+  if (hits.length) return hits[hits.length - 1]!
+
+  // Fallback: readable 1–2 token theme from FC (not the full technical code)
+  if (meaningful.length >= 1) {
+    return meaningful.slice(0, 2).map(titleCaseToken).join(' · ')
+  }
+  return formatFeatureContractLabel(fc)
+}
 
 export function TasksTable({
   tasks,
@@ -34,12 +184,15 @@ export function TasksTable({
   readinessByGroup,
   milestone,
   cfg,
+  pageSize = TASKS_TABLE_PAGE_SIZE,
 }: {
   tasks: Array<TaskView>
   runsByTask?: Record<string, Array<Run>>
   readinessByGroup?: Record<string, GroupReadiness>
   milestone?: string | null
   cfg?: LifecycleConfig
+  /** Override page size (default 20). */
+  pageSize?: number
 }) {
   const q = useStore(uiStore, (s) => s.search)
   const [filterProj, setFilterProj] = useState('')
@@ -51,8 +204,9 @@ export function TasksTable({
   const [sorting, setSorting] = useState<SortingState>([{ id: 'readiness', desc: false }])
   const navigate = useNavigate()
   const boardId = useBoardId()
-  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set())
   const [touched, setTouched] = useState(false)
+  const [page, setPage] = useState(0)
 
   const readyOf = (t: TaskView) => (cfg ? rowReadiness(cfg, t.lifecycleStage, t.done, t.total) : t.pct)
   const nextOf = (t: TaskView) => (cfg ? nextStage(cfg, t.lifecycleStage)?.key ?? null : null)
@@ -60,14 +214,15 @@ export function TasksTable({
   const runOf = (t: TaskView) => (runsByTask?.[t.id] ?? []).find((r) => r.status === 'running' || r.status === 'queued') ?? null
   const assigned = (t: TaskView) => !!runOf(t)
 
-  const projects = useMemo(() => [...new Set(tasks.map((t) => t.projectId).filter(Boolean) as Array<string>)], [tasks])
-  const scopes = useMemo(() => [...new Set(tasks.map((t) => t.scope).filter(Boolean) as Array<string>)], [tasks])
+  const projects = useMemo(() => [...new Set(tasks.map((t) => t.projectId).filter(Boolean) as Array<string>)].sort(), [tasks])
+  const scopes = useMemo(() => [...new Set(tasks.map((t) => t.scope).filter(Boolean) as Array<string>)].sort(), [tasks])
   const fcs = useMemo(() => [...new Set(tasks.map((t) => t.featureContractId).filter(Boolean) as Array<string>)].sort(), [tasks])
   const gates = useMemo(() => cfg?.stages.map((s) => s.key) ?? [], [cfg])
 
   const rows = useMemo(() => {
     const Q = q.toLowerCase()
-    const staleBefore = Date.now() - 7 * 864e5
+    // Only compute wall-clock cutoff when the stale filter is active (avoids SSR/client clock drift on other paths)
+    const staleBefore = filterFlag === 'stale' ? Date.now() - 7 * 864e5 : 0
     let out = tasks.slice()
     if (filterProj) out = out.filter((t) => t.projectId === filterProj)
     if (filterScope) out = out.filter((t) => t.scope === filterScope)
@@ -79,36 +234,60 @@ export function TasksTable({
     else if (filterFlag === 'assigned') out = out.filter((t) => assigned(t))
     else if (filterFlag === 'unassigned') out = out.filter((t) => !assigned(t))
     if (Q)
-      out = out.filter((t) =>
-        `${t.title} ${t.id} ${t.projectId ?? ''} ${t.group ?? ''} ${t.lifecycleStage ?? ''} ${t.featureContractId ?? ''}`
+      out = out.filter((t) => {
+        const human = resolveTaskDisplayTitle(t)
+        return `${human} ${t.title} ${t.id} ${t.projectId ?? ''} ${t.group ?? ''} ${t.lifecycleStage ?? ''} ${t.featureContractId ?? ''}`
           .toLowerCase()
-          .includes(Q),
-      )
+          .includes(Q)
+      })
+    // Stable secondary order by id so server/client group insertion matches
+    out.sort((a, b) => a.id.localeCompare(b.id))
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, filterProj, filterScope, filterStage, filterFC, filterGate, filterFlag, q, runsByTask, cfg])
+
+  // Reset page when filter/search changes
+  useEffect(() => {
+    setPage(0)
+  }, [filterProj, filterScope, filterStage, filterFC, filterGate, filterFlag, q, tasks.length])
 
   const columns = useMemo(
     () => [
       col.display({
         id: 'task',
         header: 'Task',
-        cell: ({ row }) => (
-          <div>
-            <div className="t-name">{row.original.title}</div>
-            <div className="t-id">{row.original.id}</div>
-          </div>
-        ),
+        cell: ({ row }) => {
+          const human = resolveTaskDisplayTitle(row.original)
+          return (
+            <div>
+              <div className="t-name">{human}</div>
+              <div className="t-id" title={row.original.title !== human ? row.original.title : undefined}>
+                {row.original.id}
+              </div>
+            </div>
+          )
+        },
       }),
       col.accessor((t) => t.lifecycleStage ?? '', {
         id: 'stage',
         header: 'Stage',
         cell: ({ row }) => {
           const s = row.original.lifecycleStage
+          const label = s ? formatLifecycleStageLabel(s) || s : null
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
-              {s ? <span className="chip chip-mono">{s}</span> : <span className="t-id">uninit</span>}
-              {row.original.blockedReason ? <span className="t-blocked" title={row.original.blockedReason}><Icon name="lock" size={9} /> blocked</span> : null}
+              {s ? (
+                <span className="chip chip-mono" title={s} data-stage={s}>
+                  {label}
+                </span>
+              ) : (
+                <span className="t-id">uninit</span>
+              )}
+              {row.original.blockedReason ? (
+                <span className="t-blocked" title={row.original.blockedReason}>
+                  <Icon name="lock" size={9} /> blocked
+                </span>
+              ) : null}
             </div>
           )
         },
@@ -176,12 +355,18 @@ export function TasksTable({
     getSortedRowModel: getSortedRowModel(),
   })
 
-  // bucket the sorted/filtered rows into collapsible groups (insertion order)
-  const modelRows = table.getRowModel().rows
+  const modelRowsAll = table.getRowModel().rows
+  const totalRows = modelRowsAll.length
+  const size = Math.max(1, pageSize)
+  const pageCount = Math.max(1, Math.ceil(totalRows / size))
+  const safePage = Math.min(page, pageCount - 1)
+  const modelRows = modelRowsAll.slice(safePage * size, safePage * size + size)
+
+  // bucket the current page into collapsible domain/theme groups (insertion order)
   const groups: Array<[string, Array<Row<TaskView>>]> = []
   const gIndex = new Map<string, number>()
   for (const r of modelRows) {
-    const k = groupKeyOf(r.original)
+    const k = domainGroupKeyOf(r.original)
     let i = gIndex.get(k)
     if (i === undefined) { i = groups.length; gIndex.set(k, i); groups.push([k, []]) }
     groups[i][1].push(r)
@@ -230,7 +415,7 @@ export function TasksTable({
           <>
             <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 4px' }} />
             {chip('', 'All stages', filterStage === '', () => setFilterStage(''))}
-            {cfg.stages.map((s) => chip(s.key, s.key, filterStage === s.key, () => setFilterStage(s.key)))}
+            {cfg.stages.map((s) => chip(s.key, formatLifecycleStageLabel(s.key) || s.key, filterStage === s.key, () => setFilterStage(s.key)))}
           </>
         ) : null}
         {fcs.length ? (
@@ -241,7 +426,11 @@ export function TasksTable({
             aria-label="Filter by feature capability"
           >
             <option value="">All FCs</option>
-            {fcs.map((f) => <option key={f} value={f}>{f}</option>)}
+            {fcs.map((f) => (
+              <option key={f} value={f} title={f}>
+                {formatFeatureContractLabel(f)}
+              </option>
+            ))}
           </select>
         ) : null}
         {gates.length ? (
@@ -252,7 +441,7 @@ export function TasksTable({
             aria-label="Filter by next gate"
           >
             <option value="">Any next gate</option>
-            {gates.map((g) => <option key={g} value={g}>→ {g}</option>)}
+            {gates.map((g) => <option key={g} value={g}>→ {formatLifecycleStageLabel(g) || g}</option>)}
           </select>
         ) : null}
         {(['blocked', 'stale', 'assigned', 'unassigned'] as const).map((f) => chip(f, f, filterFlag === f, () => setFilterFlag(filterFlag === f ? '' : f)))}
@@ -289,7 +478,14 @@ export function TasksTable({
               const open = isOpen(key)
               const totalSum = grows.reduce((a, r) => a + r.original.total, 0)
               const doneSum = grows.reduce((a, r) => a + r.original.done, 0)
-              const gr = readinessByGroup?.[key]
+              // Readiness-by-group was keyed by raw FC; try domain key then any FC in group
+              const gr =
+                readinessByGroup?.[key] ??
+                grows.reduce<GroupReadiness | undefined>((found, r) => {
+                  if (found) return found
+                  const fc = r.original.featureContractId
+                  return fc ? readinessByGroup?.[fc] : undefined
+                }, undefined)
               const pct = gr ? gr.readinessPercent : Math.round(grows.reduce((a, r) => a + r.original.pct, 0) / grows.length)
               return (
                 <tbody key={key} className="tgroup-body">
@@ -318,6 +514,45 @@ export function TasksTable({
           )}
         </table>
       </div>
+      {totalRows > size ? (
+        <div
+          className="tt-pager"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            marginTop: 10,
+            fontSize: 12.5,
+            color: 'var(--text-dim)',
+          }}
+          data-testid="tasks-table-pager"
+        >
+          <span>
+            {safePage * size + 1}–{Math.min(totalRows, safePage * size + size)} dari {totalRows}
+          </span>
+          <button
+            type="button"
+            className="fbtn"
+            disabled={safePage <= 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            aria-label="Halaman tugas sebelumnya"
+          >
+            Sebelumnya
+          </button>
+          <span className="chip chip-mono" style={{ fontSize: 11 }}>
+            {safePage + 1}/{pageCount}
+          </span>
+          <button
+            type="button"
+            className="fbtn"
+            disabled={safePage >= pageCount - 1}
+            onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+            aria-label="Halaman tugas berikutnya"
+          >
+            Berikutnya
+          </button>
+        </div>
+      ) : null}
     </>
   )
 }

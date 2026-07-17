@@ -1,5 +1,8 @@
 // Project detail — ported from prototype `vProject(m, id)` (docs/plan/assets/app.js).
 // Same markup/classes as a typed React page body; AppShell provides the chrome.
+// W-FIX-PROJECTS: compact Runs (pageSize 6–12, status-priority), tasks via TasksTable
+// (human titles / domain groups / page 20), hydration-safe client-only WireGraph.
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { BoardLink as Link } from '#/components/BoardLink'
 
@@ -8,13 +11,36 @@ import { PROJ_STATUS } from '#/lib/format'
 import { Icon } from '#/lib/icons'
 import { Collapsible } from '#/components/Collapsible'
 import { EmptyState } from '#/components/primitives'
-import { RunCard } from '#/components/RunCard'
+import {
+  countAttentionRuns,
+  PROJECT_RUNS_PAGE_SIZE,
+  RunCard,
+  sortProjectRuns,
+} from '#/components/RunCard'
 import { FeatureRow } from '#/components/FeatureRow'
 import { Architecture } from '#/components/Architecture'
 import { DesignLinks } from '#/components/DesignLinks'
 import { WireGraph } from '#/components/WireGraph'
-import { TasksTable } from '#/components/TasksTable'
+import { resolveTaskDisplayTitle, TasksTable } from '#/components/TasksTable'
 import type { Feature } from '#/lib/types'
+
+/**
+ * SSR-safe client gate: server + first client paint render the same fallback,
+ * then mount children. Used to avoid React #418 from browser-only dependency map.
+ */
+function ClientOnly({
+  children,
+  fallback,
+}: {
+  children: ReactNode
+  fallback: ReactNode
+}) {
+  const [ready, setReady] = useState(false)
+  useEffect(() => {
+    setReady(true)
+  }, [])
+  return ready ? <>{children}</> : <>{fallback}</>
+}
 
 export const Route = createFileRoute('/b/$boardId/projects/$projectId')({
   loader: async ({ context, params }) => {
@@ -43,6 +69,20 @@ function View() {
   const cfg = useLifecycle()
   const { projectId } = Route.useParams()
   const p = m.projById[projectId]
+  const [showAllRuns, setShowAllRuns] = useState(false)
+
+  // Hooks before any early return (Rules of Hooks) — empty when project missing
+  const runs = useMemo(
+    () => (p ? sortProjectRuns(m.runs.filter((r) => r.project === p.id)) : []),
+    [m.runs, p],
+  )
+  const projTasks = useMemo(
+    () =>
+      p
+        ? allTasks.filter((t) => t.projectId === p.id).slice().sort((a, b) => a.id.localeCompare(b.id))
+        : [],
+    [allTasks, p],
+  )
 
   if (!p) {
     return (
@@ -55,8 +95,9 @@ function View() {
 
   const [scls, slbl] = PROJ_STATUS[p.status] ?? ['st-planned', p.status]
   const activeFeatures = p.features.filter((f) => !f.parked)
-  const runs = m.runs.filter((r) => r.project === p.id)
-  const projTasks = allTasks.filter((t) => t.projectId === p.id)
+  const attention = countAttentionRuns(runs)
+  const visibleRuns = showAllRuns ? runs : runs.slice(0, PROJECT_RUNS_PAGE_SIZE)
+  const hiddenRunCount = Math.max(0, runs.length - PROJECT_RUNS_PAGE_SIZE)
 
   const groups: Array<[string, Array<Feature>]> = [
     ['Blocked', p.features.filter((f) => f.blocked)],
@@ -97,25 +138,7 @@ function View() {
         ) : null}
       </div>
 
-      {runs.length ? (
-        <section className="section">
-          <div className="sec-head">
-            <h2>Agents on this project</h2>
-            <span className="count">{runs.length}</span>
-          </div>
-          <div className="runs-grid">
-            {runs.map((r) => (
-              <RunCard
-                key={r.id}
-                run={r}
-                model={m}
-                taskTitle={r.taskId ? taskById[r.taskId]?.title : undefined}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
+      {/* Tasks first (owner priority) — runs are secondary chrome, not the wall above work */}
       {projTasks.length ? (
         <section className="section">
           <div className="sec-head">
@@ -127,6 +150,63 @@ function View() {
         </section>
       ) : null}
 
+      {runs.length ? (
+        <section className="section" data-testid="project-runs-section">
+          <div className="sec-head">
+            <h2>Runs ({runs.length})</h2>
+            <span className="count">{runs.length}</span>
+            {attention > 0 ? (
+              <span className="desc" style={{ color: 'var(--blocked)' }}>
+                {attention} running/failed
+              </span>
+            ) : (
+              <span className="desc">compact · running/failed first</span>
+            )}
+          </div>
+          <div className="runs-grid" data-testid="project-runs-grid" data-visible={visibleRuns.length}>
+            {visibleRuns.map((r) => {
+              const bound = r.taskId ? taskById[r.taskId] : undefined
+              const humanTask = bound ? resolveTaskDisplayTitle(bound) : undefined
+              return (
+                <RunCard
+                  key={r.id}
+                  run={r}
+                  model={m}
+                  taskTitle={humanTask}
+                />
+              )
+            })}
+          </div>
+          {!showAllRuns && hiddenRunCount > 0 ? (
+            <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="fbtn"
+                data-testid="project-runs-show-all"
+                onClick={() => setShowAllRuns(true)}
+              >
+                Lihat semua ({runs.length})
+              </button>
+              <span style={{ fontSize: 12, color: 'var(--text-faint)' }}>
+                Menampilkan {PROJECT_RUNS_PAGE_SIZE} dari {runs.length} · sisanya disembunyikan
+              </span>
+            </div>
+          ) : null}
+          {showAllRuns && runs.length > PROJECT_RUNS_PAGE_SIZE ? (
+            <div style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                className="fbtn"
+                data-testid="project-runs-collapse"
+                onClick={() => setShowAllRuns(false)}
+              >
+                Ciutkan runs
+              </button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
       {groups.map(([title, feats]) => (
         <Collapsible
           key={title}
@@ -135,7 +215,11 @@ function View() {
           defaultOpen={title !== 'Parked for later'}
         >
           {[...feats]
-            .sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0))
+            .sort((a, b) => {
+              const d = (b.pct ?? 0) - (a.pct ?? 0)
+              if (d !== 0) return d
+              return a.id.localeCompare(b.id)
+            })
             .map((f) => (
               <FeatureRow key={f.id} feature={f} model={m} />
             ))}
@@ -155,7 +239,19 @@ function View() {
           <div className="sec-head">
             <h2>Dependency map</h2>
           </div>
-          <WireGraph features={p.features} />
+          <ClientOnly
+            fallback={
+              <div
+                className="note"
+                data-testid="dependency-map-ssr-placeholder"
+                style={{ marginTop: 8 }}
+              >
+                Memuat peta ketergantungan…
+              </div>
+            }
+          >
+            <WireGraph features={p.features} />
+          </ClientOnly>
         </section>
       ) : null}
     </>
