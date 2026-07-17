@@ -1,10 +1,10 @@
 /**
  * Owner humanDisplay presentation helpers (Work).
- * Fail-closed: never promote technical title to owner primary.
- * Accepts only REVIEWED status as owner-ready; GENERATED_NEEDS_REVIEW /
- * BLOCKED / CONFLICT / CONTENT_REVIEW_REQUIRED (and any other non-REVIEWED)
- * fail closed even when contentReviewRequired flag is inconsistently false.
- * Copy comes only from projected fields; this module does not invent narrative.
+ * ADDENDUM V1.1 §C / V1.2: primary title is always scannable —
+ * humanTitle (non-placeholder) → cleaned technicalTitle → taskId.
+ * Placeholder "Konten pemilik memerlukan peninjauan" is NEVER the sole title;
+ * review state is a badge/status, not the primary line.
+ * REVIEWED + non-placeholder owner primary remains the preferred ready path.
  */
 
 export type OwnerDisplayCitation = {
@@ -14,8 +14,10 @@ export type OwnerDisplayCitation = {
 }
 
 export type OwnerDisplayInput = {
-  /** Technical/system title — NEVER owner primary. */
+  /** Technical/system title — used as cleaned fallback, never preferred over reviewed human. */
   technicalTitle: string
+  /** Task id for always-visible secondary + last-resort primary fallback. */
+  taskId?: string | null
   ownerPrimaryTitle?: string | null
   statusSentence?: string | null
   ownerAction?: string | null
@@ -40,7 +42,7 @@ export type OwnerDisplayInput = {
 }
 
 export type OwnerDisplayResolved = {
-  /** Owner-facing primary title or CONTENT_REVIEW_REQUIRED shell label. */
+  /** Owner-facing primary title — never bare placeholder. */
   primaryTitle: string
   contentReviewRequired: boolean
   statusSentence: string | null
@@ -52,7 +54,13 @@ export type OwnerDisplayResolved = {
   /** Technical title retained for secondary/tech mode only. */
   technicalTitle: string
   effectiveReviewStatus: string
+  /** True when primary came from cleaned technical / taskId fallback. */
+  usedTechnicalFallback: boolean
 }
+
+/** Canonical blocked shell copy — forbidden as the only primary title. */
+export const OWNER_CONTENT_PLACEHOLDER = 'Konten pemilik memerlukan peninjauan'
+const OWNER_CONTENT_PLACEHOLDER_SHORT = 'Konten perlu ditinjau'
 
 function trimOrNull(v: string | null | undefined): string | null {
   const t = (v ?? '').trim()
@@ -60,24 +68,61 @@ function trimOrNull(v: string | null | undefined): string | null {
 }
 
 /**
- * Owner-ready only when:
- * - contentReviewRequired === false
- * - ownerPrimaryTitle present (flat or nested)
- * - effectiveReviewStatus === 'REVIEWED' (exact)
+ * True when the string is empty or is a known content-review shell placeholder.
+ * These must never be the sole owner-facing primary title (V1.1 §C).
+ */
+export function isOwnerTitlePlaceholder(value: string | null | undefined): boolean {
+  const t = (value ?? '').trim()
+  if (!t) return true
+  const lower = t.toLowerCase()
+  if (lower === OWNER_CONTENT_PLACEHOLDER.toLowerCase()) return true
+  if (lower === OWNER_CONTENT_PLACEHOLDER_SHORT.toLowerCase()) return true
+  if (lower === 'content_review_required') return true
+  return false
+}
+
+/**
+ * Strip technical ids (bracket FC tags, T-/FC- style tokens) and light-normalize for owner scan.
+ * Mirrors FeatureDetail presentation policy (ADDENDUM C).
+ */
+export function cleanTechnicalTitle(raw: string): string {
+  let s = raw.trim()
+  if (!s) return s
+  s = s.replace(/\[[^\]]*\]\s*/g, '')
+  s = s.replace(/\b(?:T|FC|BE|WEB|RN|AFF|SALES)-[A-Z0-9._-]+\b/gi, '')
+  s = s.replace(/[_/]+/g, ' ')
+  s = s.replace(/\s+/g, ' ').trim()
+  if (!s || isOwnerTitlePlaceholder(s)) return raw.trim()
+  // Sentence-case first char; leave rest as source (often already mixed).
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+/**
+ * Owner primary resolution (V1.1 §C):
+ * 1. Non-placeholder human/owner title (reviewed preferred; generated still usable)
+ * 2. Cleaned technical title
+ * 3. taskId
  *
- * GENERATED_NEEDS_REVIEW / BLOCKED / BLOCKED_MISSING_SOURCE / CONFLICT /
- * CONTENT_REVIEW_REQUIRED / missing status → fail-closed shell even if the
- * contentReviewRequired flag is inconsistently false.
- * Primary never falls back to technicalTitle.
+ * Ready (contentReviewRequired=false) only when:
+ * - contentReviewRequired flag === false
+ * - non-placeholder ownerPrimaryTitle present
+ * - effectiveReviewStatus === 'REVIEWED'
+ *
+ * GENERATED_NEEDS_REVIEW / BLOCKED / CONFLICT keep the human title when present
+ * but stay contentReviewRequired=true (badge as status, not title).
  */
 export function resolveOwnerDisplay(
   input: OwnerDisplayInput,
 ): OwnerDisplayResolved {
   const nested = input.ownerHumanDisplay
-  const technicalTitle = input.technicalTitle
-  const ownerPrimary = trimOrNull(
+  const technicalTitle = input.technicalTitle ?? ''
+  const taskId = trimOrNull(input.taskId)
+  const ownerPrimaryRaw = trimOrNull(
     input.ownerPrimaryTitle ?? nested?.ownerPrimaryTitle,
   )
+  const ownerPrimary = isOwnerTitlePlaceholder(ownerPrimaryRaw)
+    ? null
+    : ownerPrimaryRaw
   const statusRaw = trimOrNull(
     input.effectiveReviewStatus ?? nested?.effectiveReviewStatus,
   )
@@ -89,11 +134,41 @@ export function resolveOwnerDisplay(
     reviewFlag === false && ownerPrimary != null && statusRaw === 'REVIEWED'
 
   const contentReviewRequired = !ready
-  // Prefer projected shell/primary title; never technical title as primary.
-  const primaryTitle = ownerPrimary ?? 'Konten perlu ditinjau'
+
+  let primaryTitle: string
+  let usedTechnicalFallback = false
+  if (ownerPrimary) {
+    primaryTitle = ownerPrimary
+  } else {
+    const cleaned = cleanTechnicalTitle(technicalTitle)
+    if (cleaned && !isOwnerTitlePlaceholder(cleaned)) {
+      primaryTitle = cleaned
+      usedTechnicalFallback = true
+    } else if (taskId) {
+      primaryTitle = taskId
+      usedTechnicalFallback = true
+    } else if (technicalTitle.trim() && !isOwnerTitlePlaceholder(technicalTitle)) {
+      primaryTitle = technicalTitle.trim()
+      usedTechnicalFallback = true
+    } else {
+      primaryTitle = taskId ?? 'Tugas tanpa judul'
+      usedTechnicalFallback = true
+    }
+  }
+
+  // Hard guard: never leave a placeholder as the sole primary title.
+  if (isOwnerTitlePlaceholder(primaryTitle)) {
+    const cleaned = cleanTechnicalTitle(technicalTitle)
+    primaryTitle =
+      (cleaned && !isOwnerTitlePlaceholder(cleaned) ? cleaned : null) ||
+      taskId ||
+      'Tugas tanpa judul'
+    usedTechnicalFallback = true
+  }
+
   const effectiveReviewStatus =
     statusRaw ??
-    (contentReviewRequired ? 'Konten perlu ditinjau' : 'Sudah ditinjau')
+    (contentReviewRequired ? 'CONTENT_REVIEW_REQUIRED' : 'REVIEWED')
 
   return {
     primaryTitle,
@@ -106,5 +181,6 @@ export function resolveOwnerDisplay(
     citations: input.citations ?? nested?.citations ?? [],
     technicalTitle,
     effectiveReviewStatus,
+    usedTechnicalFallback,
   }
 }

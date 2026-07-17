@@ -204,14 +204,25 @@ function OngoingBlock({ item }: { item: WorkItemRow }) {
   )
 }
 
+/**
+ * Surface-level reason only when it looks owner-actionable (not pure integrity codes).
+ * DATA_INTEGRITY / MISSING_DISPLAY / hash-like tokens stay under "Detail teknis".
+ */
 function ReasonLine({ item }: { item: WorkItemRow }) {
   const parts: Array<string> = []
   if (item.blockReason) parts.push(item.blockReason)
   if (item.reason && item.reason !== item.blockReason) parts.push(item.reason)
   if (!parts.length) return null
+  const joined = parts.join(' · ')
+  const technicalNoise =
+    /^(DATA_INTEGRITY|MISSING_DISPLAY|CONTENT_REVIEW_REQUIRED|STALE_|UNCLASSIFIED)/i.test(
+      joined,
+    ) ||
+    /DATA_INTEGRITY|MISSING_DISPLAY/.test(joined)
+  if (technicalNoise) return null
   return (
     <div className={styles.reason} data-testid="work-row-reason">
-      {parts.join(' · ')}
+      {joined}
     </div>
   )
 }
@@ -219,6 +230,7 @@ function ReasonLine({ item }: { item: WorkItemRow }) {
 function ownerDisplayFor(item: WorkItemRow) {
   return resolveOwnerDisplay({
     technicalTitle: item.title,
+    taskId: item.taskId,
     ownerPrimaryTitle: item.ownerPrimaryTitle,
     statusSentence: item.statusSentence,
     ownerAction: item.ownerAction,
@@ -274,20 +286,23 @@ function TitleBlock({
         display.contentReviewRequired ? 'true' : 'false'
       }
       data-owner-primary-title={display.primaryTitle}
+      data-used-technical-fallback={
+        display.usedTechnicalFallback ? 'true' : 'false'
+      }
     >
-      {/* Human title is primary visual; technical truth stays available on demand. */}
+      {/* Primary: scannable title (never bare placeholder). Task id always secondary. */}
       {titleNode}
+      <div
+        className={styles.taskId}
+        data-testid="work-row-task-id"
+        data-field="taskId"
+        title={item.taskId}
+      >
+        {item.taskId}
+      </div>
       <OwnerHumanFields display={display} testIdPrefix="work-row" />
       <details className={styles.technicalDisclosure}>
         <summary>Detail teknis</summary>
-        <div
-          className={styles.taskId}
-          data-testid="work-row-task-id"
-          data-field="taskId"
-          title={item.taskId}
-        >
-          {item.taskId}
-        </div>
         {display.technicalTitle &&
         display.technicalTitle !== display.primaryTitle ? (
           <div

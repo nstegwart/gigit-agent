@@ -504,7 +504,7 @@ describe('WorkRow display rules', () => {
     ).toBe('false')
   })
 
-  it('owner humanDisplay: missing projection → CONTENT_REVIEW_REQUIRED shell, never technical primary', () => {
+  it('owner humanDisplay: missing projection → cleaned technical/taskId primary, never bare placeholder (V1.1 §C)', () => {
     render(
       <table>
         <tbody>
@@ -514,7 +514,7 @@ describe('WorkRow display rules', () => {
               title: '[FC-99] raw technical must not be primary',
               bucket: 'BLOCKED',
               overlays: [],
-              // no owner fields → fail closed
+              // no owner fields → review badge + scannable fallback title
             }}
           />
         </tbody>
@@ -522,21 +522,24 @@ describe('WorkRow display rules', () => {
     )
     const rowEl = screen.getByTestId('work-row-t-hd-shell')
     expect(rowEl.getAttribute('data-content-review-required')).toBe('true')
-    expect(screen.getByTestId('work-row-owner-title').textContent).toBe(
-      'Konten perlu ditinjau',
-    )
-    expect(
-      screen.getByTestId('work-row-owner-title').textContent,
-    ).not.toContain('[FC-99]')
+    const primary = screen.getByTestId('work-row-owner-title').textContent ?? ''
+    // Placeholder must never be the sole title
+    expect(primary).not.toBe('Konten perlu ditinjau')
+    expect(primary).not.toBe('Konten pemilik memerlukan peninjauan')
+    expect(primary).not.toContain('[FC-99]')
+    // Cleaned technical fallback is scannable
+    expect(primary.toLowerCase()).toMatch(/raw technical/)
+    // Task id always secondary (not only inside disclosure)
+    expect(screen.getByTestId('work-row-task-id').textContent).toBe('t-hd-shell')
     expect(screen.getByTestId('work-row-review-badge').textContent).toMatch(
-      /Perlu tinjauan konten/,
+      /Perlu tinjauan/,
     )
     expect(
       screen.getByTestId('work-row-technical-title').textContent,
     ).toContain('[FC-99]')
   })
 
-  it('owner humanDisplay: blocked shell title preferred over technical when contentReviewRequired', () => {
+  it('owner humanDisplay: placeholder owner title falls back to cleaned technical; badge stays status (V1.1 §C)', () => {
     render(
       <table>
         <tbody>
@@ -558,14 +561,39 @@ describe('WorkRow display rules', () => {
         </tbody>
       </table>,
     )
-    expect(screen.getByTestId('work-row-owner-title').textContent).toBe(
-      'Konten pemilik memerlukan peninjauan',
+    const primary = screen.getByTestId('work-row-owner-title').textContent ?? ''
+    expect(primary).not.toBe('Konten pemilik memerlukan peninjauan')
+    expect(primary.toLowerCase()).toMatch(/tech-run-title/)
+    expect(screen.getByTestId('work-row-task-id').textContent).toBe(
+      't-hd-blocked',
     )
-    expect(
-      screen.getByTestId('work-row-owner-title').textContent,
-    ).not.toContain('tech-run-title')
     expect(screen.getByTestId('work-row-review-badge')).toBeTruthy()
     expect(screen.getByTestId('work-row-action').textContent).toMatch(/Tinjau/)
+  })
+
+  it('task id is always visible as secondary even when reviewed human title is primary', () => {
+    render(
+      <table>
+        <tbody>
+          <WorkRow
+            item={row({
+              taskId: 'T-RN-WELL-MED',
+              title: 'raw-tech',
+              bucket: 'BLOCKED',
+              ownerPrimaryTitle: 'Meditasi RN: alur consumer',
+              contentReviewRequired: false,
+              effectiveReviewStatus: 'REVIEWED',
+            })}
+          />
+        </tbody>
+      </table>,
+    )
+    expect(screen.getByTestId('work-row-owner-title').textContent).toBe(
+      'Meditasi RN: alur consumer',
+    )
+    expect(screen.getByTestId('work-row-task-id').textContent).toBe(
+      'T-RN-WELL-MED',
+    )
   })
 
   it('adversarial: GENERATED_NEEDS_REVIEW / BLOCKED / CONFLICT fail-closed even if contentReviewRequired=false', () => {

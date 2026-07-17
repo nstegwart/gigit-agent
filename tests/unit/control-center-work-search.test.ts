@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   coerceWorkSearchString,
   parseWorkRouteSearch,
+  selectDefaultWorkBucket,
   workSearchSchema,
 } from '#/routes/b.$boardId.work.index'
 import { parseWorkDeepLink } from '#/components/control-center/work'
@@ -80,5 +81,71 @@ describe('parseWorkRouteSearch — previously failing ?stale=1', () => {
       expect(r.data.bucket).toBe('BLOCKED')
       expect(r.data.boardRev).toBe('12')
     }
+  })
+})
+
+describe('selectDefaultWorkBucket (W-FIX-WORK smart landing)', () => {
+  it('picks largest non-empty; production shape lands on BLOCKED not empty ONGOING', () => {
+    expect(
+      selectDefaultWorkBucket({
+        DONE: 0,
+        RECONCILIATION_PENDING: 0,
+        ONGOING: 0,
+        NEXT: 0,
+        QUEUED: 0,
+        BLOCKED: 2501,
+      }),
+    ).toBe('BLOCKED')
+  })
+
+  it('null/undefined/all-zero → ONGOING provisional', () => {
+    expect(selectDefaultWorkBucket(null)).toBe('ONGOING')
+    expect(selectDefaultWorkBucket(undefined)).toBe('ONGOING')
+    expect(
+      selectDefaultWorkBucket({
+        DONE: 0,
+        RECONCILIATION_PENDING: 0,
+        ONGOING: 0,
+        NEXT: 0,
+        QUEUED: 0,
+        BLOCKED: 0,
+      }),
+    ).toBe('ONGOING')
+  })
+
+  it('largest wins over needs-action when counts differ', () => {
+    expect(
+      selectDefaultWorkBucket({
+        DONE: 0,
+        RECONCILIATION_PENDING: 0,
+        ONGOING: 3,
+        NEXT: 1,
+        QUEUED: 0,
+        BLOCKED: 2,
+      }),
+    ).toBe('ONGOING')
+  })
+
+  it('ties break by needs-action priority BLOCKED > NEXT > QUEUED > ONGOING', () => {
+    expect(
+      selectDefaultWorkBucket({
+        DONE: 0,
+        RECONCILIATION_PENDING: 0,
+        ONGOING: 5,
+        NEXT: 5,
+        QUEUED: 0,
+        BLOCKED: 5,
+      }),
+    ).toBe('BLOCKED')
+    expect(
+      selectDefaultWorkBucket({
+        DONE: 0,
+        RECONCILIATION_PENDING: 0,
+        ONGOING: 4,
+        NEXT: 4,
+        QUEUED: 0,
+        BLOCKED: 0,
+      }),
+    ).toBe('NEXT')
   })
 })

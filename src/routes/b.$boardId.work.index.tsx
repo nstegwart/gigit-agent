@@ -1,7 +1,7 @@
 // Control-center Work surface — six exclusive buckets + STALE overlay + deep links.
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { z } from 'zod'
 
 import {
@@ -9,6 +9,7 @@ import {
   parseWorkDeepLink,
   isPrimaryBucket,
   type WorkItemRow,
+  type WorkBucketCounts,
 } from '#/components/control-center/work'
 import type { PrimaryBucket } from '#/components/control-center/work'
 import { boardQueryOptions, useBoardId } from '#/lib/board-query'
@@ -72,6 +73,37 @@ export function parseWorkRouteSearch(search: unknown): WorkRouteSearch {
   return {}
 }
 
+/**
+ * Smart default bucket when URL omits `?bucket` (W-FIX-WORK / W-AUD-P0 §2).
+ * Prefer largest non-empty count; ties break by needs-action priority
+ * BLOCKED > NEXT > QUEUED > ONGOING > RECONCILIATION_PENDING > DONE.
+ * Never land on empty ONGOING while another bucket has inventory.
+ * Explicit `?bucket=` from the user always wins (caller responsibility).
+ */
+export function selectDefaultWorkBucket(
+  counts: Partial<WorkBucketCounts> | null | undefined,
+): PrimaryBucket {
+  const priority: ReadonlyArray<PrimaryBucket> = [
+    'BLOCKED',
+    'NEXT',
+    'QUEUED',
+    'ONGOING',
+    'RECONCILIATION_PENDING',
+    'DONE',
+  ]
+  if (!counts) return 'ONGOING'
+  let best: PrimaryBucket = 'ONGOING'
+  let bestCount = -1
+  for (const b of priority) {
+    const c = typeof counts[b] === 'number' ? (counts[b] as number) : 0
+    if (c > bestCount) {
+      bestCount = c
+      best = b
+    }
+  }
+  return bestCount > 0 ? best : 'ONGOING'
+}
+
 export const Route = createFileRoute('/b/$boardId/work/')({
   validateSearch: (search) => parseWorkRouteSearch(search),
   loader: async ({ context, params }) => {
@@ -85,6 +117,18 @@ function WorkRoute() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: '/b/$boardId/work' })
   const qc = useQueryClient()
+
+  /** Explicit `?bucket=` only — absent means smart default may apply. */
+  const explicitBucket: PrimaryBucket | null = isPrimaryBucket(search.bucket)
+    ? search.bucket
+    : null
+
+  /**
+   * Remember last smart pick so a second fetch (after counts arrive) does not
+   * snap back to empty ONGOING while the BLOCKED query is in flight.
+   */
+  const [resolvedDefaultBucket, setResolvedDefaultBucket] =
+    useState<PrimaryBucket | null>(null)
 
   const filters = useMemo(
     () =>
@@ -103,9 +147,8 @@ function WorkRoute() {
     [boardId, search],
   )
 
-  const activeBucket: PrimaryBucket = isPrimaryBucket(filters.bucket)
-    ? filters.bucket
-    : 'ONGOING'
+  const activeBucket: PrimaryBucket =
+    explicitBucket ?? resolvedDefaultBucket ?? 'ONGOING'
   const overlayKind = filters.overlayKind ?? null
   const staleOverlayActive = filters.staleOverlay
 
@@ -182,8 +225,25 @@ function WorkRoute() {
     [navigate],
   )
 
+  /**
+   * When URL omits bucket: after first envelope, pick largest/needs-action
+   * non-empty bucket and pin it into the URL (replace). Honors explicit ?bucket=.
+   */
+  useEffect(() => {
+    if (explicitBucket != null) return
+    const counts = q.data?.data?.buckets as WorkBucketCounts | undefined
+    if (!counts) return
+    const smart = selectDefaultWorkBucket(counts)
+    setResolvedDefaultBucket(smart)
+    // Pin into URL so refresh/share and tab state stay aligned with inventory.
+    if (search.bucket !== smart) {
+      patchSearch({ bucket: smart, cursor: undefined })
+    }
+  }, [explicitBucket, q.data, patchSearch, search.bucket])
+
   const onBucketChange = useCallback(
     (bucket: PrimaryBucket) => {
+      setResolvedDefaultBucket(bucket)
       patchSearch({ bucket, cursor: undefined })
     },
     [patchSearch],
