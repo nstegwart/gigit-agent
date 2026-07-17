@@ -7,7 +7,7 @@ Companion to `deploy/staging/README.md` (compose package) and in-code
 | Contract field | Value |
 |---|---|
 | Health (liveness) | Unauth `GET /api/healthz` → **401** (or 503 while unhealthy) |
-| Release PASS | Auth `GET /api/healthz` → **200** + `deployedSha` / schema **006** / migrations / required tables |
+| Release PASS | Auth `GET /api/healthz` → **200** + `deployedSha` / schema **008** / migrations / required tables |
 | Public surface | `GET /api/public-snapshot?boardId=<allowlisted>` — redacted pin only |
 | MCP | `POST /mcp` — unauth public tool surface only; sensitive tools need bearer |
 | Data mode | **Synthetic fixtures only** unless dual-approval production-derived gate passes |

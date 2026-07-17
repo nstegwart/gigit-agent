@@ -2,6 +2,8 @@
 
 **Document class:** SCREENSHOT / VISUAL PROOF SPEC
 **Authority:** ART-UX-DIRECTION § EXACT STAGING SCREENSHOT MATRIX
+**Unified machine manifest:** `RESPONSIVE_SCREENSHOT_MANIFEST.md` (**single S01–S24 index** —
+do not use either capture folder alone as the complete matrix).
 **Status:** PARTIAL→NEAR-COMPLETE real capture (2026-07-14 wave1) — **24/24 S-ids** have at least one
 real PNG against live staging at HEAD `867b9b57cccfe79aebbd6b8858aac52e624241f4`.
 Prior folder: `.artifact/art-screenshots-2026-07-14/` (S01,S02,S03,S07,S11 + 3 nine-IA extras).
@@ -97,6 +99,8 @@ Capture when visual gate expands:
     `.artifact/art-screenshots-2026-07-14/`
   - Wave1: S04–S06, S08–S10, S12–S24 in `.artifact/art-screenshots-wave1/`
     (MANIFEST.md with §1 capture params, fixture methods/hashes for S18–S20).
+- **Unified design-doc index:** `RESPONSIVE_SCREENSHOT_MANIFEST.md` merges both folders into one
+  S01–S24 table (paths, viewports, SHAs, fixture hashes, content notes).
 - **Route-gap claims for S12–S17/S21 are obsolete** — product routes exist and were exercised live
   (see §2 verification table). Residual issues are **content/data**, not missing routers.
 - **Residual gaps (honest):**
@@ -107,5 +111,17 @@ Capture when visual gate expands:
   4. S22 is a single Tab×8 end-state, not a multi-frame focus filmstrip.
   5. Human-facing copy still leaks technical enums (`CONTENT_REVIEW_REQUIRED`, `MISSING_DISPLAY`) —
      same content-contract gap as the prior pass.
+  6. Prior vs wave1 use **different release SHAs** (`e23ff1cc…` vs `867b9b57…`) — full single-SHA
+     recapture remains residual.
 - Status language: use `FUNCTIONAL: 24/24 routes captured; content residual on buckets/domains/S21`
   rather than “NOT SHIPPABLE: no visual proof”.
+
+## 6. Required ART design artifacts (01B)
+
+| Path | Role |
+|---|---|
+| `COMPONENT_INVENTORY.md` | Component/state coverage × S-ids |
+| `INTERACTION_NOTES.md` | Motion, focus, keyboard, touch, live regions |
+| `RESPONSIVE_SCREENSHOT_MANIFEST.md` | **Unified S01–S24 machine manifest** |
+| `BEFORE_AFTER.md` | Matched-view + token/IA before→after |
+| This file | Capture rules + product route map |

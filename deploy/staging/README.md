@@ -13,7 +13,7 @@ Isolated **app + MySQL** Docker Compose source for the staging release root.
 | Data mode | **synthetic fixtures only** |
 | Health (liveness) | Unauth `GET /api/healthz` → **401** (or 503 while deps/schema fail) proves listen; Docker health accepts 401\|200\|503 |
 | Release PASS | Authenticated `GET /api/healthz` → **200** with `deployedSha` / `schemaVersion` / migration history / required tables. **503 and container-healthy are NOT release PASS.** |
-| Schema pins | `CAIRN_SCHEMA_VERSION` + `CAIRN_MIGRATION_LATEST` **required** in `.env` (compose fails closed; no silent 003 default). Current latest: **006** |
+| Schema pins | `CAIRN_SCHEMA_VERSION` + `CAIRN_MIGRATION_LATEST` **required** in `.env` (compose fails closed; no silent 003 default). Current latest: **008** |
 | TLS | none (private loopback only) |
 
 This package is **staging-only**. It does not define or reference a production deploy path.
@@ -177,7 +177,7 @@ Authenticated health = **only** release acceptance (after synthetic token is set
 
 ```bash
 curl -sS -H "Authorization: Bearer $STAGING_TOKEN" http://127.0.0.1:33211/api/healthz
-# RELEASE PASS gate: HTTP 200 + schemaVersion/status match pins (006),
+# RELEASE PASS gate: HTTP 200 + schemaVersion/status match pins (008),
 # deployedSha == RELEASE_SHA, migration history/required tables (incl. stage-evidence), mysql up
 # HTTP 503 here = FAIL (never treat container-healthy or unauth 503 as release PASS)
 ```

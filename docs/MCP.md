@@ -11,7 +11,7 @@ never loses context across sessions.
 - **Auth:** READ tools are open. WRITE tools require the header `X-Cairn-Token: <CAIRN_WRITE_TOKEN>`
   when that env var is set (missing/wrong token on a write → HTTP 401). Ask the owner for the token.
 - **Impl:** `src/routes/mcp.ts` (transport + auth gate) + `src/server/board-mcp.ts` (tools/resources).
-- **Total:** 51 tools + `cairn://playbook` resource.
+- **Total:** 51+ tools (incl. domain-knowledge retrieval) + `cairn://playbook` resource.
 
 ## Connect a client
 
@@ -57,6 +57,46 @@ them (e.g. `ibils`, `mfs-rebuild`).
 | `list_accounts` | boardId? | agent-account vault + accounts |
 | `get_prod` / `get_guide` / `get_design` / `get_conventions` / `get_workspace` / `list_activity` | see args in tool schema | gates / guide / design / playbook / workspace / activity |
 
+### CP0 observable hierarchy and fail-closed sync
+
+`get_rollup` includes a `controlPlane` readback with the versioned L0/L1/L2
+capabilities, active hierarchy counts, account-sync revision/freshness, readback
+surfaces, and the global dispatch blocker. An unknown backlog remains
+`effectiveBacklog: null` and `zeroBacklogProven: false`; clients must never turn
+that into a zero-backlog claim.
+
+`list_runs` exposes `controlPlaneVersion`, `hierarchyLevel`, `controllerRunId`,
+`parentRunId`, `spawnBudgetMax`, `registrationAck`, and `budgetAck`. Account rows
+remain masked and include quota/chat verdict, probe freshness, future expiry,
+adaptive cap, and quarantine reason when CP0 probe evidence exists. Eligibility
+requires quota `PASS`, chat `PASS`, probe age at most 300 seconds, future expiry,
+and no LIMIT/quarantine/tombstone.
+
+### Domain knowledge (01A §DOMAIN KNOWLEDGE + MCP RETRIEVAL)
+Searchable knowledge/documentation layer over a versioned `DomainKnowledgeBundle` graph
+(board/portfolio/domain/project/feature/flow/entity/relation + citations, coverage manifest,
+revision/snapshot/hash/freshness). Every fact is cited; unknown/conflict → explicit gaps.
+Stale or mixed-revision retrieval fails closed. Implementation:
+`src/server/domain-knowledge.ts` + `src/server/domain-knowledge-mcp.ts` (wired from `board-mcp.ts`).
+First complete pack: `domainId=AFFILIATE` (cross-project business graph, not `projectId=affiliate` only).
+
+| Tool | Args | Returns |
+|---|---|---|
+| `search_knowledge` | query, mode? (`exact`/`keyword`/`semantic`/`alias`/`all`), domainId?, pageSize?, cursor?, expectedRevision?, refuseStale? | cited hits + match reason, pagination, revision token |
+| `get_domain_overview` | domainId, expectedRevision?, refuseStale? | human boundaries, coverage, status rollup, gaps, freshness, redactions |
+| `list_domain_features` | domainId, projectId?, pageSize?, cursor?, expectedRevision? | complete paginated **cross-project** feature inventory |
+| `get_feature_documentation` | domainId, featureId, expectedRevision? | cited human docs + technical appendix + related flows/entities |
+| `get_feature_flow` | domainId, flowId? \| featureId?, expectedRevision? | ordered nodes, variants, dependencies, outcomes, readbacks |
+| `get_related_entities` | domainId, entityId, expectedRevision? | typed incoming/outgoing relations + dependency graph neighborhood |
+| `get_change_history` | domainId, entityId?, pageSize?, cursor?, expectedRevision? | actor-attributed revision-consistent history/delta |
+| `export_documentation` | format, scope?, scopeId?, pin/bundle… | deterministic MD/HTML/PDF-print/CSV/JSON from pinned SSOT (TM-04) |
+
+`DomainKnowledgeBundle` fields: `domainId`, `humanDisplay`, `boundaries`, `projects`, `features`,
+`flows`, `entities`, `relations`, `statusRollup`, `blockers`, `decisions`, `evidence`,
+`knowledgeGaps`, `coverageManifest`, `citations`, `snapshotId`, `revision`, `sourceHash`,
+`generatedAt`, `freshness`, `redactions`, `schemaVersion`, `availability`.
+Knowledge state enum: `PROVEN | UNKNOWN | CONFLICT | STALE`.
+
 ### Lifecycle engine (evidence-gated delivery)
 | Tool | Args | Effect |
 |---|---|---|
@@ -96,9 +136,9 @@ them (e.g. `ibils`, `mfs-rebuild`).
 |---|---|---|
 | `upsert_run` | boardId?, id, agent?, role?, agentType?, model?, effort?, task?, feature?, taskId?, account?, project?, status?, **targetGate?, evidencePath?, verdict?**, note? | claim/heartbeat a run. No task/gate/receipt → shows UNPRODUCTIVE |
 | `set_run_status` | boardId?, id, status | **Legacy** board `runs` doc only (`running`→`done`). Does **not** terminal a V3 registry run or release collision locks. |
-| `register_run` | boardId, runId, taskId, targetGate, agentId, model, envelope… | V3 run register (AGENT/ROOT; `run:write`; own-run) |
-| `heartbeat_run` | boardId, runId, agentId, fencingToken, heartbeatSequence, envelope… | V3 lease renew + progress |
-| `terminate_run` | boardId, runId, fencingToken, toState, reason, envelope… | V3 terminal: AGENT `SUCCEEDED\|FAILED\|CANCELLED`; ROOT may also `STALE\|SUPERSEDED`. Requires entityExpectedRev, expectedBoardRev, canonicalHash, idempotencyKey. Releases collision locks fail-closed. Principal agentId cannot be spoofed. |
+| `register_run` | boardId, runId, taskId, targetGate, agentId, model, envelope…; CP0: controlPlaneVersion, hierarchyLevel, controllerRunId?, parentRunId?, spawnBudgetMax?, spawnAuthorizationId? | V3/CP0 run register (AGENT/ROOT; `run:write`; own-run). CP0 L0 is ROOT-only; L1/L2 require authorized lineage. Returns versioned registration and spawn-budget ACKs. |
+| `heartbeat_run` | boardId, runId, agentId, fencingToken, heartbeatSequence, envelope… | V3 lease renew + progress. CP0 renews the ten-minute run/claim lease and returns a versioned lease ACK. |
+| `terminate_run` | boardId, runId, fencingToken, toState, reason, envelope… | V3 terminal: AGENT `SUCCEEDED\|FAILED\|CANCELLED`; ROOT may also `STALE\|SUPERSEDED`. Requires entityExpectedRev, expectedBoardRev, canonicalHash, idempotencyKey. Releases collision locks fail-closed and returns terminal/release ACKs for CP0. Principal agentId cannot be spoofed. |
 | `add_comment` / `open_decision` / `decide_decision` | see schema | collaborate on features/decisions |
 
 ## Resource
@@ -108,12 +148,13 @@ them (e.g. `ibils`, `mfs-rebuild`).
 ## Recommended agent loop (lifecycle-driven)
 
 1. `get_conventions` / `cairn://playbook` — learn the rules. `get_lifecycle` — the board's rail.
-2. `get_rollup` — board readiness; `list_tasks` (filter by stage/next-gate) — the work.
-3. `list_accounts` — capacity before spawning workers.
-4. V3: `register_run` (claim + collision scopes) then `heartbeat_run` while working. Legacy: `upsert_run` for board-doc runs only.
-5. Do the work. `advance_task` with a real receipt when a gate is met
+2. Domain docs (when needed): `search_knowledge` → pin `revision`/`snapshotId` → `get_domain_overview` / `list_domain_features` / `get_feature_flow` / `get_related_entities`; export via `export_documentation`.
+3. `get_rollup` — board readiness; `list_tasks` (filter by stage/next-gate) — the work.
+4. `list_accounts` — capacity before spawning workers.
+5. V3: `register_run` (claim + collision scopes) then `heartbeat_run` while working. Legacy: `upsert_run` for board-doc runs only.
+6. Do the work. `advance_task` with a real receipt when a gate is met
    (implementer builds; a **different** run verifies gated verifier stages with a verdict).
-6. `get_rollup` / `list_audit` — readback proof. V3: `terminate_run` with fencing + full envelope (`toState=SUCCEEDED|FAILED|CANCELLED`). Legacy board-doc only: `set_run_status` → `done` (does not release V3 locks).
+7. `get_rollup` / `list_audit` — readback proof. V3: `terminate_run` with fencing + full envelope (`toState=SUCCEEDED|FAILED|CANCELLED`). Legacy board-doc only: `set_run_status` → `done` (does not release V3 locks).
 
 **100% = `PROD_READY`.** `LIVE_VERIFIED` is a post-100 live badge. Progress is the last
 proven gate — never a manual %, checkpoint count, or process state. Full field reference and

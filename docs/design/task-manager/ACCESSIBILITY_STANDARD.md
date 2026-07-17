@@ -21,11 +21,11 @@ Meet **WCAG 2.2 AA** across named routes/states:
 
 Program: Node relative-luminance (WCAG sRGB) → `.artifact/art-token-contrast-proof.json`.
 
-| Pair class | Gate | Result (this session) |
-|---|---|---|
-| Body/UI text on surface/canvas/subtle | ≥4.5:1 | **PASS** (textStrong/Default/Muted, action, status FGs) |
-| Semantic FG on semantic BG | ≥4.5:1 | **PASS** (done, ongoing, next, queued, blocked, reconcile) |
-| Focus ring `#2E90FA` on white | ≥3:1 non-text UI | **PASS** (3.24:1); not used as body text |
+| Pair class                            | Gate             | Result (this session)                                      |
+| ------------------------------------- | ---------------- | ---------------------------------------------------------- |
+| Body/UI text on surface/canvas/subtle | ≥4.5:1           | **PASS** (textStrong/Default/Muted, action, status FGs)    |
+| Semantic FG on semantic BG            | ≥4.5:1           | **PASS** (done, ongoing, next, queued, blocked, reconcile) |
+| Focus ring `#2E90FA` on white         | ≥3:1 non-text UI | **PASS** (3.24:1); not used as body text                   |
 
 `reviewer: pending` remains on token metadata until independent design review.
 
@@ -39,7 +39,17 @@ Program: Node relative-luminance (WCAG sRGB) → `.artifact/art-token-contrast-p
 
 - All primary actions reachable without pointer.
 - Tables: keyboard sort + visible sort state.
-- Command palette (ART): `/` and Cmd/Ctrl+K — **not implemented this task** (residual).
+- Command palette (implemented locally): `/`, Ctrl+K, or Meta+K opens the dialog;
+  `/` does not steal focus from an editable field.
+- Palette focus moves to the combobox on open and returns to its trigger on
+  close. ArrowUp / ArrowDown wrap options, Enter activates, and Escape closes.
+- Palette commands are navigation-only. Authenticated board navigation is
+  available to members; `/admin/users` is added only for admins.
+- Search routes preserve a validated same-board return path, filters, revision
+  query, and fragment. Cross-origin or cross-board return values fail closed to
+  the current board root.
+- Palette behavior has source and focused unit-test support only; manual browser
+  keyboard, focus, screen-reader, and accessibility-tree proof remains residual.
 - Graph/dependency views: keyboard path + text tree alternative (residual).
 
 ## 5. Touch
@@ -66,16 +76,22 @@ No pulsing status as permanent language.
 
 ## 9. Verification ladder
 
-| Layer | This foundation | Ship gate |
-|---|---|---|
-| Token contrast program | **yes** | required |
-| Typecheck / build | **yes** | required |
-| axe on routes | no | required |
-| Manual keyboard / SR | no | required |
-| Visual pair / screenshot | no | required |
+| Layer                    | This foundation | Ship gate |
+| ------------------------ | --------------- | --------- |
+| Token contrast program   | **yes**         | required  |
+| Typecheck / build        | **yes**         | required  |
+| axe on routes            | no              | required  |
+| Manual keyboard / SR     | no              | required  |
+| Visual pair / screenshot | no              | required  |
 
 ## 10. Residual gaps
 
 - Historical axe serious/critical findings on prior SHA (see audit workers) not re-run on HEAD.
 - Four-cue shapes incomplete in components.
-- Theme toggle still present in AppShell while CSS is light-locked (document for a11y testers: appearance stays light).
+- AppShell calls `initTheme()` but renders no source-owned theme toggle. CSS
+  remains light-locked; a user-facing theme control and full dark-mode
+  accessibility parity are future work.
+- Deterministic design lint still reports 1,245 CSS residual rows, including 747
+  across nine separately fenced control-center module styles.
+- No stable production-build render, screenshot, manual keyboard/focus traversal,
+  accessibility-tree proof, or shipment acceptance is claimed by this document.

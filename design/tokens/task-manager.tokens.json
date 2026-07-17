@@ -2,7 +2,7 @@
   "$schema": "https://task-manager.local/schemas/design-tokens-v1.json",
   "meta": {
     "name": "task-manager",
-    "version": "1.0.0-art-fallback",
+    "version": "1.1.0-ui-b6",
     "colorMode": "light-first",
     "darkMode": {
       "status": "not-shipped",
@@ -11,6 +11,8 @@
     "authority": "ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS",
     "generatedBy": "impl-v4-art-token-foundation",
     "generatedAt": "2026-07-13T21:55:20.515Z",
+    "lastReconciledDate": "2026-07-15",
+    "pinnedAuthoritySha256": "4eca14e115223ca4be02ec767dca0a32fb3e104dc4a512ebbc99374f93cddcee",
     "classApiPreserved": true,
     "cssEntry": "src/styles.css"
   },
@@ -211,7 +213,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--accent",
-      "aliases": []
+      "aliases": ["--t-grok"]
     },
     "actionHover": {
       "role": "actionHover",
@@ -247,9 +249,25 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--focus-ring",
-      "aliases": [
-        "--accent-bright"
-      ]
+      "aliases": ["--accent-bright"]
+    },
+    "onAction": {
+      "role": "onAction",
+      "value": "#FFFFFF",
+      "type": "color",
+      "source": "fallback",
+      "reason": "Readable foreground for action and blocked solid fills; duplicates approved surface white intentionally.",
+      "contrast": {
+        "against": "#175CD3",
+        "ratio": 5.99,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
+      },
+      "reviewer": "pending",
+      "replacementOwner": "pending",
+      "reviewDate": null,
+      "cssVar": "--on-action",
+      "aliases": []
     },
     "actionSoft": {
       "role": "actionSoft",
@@ -267,7 +285,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--accent-soft",
-      "aliases": []
+      "aliases": ["--t-claude"]
     },
     "doneFg": {
       "role": "doneFg",
@@ -285,9 +303,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--done",
-      "aliases": [
-        "--ok"
-      ]
+      "aliases": ["--ok"]
     },
     "doneBg": {
       "role": "doneBg",
@@ -305,9 +321,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--done-bg",
-      "aliases": [
-        "--ok-bg"
-      ]
+      "aliases": ["--ok-bg"]
     },
     "ongoingFg": {
       "role": "ongoingFg",
@@ -325,9 +339,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--ongoing",
-      "aliases": [
-        "--info"
-      ]
+      "aliases": ["--info"]
     },
     "ongoingBg": {
       "role": "ongoingBg",
@@ -345,9 +357,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--ongoing-bg",
-      "aliases": [
-        "--info-bg"
-      ]
+      "aliases": ["--info-bg"]
     },
     "nextFg": {
       "role": "nextFg",
@@ -365,7 +375,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--next",
-      "aliases": []
+      "aliases": ["--t-claude"]
     },
     "nextBg": {
       "role": "nextBg",
@@ -401,9 +411,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--queued",
-      "aliases": [
-        "--parked"
-      ]
+      "aliases": ["--parked"]
     },
     "queuedBg": {
       "role": "queuedBg",
@@ -421,9 +429,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--queued-bg",
-      "aliases": [
-        "--parked-bg"
-      ]
+      "aliases": ["--parked-bg"]
     },
     "blockedFg": {
       "role": "blockedFg",
@@ -477,9 +483,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--reconcile",
-      "aliases": [
-        "--warn"
-      ]
+      "aliases": ["--warn", "--t-codex"]
     },
     "reconcileBg": {
       "role": "reconcileBg",
@@ -497,9 +501,7 @@
       "replacementOwner": "pending",
       "reviewDate": null,
       "cssVar": "--reconcile-bg",
-      "aliases": [
-        "--warn-bg"
-      ]
+      "aliases": ["--warn-bg"]
     }
   },
   "contrastMatrix": [
@@ -699,6 +701,8 @@
         "step": "meta",
         "sizePx": 12,
         "lineHeightPx": 16,
+        "cssSizeVar": "--type-meta-size",
+        "cssLineVar": "--type-meta-line",
         "weight": 400,
         "use": "metadata only"
       },
@@ -706,6 +710,8 @@
         "step": "secondary",
         "sizePx": 14,
         "lineHeightPx": 20,
+        "cssSizeVar": "--type-secondary-size",
+        "cssLineVar": "--type-secondary-line",
         "weight": 400,
         "use": "secondary UI"
       },
@@ -713,6 +719,8 @@
         "step": "body",
         "sizePx": 16,
         "lineHeightPx": 24,
+        "cssSizeVar": "--type-body-size",
+        "cssLineVar": "--type-body-line",
         "weight": 400,
         "use": "body and controls"
       },
@@ -720,6 +728,8 @@
         "step": "lead",
         "sizePx": 18,
         "lineHeightPx": 28,
+        "cssSizeVar": "--type-lead-size",
+        "cssLineVar": "--type-lead-line",
         "weight": 500,
         "use": "card/section lead"
       },
@@ -727,6 +737,8 @@
         "step": "pageTitle",
         "sizePx": 24,
         "lineHeightPx": 32,
+        "cssSizeVar": "--type-title-size",
+        "cssLineVar": "--type-title-line",
         "weight": 600,
         "use": "page title"
       },
@@ -734,6 +746,8 @@
         "step": "headline",
         "sizePx": 32,
         "lineHeightPx": 40,
+        "cssSizeVar": "--type-headline-size",
+        "cssLineVar": "--type-headline-line",
         "weight": 600,
         "use": "overview headline"
       },
@@ -741,6 +755,8 @@
         "step": "statement",
         "sizePx": 40,
         "lineHeightPx": 48,
+        "cssSizeVar": "--type-statement-size",
+        "cssLineVar": "--type-statement-line",
         "weight": 600,
         "use": "exceptional desktop program statement only"
       }
@@ -750,16 +766,7 @@
   },
   "spacing": {
     "basePx": 4,
-    "stepsPx": [
-      4,
-      8,
-      12,
-      16,
-      24,
-      32,
-      48,
-      64
-    ],
+    "stepsPx": [4, 8, 12, 16, 24, 32, 48, 64],
     "cssMap": {
       "--sp-1": 4,
       "--sp-2": 8,
@@ -776,21 +783,59 @@
     "cardPx": 12,
     "panelPx": 16,
     "cssMap": {
-      "--r-xs": 6,
+      "--r-xs": 8,
       "--r-sm": 8,
       "--r-md": 12,
       "--r-lg": 16,
-      "--r-xl": 16
-    }
+      "--r-xl": 16,
+      "--r-pill": 999
+    },
+    "circle": "50%"
   },
   "elevation": {
     "default": "none",
     "floating": "restrained single shadow token for floating menus/drawers",
-    "cssMap": [
-      "--shadow-sm",
-      "--shadow-md",
-      "--shadow-pop"
+    "cssMap": {
+      "--shadow-sm": "0 1px 2px rgba(23, 32, 42, 0.06), 0 1px 3px rgba(23, 32, 42, 0.04)",
+      "--shadow-md": "0 4px 12px rgba(23, 32, 42, 0.08), 0 1px 3px rgba(23, 32, 42, 0.05)",
+      "--shadow-pop": "0 12px 32px rgba(23, 32, 42, 0.12)"
+    }
+  },
+  "motion": {
+    "hoverFocusPressMs": { "min": 120, "max": 160 },
+    "expandCollapseMs": { "min": 160, "max": 200 },
+    "drawerContextMs": { "min": 200, "max": 240 },
+    "absoluteMaxMs": 300,
+    "reducedMotionMaxMs": 80,
+    "cssMap": {
+      "--motion-fast": 120,
+      "--motion-hover": 140,
+      "--motion-expand": 180,
+      "--motion-context": 220,
+      "--motion-loader": 300,
+      "--motion-reduced": 80
+    },
+    "forbidden": [
+      "pulsing status",
+      "parallax",
+      "post-load shimmer",
+      "confetti",
+      "auto-carousel"
     ]
+  },
+  "accessibility": {
+    "wcagTarget": "2.2 AA",
+    "focusRingToken": "focusRing",
+    "focusRingMinimumNonTextContrast": 3,
+    "minimumTouchTargetPx": 44,
+    "reducedMotionMedia": "(prefers-reduced-motion: reduce)",
+    "colorOnlyStatusForbidden": true
+  },
+  "cssLint": {
+    "scanGlob": "src/**/*.css",
+    "tokenDeclarationFile": "src/styles.css",
+    "policy": "Raw color outside the global token declaration, off-scale type/spacing/radius, decorative gradients, pulsing status, and motion above 300ms are deterministic residuals.",
+    "scopeFence": "UI-B6 may edit src/styles.css only; module CSS residuals are emitted but never auto-suppressed."
   },
   "contentWidth": {
     "appMaxPx": 1440,

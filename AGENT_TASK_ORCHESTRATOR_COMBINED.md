@@ -1,83 +1,32 @@
 # AGENT_TASK_ORCHESTRATOR_COMBINED.md
 # CUMULATIVE CANONICAL EXECUTION CONTRACT
-# Generated mechanically — do not hand-edit source bodies inside VERBATIM blocks.
+# Generated mechanically by qa/cp0/generate-combined-spec.mjs; do not hand-edit.
 
 ## COMBINED_META
+
 - document_id: AGENT_TASK_ORCHESTRATOR_COMBINED
 - task_id: TM-P0-ULTIMATE-CONTROL-CENTER-V3
-- combined_task: TM-P0-COMBINED-WAVE1 / tmc-w1-01-combined-contract
-- generated_at_utc: 2026-07-13T14:23:23Z
-- workspace: /Users/user/Project/ibils-orchestrator/gigit-project-orchestration
-- branch: main
-- tree_sha_at_generation: b9c86c2d1ef6c26d4436d4ffd434642421f847bd
-- generation_mode: mechanical_verbatim_embed + precedence/checkpoint_merge_metadata
-- authority_model: cumulative (parent + addendum); addendum strengthens/extends parent; never resets verified work
+- generation_mode: deterministic_verbatim_embed_v2
+- authority_model: cumulative parent plus addendum
+- parent_sha256: b7e6c69484952d9fd3ada6d13c4b7b32a829187b6e9117c9c32f5bde7419f29d
+- addendum_sha256: 4eca14e115223ca4be02ec767dca0a32fb3e104dc4a512ebbc99374f93cddcee
+- retired_offline_provenance_sha256: 4330d6e6d34e209acc1e54a4f42127cdf39363bd6428267a3031ad1744c78091
 
-## INPUT_SOURCES
-### PARENT
-- path: AGENT_TASK_ORCHESTRATOR.md
-- role: primary execution specification (01-TASK-MANAGER-AGENT — EXECUTION SPEC V3)
-- sha256: b7e6c69484952d9fd3ada6d13c4b7b32a829187b6e9117c9c32f5bde7419f29d
-- byte_length: 62129
-- line_count_total: 2774
-- line_count_nonblank: 2024
-- ends_with_newline: true
+## CURRENT PUBLICATION AUTHORITY
 
-### ADDENDUM
-- path: ART-UX-DIRECTION.md
-- role: highest-priority in-session human UX + art direction delta (01A combined)
-- sha256: ef226c3674bd8cda29d6e0ae19dc1587ad101f25d763014512db22e8068eca15
-- byte_length: 48804
-- line_count_total: 936
-- line_count_nonblank: 846
-- ends_with_newline: true
+App-only Task Manager production publication is pre-authorized only after exact current-SHA
+staging PASS, an independent verifier PASS bound to that SHA, root acceptance, backup and
+rollback proof, authenticated UI/MCP plus sanitized public parity, zero effective sync backlog,
+and lifecycle/audit/rollup/hash/freshness readback. Publication uses --no-migrate. Production
+schema migration remains separately owner-gated; a schema-incompatible candidate returns
+SCHEMA_AUTH_REQUIRED and is not published. MFS production remains outside this contract.
 
-## PRECEDENCE
-1. **Cumulative authority:** Treat PARENT + ADDENDUM as one execution authority for TM-P0-ULTIMATE-CONTROL-CENTER-V3.
-2. **Parent baseline:** `AGENT_TASK_ORCHESTRATOR.md` defines mission, packet/terminal gates, phases, acceptance, evidence root, staging/rollback, and control-plane implementation requirements.
-3. **Addendum strengthens, never resets:** `ART-UX-DIRECTION.md` is a highest-priority in-session delta. It merges into current checkpoints; it must NOT restart the run, discard verified work, reset the source tree, or weaken parent gates (SSOT, lifecycle, evidence, RBAC, revision consistency, HOLD/EXCLUDE, independent verification, rollout gates).
-4. **Conflict resolution:** Where addendum specifies humanDisplay, owner language (id-ID), content-review release blockers, brand/design-system, accessibility, or plain-language UI obligations, those requirements are additive and binding on top of parent gates. Parent technical gates remain binding; addendum may not be used to skip them.
-5. **Production:** Neither document authorizes production deploy, production DB write, or provider mutation without separate exact owner approval (parent + addendum agree).
-6. **This combined file:** Mechanical convenience + single handoff artifact. SHA-256 of inputs + verbatim blocks are the integrity proof. If combined metadata and a verbatim body disagree, the verbatim body of the named source wins for that source's text; if precedence metadata is missing, re-read this PRECEDENCE section from generation receipt.
+## INTEGRITY RULES
 
-## CHECKPOINT_MERGE_METADATA
-### Parent terminal / evidence anchors (from PARENT packet)
-- TASK_ID: TM-P0-ULTIMATE-CONTROL-CENTER-V3
-- ROLE: CONTROL_PLANE_IMPLEMENTER
-- IMPLEMENTATION_TARGET: TASK_MANAGER_STAGING_VERIFIED
-- LIVE_TARGET: P0_TASK_MANAGER_MCP_PUBLIC_DASHBOARD_PASS
-- EVIDENCE_ROOT: .artifact/evidence/TM-P0-ULTIMATE-CONTROL-CENTER-V3/
-- EXACT_TERMINAL_RECEIPT: .artifact/evidence/TM-P0-ULTIMATE-CONTROL-CENTER-V3/WORKER_RESULT_TM_P0_ULTIMATE_CONTROL_CENTER_V3.md
-
-### Addendum merge protocol (from ADDENDUM)
-- ADDENDUM_ACK required: ACCEPTED | BLOCKED with CURRENT_CHECKPOINT, PRESERVED_WORK, MERGE_POINTS, NEW_EVIDENCE_ROOT, CONFLICTS, NEXT_ACTION
-- Merge points (declared by addendum): schema/migration/projection; complete backfill; humanDisplay/content review; design-system/UI; tests; evidence; rollout — at earliest collision-safe checkpoint
-- Explicit non-goals for merge: do not restart run; do not discard independently verified checkpoints; do not weaken parent gates
-- Content release blocker: CONTENT_REVIEW_REQUIRED when primary human copy missing/stale/conflicted/unreviewed for required scope
-- Art direction second ack block (PART 2) also requires ADDENDUM_ACK-style acknowledgement for brand/visual merge
-
-### Combined wave1 evidence (this mechanical contract worker)
-- ISOLATED_EVIDENCE_DIR: .artifact/evidence/TM-P0-ULTIMATE-CONTROL-CENTER-V3/combined-wave1/tmc-w1-01-combined-contract/
-- GAP_MAP: .artifact/evidence/TM-P0-ULTIMATE-CONTROL-CENTER-V3/combined-wave1/tmc-w1-01-combined-contract/GAP_MAP.md
-- LINE_PRESERVATION_PROOF: .artifact/evidence/TM-P0-ULTIMATE-CONTROL-CENTER-V3/combined-wave1/tmc-w1-01-combined-contract/LINE_PRESERVATION_PROOF.json
-- INPUT_HASHES: .artifact/evidence/TM-P0-ULTIMATE-CONTROL-CENTER-V3/combined-wave1/tmc-w1-01-combined-contract/INPUT_HASHES.json
-- INDEPENDENT_VERIFY: .artifact/evidence/TM-P0-ULTIMATE-CONTROL-CENTER-V3/combined-wave1/tmc-w1-01-combined-contract/INDEPENDENT_VERIFY.json
-
-### Dependency order for downstream implementers (informational; not a rewrite of parent phases)
-1. Consume this combined contract as single cumulative authority (read both verbatim sections).
-2. Preserve existing verified checkpoints; merge addendum obligations at collision-safe points.
-3. Schema/projection/humanDisplay before owner-primary UI copy claims.
-4. Brand/tokens/components/a11y gates before visual/staging acceptance claims.
-5. Staging/migration/ops only after parent packet terminal gates allow; production still requires separate approval.
-
-## VERBATIM_EMBED_RULES
-- Each source appears exactly once between BEGIN/END markers.
-- Bodies are byte-identical to the input files at the recorded sha256 (including newlines).
-- Combined metadata above is NEW text and is not part of either source.
-- Proof that no nonblank source line was omitted is program-emitted in LINE_PRESERVATION_PROOF.json.
-- Extraction rule: body = text after `<<<BEGIN...>>>\n` and before `<<<END...>>>\n` (no extra blank line injected).
-
----
+- Each pinned source appears exactly once between its BEGIN/END markers.
+- Text inside each verbatim block is byte-identical to the named pinned source.
+- Metadata resolves later owner authority only; it does not rewrite either source body.
+- Run this generator with --check before accepting a candidate.
 
 ## VERBATIM_PARENT: AGENT_TASK_ORCHESTRATOR.md
 
@@ -2858,8 +2807,6 @@ Do not patch excluded/compiled paths.
 Do not return plan-only while safe authorized implementation remains.
 <<<END_VERBATIM_SOURCE:AGENT_TASK_ORCHESTRATOR.md>>>
 
----
-
 ## VERBATIM_ADDENDUM: ART-UX-DIRECTION.md
 
 <<<BEGIN_VERBATIM_SOURCE:ART-UX-DIRECTION.md>>>
@@ -3799,12 +3746,6 @@ Extend the already-running parent receipt with:
 DONE means implemented and proven on staging—not a mood board, token proposal, Figma-only
 mock, screenshot assertion, FABLE opinion, or implementer claim. Preserve the parent task's
 independent verification and integration rules. Live production remains separately gated.
+
 <<<END_VERBATIM_SOURCE:ART-UX-DIRECTION.md>>>
 
----
-
-## COMBINED_FOOTER
-- end_of_cumulative_contract: true
-- parent_sha256_reassert: b7e6c69484952d9fd3ada6d13c4b7b32a829187b6e9117c9c32f5bde7419f29d
-- addendum_sha256_reassert: ef226c3674bd8cda29d6e0ae19dc1587ad101f25d763014512db22e8068eca15
-- note: Re-verify integrity by extracting between BEGIN/END markers and hashing; see LINE_PRESERVATION_PROOF.json.

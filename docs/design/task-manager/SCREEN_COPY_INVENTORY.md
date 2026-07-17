@@ -93,8 +93,34 @@ Route: `/b/$boardId/priority` · component tree under `src/components/control-ce
 
 **Known residual:** empty-product warning block on denominators is owned by a separate root fix (`productDenominator=0` → human sentence + Detail teknis); do not fork that block in this pass.
 
-## 8. Residual (this task)
+## 8. Overview / Work chrome banners (id-ID primary — TM-11)
+
+Owner-mode surface chrome for Overview `SurfaceBanner` / `AppSummaryBar` and Work
+`WorkStates` / bucket-overlay `labels` is plain **id-ID**. Wiring (stale flags,
+envelope source, data attrs) is unchanged.
+
+| Surface | State / chrome | Owner copy (id-ID) |
+|---|---|---|
+| Overview banner | loading | Memuat ringkasan |
+| Overview banner | zero-results | Tidak ada hasil yang cocok |
+| Overview banner | partial | Ringkasan sebagian |
+| Overview banner | stale | Data basi |
+| Overview banner | disconnected | Terputus |
+| Overview banner | error | Ringkasan gagal |
+| Overview banner | forbidden | Akses ditolak |
+| Overview app bar | connection live/stale/disconnected | Langsung / Basi / Terputus |
+| Overview app bar | stale chip | BASI (+ server reason) |
+| Work states | loading / empty / zero-results | Memuat… / Tidak ada pekerjaan… |
+| Work states | partial / stale / disconnected / error / forbidden / needs-human | Data sebagian / Envelope basi / Terputus / … |
+| Work buckets | DONE…BLOCKED | Selesai / Sedang dicocokkan / Sedang dikerjakan / Berikutnya / Menunggu giliran / Terhambat |
+| Work overlays | STALE_* family | Sumber data basi, Klaim basi, … (see `labels.ts`) |
+| Work liveness | PRODUCTIVE/IDLE/STALLED/EXPIRED | Produktif / Menganggur / Macet / Kedaluwarsa |
+
+## 9. Residual (this task)
 
 - No mass content backfill of task humanDisplay rows.
-- AppShell chrome remains English nine-IA until i18n task.
-- Inventory is the alias + required-field contract plus Priority label map above.
+- AppShell chrome remains English nine-IA until i18n task (nav: Overview, Work, …).
+- Work `StaleOverlayFilter` chip label and other surfaces outside Overview/Work
+  banners (Features/Agents/Decisions “Stale pin”, etc.) may still show EN chrome.
+- Inventory is the alias + required-field contract plus Priority + Overview/Work
+  banner maps above.

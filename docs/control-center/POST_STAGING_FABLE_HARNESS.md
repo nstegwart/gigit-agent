@@ -24,6 +24,26 @@ Design-input FABLE receipts under `.artifact/evidence/.../input/01-task-manager-
 
 - **Code:** `qa/evidence/post-staging-fable-harness.mjs`
 - **Unit tests:** `tests/unit/post-staging-fable-harness.test.ts` (LOCAL ONLY; no live FABLE)
+- **Example supply pack:** `qa/evidence/post-staging-fable-supply.example.json`  
+  Synthetic-only complete pack (screenshot manifest, mission Q1–Q8 map, staging SHA/schema, revisions hash, responsive states, prior ledger pin). Use with `pack --supply` to prove assembly; **not** a live post-staging FABLE PASS.
+
+### Related: comprehension harness (01A §COMPREHENSION ACCEPTANCE)
+
+Post-staging FABLE is advisory art critique. Owner comprehension is a separate program-scored gate:
+
+| Artifact | Path |
+|---|---|
+| Harness | `qa/evidence/comprehension-harness.mjs` |
+| Sample + expected cited answers | `qa/evidence/comprehension-sample.json` |
+| Unit tests | `tests/unit/comprehension-harness.test.ts` (LOCAL ONLY) |
+
+```bash
+node qa/evidence/comprehension-harness.mjs --self-test
+node qa/evidence/comprehension-harness.mjs --validate-sample
+node qa/evidence/comprehension-harness.mjs --sample qa/evidence/comprehension-sample.json --actuals path/to/actuals.json
+```
+
+Thresholds (program-emitted only — **no hand-typed PASS**): ≥90% answer cells correct, 100% owner-decision identification, zero stale claims shown as ongoing. Sample spans every work bucket, HOLD/EXCLUDE, P0/non-P0, mapping/product readiness distinction, reconciliation, and owner decision.
 
 ### CLI
 
@@ -32,6 +52,8 @@ node qa/evidence/post-staging-fable-harness.mjs help
 node qa/evidence/post-staging-fable-harness.mjs print-argv
 node qa/evidence/post-staging-fable-harness.mjs check-staging --staging path/to/staging-pass.json
 node qa/evidence/post-staging-fable-harness.mjs pack --supply path/to/supply.json [--ledger docs/control-center/DESIGN_DECISIONS.md] [--out bundle.json]
+# Example supply (synthetic; proves pack completeness, not FABLE PASS):
+node qa/evidence/post-staging-fable-harness.mjs pack --supply qa/evidence/post-staging-fable-supply.example.json --out /tmp/tm-fable-pack.json
 node qa/evidence/post-staging-fable-harness.mjs verify-output --output path/to/post-staging-fable.json --expected-sha <64hex>
 node qa/evidence/post-staging-fable-harness.mjs gate --staging staging-pass.json --supply supply.json
 # Execute FABLE only when staging PASS + intentional flag:

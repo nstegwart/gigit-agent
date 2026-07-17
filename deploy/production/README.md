@@ -17,7 +17,9 @@ Bare-metal **PM2 + nginx** production release tooling for
 
 Evidence source for this package: `WORKER_RESULT_investigate-final-production-502-r3.md`.
 
-**This package never auto-deploys.** Scripts are operator-driven and refuse missing approval.
+The release entrypoint may be invoked by the authorized orchestrator after root
+acceptance. Real mutation still refuses a missing approval bundle, mutation
+opt-in, exact-SHA health/readback, or rollback target. No CI job invokes it.
 
 ---
 
@@ -37,6 +39,7 @@ deploy/production/
     pm2-atomic.sh           # delete+start+save [+systemd]
     health-readback.sh      # loopback / origin / edge
     rollback.sh             # prior SHA + DB forward-fix class
+    rollback-prior-sha.sh   # automatic app-only prior-SHA rollback wrapper
     release.sh              # orchestrates 1→6
   selftest/
     selftest.sh             # shell self-test (no production mutation)
@@ -97,6 +100,43 @@ APPROVED_FULL_SHA=$(git rev-parse HEAD) \
   ./deploy/production/scripts/pm2-atomic.sh
 ```
 
+Exact app-only release plan (no host, DB, service, or network mutation; does
+not claim deploy/readback/rollback PASS):
+
+```bash
+./deploy/production/scripts/release.sh \
+  --dry-run \
+  --no-migrate \
+  --expected-sha "$(git rev-parse HEAD)"
+
+./deploy/production/scripts/rollback-prior-sha.sh \
+  --dry-run \
+  --expected-sha "$(git rev-parse HEAD)"
+```
+
+`--no-migrate` is the production app-only fence. It skips both migration plan
+and apply; it does not grant task-manager production schema authority.
+
+### Exact authenticated readback
+
+Release acceptance uses all three authenticated surfaces (loopback, nginx
+origin, public edge), exact `deployedSha`, release/schema match, non-blocked
+migration state, and proven sync backlog zero:
+
+```bash
+# CAIRN_HEALTH_BEARER is loaded from the production secret environment; never echo it.
+CAIRN_HEALTH_BEARER="$CAIRN_HEALTH_BEARER" \
+  ./deploy/production/scripts/health-readback.sh \
+    --require-exact \
+    --require-sync-zero \
+    --expected-sha "$APPROVED_FULL_SHA"
+```
+
+Liveness-only `401|200|503` is still observable in default read-only mode, but
+it cannot close a release gate. A failed exact readback in real `release.sh`
+automatically invokes `rollback-prior-sha.sh` when a distinct prior SHA was
+captured. Failed-release and rollback output remains evidence; it is not erased.
+
 ---
 
 ## Rollback classes
@@ -110,6 +150,10 @@ APPROVED_FULL_SHA=$(git rev-parse HEAD) \
 ```bash
 SCHEMA_MOVED=1 HAS_DB_DUMP=0 ./deploy/production/scripts/rollback.sh --classify
 ```
+
+The automatic wrapper performs app rollback plus exact health/readback of the
+prior SHA. It never auto-reverts a database and its dry-run output explicitly
+sets `rollback_proven=false`.
 
 ---
 
