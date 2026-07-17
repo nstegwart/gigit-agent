@@ -22,7 +22,8 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
@@ -31,14 +32,61 @@ import { z } from 'zod'
 // Paths & constants
 // ---------------------------------------------------------------------------
 
-/** Relative path that ships in the deploy artifact (under process.cwd()). */
+/** Relative path that ships in the deploy artifact (under app root). */
 export const DEPLOYED_FLOW_DATA_REL = join('public', 'flow-data')
+
+/** Vite preview / built client copy of the same corpus. */
+const DIST_CLIENT_FLOW_DATA_REL = join('dist', 'client', 'flow-data')
+const CLIENT_FLOW_DATA_REL = join('client', 'flow-data')
+
+/**
+ * App-root candidates that do not depend solely on process.cwd().
+ * Vite preview pm2 cwd is usually the app dir, but SSR bundles may evaluate
+ * from dist/server/* — walk from this module URL as well.
+ */
+function knowledgeAppRootCandidates(): string[] {
+  const roots = new Set<string>()
+  const add = (p: string | null | undefined) => {
+    if (p && p.trim()) roots.add(p)
+  }
+  add(process.cwd())
+  add(join(process.cwd(), 'task-manager'))
+  add(join(process.cwd(), '..'))
+  try {
+    // knowledge-tools.ts lives at src/server/ or dist/server/assets/
+    const here = dirname(fileURLToPath(import.meta.url))
+    add(join(here, '..', '..')) // src/server → repo root; dist/server → dist parent (app)
+    add(join(here, '..', '..', '..')) // dist/server/assets → app root
+    add(join(here, '..')) // dist/server → dist
+    add(join(here, '..', '..', '..', '..')) // deeper nested chunk layouts
+  } catch {
+    // non-ESM / test harness without import.meta.url — cwd candidates only
+  }
+  return [...roots]
+}
+
+function flowDataCandidatesUnder(root: string): string[] {
+  return [
+    join(root, DEPLOYED_FLOW_DATA_REL),
+    join(root, DIST_CLIENT_FLOW_DATA_REL),
+    join(root, CLIENT_FLOW_DATA_REL),
+    join(root, 'flow-data'),
+  ]
+}
+
+function isFlowDataDir(dir: string): boolean {
+  return (
+    existsSync(join(dir, 'data-bundle.json')) ||
+    existsSync(join(dir, 'graph.json')) ||
+    existsSync(join(dir, 'knowledge.json'))
+  )
+}
 
 /**
  * Resolve the offline knowledge corpus directory.
- * Priority: explicit arg → TM_KNOWLEDGE_BUNDLE_PATH → public/flow-data under cwd
- * (and a few nearby deploy-safe candidates). Never defaults to absolute
- * /home/user/.claude/... job paths (those are absent on prod).
+ * Priority: explicit arg → TM_KNOWLEDGE_BUNDLE_PATH → public/flow-data (and
+ * dist/client/flow-data) under cwd + import.meta-relative app roots.
+ * Never defaults to absolute /home/user/.claude/... job paths (absent on prod).
  */
 export function resolveKnowledgeBundlePath(override?: string): string {
   const env = (override ?? process.env.TM_KNOWLEDGE_BUNDLE_PATH)?.trim()
@@ -50,20 +98,12 @@ export function resolveKnowledgeBundlePath(override?: string): string {
       return env
     }
   }
-  const candidates = [
-    join(process.cwd(), DEPLOYED_FLOW_DATA_REL),
-    join(process.cwd(), 'task-manager', DEPLOYED_FLOW_DATA_REL),
-    // Next standalone / dist layouts still keep public next to the app root
-    join(process.cwd(), '..', DEPLOYED_FLOW_DATA_REL),
-  ]
+  const candidates: string[] = []
+  for (const root of knowledgeAppRootCandidates()) {
+    candidates.push(...flowDataCandidatesUnder(root))
+  }
   for (const c of candidates) {
-    if (
-      existsSync(join(c, 'data-bundle.json')) ||
-      existsSync(join(c, 'graph.json')) ||
-      existsSync(join(c, 'knowledge.json'))
-    ) {
-      return c
-    }
+    if (isFlowDataDir(c)) return c
   }
   // Stable default even when files are not yet present (tests may inject corpus).
   return join(process.cwd(), DEPLOYED_FLOW_DATA_REL)
@@ -71,8 +111,8 @@ export function resolveKnowledgeBundlePath(override?: string): string {
 
 /**
  * Default offline corpus directory (deployed public/flow-data).
- * Overridable via TM_KNOWLEDGE_BUNDLE_PATH. Evaluated at access time via
- * resolveKnowledgeBundlePath so cwd is correct under tests/prod.
+ * Overridable via TM_KNOWLEDGE_BUNDLE_PATH. Prefer resolveKnowledgeBundlePath()
+ * at call time — this constant is a snapshot at first module evaluation.
  */
 export const DEFAULT_KNOWLEDGE_BUNDLE_PATH = resolveKnowledgeBundlePath()
 

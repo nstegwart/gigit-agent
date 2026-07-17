@@ -612,6 +612,11 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   // board-mcp must call registerDomainKnowledgeTools / registerExportDocumentationTool.
   // Single catalog entry each — W-GIT-1 merge previously duplicated this block.
   { name: 'search_knowledge', kind: 'read', scopes: ['board:read'] },
+  // Product knowledge one-shot tools (knowledge-tools.ts) — same board:read class.
+  // Missing catalog entries → authorizeToolCall 401 unknown tool (even with valid bearer).
+  { name: 'get_feature_bundle', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_endpoint_bundle', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_flow', kind: 'read', scopes: ['board:read'] },
   { name: 'get_domain_overview', kind: 'read', scopes: ['board:read'] },
   { name: 'list_domain_features', kind: 'read', scopes: ['board:read'] },
   { name: 'get_feature_documentation', kind: 'read', scopes: ['board:read'] },

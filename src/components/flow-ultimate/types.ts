@@ -125,7 +125,7 @@ export const DRAG_THRESHOLD = 5
 export const STORAGE_KEY = 'cairn-flow-pos-v1'
 
 export const MODE_LABEL: Record<FlowMode, string> = {
-  cross: 'Lintas-Project',
+  cross: 'Cross-project',
   rn: 'React Native',
   'web-member': 'Web Member',
   'panel-sales': 'Panel Sales',

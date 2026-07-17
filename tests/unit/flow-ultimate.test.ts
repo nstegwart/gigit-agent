@@ -117,24 +117,36 @@ describe('flow-ultimate humanize', () => {
     expect(hasTechIdLeak(s)).toBe(false)
   })
 
-  it('humanizes screens and titles', () => {
+  it('humanizes screens and titles in EN', () => {
     expect(humanizeScreen('/premium')).toBe('Premium')
-    expect(humanizeScreen('login')).toBe('Masuk')
-    expect(humanizeTitle('/premium — pricing muncul')).toMatch(/Premium/)
-    // scrubTechIds runs first → T-* becomes "tugas terkait" (canon parity)
+    expect(humanizeScreen('login')).toBe('Login')
+    expect(humanizeTitle('/premium — pricing appears')).toMatch(/Premium/)
+    // scrubTechIds runs first → T-* becomes "related task"
     expect(humanizeTaskTitle('T-AUTH-01 Wire login screen')).toMatch(
       /Wire login screen/,
     )
     expect(hasTechIdLeak(humanizeTaskTitle('T-AUTH-01 Wire login screen'))).toBe(
       false,
     )
+    expect(scrubTechIds('FEAT-X and T-WEB-001')).not.toMatch(/\b(layar|tugas|fitur)\b/)
   })
 
-  it('maps status labels to owner-readable id-ID', () => {
+  it('maps status labels to owner-readable EN', () => {
     expect(statusClass('MAPPED_100')).toBe('ok')
     expect(statusClass('MISSING')).toBe('bad')
-    expect(statusLabel('terbukti')).toBe('Terbukti')
-    expect(statusLabel('sebagian')).toBe('Sebagian')
+    expect(statusLabel('terbukti')).toBe('Proven')
+    expect(statusLabel('sebagian')).toBe('Partial')
+  })
+
+  it('node meta uses EN screens unit (not layar)', () => {
+    const g = buildCrossGraph(fixture, {})
+    for (const n of g.nodes) {
+      expect(n.meta).not.toMatch(/\blayar\b/)
+      expect(n.meta).not.toMatch(/\btugas\b/)
+      if (/\d+\s+\w+/.test(n.meta) && n.meta.includes('%') && n.meta.includes('·')) {
+        expect(n.meta).toMatch(/screens/)
+      }
+    }
   })
 })
 

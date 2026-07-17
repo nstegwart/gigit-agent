@@ -21,6 +21,26 @@ import {
   setKnowledgeCorpusForTests,
   type KnowledgeCorpus,
 } from '#/server/knowledge-tools'
+import { authorizeToolCall, MCP_TOOL_SPECS } from '#/server/rbac'
+import type { Principal } from '#/server/rbac'
+
+function isFlowDataPath(p: string): boolean {
+  return (
+    p.includes(join('public', 'flow-data')) ||
+    p.includes(join('client', 'flow-data')) ||
+    p.endsWith('flow-data')
+  )
+}
+
+function boardReadPrincipal(): Principal {
+  return {
+    role: 'ROOT_ORCHESTRATOR',
+    actorId: 'test-root',
+    channel: 'bearer',
+    scopes: ['board:read', 'task:read'],
+    boards: [],
+  }
+}
 
 function fixtureCorpus(): KnowledgeCorpus {
   return {
@@ -337,6 +357,21 @@ describe('deployed public/flow-data corpus (no absolute external paths)', () => 
     expect(DEFAULT_KNOWLEDGE_BUNDLE_PATH.includes('tm-wave0')).toBe(false)
   })
 
+  it('resolves corpus when cwd is not the app root (prod pm2 / nested cwd)', () => {
+    const prev = process.cwd()
+    try {
+      // Simulate pm2 cwd outside app (or nested) — import.meta-relative roots still find public/flow-data
+      process.chdir('/tmp')
+      const resolved = resolveKnowledgeBundlePath()
+      expect(isFlowDataPath(resolved)).toBe(true)
+      expect(resolved.includes('/home/user/.claude')).toBe(false)
+      const corpus = loadKnowledgeCorpusFromJson(resolved)
+      expect(corpus.features.length).toBeGreaterThan(10)
+    } finally {
+      process.chdir(prev)
+    }
+  })
+
   it('auth specs for get_feature_bundle match search_knowledge (board:read)', () => {
     const search = KNOWLEDGE_TOOL_AUTH_SPECS.find((s) => s.name === 'search_knowledge')
     const bundle = KNOWLEDGE_TOOL_AUTH_SPECS.find((s) => s.name === 'get_feature_bundle')
@@ -347,6 +382,30 @@ describe('deployed public/flow-data corpus (no absolute external paths)', () => 
     expect([...search!.scopes]).toEqual([...bundle!.scopes])
     expect(search!.scopes).toContain('board:read')
   })
+
+  it('MCP_TOOL_SPECS catalogs get_feature_bundle with same board:read gate as search_knowledge', () => {
+    const names = MCP_TOOL_SPECS.map((t) => t.name)
+    expect(names).toContain('search_knowledge')
+    expect(names).toContain('get_feature_bundle')
+    expect(names).toContain('get_endpoint_bundle')
+    expect(names).toContain('get_flow')
+    const principal = boardReadPrincipal()
+    for (const tool of [
+      'search_knowledge',
+      'get_feature_bundle',
+      'get_endpoint_bundle',
+      'get_flow',
+    ] as const) {
+      const gate = authorizeToolCall(principal, tool, {})
+      expect(gate.ok, `${tool} should authorize board:read principal`).toBe(true)
+    }
+    // Regression: missing catalog entry used to yield 401 AUTHORIZATION_REQUIRED
+    // even with a valid bearer (unknown tool), while search_knowledge worked.
+    const unauth = authorizeToolCall(null, 'get_feature_bundle', {})
+    expect(unauth.ok).toBe(false)
+    expect(unauth.code).toBe('AUTHORIZATION_REQUIRED')
+  })
+
 
   it(
     'loads corpus from public/flow-data and finds period tracker',

@@ -2,15 +2,15 @@ import type { FlowStatusClass } from './types'
 
 export function scrubTechIds(s: string): string {
   return String(s || '')
-    .replace(/\bFEAT-[A-Z0-9-]+\b/g, 'fitur terkait')
-    .replace(/\bT-[A-Z0-9-]+\b/g, 'tugas terkait')
-    .replace(/\bFC-[A-Z0-9-]+\b/g, 'kontrak fitur')
-    .replace(/\bMAPPED_100\b/g, 'terbukti penuh')
-    .replace(/\bPROD_READY\b/g, 'siap produksi')
-    .replace(/\bMISSING\b/g, 'belum')
+    .replace(/\bFEAT-[A-Z0-9-]+\b/g, 'related feature')
+    .replace(/\bT-[A-Z0-9-]+\b/g, 'related task')
+    .replace(/\bFC-[A-Z0-9-]+\b/g, 'feature contract')
+    .replace(/\bMAPPED_100\b/g, 'fully proven')
+    .replace(/\bPROD_READY\b/g, 'production ready')
+    .replace(/\bMISSING\b/g, 'missing')
     .replace(
       /\b(mfs-web-original-upgrade|sales-rebuild|rebuild-backend|affiliate-rebuild|legacy\/[a-z0-9-]+)\b/g,
-      'repo terkait',
+      'related repo',
     )
 }
 
@@ -23,20 +23,20 @@ export function statusClass(st: string | undefined | null): FlowStatusClass {
 
 export function statusLabel(st: string | undefined | null): string {
   const c = statusClass(st)
-  if (c === 'ok') return 'Terbukti'
-  if (c === 'bad') return 'Belum'
-  return 'Sebagian'
+  if (c === 'ok') return 'Proven'
+  if (c === 'bad') return 'Missing'
+  return 'Partial'
 }
 
 export function verdictLabel(v: string | undefined | null): string {
-  if (!v) return 'Sebagian'
-  if (v === 'MAPPED_100' || /terbukti|ok/i.test(v)) return 'Terbukti'
-  if (/MISSING|belum|blocked/i.test(v)) return 'Belum'
-  return 'Sebagian'
+  if (!v) return 'Partial'
+  if (v === 'MAPPED_100' || /terbukti|ok|proven/i.test(v)) return 'Proven'
+  if (/MISSING|belum|blocked|missing/i.test(v)) return 'Missing'
+  return 'Partial'
 }
 
 export function humanizeScreen(raw: string | undefined | null): string {
-  if (!raw) return 'Layar'
+  if (!raw) return 'Screen'
   let s = scrubTechIds(String(raw))
     .replace(/^\/+/, '')
     .replace(/\[.*?\]/g, '')
@@ -45,28 +45,28 @@ export function humanizeScreen(raw: string | undefined | null): string {
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/\s+/g, ' ')
     .trim()
-  if (!s) return 'Layar'
+  if (!s) return 'Screen'
   const map: Record<string, string> = {
-    login: 'Masuk',
-    register: 'Daftar',
-    auth: 'Autentikasi',
+    login: 'Login',
+    register: 'Register',
+    auth: 'Auth',
     premium: 'Premium',
     checkout: 'Checkout',
-    meditation: 'Meditasi',
-    workout: 'Latihan',
+    meditation: 'Meditation',
+    workout: 'Workout',
     admin: 'Admin',
     sales: 'Sales',
-    affiliate: 'Afiliasi',
-    home: 'Beranda',
-    profile: 'Profil',
-    payment: 'Pembayaran',
-    success: 'Sukses',
-    account: 'Akun',
-    dashboard: 'Dasbor',
-    discover: 'Jelajah',
-    listing: 'Daftar',
+    affiliate: 'Affiliate',
+    home: 'Home',
+    profile: 'Profile',
+    payment: 'Payment',
+    success: 'Success',
+    account: 'Account',
+    dashboard: 'Dashboard',
+    discover: 'Discover',
+    listing: 'Listing',
     detail: 'Detail',
-    settings: 'Pengaturan',
+    settings: 'Settings',
     voucher: 'Voucher',
     promo: 'Promo',
   }
@@ -83,7 +83,7 @@ export function humanizeScreen(raw: string | undefined | null): string {
 }
 
 export function humanizeTaskTitle(t: string | undefined | null): string {
-  if (!t) return 'Tugas'
+  if (!t) return 'Task'
   let s = scrubTechIds(String(t))
     .replace(/^T-[A-Z0-9-]+\s*/i, '')
     .replace(/[_/]+/g, ' ')
@@ -98,11 +98,11 @@ export function humanizeTaskTitle(t: string | undefined | null): string {
       )
       .join(' ')
   }
-  return s || 'Tugas'
+  return s || 'Task'
 }
 
 export function humanizeTitle(raw: string | undefined | null): string {
-  if (!raw) return 'Langkah'
+  if (!raw) return 'Step'
   let s = scrubTechIds(String(raw).trim())
   s = s.replace(/^\/[a-zA-Z0-9._\-\[\]{}/*]+(?:\s*[—–-]\s*)?/, (m) => {
     const pathPart = m
@@ -113,7 +113,7 @@ export function humanizeTitle(raw: string | undefined | null): string {
   })
   s = s.replace(/\s+/g, ' ').trim()
   if (s && /^[a-z]/.test(s)) s = s.charAt(0).toUpperCase() + s.slice(1)
-  return s || 'Langkah'
+  return s || 'Step'
 }
 
 /** True when a display string still exposes technical IDs (gate helper). */

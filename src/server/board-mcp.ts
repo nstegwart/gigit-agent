@@ -4243,22 +4243,28 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     handler: (args: any) => Promise<ReturnType<typeof jsonText>> | ReturnType<typeof jsonText>,
   ): void {
     if (!isToolListable(principal, name)) return
-    server.registerTool(name, meta as any, async (args: any) => {
-      const gate = authorizeToolCall(principal, name, (args ?? {}) as Record<string, unknown>)
-      if (!gate.ok) {
-        return jsonText(authErrorEnvelope(gate.code ?? 'AUTHORIZATION_REQUIRED', gate.message))
-      }
-      // ROOT-only ops when mechanism missing should already have principal from bearer;
-      // if DECISION_AUTH and somehow listed, deny non-public.
-      if (!principal && name !== 'get_public_snapshot') {
-        return jsonText(authErrorEnvelope('AUTHORIZATION_REQUIRED'))
-      }
-      try {
-        return await handler(args ?? {})
-      } catch (e) {
-        return jsonText(typedError(e))
-      }
-    })
+    try {
+      server.registerTool(name, meta as any, async (args: any) => {
+        const gate = authorizeToolCall(principal, name, (args ?? {}) as Record<string, unknown>)
+        if (!gate.ok) {
+          return jsonText(authErrorEnvelope(gate.code ?? 'AUTHORIZATION_REQUIRED', gate.message))
+        }
+        // ROOT-only ops when mechanism missing should already have principal from bearer;
+        // if DECISION_AUTH and somehow listed, deny non-public.
+        if (!principal && name !== 'get_public_snapshot') {
+          return jsonText(authErrorEnvelope('AUTHORIZATION_REQUIRED'))
+        }
+        try {
+          return await handler(args ?? {})
+        } catch (e) {
+          return jsonText(typedError(e))
+        }
+      })
+    } catch (e) {
+      // Product knowledge tools register first (mcp.ts); keep flow-data corpus handlers.
+      if (e instanceof Error && /already registered/i.test(e.message)) return
+      throw e
+    }
   }
 
   /**

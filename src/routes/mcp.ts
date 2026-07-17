@@ -515,9 +515,10 @@ async function handle(request: Request): Promise<Response> {
     enableJsonResponse: true, // return JSON, not an SSE stream
   })
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION })
-  registerBoardTools(server, authWithIp)
-  // Product knowledge tools (features/pages/endpoints/flows). Read-only; safe skip on name clash.
+  // Product knowledge tools FIRST so search_knowledge / get_feature_bundle hit the
+  // deployed flow-data corpus. Board tools (domain-knowledge) skip name clashes.
   registerKnowledgeTools(server)
+  registerBoardTools(server, authWithIp)
   try {
     await server.connect(transport)
     try {
