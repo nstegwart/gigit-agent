@@ -233,6 +233,22 @@ export const MIGRATION_MANIFEST: ReadonlyArray<MigrationEntry> = [
     description:
       'CP0 additive hierarchy budgets, versioned ACKs, masked account probes, and fail-closed sync status; production apply remains wrapper-authority gated',
   },
+  {
+    version: '009',
+    filename: '009_rebuild_lineage.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '009_rebuild_lineage.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'Additive rebuild lineage layer: rebuild_lineage_records, parity_rollups, feature_units, feature_directory; no pin/lifecycle/classification table changes',
+  },
+  {
+    version: '010',
+    filename: '010_product_features.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '010_product_features.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'Additive product-feature taxonomy FEAT-*: product_features + feature_task_map; no pin/lifecycle/classification table changes',
+  },
 ] as const
 
 export function sha256Hex(content: string | Buffer): string {
