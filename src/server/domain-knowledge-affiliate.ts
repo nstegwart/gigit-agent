@@ -110,7 +110,11 @@ export type DomainKnowledgeBundle = {
     coverageIncluded: number
     coverageExpected: number
   }
-  blockers: ReadonlyArray<{ id: string; title: string; knowledgeState: KnowledgeState }>
+  blockers: ReadonlyArray<{
+    id: string
+    title: string
+    knowledgeState: KnowledgeState
+  }>
   decisions: ReadonlyArray<{ id: string; title: string; status: string }>
   evidence: ReadonlyArray<{ id: string; kind: string; summary: string }>
   knowledgeGaps: ReadonlyArray<{
@@ -144,7 +148,11 @@ export type AffiliateBundleBuildOptions = {
   sourceHash?: string
   /** Optional live pin enrichment (task/decision/evidence hits). */
   pinHits?: {
-    projects?: ReadonlyArray<{ id: string; name: string | null; taskCount?: number }>
+    projects?: ReadonlyArray<{
+      id: string
+      name: string | null
+      taskCount?: number
+    }>
     features?: ReadonlyArray<{ id: string; name: string | null }>
     tasks?: ReadonlyArray<{
       taskId: string
@@ -152,7 +160,11 @@ export type AffiliateBundleBuildOptions = {
       bucket?: string | null
       ownerPrimaryTitle?: string | null
     }>
-    decisions?: ReadonlyArray<{ decisionId: string; title: string; status?: string }>
+    decisions?: ReadonlyArray<{
+      decisionId: string
+      title: string
+      status?: string
+    }>
     evidence?: ReadonlyArray<{ id: string; kind: string; summary: string }>
     stale?: boolean
     staleReason?: string | null
@@ -219,7 +231,8 @@ const FEATURES: ReadonlyArray<DomainKnowledgeFeature> = [
     id: 'feat-sales-kyc',
     name: 'KYC dan verifikasi Sales',
     projectId: 'sales-rebuild',
-    summary: 'Verifikasi identitas, kontrak, undangan, dan readback komisi di panel Sales.',
+    summary:
+      'Verifikasi identitas, kontrak, undangan, dan readback komisi di panel Sales.',
     knowledgeState: 'PROVEN',
   },
   {
@@ -233,14 +246,16 @@ const FEATURES: ReadonlyArray<DomainKnowledgeFeature> = [
     id: 'feat-be-referral-attr',
     name: 'Atribusi referral backend',
     projectId: 'rebuild-backend',
-    summary: 'Menautkan kode affiliate ke order/checkout dan menyimpan jejak atribusi.',
+    summary:
+      'Menautkan kode affiliate ke order/checkout dan menyimpan jejak atribusi.',
     knowledgeState: 'PROVEN',
   },
   {
     id: 'feat-be-commission-payout',
     name: 'Komisi, payout, webhook, rekonsiliasi',
     projectId: 'rebuild-backend',
-    summary: 'Hitung komisi, payout, webhook provider, dan rekonsiliasi ledger.',
+    summary:
+      'Hitung komisi, payout, webhook provider, dan rekonsiliasi ledger.',
     knowledgeState: 'PROVEN',
   },
   {
@@ -269,7 +284,8 @@ const FEATURES: ReadonlyArray<DomainKnowledgeFeature> = [
     id: 'feat-readbacks',
     name: 'Readback member, admin, DB, email, provider, audit',
     projectId: 'rebuild-backend',
-    summary: 'Cross-surface readback untuk member/admin/DB/email/provider/audit.',
+    summary:
+      'Cross-surface readback untuk member/admin/DB/email/provider/audit.',
     knowledgeState: 'PROVEN',
   },
 ]
@@ -503,7 +519,8 @@ function buildBaseCoverageManifest(): CoverageManifestEntry[] {
     kind: 'outcome-detail',
     label: 'Rincian billing recurring per provider',
     disposition: 'expected',
-    reason: 'Outcome recurring disebut di spek; detail per-provider belum diikat ke pin SSOT.',
+    reason:
+      'Outcome recurring disebut di spek; detail per-provider belum diikat ke pin SSOT.',
     projectIds: ['payment-provider', 'rebuild-backend'],
     knowledgeState: 'UNKNOWN',
   })
@@ -522,7 +539,8 @@ function buildBaseCoverageManifest(): CoverageManifestEntry[] {
     kind: 'rule',
     label: 'Aturan bonus tier affiliate per kampanye',
     disposition: 'unknown',
-    reason: 'Aturan bonus tier per kampanye belum punya citasi SSOT pin yang PROVEN.',
+    reason:
+      'Aturan bonus tier per kampanye belum punya citasi SSOT pin yang PROVEN.',
     projectIds: ['affiliate-rebuild', 'sales-rebuild'],
     knowledgeState: 'UNKNOWN',
   })
@@ -540,7 +558,8 @@ function buildBaseCoverageManifest(): CoverageManifestEntry[] {
     kind: 'surface',
     label: 'Aplikasi native mobile affiliate',
     disposition: 'omitted-with-reason',
-    reason: 'Di luar boundary domain web/portal/Sales/backend spek 01A AFFILIATE.',
+    reason:
+      'Di luar boundary domain web/portal/Sales/backend spek 01A AFFILIATE.',
     projectIds: [],
     knowledgeState: 'PROVEN',
   })
@@ -601,13 +620,16 @@ function buildBaseGaps(): DomainKnowledgeBundle['knowledgeGaps'] {
     {
       id: 'gap-kyc-pii-redacted',
       code: 'REDACTED_KYC_PII',
-      message: 'Payload PII KYC diredaksi dari export knowledge default (bukan silent omit).',
+      message:
+        'Payload PII KYC diredaksi dari export knowledge default (bukan silent omit).',
       knowledgeState: 'PROVEN',
     },
   ]
 }
 
-export function isAffiliateDomainId(domain: string | null | undefined): boolean {
+export function isAffiliateDomainId(
+  domain: string | null | undefined,
+): boolean {
   if (!domain) return false
   const d = domain.trim().toUpperCase()
   return d === AFFILIATE_DOMAIN_ID || d === 'AFF' || d === 'AFFILIATE-REBUILD'
@@ -635,7 +657,8 @@ export function buildAffiliateDomainKnowledgeBundle(
       knowledgeGaps.push({
         id: 'gap-pin-no-tasks',
         code: 'NO_MATCHING_PIN_TASKS',
-        message: 'Pin board saat ini tidak punya task hit domain AFFILIATE (pack tetap tersedia).',
+        message:
+          'Pin board saat ini tidak punya task hit domain AFFILIATE (pack tetap tersedia).',
         knowledgeState: 'UNKNOWN',
       })
     }
@@ -643,7 +666,8 @@ export function buildAffiliateDomainKnowledgeBundle(
       knowledgeGaps.push({
         id: 'gap-pin-no-decisions',
         code: 'NO_MATCHING_PIN_DECISIONS',
-        message: 'Pin board saat ini tidak punya decision hit domain AFFILIATE.',
+        message:
+          'Pin board saat ini tidak punya decision hit domain AFFILIATE.',
         knowledgeState: 'UNKNOWN',
       })
     }
@@ -651,7 +675,8 @@ export function buildAffiliateDomainKnowledgeBundle(
       knowledgeGaps.push({
         id: 'gap-pin-no-evidence',
         code: 'NO_MATCHING_PIN_EVIDENCE',
-        message: 'Pin board saat ini tidak punya evidence hit domain AFFILIATE.',
+        message:
+          'Pin board saat ini tidak punya evidence hit domain AFFILIATE.',
         knowledgeState: 'UNKNOWN',
       })
     }
@@ -689,7 +714,9 @@ export function buildAffiliateDomainKnowledgeBundle(
       })) ?? []
 
   const coverageManifest = buildBaseCoverageManifest()
-  const included = coverageManifest.filter((e) => e.disposition === 'included').length
+  const included = coverageManifest.filter(
+    (e) => e.disposition === 'included',
+  ).length
   const expected = coverageManifest.filter(
     (e) => e.disposition === 'expected' || e.disposition === 'included',
   ).length
@@ -697,9 +724,8 @@ export function buildAffiliateDomainKnowledgeBundle(
   const hasUnknownOrConflict = coverageManifest.some(
     (e) => e.disposition === 'unknown' || e.disposition === 'conflict',
   )
-  const availability: DomainKnowledgeBundle['availability'] = hasUnknownOrConflict
-    ? 'partial'
-    : 'available'
+  const availability: DomainKnowledgeBundle['availability'] =
+    hasUnknownOrConflict ? 'partial' : 'available'
 
   const citations = [
     ...buildBaseCitations(),
@@ -781,11 +807,14 @@ export function projectKnowledgeConflictsFromBundle(
   const conflictEntries = bundle.coverageManifest.filter(
     (c) => c.disposition === 'conflict' || c.knowledgeState === 'CONFLICT',
   )
-  const conflictGaps = bundle.knowledgeGaps.filter((g) => g.knowledgeState === 'CONFLICT')
+  const conflictGaps = bundle.knowledgeGaps.filter(
+    (g) => g.knowledgeState === 'CONFLICT',
+  )
   if (conflictEntries.length === 0 && conflictGaps.length === 0) return []
 
   // Honest dual-source pair for commission formula CONFLICT (cited pack paths).
-  const dualCommission = conflictEntries.some((c) => c.id.includes('commission')) ||
+  const dualCommission =
+    conflictEntries.some((c) => c.id.includes('commission')) ||
     conflictGaps.some((g) => g.code.includes('COMMISSION'))
   if (dualCommission) {
     return [
@@ -799,7 +828,8 @@ export function projectKnowledgeConflictsFromBundle(
         sourceId: 'rebuild-commission-ssot',
         label: 'Rebuild commission SSOT',
         citation: 'rebuild-backend:commission.formula',
-        claim: 'Formula komisi rebuild-backend sebagai acuan target; belum di-reconcile.',
+        claim:
+          'Formula komisi rebuild-backend sebagai acuan target; belum di-reconcile.',
       },
     ]
   }
@@ -890,12 +920,20 @@ export function affiliateBundleToKnowledgeDomainData(
     claim: string | null
   }>
   /** Structured redaction disclosures for ART S21 panel. */
-  redactions: Array<{ fieldPath: string; reason: string; hiddenScope: string | null }>
+  redactions: Array<{
+    fieldPath: string
+    reason: string
+    hiddenScope: string | null
+  }>
   knowledgeState: KnowledgeState
   lastValidGeneratedAt: string | null
   bundle: DomainKnowledgeBundle
 } {
-  const packProjects = bundle.projects.map((p) => {
+  const packProjects: Array<{
+    id: string
+    name: string | null
+    taskCount: number
+  }> = bundle.projects.map((p) => {
     const hit = pinHits?.projects?.find((x) => x.id === p.id)
     return {
       id: p.id,
@@ -914,10 +952,11 @@ export function affiliateBundleToKnowledgeDomainData(
     }
   }
 
-  const packFeatures = bundle.features.map((f) => ({
-    id: f.id,
-    name: f.name,
-  }))
+  const packFeatures: Array<{ id: string; name: string | null }> =
+    bundle.features.map((f) => ({
+      id: f.id,
+      name: f.name,
+    }))
   for (const hit of pinHits?.features ?? []) {
     if (!packFeatures.some((f) => f.id === hit.id)) {
       packFeatures.push({ id: hit.id, name: hit.name })
@@ -995,7 +1034,9 @@ export function affiliateBundleToKnowledgeDomainData(
 /**
  * Documentation export preview body from the AFFILIATE pack (ART S17).
  */
-export function affiliateBundleToDocumentationMarkdown(bundle: DomainKnowledgeBundle): string {
+export function affiliateBundleToDocumentationMarkdown(
+  bundle: DomainKnowledgeBundle,
+): string {
   const lines: string[] = [
     `# Dokumentasi domain: ${bundle.humanDisplay.title}`,
     '',
@@ -1011,7 +1052,8 @@ export function affiliateBundleToDocumentationMarkdown(bundle: DomainKnowledgeBu
     '',
     '## Fitur',
     ...bundle.features.map(
-      (f) => `- **${f.name}** (\`${f.id}\`) · \`${f.projectId}\` — ${f.summary}`,
+      (f) =>
+        `- **${f.name}** (\`${f.id}\`) · \`${f.projectId}\` — ${f.summary}`,
     ),
     '',
     '## Alur end-to-end',
@@ -1028,7 +1070,9 @@ export function affiliateBundleToDocumentationMarkdown(bundle: DomainKnowledgeBu
   }
   lines.push(
     '## Relasi',
-    ...bundle.relations.map((r) => `- ${r.label} (\`${r.fromId}\` → \`${r.toId}\`, ${r.type})`),
+    ...bundle.relations.map(
+      (r) => `- ${r.label} (\`${r.fromId}\` → \`${r.toId}\`, ${r.type})`,
+    ),
     '',
     '## Gap jujur',
     ...bundle.knowledgeGaps.map((g) => `- **${g.code}**: ${g.message}`),

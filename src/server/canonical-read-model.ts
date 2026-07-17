@@ -22,24 +22,33 @@ import {
   computeDistinctCounts,
   payloadSha256,
   validateCanonicalSnapshot,
-  type CanonicalAcceptancePath,
-  type CanonicalAnchor,
-  type CanonicalClassification,
-  type CanonicalFlow,
-  type CanonicalNode,
-  type CanonicalProject,
-  type CanonicalSnapshot,
-  type CanonicalSnapshotPayload,
-  type CanonicalTask,
-  type DistinctCounts,
-  SnapshotValidationError,
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  SnapshotValidationError
 } from '#/server/canonical-snapshot'
+import type {CanonicalAcceptancePath, CanonicalAnchor, CanonicalClassification, CanonicalFlow, CanonicalNode, CanonicalProject, CanonicalSnapshot, CanonicalSnapshotPayload, CanonicalTask, DistinctCounts} from '#/server/canonical-snapshot';
 import type {
   DependencyJoin,
   FeatureContractJoin,
   NodeJoin,
   PrimaryOwnership,
 } from '#/lib/control-plane-types'
+import {
+  ingestMappingSnapshot,
+  mappingVersionFromPinAndProjection,
+  mappingVersionToWire
+  
+  
+} from '#/server/adaptive-mapping'
+import type {MappingVersionInfo, MappingVersionWirePayload} from '#/server/adaptive-mapping';
 
 // ---------------------------------------------------------------------------
 // Error codes / types
@@ -645,14 +654,14 @@ export async function tryLoadPinnedDefinitionReadModel(
  * Definition lists only — inject lifecycle overlays at call site by task id intersection.
  */
 export interface CanonicalDefinitionReadAdapter {
-  loadPinnedDefinition(
+  loadPinnedDefinition: (
     boardId: string,
     opts?: LoadPinnedDefinitionOptions,
-  ): Promise<CanonicalDefinitionReadModel>
-  tryLoadPinnedDefinition(
+  ) => Promise<CanonicalDefinitionReadModel>
+  tryLoadPinnedDefinition: (
     boardId: string,
     opts?: LoadPinnedDefinitionOptions,
-  ): Promise<TryLoadPinnedDefinitionResult>
+  ) => Promise<TryLoadPinnedDefinitionResult>
 }
 
 export function createCanonicalDefinitionReadAdapter(
@@ -666,4 +675,113 @@ export function createCanonicalDefinitionReadAdapter(
       return tryLoadPinnedDefinitionReadModel(storage, boardId, opts)
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Adaptive mapping version surface (Requirement #2) — read path only
+// ---------------------------------------------------------------------------
+
+/**
+ * Build MappingVersionInfo from a successfully loaded definition read model.
+ * Denominators = DISTINCT from projection; never hardcoded.
+ */
+export function mappingVersionFromDefinitionModel(
+  model: CanonicalDefinitionReadModel,
+  opts: { now?: Date | number; staleAfterSeconds?: number } = {},
+): MappingVersionInfo {
+  return mappingVersionFromPinAndProjection({
+    pin: model.pin,
+    snapshot: model.snapshot,
+    projection: model.projection,
+    now: opts.now,
+    staleAfterSeconds: opts.staleAfterSeconds,
+  })
+}
+
+function pinFromBoardState(pinState: ImportBoardState | null | undefined): CanonicalDefinitionPin | null {
+  if (!pinState) return null
+  return {
+    boardId: pinState.boardId,
+    boardRev: pinState.boardRev,
+    lifecycleRev: pinState.lifecycleRev,
+    canonicalSnapshotId: pinState.canonicalSnapshotId ?? '',
+    canonicalHash: pinState.canonicalHash ?? '',
+    entityRev: pinState.entityRev,
+    subjectHash: pinState.subjectHash,
+    payloadSha256: pinState.lastPayloadSha256 ?? '',
+    lastSnapshotGeneratedAt: pinState.lastSnapshotGeneratedAt,
+    lastSnapshotId: pinState.lastSnapshotId,
+  }
+}
+
+/**
+ * Adaptive load: try strict pin definition first; on SCHEMA_INVALID / missing, degrade to
+ * pin metadata + best-effort payload ingest (ADAPTIVE_DEGRADED). Never fabricates readiness.
+ *
+ * Import APPLY remains strict via validateCanonicalSnapshot — this is read/UI/MCP only.
+ */
+export async function loadAdaptiveMappingVersion(
+  storage: PinnedSnapshotReader,
+  boardId: string,
+  opts: LoadPinnedDefinitionOptions & {
+    now?: Date | number
+    staleAfterSeconds?: number
+  } = {},
+): Promise<{
+  version: MappingVersionInfo
+  model: CanonicalDefinitionReadModel | null
+  wire: MappingVersionWirePayload
+}> {
+  const tried = await tryLoadPinnedDefinitionReadModel(storage, boardId, opts)
+  if (tried.ok) {
+    const version = mappingVersionFromDefinitionModel(tried.model, {
+      now: opts.now,
+      staleAfterSeconds: opts.staleAfterSeconds,
+    })
+    return { version, model: tried.model, wire: mappingVersionToWire(version) }
+  }
+
+  // Degraded: surface pin row when present even if snapshot schema is unknown/invalid.
+  const id = String(boardId).trim()
+  const bundle = await storage.getPinnedSnapshot(id)
+  const pinState = bundle?.pin ?? (await storage.getBoardState(id))
+  const pin = pinFromBoardState(pinState ?? null)
+
+  const rawSnapshot =
+    bundle && 'snapshot' in bundle ? (bundle).snapshot : null
+  let version: MappingVersionInfo
+  if (rawSnapshot) {
+    version = ingestMappingSnapshot(rawSnapshot, {
+      now: opts.now,
+      staleAfterSeconds: opts.staleAfterSeconds,
+      pin,
+    }).version
+    if (tried.code === 'SCHEMA_INVALID' || !version.knownSchema) {
+      version = {
+        ...version,
+        mode: 'ADAPTIVE_DEGRADED',
+        warnings: [
+          ...version.warnings,
+          `STRICT_LOAD_FAILED:${tried.code}`,
+          tried.message,
+        ],
+      }
+    }
+  } else {
+    version = mappingVersionFromPinAndProjection({
+      pin,
+      now: opts.now,
+      staleAfterSeconds: opts.staleAfterSeconds,
+      schemaVersion: null,
+    })
+    version = {
+      ...version,
+      mode: 'ADAPTIVE_DEGRADED',
+      warnings: [...version.warnings, `STRICT_LOAD_FAILED:${tried.code}`, tried.message],
+      stale: true,
+      staleReason: version.staleReason ?? tried.code,
+    }
+  }
+
+  return { version, model: null, wire: mappingVersionToWire(version) }
 }

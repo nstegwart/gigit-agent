@@ -6,7 +6,7 @@ import { z } from 'zod'
 
 import { buildModel } from '#/lib/model'
 import { deriveCheckpoints, nextEvidence, nextStage, stageReadiness } from '#/lib/readiness'
-import type { Feature } from '#/lib/types'
+import type { Feature, OpsData, WorkTask  } from '#/lib/types'
 import {
   advanceTaskV3,
   computeRollup,
@@ -16,22 +16,22 @@ import {
   readLifecycle,
   submitStageEvidence,
   V3_LIFECYCLE_RAIL,
-  writeLifecycle,
-  type AdvanceV3Input,
-  type AdvanceV3Result,
-  type LifecycleBoardPin,
-  type LifecycleV3Storage,
-  type RegisteredRun,
-  type RegisteredStageEvidence,
-  type StageReceipt,
-  type SubmitStageEvidenceInput,
-  type TaskLifecycleV3State,
+  writeLifecycle
+  
+  
+  
+  
+  
+  
+  
+  
+  
 } from '#/server/lifecycle-store'
+import type {AdvanceV3Input, AdvanceV3Result, LifecycleBoardPin, LifecycleV3Storage, RegisteredRun, RegisteredStageEvidence, StageReceipt, SubmitStageEvidenceInput, TaskLifecycleV3State} from '#/server/lifecycle-store';
 import { computeTaskHash, setTaskLifecycle, taskLifecycle, taskStageRows, writeAudit } from '#/server/tasks-store'
 import { db, readDoc, writeDoc } from '#/server/db'
-import type { LifecycleStageKey } from '#/lib/control-plane-types'
-import { decideDecision, deleteBoard, deleteProject, setQueue, updateBoard, upsertProject } from '#/server/board-store'
-import {
+import type { LifecycleStageKey, PinnedRevisionTuple , RollupV3Result, TaskClassificationRecord  } from '#/lib/control-plane-types'
+import { decideDecision, deleteBoard, deleteProject, setQueue, updateBoard, upsertProject,
   addComment,
   addComponent,
   addTaskSection,
@@ -62,7 +62,10 @@ import {
   upsertFeature,
   upsertTask,
   upsertRun,
-} from '#/server/board-store'
+  createSystemClock
+  
+  
+ } from '#/server/board-store'
 import {
   assertAgentOwnRun,
   assertIntegratorBounds,
@@ -70,15 +73,19 @@ import {
   authorizeToolCall,
   isToolListable,
   listHumanSafeToolNames,
-  RbacError,
-  type AuthMechanismState,
-  type Principal,
+  RbacError
+  
+  
 } from '#/server/rbac'
+import type {AuthMechanismState, Principal} from '#/server/rbac';
 import {
-  buildCp0CapabilitiesReadback,
   buildCp0SyncStatusReadback,
   resolveCp0ReadBoardId,
   type Cp0SyncStatusRow,
+} from '#/server/cp0-mcp-metadata'
+export {
+  buildCp0SyncStatusReadback,
+  resolveCp0ReadBoardId,
 } from '#/server/cp0-mcp-metadata'
 import {
   getSharedPublicSnapshotService,
@@ -90,25 +97,28 @@ import {
   resetControlPlaneRuntimeContextForTests,
   setTestControlPlaneRuntimeContext,
   createMemoryControlPlaneRuntimeContext,
-  hasTestControlPlaneRuntimeContext,
-  type ControlPlaneRuntimeContext,
+  hasTestControlPlaneRuntimeContext
+  
 } from '#/server/control-plane-runtime-context'
+import type {ControlPlaneRuntimeContext} from '#/server/control-plane-runtime-context';
 import {
   buildPinnedReadEnvelope,
   paginateReadRows,
   validateReadFilters,
-  type McpReadPin,
-  McpReadContractError,
+  
+  McpReadContractError
 } from '#/server/mcp-canonical-reads'
+import type {McpReadPin} from '#/server/mcp-canonical-reads';
 import {
   selectNextFromActivePlan,
   publishDispatchPlan,
   getSharedDispatchPlanStore,
   setSharedDispatchPlanStore,
   projectDispatchNextFields,
-  asLegacyFeatureQueue,
-  type DispatchPlanStore,
+  asLegacyFeatureQueue
+  
 } from '#/server/control-plane-ingest'
+import type {DispatchPlanStore} from '#/server/control-plane-ingest';
 import {
   registerRun,
   heartbeatRun,
@@ -125,92 +135,98 @@ import {
 import {
   DECISION_HEARTBEAT_RETENTION_POLICY,
   resolveRetentionEnvironmentDetails,
-  resolveRetentionPolicy,
-  type BoardPolicyRetention,
-  type RetentionPolicyResolveResult,
-  type RetentionStore,
+  resolveRetentionPolicy
+  
+  
+  
 } from '#/server/audit-retention'
-import {
-  createSystemClock,
-  type ControlPlaneAtomicStore,
-  type ControlPlaneClock,
-} from '#/server/board-store'
+import type {BoardPolicyRetention, RetentionPolicyResolveResult, RetentionStore} from '#/server/audit-retention';
+import type {ControlPlaneAtomicStore, ControlPlaneClock} from '#/server/board-store';
 import {
   beginIdempotent,
   completeIdempotent,
-  IdempotencyError,
-  type IdempotencyStorage,
+  IdempotencyError
+  
 } from '#/server/idempotency'
+import type {IdempotencyStorage} from '#/server/idempotency';
 import {
   DEFAULT_HUMAN_LOCALE,
-  HUMAN_DISPLAY_SCHEMA_VERSION,
-  type HumanDisplayEntityKind,
-  type HumanDisplayReviewStatus,
-  type HumanDisplayV1,
+  HUMAN_DISPLAY_SCHEMA_VERSION
+  
+  
+  
 } from '#/server/human-display'
+import type {HumanDisplayEntityKind, HumanDisplayReviewStatus, HumanDisplayV1} from '#/server/human-display';
 import {
   assertHumanDisplayWriteTransition,
   HumanDisplayPersistenceError,
-  resolveHumanDisplayPreviousAuthor,
-  type HumanDisplayStore,
+  resolveHumanDisplayPreviousAuthor
+  
 } from '#/server/human-display-persistence'
+import type {HumanDisplayStore} from '#/server/human-display-persistence';
 import type { LockStore } from '#/server/locks'
 import {
   evaluateCas,
-  STALE_REVISION,
-  type RevisionState,
+  STALE_REVISION
+  
 } from '#/server/revisions'
+import type {RevisionState} from '#/server/revisions';
 import {
   evaluateCapacityPolicy,
   getSharedAccountSyncStore,
-  setSharedAccountSyncStore,
-  type AccountSyncStore,
-  type AccountSyncTrigger,
-  type AccountProviderKind,
-  type MaskedAccountStatus,
-  type SyncAccountsRequest,
-  type SyncAccountsResult,
+  setSharedAccountSyncStore
+  
+  
+  
+  
+  
+  
 } from '#/server/account-sync'
+import type {AccountSyncStore, AccountSyncTrigger, AccountProviderKind, MaskedAccountStatus, SyncAccountsRequest, SyncAccountsResult} from '#/server/account-sync';
 import { inferAccountSyncTriggerFromStatuses } from '#/server/account-sync-scheduler'
 import { readMcpListAccountsService } from '#/server/account-surface-readers'
 import {
   openDecisionV3,
-  resolveDecisionV3,
-  type DecisionV3Store,
-  type DecisionV3Deps,
+  resolveDecisionV3
+  
+  
 } from '#/server/decisions-v3'
+import type {DecisionV3Store, DecisionV3Deps} from '#/server/decisions-v3';
 import {
   dryRunReconcile,
   applyReconcile,
-  claimReconcilerLeadership,
-  type ReconcilerStore,
-  type ReconcilerDeps,
+  claimReconcilerLeadership
+  
+  
 } from '#/server/reconciler'
+import type {ReconcilerStore, ReconcilerDeps} from '#/server/reconciler';
 import { evaluateG5, G5_REQUIRED_DOMAINS } from '#/server/g5'
-import type { PinnedRevisionTuple } from '#/lib/control-plane-types'
 import {
   applyImport,
-  planImport,
-  type ImportApplyResult,
-  type ImportAuthContext,
-  type ImportPlanResult,
+  planImport
+  
+  
+  
 } from '#/server/canonical-import'
+import type {ImportApplyResult, ImportAuthContext, ImportPlanResult} from '#/server/canonical-import';
 import {
-  produceCanonicalSnapshot,
-  type CanonicalSnapshot,
-  type CanonicalSnapshotInput,
+  produceCanonicalSnapshot
+  
+  
 } from '#/server/canonical-snapshot'
+import type {CanonicalSnapshot, CanonicalSnapshotInput} from '#/server/canonical-snapshot';
 import {
   createCanonicalDefinitionReadAdapter,
   isPinComplete,
   isSyntheticCanonicalSnapshotId,
   loadPinnedDefinitionReadModel,
-  tryLoadPinnedDefinitionReadModel,
-  type CanonicalDefinitionProjection,
-  type CanonicalDefinitionReadModel,
+  tryLoadPinnedDefinitionReadModel
+  
+  
 } from '#/server/canonical-read-model'
-import { computeRollupV3, type RollupTaskInput } from '#/server/rollup-v3'
-import type { RollupV3Result, TaskClassificationRecord } from '#/lib/control-plane-types'
+import type {CanonicalDefinitionProjection, CanonicalDefinitionReadModel} from '#/server/canonical-read-model';
+import { computeRollupV3  } from '#/server/rollup-v3'
+import type {RollupTaskInput} from '#/server/rollup-v3';
 import {
   sanitizeClassificationRecordForPersistence,
   stripSelfAssertedMembershipFields,
@@ -221,7 +237,6 @@ import {
   projectClassificationSyncAuditActivity,
 } from '#/server/classification-sync'
 import { createHash } from 'node:crypto'
-import type { OpsData, WorkTask } from '#/lib/types'
 import { registerDomainKnowledgeTools } from '#/server/domain-knowledge-mcp'
 import { registerExportDocumentationTool } from '#/server/mcp-register-export-documentation'
 
@@ -250,6 +265,20 @@ export interface McpAuthContext {
   clientIp?: string
 }
 
+export const CP0_CONTROL_PLANE_CAPABILITIES = Object.freeze({
+  version: CP0_CONTROL_PLANE_VERSION,
+  hierarchy: ['L0', 'L1', 'L2'],
+  acknowledgements: ['REGISTRATION', 'SPAWN_BUDGET', 'LEASE_RENEWAL', 'TERMINAL', 'RELEASE'],
+  renewableLeaseSeconds: 60,
+  maxL1: 20,
+  maxActiveL2PerL1: 20,
+  accountProbeMaxAgeSeconds: 300,
+  mutationEnvelope: ['expectedBoardRev', 'entityExpectedRev', 'canonicalHash', 'idempotencyKey'],
+})
+
+
+
+
 function jsonText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] }
 }
@@ -265,6 +294,7 @@ function runInfo(runs?: Array<{ id: string; status: string; role?: string; verdi
 const bid = async (boardId?: string) => boardId || (await defaultBoardId())
 const modelOf = async (boardId?: string) => buildModel(await readBoard(await bid(boardId)))
 const BOARD_ARG = { boardId: z.string().optional().describe('Board id (default = the first board)') }
+
 
 function featureSummary(f: Feature) {
   return {
@@ -916,7 +946,7 @@ export async function notifyAccountSchedulerTrigger(
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     const code =
-      e && typeof e === 'object' && 'code' in e && typeof (e as { code: unknown }).code === 'string'
+      e && typeof e === 'object' && 'code' in e && typeof (e).code === 'string'
         ? String((e as { code: string }).code)
         : 'ACCOUNT_SYNC_NOTIFY_FAILED'
     try {
@@ -1223,7 +1253,7 @@ export function parseMutationEnvelope(args: Record<string, unknown>): ParsedMuta
 }
 
 function schemaKeysOf(inputSchema: Record<string, unknown> | object): string[] {
-  return Object.keys(inputSchema as Record<string, unknown>)
+  return Object.keys(inputSchema)
 }
 
 function mergeMutationEnvelope(
@@ -2218,7 +2248,7 @@ export async function persistDurableLifecycleV3IfAbsent(
       )
       const raw = (rows as Array<{ data: unknown }>)[0]?.data
       const tasks: Record<string, TaskLifecycleV3State> =
-        raw && typeof raw === 'object' && raw !== null && 'tasks' in (raw as object)
+        raw && typeof raw === 'object' && raw !== null && 'tasks' in (raw)
           ? { ...((raw as { tasks: Record<string, TaskLifecycleV3State> }).tasks ?? {}) }
           : {}
       if (tasks[taskId]) {
@@ -2365,7 +2395,7 @@ export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Sto
       }
     } else {
       const stage =
-        row.stage && isV3LifecycleStageKey(row.stage) ? (row.stage as LifecycleStageKey) : null
+        row.stage && isV3LifecycleStageKey(row.stage) ? (row.stage) : null
       let taskHash = `${boardId}:${taskId}:v0`
       try {
         const full = await readTask(boardId, taskId)
@@ -2516,7 +2546,7 @@ export function createDurableLifecycleV3Storage(boardId: string): LifecycleV3Sto
           )
           const raw = (rows as Array<{ data: unknown }>)[0]?.data
           const tasks: Record<string, TaskLifecycleV3State> =
-            raw && typeof raw === 'object' && raw !== null && 'tasks' in (raw as object)
+            raw && typeof raw === 'object' && raw !== null && 'tasks' in (raw)
               ? { ...((raw as { tasks: Record<string, TaskLifecycleV3State> }).tasks ?? {}) }
               : {}
           tasks[state.taskId] = {
@@ -3004,7 +3034,7 @@ export function legacyOpsCompatibilityPayload(
       ? (ops.alert as OpsData['alert'])
       : undefined
   return {
-    vault: vaultRaw as OpsData['vault'],
+    vault: vaultRaw,
     accounts,
     ...(alert !== undefined ? { alert } : {}),
   }
@@ -3616,7 +3646,7 @@ export async function loadDurableLifecycleV3TaskStates(
     const map = new Map<string, TaskLifecycleV3State>()
     const tasks = doc?.tasks ?? {}
     for (const [id, st] of Object.entries(tasks)) {
-      if (id && st && typeof st === 'object') map.set(id, st as TaskLifecycleV3State)
+      if (id && st && typeof st === 'object') map.set(id, st)
     }
     return map
   } catch {
@@ -4161,8 +4191,8 @@ function pinnedEnvelope(pin: BoardPin, data: unknown, extra: Record<string, unkn
     freshnessAgeSeconds: pin.freshnessAgeSeconds,
     stale: pin.stale,
     staleReason: pin.staleReason,
-    nextCursor: (extra.nextCursor as unknown) ?? null,
-    cursor: (extra.cursor as unknown) ?? null,
+    nextCursor: (extra.nextCursor) ?? null,
+    cursor: (extra.cursor) ?? null,
     freshness:
       extra.freshness ??
       ({ ageSeconds: pin.freshnessAgeSeconds, stale: pin.stale, reason: pin.staleReason } as const),
@@ -4184,19 +4214,19 @@ async function pinnedEnvelopeFromBoard(
   // Allow callers to override pin fields only when they hold a fresher known pin (never invent success).
   const merged: BoardPin = {
     ...pin,
-    boardRev: typeof extra.boardRev === 'number' ? (extra.boardRev as number) : pin.boardRev,
+    boardRev: typeof extra.boardRev === 'number' ? (extra.boardRev) : pin.boardRev,
     lifecycleRev:
-      typeof extra.lifecycleRev === 'number' ? (extra.lifecycleRev as number) : pin.lifecycleRev,
+      typeof extra.lifecycleRev === 'number' ? (extra.lifecycleRev) : pin.lifecycleRev,
     canonicalSnapshotId:
       typeof extra.canonicalSnapshotId === 'string'
-        ? (extra.canonicalSnapshotId as string)
+        ? (extra.canonicalSnapshotId)
         : pin.canonicalSnapshotId,
     canonicalHash:
-      typeof extra.canonicalHash === 'string' ? (extra.canonicalHash as string) : pin.canonicalHash,
-    stale: typeof extra.stale === 'boolean' ? (extra.stale as boolean) : pin.stale,
+      typeof extra.canonicalHash === 'string' ? (extra.canonicalHash) : pin.canonicalHash,
+    stale: typeof extra.stale === 'boolean' ? (extra.stale) : pin.stale,
     staleReason:
       extra.staleReason === null || typeof extra.staleReason === 'string'
-        ? (extra.staleReason as string | null)
+        ? (extra.staleReason)
         : pin.staleReason,
   }
   return pinnedEnvelope(merged, data, extra)
@@ -4212,7 +4242,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     handler: (args: any) => Promise<ReturnType<typeof jsonText>> | ReturnType<typeof jsonText>,
   ): void {
     if (!isToolListable(principal, name)) return
-    server.registerTool(name as any, meta as any, async (args: any) => {
+    server.registerTool(name, meta as any, async (args: any) => {
       const gate = authorizeToolCall(principal, name, (args ?? {}) as Record<string, unknown>)
       if (!gate.ok) {
         return jsonText(authErrorEnvelope(gate.code ?? 'AUTHORIZATION_REQUIRED', gate.message))
@@ -4270,28 +4300,24 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     {
       title: 'Get authenticated CP0 capabilities',
       description:
-        'Identity-safe capability names available to the authenticated board-bound principal.',
-      inputSchema: {
-        boardId: z.string().optional().describe('Board id; defaults to the authenticated board binding.'),
-      },
+        'Identity-safe capability names available to the current board-bound principal. Missing sensitive scopes remain omitted.',
+      inputSchema: { ...BOARD_ARG },
     },
     async (args) => {
       const id = resolveCp0ReadBoardId(args.boardId, principal)
       if (!id) throw new RbacError('FORBIDDEN_SCOPE', 'boardId required for CP0 metadata read')
-      const pin = await resolveBoardPin(id)
-      return jsonText(
-        buildCp0CapabilitiesReadback({
-          principal,
-          capabilities: listHumanSafeToolNames(principal),
-          pin: {
-            boardRev: pin.boardRev,
-            lifecycleRev: pin.lifecycleRev,
-            canonicalHash: pin.canonicalHash,
-            generatedAt: pin.generatedAt,
-            stale: pin.stale,
-          },
-        }),
-      )
+      const pin = boardPinToMcpReadPin(await resolveBoardPin(id))
+      return jsonText({
+        ok: true,
+        authenticated: principal != null,
+        role: principal?.role ?? null,
+        capabilities: listHumanSafeToolNames(principal),
+        boardRev: pin.boardRev,
+        lifecycleRev: pin.lifecycleRev,
+        canonicalHash: pin.canonicalHash,
+        observedAt: pin.generatedAt,
+        stale: pin.stale,
+      })
     },
   )
   secureTool(
@@ -4299,10 +4325,8 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
     {
       title: 'Get fail-closed CP0 sync status',
       description:
-        'Current-pin schema-008 sync/backlog readback; missing, stale, malformed, or off-pin evidence never proves zero.',
-      inputSchema: {
-        boardId: z.string().optional().describe('Board id; defaults to the authenticated board binding.'),
-      },
+        'Pinned sync/backlog readback. Missing migration-008 state remains explicit UNKNOWN and never becomes zero.',
+      inputSchema: { ...BOARD_ARG },
     },
     async (args) => {
       const id = resolveCp0ReadBoardId(args.boardId, principal)
@@ -4322,6 +4346,8 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         )
         row = (rows as Array<Cp0SyncStatusRow>)[0] ?? null
       } catch {
+        // App-only compatibility on schema 007: absence is an explicit unknown,
+        // never a fabricated empty outbox.
         schemaAvailable = false
       }
       return jsonText({
@@ -5154,9 +5180,9 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
             if (task.classification && typeof task.classification === 'object') {
               task.classification = sanitizeClassificationRecordForPersistence({
                 taskId: String(task.id ?? ''),
-                taskClass: (task.classification.taskClass ?? 'UNCLASSIFIED') as TaskClassificationRecord['taskClass'],
+                taskClass: (task.classification.taskClass ?? 'UNCLASSIFIED'),
                 disposition: (task.classification.disposition ??
-                  'UNCLASSIFIED') as TaskClassificationRecord['disposition'],
+                  'UNCLASSIFIED'),
                 receipt: task.classification.receipt ?? null,
                 controlPlaneTargetGate: task.classification.controlPlaneTargetGate,
                 controlPlaneGateVerifiedPass: task.classification.controlPlaneGateVerifiedPass,
@@ -5168,7 +5194,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
                 task.classificationReceipt,
               )
             }
-            return await upsertTask(id, task as never, env.entityExpectedRev)
+            return await upsertTask(id, task, env.entityExpectedRev)
           },
         )
         return jsonText(result)
@@ -5444,7 +5470,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           checkPinHash: true,
         })
         const opsRaw = (args.ops ?? {}) as Record<string, unknown>
-        const mapped = mapLegacyOpsAccountsToSync(opsRaw as { accounts?: Array<Record<string, unknown>> })
+        const mapped = mapLegacyOpsAccountsToSync(opsRaw)
         if (mapped.length === 0) {
           throw new McpMutationError('INVALID_INPUT', 'ops.accounts must be non-empty for replace_accounts')
         }
@@ -5864,7 +5890,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           const v3Map = await loadDurableLifecycleV3TaskStates(bid0)
           const v3 = v3Map.get(id)
           if (v3) {
-            stage = (v3.stage as string | null | undefined) ?? null
+            stage = (v3.stage) ?? null
             if (v3.implementerRunId != null) implementerRun = v3.implementerRunId
             // JSON clone keeps TaskLifecycleRow.lifecycle (Json) assignable.
             lifecycle = JSON.parse(
@@ -6160,21 +6186,38 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           // No-pin / incomplete: legacy lifecycle-table rollup (stale honesty on pin).
           rollup = (await computeRollup(id)) as unknown as Record<string, unknown>
         }
-        const classificationSyncRevision = await resolveMcpRuntimeContext().revisions.getEntity({
-          boardId: id,
-          entityType: 'classification_sync',
-          entityId: id,
-        })
-        const data = {
-          rollup,
-          ...rollup,
-          controlPlane: {
-            classificationSync: {
-              entityRev: classificationSyncRevision?.entityRev ?? 0,
-              subjectHash: classificationSyncRevision?.subjectHash ?? null,
-            },
+        const [accountSnapshot, durableRuns, boardState, classificationSyncRevision] = await Promise.all([
+          sharedAccountStore().get(id),
+          sharedRunStore().list(id),
+          sharedAtomic().getBoardState(id),
+          resolveMcpRuntimeContext().revisions.getEntity({
+            boardId: id,
+            entityType: 'classification_sync',
+            entityId: id,
+          }),
+        ])
+        const controlPlane = {
+          capabilities: CP0_CONTROL_PLANE_CAPABILITIES,
+          hierarchy: {
+            l0: durableRuns.filter((r) => r.hierarchyLevel === 'L0').length,
+            l1: durableRuns.filter((r) => r.hierarchyLevel === 'L1' && !['SUCCEEDED', 'FAILED', 'CANCELLED', 'STALE', 'SUPERSEDED'].includes(r.state)).length,
+            l2: durableRuns.filter((r) => r.hierarchyLevel === 'L2' && !['SUCCEEDED', 'FAILED', 'CANCELLED', 'STALE', 'SUPERSEDED'].includes(r.state)).length,
+          },
+          sync: {
+            status: boardState.dispatchBlocked ? 'TASK_MANAGER_SYNC_BLOCKED' : accountSnapshot?.stale ? 'STALE' : 'READBACK_REQUIRED',
+            sourceRevision: accountSnapshot?.sourceRevision ?? null,
+            generatedAt: accountSnapshot?.generatedAt ?? null,
+            readbackSurfaces: accountSnapshot?.readbackSurfaces ?? null,
+            effectiveBacklog: null,
+            zeroBacklogProven: false,
+            blocker: boardState.dispatchBlockedReason ?? null,
+          },
+          classificationSync: {
+            entityRev: classificationSyncRevision?.entityRev ?? 0,
+            subjectHash: classificationSyncRevision?.subjectHash ?? null,
           },
         }
+        const data = { rollup, ...rollup, controlPlane }
         const env = buildPinnedReadEnvelope(boardPinToMcpReadPin(pin), data, {
           method: 'get_rollup',
           nextCursor: null,
@@ -6606,7 +6649,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         readAudit(id, { limit: 200 }),
       ])
       const classificationActivity = projectClassificationSyncAuditActivity(
-        durableAudit as unknown as Array<Record<string, unknown>>,
+        durableAudit,
         pin.generatedAt,
       )
       const activity = [...model.activity, ...classificationActivity]
@@ -7885,6 +7928,21 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         accounts: z.array(z.record(z.string(), z.any())),
         idempotencyKey: z.string().min(1),
         trigger: ACCOUNT_SYNC_TRIGGER_Z.optional(),
+        genuineReadyPacketCount: z.number().int().min(0).optional(),
+        health: z
+          .object({
+            cpuPercent: z.number(),
+            memAvailableGiB: z.number().optional(),
+            observedWorkerRssP95MiB: z.number().optional(),
+            cpuOver95Samples: z.number().int().optional(),
+            hostLoad1m: z.number().optional(),
+            pidCount: z.number().int().optional(),
+            acceptedTerminalYieldPercent: z.number().optional(),
+            missingHeartbeatPercent: z.number().optional(),
+            infrastructureFailurePercent: z.number().optional(),
+            collisionDetected: z.boolean().optional(),
+          })
+          .optional(),
       },
     },
     async (args) => {
@@ -7931,6 +7989,8 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           idempotencyKey: env.idempotencyKey,
           callerRole: 'ROOT_ORCHESTRATOR' as const,
           actorId: actorIdOf(),
+          genuineReadyPacketCount: args.genuineReadyPacketCount,
+          health: args.health,
         }
         // Shared scheduler is required for multi-surface publication + SLA parity.
         // Never fall back to raw syncAccounts (that resets readbackSurfaces to null
@@ -8261,6 +8321,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         'INTEGRATOR path/checkpoint bounded lock (Grok-only integrator model). Full mutation envelope required. Principal checkpoint/pathspec bounds enforced.',
       inputSchema: {
         ...BOARD_ARG,
+        action: z.enum(['ACQUIRE_OR_RENEW', 'RELEASE']).optional(),
         pathspec: z.string().optional(),
         pathspecs: z.array(z.string()).optional(),
         checkpointId: z.string().optional(),
@@ -8269,6 +8330,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         trackingBranch: z.string().optional(),
         runId: z.string().optional(),
         integratorModel: z.string().optional(),
+        fencingToken: z.string().optional(),
       },
     },
     async (args) => {
@@ -8278,6 +8340,54 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           boardId: id,
           checkPinHash: true,
         })
+        if (args.action === 'RELEASE') {
+          if (!args.repoId || !args.trackingBranch || !args.runId || !args.fencingToken) {
+            throw new McpMutationError(
+              'INVALID_INPUT',
+              'integration_lock RELEASE requires repoId, trackingBranch, runId, and fencingToken',
+            )
+          }
+          const existing = await sharedLocks().getIntegration(id, args.repoId, args.trackingBranch)
+          if (!existing) throwNotFound('integration lock not found', { repoId: args.repoId })
+          enforceIntegratorLockBounds(principal, {
+            checkpointId: existing.checkpointId,
+            pathspecs: existing.pathspecs,
+          })
+          const begin = await beginIdempotent(sharedIdempotency(), {
+            scope: { actorId: actorIdOf(), boardId: id, endpoint: 'integration_lock_release', key: env.idempotencyKey },
+            requestBody: {
+              repoId: args.repoId,
+              trackingBranch: args.trackingBranch,
+              runId: args.runId,
+              fencingToken: args.fencingToken,
+              expectedBoardRev: env.expectedBoardRev,
+              entityExpectedRev: env.entityExpectedRev,
+              canonicalHash: env.subjectHash,
+            },
+            nowMs: systemClock().nowMs(),
+          })
+          if (begin.kind === 'REPLAY' && begin.record) return jsonText(begin.record.responseBody)
+          const { releaseIntegrationLock } = await import('#/server/locks')
+          const released = await releaseIntegrationLock(sharedLocks(), systemClock(), {
+            boardId: id,
+            repoId: args.repoId,
+            trackingBranch: args.trackingBranch,
+            runId: args.runId,
+            fencingToken: args.fencingToken,
+          })
+          const boardRev = await sharedAtomic().bumpBoardRev(id)
+          const ack = {
+            version: CP0_CONTROL_PLANE_VERSION,
+            ackType: 'RELEASE',
+            ackId: `ack-${createHash('sha256').update(`release\0${released.lockId}\0${released.entityRev}\0${boardRev}`).digest('hex').slice(0, 32)}`,
+            lockId: released.lockId,
+            entityRev: released.entityRev,
+            boardRev,
+          }
+          const body = { ok: true, action: 'RELEASE', released, releaseAck: ack, replayed: false }
+          await completeIdempotent(sharedIdempotency(), begin.scopeHash, 200, body, begin.requestHash)
+          return jsonText(body)
+        }
         const pathspecs: Array<string> =
           args.pathspecs ?? (args.pathspec ? [args.pathspec] : [])
         if (!pathspecs.length || !args.checkpointId || !args.rootAcceptanceId) {

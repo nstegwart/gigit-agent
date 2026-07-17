@@ -97,7 +97,7 @@ export const upsertRunFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     await requireAdminWrite()
     const { boardId, ...run } = data
-    return upsertRun(boardId, run as never)
+    return upsertRun(boardId, run)
   })
 
 export const setRunStatusFn = createServerFn({ method: 'POST' })
@@ -377,6 +377,15 @@ export const getGuideFn = createServerFn({ method: 'GET' })
  * when context is installed; otherwise fall back to process shared plan store.
  * Returns empty selection when no active plan / expired / superseded.
  */
+/** Adaptive mapping version + live progress (addendum B) — read-only, pin-derived. */
+export const getAdaptiveMappingVersionFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ boardId: board }))
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    const { loadBoardAdaptiveMappingSurface } = await import('#/server/mapping-version-loader')
+    return loadBoardAdaptiveMappingSurface(data.boardId)
+  })
+
 export const getNextFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
   .handler(async ({ data }) => {

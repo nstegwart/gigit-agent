@@ -379,7 +379,7 @@ export function assertAgentOwnRun(
 export function normalizeRepoRelativePath(raw: string): string | null {
   if (typeof raw !== 'string') return null
   if (raw.includes('\0')) return null
-  let s = raw.trim().replace(/\\/g, '/')
+  const s = raw.trim().replace(/\\/g, '/')
   if (!s) return null
   // Absolute: POSIX root, Windows drive, UNC
   if (s.startsWith('/') || /^[A-Za-z]:\//.test(s) || s.startsWith('//')) return null
@@ -603,10 +603,14 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   { name: 'get_dispatch_next', kind: 'read', scopes: ['board:read'], aliasOf: 'get_next' },
   // Owner humanDisplay projection (versioned; fail-closed CONTENT_REVIEW_REQUIRED when missing).
   { name: 'get_human_display', kind: 'read', scopes: ['board:read'] },
-  // Identity-safe, board-bound CP0 metadata. Account/audit data keep dedicated scopes.
+  // CP0 observability metadata. Both are identity-safe and board-bound;
+  // sensitive account/audit rows retain their dedicated scopes.
   { name: 'get_capabilities', kind: 'read', scopes: ['board:read'] },
   { name: 'get_sync_status', kind: 'read', scopes: ['board:read'] },
-  // Snapshot-pinned domain knowledge and deterministic documentation export.
+  // Snapshot-pinned domain knowledge + documentation export (Addendum C / 01A + TM-04).
+  // Handlers live in domain-knowledge-mcp + mcp-register-export-documentation;
+  // board-mcp must call registerDomainKnowledgeTools / registerExportDocumentationTool.
+  // Single catalog entry each — W-GIT-1 merge previously duplicated this block.
   { name: 'search_knowledge', kind: 'read', scopes: ['board:read'] },
   { name: 'get_domain_overview', kind: 'read', scopes: ['board:read'] },
   { name: 'list_domain_features', kind: 'read', scopes: ['board:read'] },
@@ -723,7 +727,7 @@ export function isPublicTool(name: string): boolean {
 export const UNSCOPED_BOARD_ENUMERATION_TOOLS: ReadonlyArray<string> = ['list_boards'] as const
 
 export function isUnscopedBoardEnumerationTool(name: string): boolean {
-  return (UNSCOPED_BOARD_ENUMERATION_TOOLS as ReadonlyArray<string>).includes(name)
+  return (UNSCOPED_BOARD_ENUMERATION_TOOLS).includes(name)
 }
 
 /**

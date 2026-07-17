@@ -26,35 +26,39 @@ import type { Decision, DecisionOptionV3Carrier, RawBoard, Run, WorkTask } from 
 import {
   isPinComplete,
   isSyntheticCanonicalSnapshotId,
-  tryLoadPinnedDefinitionReadModel,
-  type CanonicalDefinitionProjection,
-  type CanonicalDefinitionReadModel,
+  tryLoadPinnedDefinitionReadModel
+  
+  
 } from '#/server/canonical-read-model'
+import type {CanonicalDefinitionProjection, CanonicalDefinitionReadModel} from '#/server/canonical-read-model';
 import {
   boardHash,
   listBoards,
   readBoard,
   readOps,
-  readTasks,
-  type ControlPlaneAuditEvent,
+  readTasks, createSystemClock 
+  
 } from '#/server/board-store'
-import { parseValidClaimState, type ValidClaimState } from '#/server/tasks-store'
+import type {ControlPlaneAuditEvent} from '#/server/board-store';
+import { parseValidClaimState  } from '#/server/tasks-store'
+import type {ValidClaimState} from '#/server/tasks-store';
 import {
   selectNextFromActivePlan,
   getSharedDispatchPlanStore,
-  projectDispatchNextFields,
-  type DispatchPlanRecord,
+  projectDispatchNextFields
+  
 } from '#/server/control-plane-ingest'
-import { createSystemClock } from '#/server/board-store'
+import type {DispatchPlanRecord} from '#/server/control-plane-ingest';
 import { db } from '#/server/db'
 import type { DecisionV3Record, DecisionSeverity, DecisionV3Status } from '#/server/decisions-v3'
 import {
   projectAccountSyncCcReadModel,
-  readLatestAccountSyncSnapshot,
-  type AccountSyncCcReadModel,
-  type AccountSyncSnapshot,
-  type MaskedAccountRecord,
+  readLatestAccountSyncSnapshot
+  
+  
+  
 } from '#/server/account-sync'
+import type {AccountSyncCcReadModel, AccountSyncSnapshot, MaskedAccountRecord} from '#/server/account-sync';
 import {
   loadPinnedAuthoritativeAccountSnapshot,
   readAuthenticatedUiAccountSourceService,
@@ -65,43 +69,46 @@ import {
   humanDisplayEntityKey,
   livePinFromControlCenter,
   maskAccountForUi,
-  projectOwnerHumanDisplayUi,
-  type AccountSyncUiMeta,
-  type AccountUiSummary,
-  type AuditUiEvent,
-  type ControlCenterAggregation,
-  type ControlCenterAggregationInput,
-  type ControlCenterPin,
-  type ControlCenterTaskInput,
-  type DispatchNextUi,
-  type FeatureUiSummary,
-  type OwnerHumanDisplayUiProjection,
-  type ProjectUiSummary,
-  type ProductiveSubstate,
-  type RunUiSummary,
+  projectOwnerHumanDisplayUi
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
 } from '#/server/control-center-ui'
+import type {AccountSyncUiMeta, AccountUiSummary, AuditUiEvent, ControlCenterAggregation, ControlCenterAggregationInput, ControlCenterPin, ControlCenterTaskInput, DispatchNextUi, FeatureUiSummary, OwnerHumanDisplayUiProjection, ProjectUiSummary, ProductiveSubstate, RunUiSummary} from '#/server/control-center-ui';
 import type { HumanDisplayRecord } from '#/server/human-display-persistence'
 import {
-  getControlPlaneRuntimeContext,
-  type ControlPlaneRuntimeContext,
+  getControlPlaneRuntimeContext
+  
 } from '#/server/control-plane-runtime-context'
+import type {ControlPlaneRuntimeContext} from '#/server/control-plane-runtime-context';
 import {
   LEASED_RUN_STATES,
   RUN_LEASE_MS,
   RUN_RECONCILIATION_GRACE_MS,
-  TERMINAL_RUN_STATES,
-  type RunRecord,
-  type RunState,
+  TERMINAL_RUN_STATES
+  
+  
 } from '#/server/run-registry'
-import type { PriorityPacket } from '#/server/rollup-v3'
-import type { ClaimState, RunLiveness } from '#/server/rollup-v3'
+import type {RunRecord, RunState} from '#/server/run-registry';
+import type { PriorityPacket, ClaimState, RunLiveness  } from '#/server/rollup-v3'
 import { isAllowedClosureRole } from '#/server/rollup-v3'
 import {
   buildDirectMembershipAllowlist,
-  isPriorityPortfolioMembership,
-  type DirectMembershipAllowlist,
-  type PriorityMembershipContext,
+  isPriorityPortfolioMembership
+  
+  
 } from '#/server/classification'
+import type {DirectMembershipAllowlist, PriorityMembershipContext} from '#/server/classification';
 
 /** Optional run-registry / extended fields never mirrored from heartbeat alone. */
 type RunSourceExt = Run & {
@@ -167,12 +174,12 @@ export function mapTaskClassification(
 
   const nested = raw.classification
   const taskClass = isTaskClass(nested?.taskClass)
-    ? nested!.taskClass
+    ? nested.taskClass
     : isTaskClass(raw.taskClass)
       ? raw.taskClass
       : null
   const disposition = isDisposition(nested?.disposition)
-    ? nested!.disposition
+    ? nested.disposition
     : isDisposition(raw.disposition)
       ? raw.disposition
       : null
@@ -701,7 +708,7 @@ function mapDecisionOptions(
     const mapped: DecisionV3Record['options'] = []
     for (const o of rawOptions) {
       if (!o || typeof o !== 'object') continue
-      const carrier = o as DecisionOptionV3Carrier
+      const carrier = o
       const optionId = String(carrier.optionId ?? carrier.id ?? carrier.key ?? '').trim()
       const label = String(carrier.label ?? '').trim()
       if (!optionId || !label) continue
@@ -866,7 +873,7 @@ export function mapWorkTaskToControlCenterInput(
     claimState =
       opts.durableOwnership.claimState === 'NONE'
         ? undefined
-        : (opts.durableOwnership.claimState as ValidClaimState)
+        : (opts.durableOwnership.claimState)
     runLiveness = opts.durableOwnership.runLiveness
   } else {
     // Fixture / unit path only — production load always supplies durableOwnership when runs exist.
@@ -1110,7 +1117,7 @@ export function mapLegacyDecisionToV3(
     title: titleSrc.slice(0, 200),
     question: questionSrc.slice(0, 2000),
     evidence: mapEvidenceStringRefs(raw.evidence),
-    options: mapDecisionOptions(raw as Decision),
+    options: mapDecisionOptions(raw),
     agentRecommendation: recommendation,
     blocking,
     dueAt: due.iso,
@@ -1300,9 +1307,9 @@ function resolveAccountSyncReadModel(
 ): AccountSyncCcReadModel | null {
   if (!src.accountSyncSnapshot) return null
   const snap = src.accountSyncSnapshot
-  if ('readbackParityOk' in snap && typeof (snap as AccountSyncCcReadModel).readbackParityOk === 'boolean') {
+  if ('readbackParityOk' in snap && typeof (snap).readbackParityOk === 'boolean') {
     // Already projected read model
-    return snap as AccountSyncCcReadModel
+    return snap
   }
   return projectAccountSyncCcReadModel(snap as AccountSyncSnapshot)
 }
@@ -2337,7 +2344,7 @@ export async function loadControlCenterAggregation(
       // without reintroducing legacy projects/features/tasks as definition authority.
       try {
         const legacyRaw = await readBoard(boardId)
-        legacyRuns = (legacyRaw.runs ?? []) as Run[]
+        legacyRuns = (legacyRaw.runs ?? [])
         raw = {
           ...raw,
           conventions: legacyRaw.conventions,
@@ -2382,7 +2389,7 @@ export async function loadControlCenterAggregation(
   if (!usedCanonicalDefinition) {
     try {
       ;[raw, hash] = await Promise.all([readBoard(boardId), boardHash(boardId)])
-      legacyRuns = (raw.runs ?? []) as Run[]
+      legacyRuns = (raw.runs ?? [])
     } catch (e) {
       throw e
     }
@@ -2441,7 +2448,7 @@ export async function loadControlCenterAggregation(
   // Legacy ops is diagnostic only — never account capacity authority (C2 snapshot is).
   try {
     const ops = await readOps(boardId)
-    opsAccounts = (ops.accounts ?? []) as ControlCenterSourceBundle['opsAccounts']
+    opsAccounts = (ops.accounts ?? [])
   } catch (e) {
     sectionErrors.push({
       section: 'accounts_legacy',

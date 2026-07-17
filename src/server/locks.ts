@@ -10,12 +10,14 @@ import type { ControlPlaneAtomicStore, ControlPlaneClock } from './board-store'
 import {
   beginIdempotent,
   completeIdempotent,
-  type IdempotencyStorage,
-  IdempotencyError,
+  
+  IdempotencyError
 } from './idempotency'
+import type {IdempotencyStorage} from './idempotency';
 
 // ---- constants ----
 
+/** CP0 renewable claim/integration lease: ten minutes. */
 export const DEFAULT_LOCK_LEASE_MS = 60_000
 
 export type LockRole = 'AUTHOR' | 'VERIFIER' | 'INTEGRATOR' | 'OTHER' | string
@@ -79,7 +81,11 @@ export type LockErrorCode =
 export class LockError extends Error {
   readonly code: LockErrorCode
   readonly details: Readonly<Record<string, unknown>>
-  constructor(code: LockErrorCode, message: string, details: Record<string, unknown> = {}) {
+  constructor(
+    code: LockErrorCode,
+    message: string,
+    details: Record<string, unknown> = {},
+  ) {
     super(message)
     this.name = 'LockError'
     this.code = code
@@ -88,22 +94,25 @@ export class LockError extends Error {
 }
 
 export interface LockStore {
-  listCollision(boardId: string): Promise<Array<CollisionLockRecord>>
-  getCollision(boardId: string, lockId: string): Promise<CollisionLockRecord | null>
-  getCollisionByScope(
+  listCollision: (boardId: string) => Promise<Array<CollisionLockRecord>>
+  getCollision: (
+    boardId: string,
+    lockId: string,
+  ) => Promise<CollisionLockRecord | null>
+  getCollisionByScope: (
     boardId: string,
     scopeId: string,
-  ): Promise<CollisionLockRecord | null>
-  putCollision(rec: CollisionLockRecord): Promise<void>
-  listIntegration(boardId: string): Promise<Array<IntegrationLockRecord>>
-  getIntegration(
+  ) => Promise<CollisionLockRecord | null>
+  putCollision: (rec: CollisionLockRecord) => Promise<void>
+  listIntegration: (boardId: string) => Promise<Array<IntegrationLockRecord>>
+  getIntegration: (
     boardId: string,
     repoId: string,
     trackingBranch: string,
-  ): Promise<IntegrationLockRecord | null>
-  putIntegration(rec: IntegrationLockRecord): Promise<void>
+  ) => Promise<IntegrationLockRecord | null>
+  putIntegration: (rec: IntegrationLockRecord) => Promise<void>
   /** Board-level mutex for atomic multi-lock ops. */
-  withBoardLock<T>(boardId: string, fn: () => Promise<T> | T): Promise<T>
+  withBoardLock: <T>(boardId: string, fn: () => Promise<T> | T) => Promise<T>
 }
 
 // ---- pure helpers ----
@@ -169,7 +178,12 @@ export function parseScope(scopeId: string): {
     const rest = raw.slice(5)
     const idx = rest.indexOf(':')
     if (idx < 0) return { domain: 'repo', repoId: rest, path: '', raw }
-    return { domain: 'repo', repoId: rest.slice(0, idx), path: rest.slice(idx + 1), raw }
+    return {
+      domain: 'repo',
+      repoId: rest.slice(0, idx),
+      path: rest.slice(idx + 1),
+      raw,
+    }
   }
   if (raw.startsWith('path:')) {
     return { domain: 'path', path: raw.slice(5), raw }
@@ -197,22 +211,36 @@ export function parseScope(scopeId: string): {
  */
 export function assertSafeLockPath(p: string, label = 'path'): void {
   if (typeof p !== 'string') {
-    throw new LockError('INVALID_INPUT', `${label} must be a string`, { path: p })
+    throw new LockError('INVALID_INPUT', `${label} must be a string`, {
+      path: p,
+    })
   }
   if (p.includes('\0')) {
-    throw new LockError('INVALID_INPUT', `${label} must not contain NUL`, { path: p })
+    throw new LockError('INVALID_INPUT', `${label} must not contain NUL`, {
+      path: p,
+    })
   }
   const raw = p.trim()
   if (!raw) {
-    throw new LockError('INVALID_INPUT', `${label} must not be empty`, { path: p })
+    throw new LockError('INVALID_INPUT', `${label} must not be empty`, {
+      path: p,
+    })
   }
   // Windows drive / UNC absolute forms before slash normalize
-  if (/^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith('\\\\') || raw.startsWith('//')) {
-    throw new LockError('INVALID_INPUT', `${label} must not be absolute`, { path: p })
+  if (
+    /^[A-Za-z]:[\\/]/.test(raw) ||
+    raw.startsWith('\\\\') ||
+    raw.startsWith('//')
+  ) {
+    throw new LockError('INVALID_INPUT', `${label} must not be absolute`, {
+      path: p,
+    })
   }
-  let s = raw.replace(/\\/g, '/')
+  const s = raw.replace(/\\/g, '/')
   if (s.startsWith('/')) {
-    throw new LockError('INVALID_INPUT', `${label} must not be absolute`, { path: p })
+    throw new LockError('INVALID_INPUT', `${label} must not be absolute`, {
+      path: p,
+    })
   }
   // Strip allowed trailing globs for segment validation only
   let body = s
@@ -221,25 +249,41 @@ export function assertSafeLockPath(p: string, label = 'path'): void {
   while (body.endsWith('/')) body = body.slice(0, -1)
   if (!body) {
     // bare `/**` or `/*` is non-canonical (no relative root)
-    throw new LockError('INVALID_INPUT', `${label} must be a relative non-empty path`, { path: p })
+    throw new LockError(
+      'INVALID_INPUT',
+      `${label} must be a relative non-empty path`,
+      { path: p },
+    )
   }
   if (body.startsWith('/')) {
-    throw new LockError('INVALID_INPUT', `${label} must not be absolute`, { path: p })
+    throw new LockError('INVALID_INPUT', `${label} must not be absolute`, {
+      path: p,
+    })
   }
   const segs = body.split('/')
   for (const seg of segs) {
     if (seg === '') {
-      throw new LockError('INVALID_INPUT', `${label} must be canonical (no empty segments)`, {
-        path: p,
-      })
+      throw new LockError(
+        'INVALID_INPUT',
+        `${label} must be canonical (no empty segments)`,
+        {
+          path: p,
+        },
+      )
     }
     if (seg === '..') {
-      throw new LockError('INVALID_INPUT', `${label} must not contain '..'`, { path: p })
-    }
-    if (seg === '.') {
-      throw new LockError('INVALID_INPUT', `${label} must be canonical (no '.' segments)`, {
+      throw new LockError('INVALID_INPUT', `${label} must not contain '..'`, {
         path: p,
       })
+    }
+    if (seg === '.') {
+      throw new LockError(
+        'INVALID_INPUT',
+        `${label} must be canonical (no '.' segments)`,
+        {
+          path: p,
+        },
+      )
     }
   }
 }
@@ -257,10 +301,14 @@ export function normalizePath(p: string): string {
 /** Validate path-bearing collision/integration scope ids before lock acquire. */
 export function assertSafeScopeId(scopeId: string): void {
   if (typeof scopeId !== 'string' || !scopeId.trim()) {
-    throw new LockError('INVALID_INPUT', 'scopeId must be a non-empty string', { scopeId })
+    throw new LockError('INVALID_INPUT', 'scopeId must be a non-empty string', {
+      scopeId,
+    })
   }
   if (scopeId.includes('\0')) {
-    throw new LockError('INVALID_INPUT', 'scopeId must not contain NUL', { scopeId })
+    throw new LockError('INVALID_INPUT', 'scopeId must not contain NUL', {
+      scopeId,
+    })
   }
   const parsed = parseScope(scopeId)
   if (parsed.domain === 'path') {
@@ -305,7 +353,10 @@ export function scopesCollide(a: string, b: string): boolean {
   }
   // integration keys collide only on exact repo+branch (handled separately)
   if (pa.domain === 'integration' && pb.domain === 'integration') {
-    return (pa.repoId ?? '') === (pb.repoId ?? '') && (pa.branch ?? '') === (pb.branch ?? '')
+    return (
+      (pa.repoId ?? '') === (pb.repoId ?? '') &&
+      (pa.branch ?? '') === (pb.branch ?? '')
+    )
   }
   return false
 }
@@ -360,7 +411,9 @@ export async function acquireCollisionLocks(
   clock: ControlPlaneClock,
   req: AcquireCollisionRequest,
 ): Promise<AcquireCollisionResult> {
-  const scopes = [...new Set(req.collisionScopeLockIds.map((s) => s.trim()).filter(Boolean))]
+  const scopes = [
+    ...new Set(req.collisionScopeLockIds.map((s) => s.trim()).filter(Boolean)),
+  ]
   if (!scopes.length) {
     return { locks: [], fencingToken: '', fencingVersion: 0 }
   }
@@ -371,11 +424,15 @@ export async function acquireCollisionLocks(
   // Intra-request uniqueness + self-overlap
   for (let i = 0; i < scopes.length; i++) {
     for (let j = i + 1; j < scopes.length; j++) {
-      if (scopesCollide(scopes[i]!, scopes[j]!)) {
-        throw new LockError('CLAIM_COLLISION', `duplicate/overlapping scopes in request: ${scopes[i]} vs ${scopes[j]}`, {
-          a: scopes[i],
-          b: scopes[j],
-        })
+      if (scopesCollide(scopes[i], scopes[j])) {
+        throw new LockError(
+          'CLAIM_COLLISION',
+          `duplicate/overlapping scopes in request: ${scopes[i]} vs ${scopes[j]}`,
+          {
+            a: scopes[i],
+            b: scopes[j],
+          },
+        )
       }
     }
   }
@@ -397,11 +454,19 @@ export async function acquireCollisionLocks(
           // renew path handled below
           continue
         }
-        if (held.taskId !== req.taskId && scopesCollide(scopeId, held.scopeId)) {
+        if (
+          held.taskId !== req.taskId &&
+          scopesCollide(scopeId, held.scopeId)
+        ) {
           throw new LockError(
             'CLAIM_COLLISION',
             `overlapping cross-task path collision: ${scopeId} conflicts with held ${held.scopeId} (task ${held.taskId})`,
-            { scopeId, heldScopeId: held.scopeId, heldTaskId: held.taskId, heldRunId: held.runId },
+            {
+              scopeId,
+              heldScopeId: held.scopeId,
+              heldTaskId: held.taskId,
+              heldRunId: held.runId,
+            },
           )
         }
         if (held.taskId === req.taskId && held.runId !== req.runId) {
@@ -420,7 +485,12 @@ export async function acquireCollisionLocks(
         }
       }
 
-      const prior = existing.find((e) => e.scopeId === scopeId && isLiveCollision(e, now) && e.runId === req.runId)
+      const prior = existing.find(
+        (e) =>
+          e.scopeId === scopeId &&
+          isLiveCollision(e, now) &&
+          e.runId === req.runId,
+      )
       if (prior) {
         const renewed: CollisionLockRecord = {
           ...prior,
@@ -484,9 +554,13 @@ export async function renewCollisionLocks(
     const out: Array<CollisionLockRecord> = []
     for (const rec of held) {
       if (rec.fencingToken !== opts.fencingToken) {
-        throw new LockError('FENCED', `fencing token mismatch for lock ${rec.lockId}`, {
-          lockId: rec.lockId,
-        })
+        throw new LockError(
+          'FENCED',
+          `fencing token mismatch for lock ${rec.lockId}`,
+          {
+            lockId: rec.lockId,
+          },
+        )
       }
       if (rec.leaseExpiresAtMs <= now) {
         const expired: CollisionLockRecord = {
@@ -496,9 +570,13 @@ export async function renewCollisionLocks(
           entityRev: rec.entityRev + 1,
         }
         await store.putCollision(expired)
-        throw new LockError('LEASE_EXPIRED', `lock lease expired: ${rec.lockId}`, {
-          lockId: rec.lockId,
-        })
+        throw new LockError(
+          'LEASE_EXPIRED',
+          `lock lease expired: ${rec.lockId}`,
+          {
+            lockId: rec.lockId,
+          },
+        )
       }
       const renewed: CollisionLockRecord = {
         ...rec,
@@ -529,9 +607,13 @@ export async function releaseCollisionLocks(
     const out: Array<CollisionLockRecord> = []
     for (const rec of held) {
       if (rec.fencingToken !== opts.fencingToken) {
-        throw new LockError('FENCED', `fencing token mismatch on release: ${rec.lockId}`, {
-          lockId: rec.lockId,
-        })
+        throw new LockError(
+          'FENCED',
+          `fencing token mismatch on release: ${rec.lockId}`,
+          {
+            lockId: rec.lockId,
+          },
+        )
       }
       const released: CollisionLockRecord = {
         ...rec,
@@ -568,12 +650,19 @@ export async function supersedeCollisionLock(
     const now = clock.nowMs()
     const all = await store.listCollision(opts.boardId)
     const current = all.find(
-      (l) => l.scopeId === opts.scopeId && l.state === 'HELD' && l.leaseExpiresAtMs > now,
+      (l) =>
+        l.scopeId === opts.scopeId &&
+        l.state === 'HELD' &&
+        l.leaseExpiresAtMs > now,
     )
     if (!current) {
-      throw new LockError('LOCK_NOT_FOUND', `no live lock for scope ${opts.scopeId}`, {
-        scopeId: opts.scopeId,
-      })
+      throw new LockError(
+        'LOCK_NOT_FOUND',
+        `no live lock for scope ${opts.scopeId}`,
+        {
+          scopeId: opts.scopeId,
+        },
+      )
     }
     if (current.fencingToken !== opts.expectedFencingToken) {
       throw new LockError('FENCED', 'supersession fencing check failed', {
@@ -697,25 +786,46 @@ export async function acquireIntegrationLock(
   gate: IntegrationLockGateDeps,
 ): Promise<IntegrationLockRecord> {
   if (!req.rootAcceptanceId) {
-    throw new LockError('INVALID_INPUT', 'rootAcceptanceId required for integration lock')
+    throw new LockError(
+      'INVALID_INPUT',
+      'rootAcceptanceId required for integration lock',
+    )
   }
   if (!req.checkpointId) {
-    throw new LockError('INVALID_INPUT', 'checkpointId required for integration lock')
+    throw new LockError(
+      'INVALID_INPUT',
+      'checkpointId required for integration lock',
+    )
   }
   if (!req.pathspecs?.length) {
-    throw new LockError('INVALID_INPUT', 'pathspecs required for integration lock')
+    throw new LockError(
+      'INVALID_INPUT',
+      'pathspecs required for integration lock',
+    )
   }
-  if (typeof req.entityExpectedRev !== 'number' || !Number.isInteger(req.entityExpectedRev)) {
+  if (
+    typeof req.entityExpectedRev !== 'number' ||
+    !Number.isInteger(req.entityExpectedRev)
+  ) {
     throw new LockError(
       'INVALID_INPUT',
       'entityExpectedRev is required (create=0, renew=current) — no silent default',
     )
   }
-  if (typeof req.expectedBoardRev !== 'number' || !Number.isInteger(req.expectedBoardRev)) {
-    throw new LockError('INVALID_INPUT', 'expectedBoardRev is required — no silent default')
+  if (
+    typeof req.expectedBoardRev !== 'number' ||
+    !Number.isInteger(req.expectedBoardRev)
+  ) {
+    throw new LockError(
+      'INVALID_INPUT',
+      'expectedBoardRev is required — no silent default',
+    )
   }
   if (!req.canonicalHash || !String(req.canonicalHash).trim()) {
-    throw new LockError('INVALID_INPUT', 'canonicalHash is required (current pin hash)')
+    throw new LockError(
+      'INVALID_INPUT',
+      'canonicalHash is required (current pin hash)',
+    )
   }
   if (!req.idempotencyKey || !String(req.idempotencyKey).trim()) {
     throw new LockError('INVALID_INPUT', 'idempotencyKey is required')
@@ -725,10 +835,14 @@ export async function acquireIntegrationLock(
     req.currentPinHash !== '' &&
     req.currentPinHash !== req.canonicalHash
   ) {
-    throw new LockError('STALE_REVISION', 'canonical hash mismatch vs current pin', {
-      expectedCanonicalHash: req.canonicalHash,
-      currentPinHash: req.currentPinHash,
-    })
+    throw new LockError(
+      'STALE_REVISION',
+      'canonical hash mismatch vs current pin',
+      {
+        expectedCanonicalHash: req.canonicalHash,
+        currentPinHash: req.currentPinHash,
+      },
+    )
   }
   // Exact supported Grok integrator identity only (no substring /grok/i).
   if (req.integratorModel.trim() !== 'grok-4.5') {
@@ -770,16 +884,28 @@ export async function acquireIntegrationLock(
   try {
     const board = await gate.atomic.getBoardState(req.boardId)
     if (req.expectedBoardRev !== board.boardRev) {
-      throw new LockError('STALE_REVISION', 'board rev mismatch on integration_lock', {
-        expectedBoardRev: req.expectedBoardRev,
-        currentBoardRev: board.boardRev,
-      })
+      throw new LockError(
+        'STALE_REVISION',
+        'board rev mismatch on integration_lock',
+        {
+          expectedBoardRev: req.expectedBoardRev,
+          currentBoardRev: board.boardRev,
+        },
+      )
     }
 
     const rec = await store.withBoardLock(req.boardId, async () => {
       const now = clock.nowMs()
-      const existing = await store.getIntegration(req.boardId, req.repoId, req.trackingBranch)
-      if (existing && isLiveIntegration(existing, now) && existing.runId !== req.runId) {
+      const existing = await store.getIntegration(
+        req.boardId,
+        req.repoId,
+        req.trackingBranch,
+      )
+      if (
+        existing &&
+        isLiveIntegration(existing, now) &&
+        existing.runId !== req.runId
+      ) {
         throw new LockError(
           'INTEGRATION_LOCKED',
           `exactly one live COMMIT_INTEGRATE per repoId+trackingBranch; held by ${existing.runId}`,
@@ -790,13 +916,21 @@ export async function acquireIntegrationLock(
           },
         )
       }
-      if (existing && isLiveIntegration(existing, now) && existing.runId === req.runId) {
+      if (
+        existing &&
+        isLiveIntegration(existing, now) &&
+        existing.runId === req.runId
+      ) {
         // Renew: CAS current entity rev; no board-rev bump on renew.
         if (req.entityExpectedRev !== existing.entityRev) {
-          throw new LockError('STALE_REVISION', 'entity rev mismatch on integration_lock renew', {
-            entityExpectedRev: req.entityExpectedRev,
-            currentEntityRev: existing.entityRev,
-          })
+          throw new LockError(
+            'STALE_REVISION',
+            'entity rev mismatch on integration_lock renew',
+            {
+              entityExpectedRev: req.entityExpectedRev,
+              currentEntityRev: existing.entityRev,
+            },
+          )
         }
         const renewed: IntegrationLockRecord = {
           ...existing,
@@ -838,7 +972,13 @@ export async function acquireIntegrationLock(
       await gate.atomic.bumpBoardRev(req.boardId)
       return next
     })
-    await completeIdempotent(gate.idempotency, begin.scopeHash, 200, rec, begin.requestHash)
+    await completeIdempotent(
+      gate.idempotency,
+      begin.scopeHash,
+      200,
+      rec,
+      begin.requestHash,
+    )
     return rec
   } catch (e) {
     try {
@@ -866,9 +1006,17 @@ export async function releaseIntegrationLock(
 ): Promise<IntegrationLockRecord> {
   return store.withBoardLock(opts.boardId, async () => {
     const now = clock.nowMs()
-    const existing = await store.getIntegration(opts.boardId, opts.repoId, opts.trackingBranch)
+    const existing = await store.getIntegration(
+      opts.boardId,
+      opts.repoId,
+      opts.trackingBranch,
+    )
     if (!existing || existing.runId !== opts.runId) {
-      throw new LockError('LOCK_NOT_FOUND', 'integration lock not found for run', opts)
+      throw new LockError(
+        'LOCK_NOT_FOUND',
+        'integration lock not found for run',
+        opts,
+      )
     }
     if (existing.fencingToken !== opts.fencingToken) {
       throw new LockError('FENCED', 'integration release fencing mismatch')
@@ -921,7 +1069,7 @@ export async function markExpiredLocks(
 }
 
 export function createMemoryLockStore(): LockStore & {
-  snapshot(): {
+  snapshot: () => {
     collision: Array<CollisionLockRecord>
     integration: Array<IntegrationLockRecord>
   }
@@ -942,7 +1090,9 @@ export function createMemoryLockStore(): LockStore & {
       }
     },
     async listCollision(boardId) {
-      return [...collision.values()].filter((r) => r.boardId === boardId).map((r) => ({ ...r }))
+      return [...collision.values()]
+        .filter((r) => r.boardId === boardId)
+        .map((r) => ({ ...r }))
     },
     async getCollision(boardId, lockId) {
       const r = collision.get(ck(boardId, lockId))
@@ -950,7 +1100,8 @@ export function createMemoryLockStore(): LockStore & {
     },
     async getCollisionByScope(boardId, scopeId) {
       const live = [...collision.values()].find(
-        (r) => r.boardId === boardId && r.scopeId === scopeId && r.state === 'HELD',
+        (r) =>
+          r.boardId === boardId && r.scopeId === scopeId && r.state === 'HELD',
       )
       return live ? { ...live } : null
     },
@@ -958,14 +1109,18 @@ export function createMemoryLockStore(): LockStore & {
       collision.set(ck(rec.boardId, rec.lockId), { ...rec })
     },
     async listIntegration(boardId) {
-      return [...integration.values()].filter((r) => r.boardId === boardId).map((r) => ({ ...r }))
+      return [...integration.values()]
+        .filter((r) => r.boardId === boardId)
+        .map((r) => ({ ...r }))
     },
     async getIntegration(boardId, repoId, trackingBranch) {
       const r = integration.get(ik(boardId, repoId, trackingBranch))
       return r ? { ...r } : null
     },
     async putIntegration(rec) {
-      integration.set(ik(rec.boardId, rec.repoId, rec.trackingBranch), { ...rec })
+      integration.set(ik(rec.boardId, rec.repoId, rec.trackingBranch), {
+        ...rec,
+      })
     },
     async withBoardLock(boardId, fn) {
       const prev = chains.get(boardId) ?? Promise.resolve()
