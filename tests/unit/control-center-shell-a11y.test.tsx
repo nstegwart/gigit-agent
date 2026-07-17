@@ -22,9 +22,26 @@ const appShellSrc = readFileSync(
 const stylesSrc = readFileSync(join(root, 'src/styles.css'), 'utf8')
 const rootRouteSrc = readFileSync(join(root, 'src/routes/__root.tsx'), 'utf8')
 
-/** Exact nine primary IA labels for mfs-rebuild (UI_CONTRACT §2). */
+/** Nine primary IA labels (UI_CONTRACT §2) — CONTROL_CENTER_NAV_LABELS export. */
 const EXPECTED_CC_LABELS = [
   'Overview',
+  'Work',
+  'Priority',
+  'Projects',
+  'Features / Flows',
+  'Agents / Runs',
+  'Ops / Accounts',
+  'Decisions',
+  'Evidence / Audit',
+] as const
+
+/**
+ * Live CONTROL_CENTER_NAV order after W-UI-1: Rebuild sits after Overview/Ringkasan
+ * (SPEC-TM-KOMPAT-VISUAL-V1 §3.A / §4.6). Export CONTROL_CENTER_NAV_LABELS stays 9.
+ */
+const EXPECTED_CC_NAV_MARKUP_LABELS = [
+  'Overview',
+  'Rebuild',
   'Work',
   'Priority',
   'Projects',
@@ -58,7 +75,7 @@ describe('control-center shell a11y — nav order + names', () => {
       if (['Structure', 'Ops', 'Struktur', 'Operasi'].includes(m[1])) continue
       labels.push(m[1])
     }
-    expect(labels).toEqual([...EXPECTED_CC_LABELS])
+    expect(labels).toEqual([...EXPECTED_CC_NAV_MARKUP_LABELS])
   })
 
   it('nav BoardLink always sets aria-label from the item label (mobile icon-only name)', () => {

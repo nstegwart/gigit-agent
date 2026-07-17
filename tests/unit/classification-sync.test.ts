@@ -275,6 +275,54 @@ describe('schema-007 classification sync', () => {
     expect(writeToolSchemaHasFullEnvelope(schema!.schemaKeys)).toBe(true)
   })
 
+  it('sync_task_classifications items schema accepts complete-set size 2501 (maxItems 10000 headroom)', () => {
+    // Live board complete-set is 2501 tasks; old maxItems=2000 rejected schema before handler.
+    const root = principal('ROOT_ORCHESTRATOR', 'root-1')
+    const server = new McpServer({
+      name: 'classification-sync-items-cap',
+      version: '0.0.0',
+    })
+    registerBoardTools(server, {
+      principal: root,
+      mechanism: { kind: 'OK' },
+      bearerPresent: true,
+    })
+    const tools = (
+      server as unknown as {
+        _registeredTools: Partial<
+          Record<
+            string,
+            {
+              inputSchema?: {
+                shape?: { items?: { safeParse: (v: unknown) => { success: boolean } } }
+              }
+            }
+          >
+        >
+      }
+    )._registeredTools
+    const itemsSchema = tools.sync_task_classifications?.inputSchema?.shape?.items
+    expect(itemsSchema).toBeDefined()
+
+    const item = {
+      taskId: 't-x',
+      taskClass: 'PRODUCT' as const,
+      disposition: 'ACTIVE' as const,
+    }
+    const set2501 = Array.from({ length: 2501 }, (_, i) => ({
+      ...item,
+      taskId: `t-${i}`,
+    }))
+    expect(itemsSchema!.safeParse(set2501).success).toBe(true)
+
+    // Still bounded: headroom is 10_000, not unbounded.
+    const set10001 = Array.from({ length: 10_001 }, (_, i) => ({
+      ...item,
+      taskId: `t-${i}`,
+    }))
+    expect(itemsSchema!.safeParse(set10001).success).toBe(false)
+  })
+
   it('real MCP handler persists exact set, replays before stale CAS, and rejects changed or partial input', async () => {
     const { ctx, applied } = await installCanonicalFixture()
     const rootServer = new McpServer({
