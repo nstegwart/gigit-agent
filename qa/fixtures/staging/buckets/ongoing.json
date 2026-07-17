@@ -1,0 +1,77 @@
+{
+  "bucket": "ONGOING",
+  "pin": {
+    "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+    "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+    "boardRev": 7,
+    "lifecycleRev": 3,
+    "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4"
+  },
+  "issuedAt": "2026-07-13T12:00:00.000Z",
+  "taskIds": [
+    "task-ongoing-1"
+  ],
+  "tasks": [
+    {
+      "id": "task-ongoing-1",
+      "title": "SYNTH ONGOING implementer work",
+      "projectId": "proj-sales-web",
+      "featureContractId": "feat-checkout",
+      "phase": "build",
+      "lifecycleStage": "IMPL_IN_PROGRESS",
+      "implementerRun": "run-synth-ongoing",
+      "blockedReason": null,
+      "data": {
+        "id": "task-ongoing-1",
+        "title": "SYNTH ONGOING implementer work",
+        "claimState": "VALID_CURRENT",
+        "lifecycleStage": "IMPL_IN_PROGRESS",
+        "status": "in_progress",
+        "hasBlockingDecision": false,
+        "blockers": [],
+        "selectedForNextDispatch": false,
+        "stale": false,
+        "staleReason": null,
+        "staleDataSource": false,
+        "reconciliation": null,
+        "classification": {
+          "taskClass": "PRODUCT",
+          "disposition": "ACTIVE",
+          "receipt": {
+            "receiptId": "rcpt-task-ongoing-1",
+            "receiptHash": "17dad223fd74a027538c8216b8d69b12dedfb609ccc220e18e70a7c73429f537",
+            "taskId": "task-ongoing-1",
+            "taskClass": "PRODUCT",
+            "disposition": "ACTIVE",
+            "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+            "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+            "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+            "boardRev": 7,
+            "lifecycleRev": 3,
+            "issuedAt": "2026-07-13T12:00:00.000Z",
+            "expiresAt": null,
+            "membershipPortfolioId": "SALES_WEB_RELATED_BACKEND",
+            "membershipProofHash": "47bec9b2843d6873e5ab240cb3b8964c49a437dca09f35fdbb2a3b64f341a75e"
+          },
+          "controlPlaneTargetGate": null
+        },
+        "dependencies": []
+      }
+    }
+  ],
+  "durableOwnership": {
+    "run": {
+      "runId": "run-synth-ongoing",
+      "taskId": "task-ongoing-1",
+      "state": "RUNNING",
+      "agentId": "run-synth-ongoing",
+      "role": "Worker",
+      "model": "grok-4.5",
+      "effort": "high",
+      "targetGate": "PROD_READY",
+      "fencingToken": "fence_synth_run-synth-ongoing",
+      "leaseExpiresAtMs": 1783945800000,
+      "maskedAccountRef": "acc_synth_r2d_001"
+    }
+  }
+}

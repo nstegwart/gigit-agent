@@ -1,0 +1,63 @@
+{
+  "bucket": "NEXT",
+  "pin": {
+    "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+    "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+    "boardRev": 7,
+    "lifecycleRev": 3,
+    "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4"
+  },
+  "issuedAt": "2026-07-13T12:00:00.000Z",
+  "taskIds": [
+    "task-next-1"
+  ],
+  "tasks": [
+    {
+      "id": "task-next-1",
+      "title": "SYNTH NEXT candidate",
+      "projectId": "proj-sales-web",
+      "featureContractId": "feat-checkout",
+      "phase": "spec",
+      "lifecycleStage": "SPEC_READY",
+      "implementerRun": null,
+      "blockedReason": null,
+      "data": {
+        "id": "task-next-1",
+        "title": "SYNTH NEXT candidate",
+        "claimState": null,
+        "lifecycleStage": "SPEC_READY",
+        "status": "todo",
+        "hasBlockingDecision": false,
+        "blockers": [],
+        "selectedForNextDispatch": true,
+        "stale": false,
+        "staleReason": null,
+        "staleDataSource": false,
+        "reconciliation": null,
+        "classification": {
+          "taskClass": "PRODUCT",
+          "disposition": "ACTIVE",
+          "receipt": {
+            "receiptId": "rcpt-task-next-1",
+            "receiptHash": "b8bc80b7906e05f7e7d1bb203a428401fd0f7ee961913a3903462f2df0d298e5",
+            "taskId": "task-next-1",
+            "taskClass": "PRODUCT",
+            "disposition": "ACTIVE",
+            "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+            "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+            "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+            "boardRev": 7,
+            "lifecycleRev": 3,
+            "issuedAt": "2026-07-13T12:00:00.000Z",
+            "expiresAt": null,
+            "membershipPortfolioId": "SALES_WEB_RELATED_BACKEND",
+            "membershipProofHash": "6d1365741787d90ac29656cdc7cfde4b53e16c6f447eb7c6c0f9a5cf3cf28ca7"
+          },
+          "controlPlaneTargetGate": null
+        },
+        "dependencies": []
+      }
+    }
+  ],
+  "durableOwnership": null
+}

@@ -1,0 +1,110 @@
+{
+  "bucket": "RECONCILIATION_PENDING",
+  "pin": {
+    "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+    "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+    "boardRev": 7,
+    "lifecycleRev": 3,
+    "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4"
+  },
+  "issuedAt": "2026-07-13T12:00:00.000Z",
+  "taskIds": [
+    "task-recon-1",
+    "task-stale-1"
+  ],
+  "tasks": [
+    {
+      "id": "task-recon-1",
+      "title": "SYNTH RECONCILIATION_PENDING",
+      "projectId": "proj-sales-web",
+      "featureContractId": "feat-checkout",
+      "phase": "qa",
+      "lifecycleStage": "QA_IN_PROGRESS",
+      "implementerRun": null,
+      "blockedReason": null,
+      "data": {
+        "id": "task-recon-1",
+        "title": "SYNTH RECONCILIATION_PENDING",
+        "claimState": "ORPHAN",
+        "lifecycleStage": "QA_IN_PROGRESS",
+        "status": "in_progress",
+        "hasBlockingDecision": false,
+        "blockers": [],
+        "selectedForNextDispatch": false,
+        "stale": false,
+        "staleReason": null,
+        "staleDataSource": false,
+        "reconciliation": "pending",
+        "classification": {
+          "taskClass": "PRODUCT",
+          "disposition": "ACTIVE",
+          "receipt": {
+            "receiptId": "rcpt-task-recon-1",
+            "receiptHash": "0e5e49c36fc543ce5a83e7f40b8400ca9e88588b0b4dea72f83c19645a31b31f",
+            "taskId": "task-recon-1",
+            "taskClass": "PRODUCT",
+            "disposition": "ACTIVE",
+            "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+            "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+            "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+            "boardRev": 7,
+            "lifecycleRev": 3,
+            "issuedAt": "2026-07-13T12:00:00.000Z",
+            "expiresAt": null,
+            "membershipPortfolioId": "SALES_WEB_RELATED_BACKEND",
+            "membershipProofHash": "6c6973758d3f6d00b610587c946683f9b0b1278215be867e587be329764d0117"
+          },
+          "controlPlaneTargetGate": null
+        },
+        "dependencies": []
+      }
+    },
+    {
+      "id": "task-stale-1",
+      "title": "SYNTH STALE deep-link fixture",
+      "projectId": "proj-sales-web",
+      "featureContractId": "feat-checkout",
+      "phase": "build",
+      "lifecycleStage": "IMPL_IN_PROGRESS",
+      "implementerRun": null,
+      "blockedReason": null,
+      "data": {
+        "id": "task-stale-1",
+        "title": "SYNTH STALE deep-link fixture",
+        "claimState": "STALE",
+        "lifecycleStage": "IMPL_IN_PROGRESS",
+        "status": "in_progress",
+        "hasBlockingDecision": false,
+        "blockers": [],
+        "selectedForNextDispatch": false,
+        "stale": true,
+        "staleReason": "SYNTH: pin older than publication window",
+        "staleDataSource": true,
+        "reconciliation": null,
+        "classification": {
+          "taskClass": "PRODUCT",
+          "disposition": "ACTIVE",
+          "receipt": {
+            "receiptId": "rcpt-task-stale-1",
+            "receiptHash": "424f60468c3bb5e4c999194e01f1184a15dd099caa2f6752274ec92e28f57ff6",
+            "taskId": "task-stale-1",
+            "taskClass": "PRODUCT",
+            "disposition": "ACTIVE",
+            "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+            "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+            "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+            "boardRev": 7,
+            "lifecycleRev": 3,
+            "issuedAt": "2026-07-13T12:00:00.000Z",
+            "expiresAt": null,
+            "membershipPortfolioId": "SALES_WEB_RELATED_BACKEND",
+            "membershipProofHash": "c7da43c85c3277c6737bb09f0ae43feff2f3f342c82852fb6667a834f1b9c25a"
+          },
+          "controlPlaneTargetGate": null
+        },
+        "dependencies": []
+      }
+    }
+  ],
+  "durableOwnership": null
+}

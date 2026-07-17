@@ -1,0 +1,186 @@
+{
+  "fixtureId": "staging-expected-buckets-v1",
+  "version": 1,
+  "purpose": "Owner progress bucket seed intent for AC-BUCKET-01..07 / ART S04–S06/S08. Pin-bound classification so fail-closed DATA_INTEGRITY does not collapse tracked work into BLOCKED. Only task-missing-proof-1 is deliberate DATA_INTEGRITY repair.",
+  "syntheticOnly": true,
+  "productionDerived": false,
+  "boardId": "mfs-rebuild",
+  "issuedAt": "2026-07-13T12:00:00.000Z",
+  "pin": {
+    "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+    "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+    "boardRev": 7,
+    "lifecycleRev": 3,
+    "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4"
+  },
+  "forbiddenPlaceholderCanonicalHash": "a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890ab",
+  "note": "canonicalHash is materializeAuthorityPin authority (MFS_CANONICAL_TASK_SNAPSHOT_V1 subject hash). NEVER use FORBIDDEN_PLACEHOLDER a1b2c3d4… as pin authority — that fail-closed maps all classified receipts to UNCLASSIFIED → BLOCKED:DATA_INTEGRITY and empties ONGOING/NEXT/QUEUED/RECONCILIATION.",
+  "expectedBuckets": {
+    "DONE": [
+      "task-done-1"
+    ],
+    "ONGOING": [
+      "task-ongoing-1"
+    ],
+    "NEXT": [
+      "task-next-1"
+    ],
+    "QUEUED": [
+      "task-queued-1"
+    ],
+    "RECONCILIATION_PENDING": [
+      "task-recon-1",
+      "task-stale-1"
+    ],
+    "BLOCKED": [
+      "task-blocked-1",
+      "task-missing-proof-1"
+    ]
+  },
+  "counts": {
+    "DONE": 1,
+    "ONGOING": 1,
+    "NEXT": 1,
+    "QUEUED": 1,
+    "RECONCILIATION_PENDING": 2,
+    "BLOCKED": 2
+  },
+  "trackedWorkDenominator": 8,
+  "acBucket": {
+    "AC-BUCKET-01": "DISTINCT active bucket sum holds (trackedWorkDenominator = sum of six buckets)",
+    "AC-BUCKET-02": "task-blocked-1 hasBlockingDecision; non-blocking decisions do not demote ONGOING",
+    "AC-BUCKET-03": "task-done-1 stays DONE with claimState=STALE → STALE_CLAIM overlay",
+    "AC-BUCKET-04": "CONTROL_PLANE verified gate maps to DONE without product progress (gate pack)",
+    "AC-BUCKET-05": "task-stale-1 STALE overlay/chip matches claimState=STALE + staleDataSource",
+    "AC-BUCKET-06": "trackedWorkDenominator includes ACTIVE + UNCLASSIFIED repair (task-missing-proof-1) once",
+    "AC-BUCKET-07": "task-recon-1 ORPHAN → RECONCILIATION_PENDING; task-done-1 STALE claim stays DONE (completed-task exception)"
+  },
+  "artScreens": {
+    "S04": {
+      "route": "/work?bucket=ONGOING",
+      "taskIds": [
+        "task-ongoing-1"
+      ]
+    },
+    "S05": {
+      "route": "/work?bucket=NEXT",
+      "taskIds": [
+        "task-next-1"
+      ]
+    },
+    "S06": {
+      "route": "/work?bucket=QUEUED",
+      "taskIds": [
+        "task-queued-1"
+      ]
+    },
+    "S08": {
+      "route": "/work?bucket=RECONCILIATION_PENDING",
+      "taskIds": [
+        "task-recon-1",
+        "task-stale-1"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "task-done-1",
+      "scenario": "DONE",
+      "expectedPrimary": "DONE",
+      "requires": [
+        "PRODUCT+ACTIVE receipt",
+        "lifecycleStage=PROD_READY"
+      ],
+      "residualIf": "pin.canonicalHash mismatch → DATA_INTEGRITY",
+      "pinTaskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+      "pinBoardRev": 7
+    },
+    {
+      "id": "task-ongoing-1",
+      "scenario": "ONGOING",
+      "expectedPrimary": "ONGOING",
+      "requires": [
+        "PRODUCT+ACTIVE receipt",
+        "claimState=VALID_CURRENT",
+        "runLiveness=RUNNING"
+      ],
+      "residualIf": "adapter claimState hardcoded undefined → may fall through to QUEUED",
+      "pinTaskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+      "pinBoardRev": 7
+    },
+    {
+      "id": "task-next-1",
+      "scenario": "NEXT",
+      "expectedPrimary": "NEXT",
+      "requires": [
+        "PRODUCT+ACTIVE receipt",
+        "active dispatch plan selection"
+      ],
+      "residualIf": "no MCP publish of dispatch plan → not selected",
+      "pinTaskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+      "pinBoardRev": 7
+    },
+    {
+      "id": "task-queued-1",
+      "scenario": "QUEUED",
+      "expectedPrimary": "QUEUED",
+      "requires": [
+        "PRODUCT+ACTIVE receipt",
+        "eligible",
+        "not selected for NEXT"
+      ],
+      "residualIf": "pin mismatch → DATA_INTEGRITY",
+      "pinTaskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+      "pinBoardRev": 7
+    },
+    {
+      "id": "task-blocked-1",
+      "scenario": "BLOCKED",
+      "expectedPrimary": "BLOCKED",
+      "requires": [
+        "PRODUCT+ACTIVE receipt",
+        "hardBlocker or blocking decision"
+      ],
+      "residualIf": "pin mismatch → DATA_INTEGRITY instead of HARD_BLOCKER",
+      "pinTaskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+      "pinBoardRev": 7
+    },
+    {
+      "id": "task-recon-1",
+      "scenario": "RECONCILIATION_PENDING",
+      "expectedPrimary": "RECONCILIATION_PENDING",
+      "requires": [
+        "PRODUCT+ACTIVE receipt",
+        "claimState=ORPHAN/STALE/EXPIRED/FENCED"
+      ],
+      "residualIf": "adapter claimState undefined → not RECON",
+      "pinTaskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+      "pinBoardRev": 7
+    },
+    {
+      "id": "task-stale-1",
+      "scenario": "STALE",
+      "expectedPrimary": "RECONCILIATION_PENDING",
+      "requires": [
+        "PRODUCT+ACTIVE receipt",
+        "claimState=STALE",
+        "staleDataSource"
+      ],
+      "residualIf": "adapter does not map staleDataSource/claimState",
+      "pinTaskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+      "pinBoardRev": 7
+    },
+    {
+      "id": "task-missing-proof-1",
+      "scenario": "UNCLASSIFIED",
+      "expectedPrimary": "BLOCKED",
+      "blockReason": "DATA_INTEGRITY",
+      "requires": [
+        "no classification receipt"
+      ],
+      "residualIf": "none — deliberate single repair row",
+      "pinTaskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+      "pinBoardRev": 7
+    }
+  ]
+}

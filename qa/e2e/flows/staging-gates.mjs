@@ -122,8 +122,41 @@ async function main() {
 
   // self-test
   const self = contract.runGateContractSelfTests()
+
+  // TM-06: also assert parent staging MANIFEST expectedBuckets (owner progress surfaces)
+  let bucketProbe = { ok: true, errors: [], expectedBuckets: null }
+  try {
+    const stagingContractUrl = pathToFileURL(
+      join(ROOT, 'qa/fixtures/staging/contract.mjs'),
+    ).href
+    const stagingContract = await import(stagingContractUrl)
+    bucketProbe = stagingContract.validateExpectedBuckets(
+      stagingContract.loadStagingManifest(),
+    )
+    const pin = stagingContract.loadStagingPin()
+    if (
+      String(pin.canonicalHash).toLowerCase() ===
+      stagingContract.FORBIDDEN_PLACEHOLDER_CANONICAL_HASH
+    ) {
+      bucketProbe = {
+        ok: false,
+        errors: [
+          ...(bucketProbe.errors ?? []),
+          'staging pin.canonicalHash is FORBIDDEN_PLACEHOLDER',
+        ],
+        buckets: bucketProbe.buckets ?? null,
+      }
+    }
+  } catch (e) {
+    bucketProbe = {
+      ok: false,
+      errors: [`staging expectedBuckets probe failed: ${String(e?.message || e)}`],
+      buckets: null,
+    }
+  }
+
   const payload = {
-    ok: self.ok,
+    ok: self.ok && bucketProbe.ok,
     mode: 'self-test',
     fixtureId: self.fixtureId,
     packHash: self.packHash,
@@ -132,6 +165,9 @@ async function main() {
     checkCount: self.checks?.length ?? 0,
     passCount: (self.checks ?? []).filter((c) => c.ok).length,
     stagingMutation: false,
+    expectedBuckets: bucketProbe.buckets ?? bucketProbe.expectedBuckets ?? null,
+    expectedBucketsOk: bucketProbe.ok,
+    expectedBucketsErrors: bucketProbe.errors ?? [],
   }
   const receipt = writeReceipt(payload)
   console.log(JSON.stringify({ ...payload, receipt }, null, 2))

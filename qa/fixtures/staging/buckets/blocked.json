@@ -1,0 +1,92 @@
+{
+  "bucket": "BLOCKED",
+  "pin": {
+    "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+    "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+    "boardRev": 7,
+    "lifecycleRev": 3,
+    "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4"
+  },
+  "issuedAt": "2026-07-13T12:00:00.000Z",
+  "taskIds": [
+    "task-blocked-1",
+    "task-missing-proof-1"
+  ],
+  "tasks": [
+    {
+      "id": "task-blocked-1",
+      "title": "SYNTH BLOCKED needs-human",
+      "projectId": "proj-auth",
+      "featureContractId": "feat-login",
+      "phase": "build",
+      "lifecycleStage": "IMPL_IN_PROGRESS",
+      "implementerRun": null,
+      "blockedReason": "SYNTH: waiting owner decision dec-v3-001",
+      "data": {
+        "id": "task-blocked-1",
+        "title": "SYNTH BLOCKED needs-human",
+        "claimState": null,
+        "lifecycleStage": "IMPL_IN_PROGRESS",
+        "status": "blocked",
+        "hasBlockingDecision": true,
+        "blockers": [
+          "dec-v3-001"
+        ],
+        "selectedForNextDispatch": false,
+        "stale": false,
+        "staleReason": null,
+        "staleDataSource": false,
+        "reconciliation": null,
+        "classification": {
+          "taskClass": "PRODUCT",
+          "disposition": "ACTIVE",
+          "receipt": {
+            "receiptId": "rcpt-task-blocked-1",
+            "receiptHash": "1e2f8d35cd8de53d0fd033022a9750cd5ecc7168c9782d75853a7893cdbf4dab",
+            "taskId": "task-blocked-1",
+            "taskClass": "PRODUCT",
+            "disposition": "ACTIVE",
+            "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+            "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+            "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4",
+            "boardRev": 7,
+            "lifecycleRev": 3,
+            "issuedAt": "2026-07-13T12:00:00.000Z",
+            "expiresAt": null,
+            "membershipPortfolioId": "SALES_WEB_RELATED_BACKEND",
+            "membershipProofHash": "1abb4a6984ddcd67d18c5ea9bd0b369f09bc25795022fd5f7701f450e4cb4e01"
+          },
+          "controlPlaneTargetGate": null
+        },
+        "dependencies": []
+      }
+    },
+    {
+      "id": "task-missing-proof-1",
+      "title": "SYNTH missing-proof (DATA_INTEGRITY / UNCLASSIFIED)",
+      "projectId": "proj-sales-web",
+      "featureContractId": "feat-checkout",
+      "phase": "build",
+      "lifecycleStage": "IMPL_IN_PROGRESS",
+      "implementerRun": null,
+      "blockedReason": null,
+      "data": {
+        "id": "task-missing-proof-1",
+        "title": "SYNTH missing-proof (DATA_INTEGRITY / UNCLASSIFIED)",
+        "claimState": null,
+        "lifecycleStage": "IMPL_IN_PROGRESS",
+        "status": "in_progress",
+        "hasBlockingDecision": false,
+        "blockers": [],
+        "selectedForNextDispatch": false,
+        "stale": false,
+        "staleReason": null,
+        "staleDataSource": false,
+        "reconciliation": null,
+        "classification": null,
+        "dependencies": []
+      }
+    }
+  ],
+  "durableOwnership": null
+}

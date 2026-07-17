@@ -47,6 +47,15 @@
       "unrelated tables"
     ]
   },
-  "readback": ["tasks count", "taskHash", "board_revisions pin", "classifiedTasks"],
+  "readback": [
+    "tasks count",
+    "taskHash",
+    "board_revisions pin",
+    "classifiedTasks",
+    "expectedBuckets ONGOING/NEXT/QUEUED/RECONCILIATION_PENDING/BLOCKED/DONE"
+  ],
+  "expectedBucketsRef": "qa/fixtures/staging/MANIFEST.json#expectedBuckets",
+  "bucketFixtures": "qa/fixtures/staging/buckets/",
+  "pinAuthority": "materializeAuthorityPin subject hash — never FORBIDDEN_PLACEHOLDER a1b2c3d4…",
   "provenance": "synthetic-only; never print secrets/passwords/tokens"
 }

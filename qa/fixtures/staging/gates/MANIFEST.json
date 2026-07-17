@@ -3,7 +3,7 @@
   "version": 1,
   "purpose": "Reversible synthetic staging gate fixture pack for classification matrix, DISTINCT join rejection, lifecycle rail ±, nine G5 honest statuses, capacity/priority fail-closed, reconciler dry-run/apply. No production-derived data. No staging mutation by default.",
   "boardId": "mfs-rebuild",
-  "schemaVersionExpected": "006",
+  "schemaVersionExpected": "008",
   "healthzSchema": "MFS_HEALTHZ_V1",
   "syntheticOnly": true,
   "productionDerived": false,

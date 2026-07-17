@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "TM_POST_STAGING_FABLE_SUPPLY_V1",
+  "gate": "POST_STAGING_FABLE",
+  "note": "Example supply pack for pack/assembleEvidenceBundle. Synthetic-only; not a live post-staging FABLE PASS. Replace pins/paths with real staging evidence before gate --allow-execute.",
+  "syntheticOnly": true,
+  "screenshotManifest": {
+    "schemaVersion": "TM_SCREENSHOT_MANIFEST_V1",
+    "releaseSha": "b207830abc123def456789012345678901234567",
+    "boardId": "mfs-rebuild",
+    "rows": [
+      {
+        "id": "S01",
+        "route": "/b/mfs-rebuild/",
+        "viewport": "1440x900",
+        "state": "populated",
+        "scenario": "Overview desktop mission truth",
+        "path": "qa/fixtures/staging/screenshots/S01-overview-desktop.png"
+      },
+      {
+        "id": "S04",
+        "route": "/b/mfs-rebuild/work?bucket=DONE",
+        "viewport": "1440x900",
+        "state": "populated",
+        "scenario": "Work DONE bucket",
+        "path": "qa/fixtures/staging/screenshots/S04-work-done.png"
+      },
+      {
+        "id": "S08",
+        "route": "/b/mfs-rebuild/work?bucket=BLOCKED",
+        "viewport": "390x844",
+        "state": "populated",
+        "scenario": "Work BLOCKED mobile",
+        "path": "qa/fixtures/staging/screenshots/S08-work-blocked-mobile.png"
+      },
+      {
+        "id": "S12",
+        "route": "/b/mfs-rebuild/decisions",
+        "viewport": "1440x900",
+        "state": "populated",
+        "scenario": "Decision Inbox owner decisions",
+        "path": "qa/fixtures/staging/screenshots/S12-decisions.png"
+      },
+      {
+        "id": "S24",
+        "route": "/b/mfs-rebuild/",
+        "viewport": "1440x900",
+        "state": "200% zoom",
+        "scenario": "Overview 200% zoom reflow",
+        "path": "qa/fixtures/staging/screenshots/S24-overview-zoom200.png"
+      }
+    ]
+  },
+  "missionEvidenceMap": {
+    "Q1": {
+      "question": "What is DONE for the current stage?",
+      "evidence": [
+        "qa/fixtures/staging/screenshots/S04-work-done.png",
+        "qa/fixtures/staging/buckets/done.json"
+      ]
+    },
+    "Q2": {
+      "question": "What is ONGOING now and which agent/model/account owns it?",
+      "evidence": [
+        "qa/fixtures/staging/screenshots/S01-overview-desktop.png",
+        "qa/fixtures/staging/buckets/ongoing.json"
+      ]
+    },
+    "Q3": {
+      "question": "What is NEXT and why?",
+      "evidence": ["qa/fixtures/staging/buckets/next.json"]
+    },
+    "Q4": {
+      "question": "What is QUEUED and why?",
+      "evidence": ["qa/fixtures/staging/buckets/queued.json"]
+    },
+    "Q5": {
+      "question": "What is BLOCKED and who can unblock it?",
+      "evidence": [
+        "qa/fixtures/staging/screenshots/S08-work-blocked-mobile.png",
+        "qa/fixtures/staging/buckets/blocked.json"
+      ]
+    },
+    "Q6": {
+      "question": "What decision needs the owner?",
+      "evidence": ["qa/fixtures/staging/screenshots/S12-decisions.png"]
+    },
+    "Q7": {
+      "question": "Is SALES_WEB_RELATED_BACKEND receiving correct priority?",
+      "evidence": ["qa/fixtures/staging/screenshots/S01-overview-desktop.png"]
+    },
+    "Q8": {
+      "question": "Is global legacy-to-rebuild readiness honest and evidence-backed?",
+      "evidence": [
+        "qa/fixtures/staging/screenshots/S01-overview-desktop.png",
+        "qa/fixtures/staging/pin.json"
+      ]
+    }
+  },
+  "stagingSha": "b207830abc123def456789012345678901234567",
+  "stagingSchema": "006",
+  "revisionsHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "responsiveStates": [
+    "1440x900",
+    "1024x768",
+    "390x844",
+    "360x800",
+    "200%"
+  ],
+  "priorReviewFindingLedger": {
+    "path": "docs/control-center/DESIGN_DECISIONS.md",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "note": "Example ledger pin. Prefer --ledger docs/control-center/DESIGN_DECISIONS.md at pack time to re-hash live file bytes."
+  },
+  "meta": {
+    "purpose": "example supply for acceptance_cmd pack",
+    "notALiveFablePass": true,
+    "comprehensionSample": "qa/evidence/comprehension-sample.json"
+  }
+}

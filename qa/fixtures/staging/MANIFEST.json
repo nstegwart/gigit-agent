@@ -3,17 +3,18 @@
   "version": 1,
   "purpose": "Synthetic staging board + agent MCP lifecycle smoke (no production-derived data)",
   "boardId": "mfs-rebuild",
-  "schemaVersionExpected": "005",
+  "schemaVersionExpected": "008",
   "healthzSchema": "MFS_HEALTHZ_V1",
   "syntheticOnly": true,
   "productionDerived": false,
-  "schemaVersionNote": "Expected latest registered migration package version (000..005). Synthetic fixture only — not a live DB readback of applied_versions.",
+  "schemaVersionNote": "Expected latest registered migration package version. Synthetic fixture only — not a live DB readback of applied_versions. Pin authority = materializeAuthorityPin subject hash (not FORBIDDEN_PLACEHOLDER).",
   "expiryPolicy": "ephemeral-smoke-ids-per-run; fixtures durable in repo",
   "pin": {
     "canonicalSnapshotId": "synth-c3-r2d-snap-001",
-    "canonicalHash": "a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890ab",
+    "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
     "boardRev": 7,
-    "lifecycleRev": 3
+    "lifecycleRev": 3,
+    "taskHash": "49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4"
   },
   "taskIds": [
     "task-done-1",
@@ -79,5 +80,39 @@
     "unauth sensitive write not denied",
     "missing required tool in tools/list",
     "missing authorized token reference for --real"
-  ]
+  ],
+  "expectedBuckets": {
+    "DONE": [
+      "task-done-1"
+    ],
+    "ONGOING": [
+      "task-ongoing-1"
+    ],
+    "NEXT": [
+      "task-next-1"
+    ],
+    "QUEUED": [
+      "task-queued-1"
+    ],
+    "RECONCILIATION_PENDING": [
+      "task-recon-1",
+      "task-stale-1"
+    ],
+    "BLOCKED": [
+      "task-blocked-1",
+      "task-missing-proof-1"
+    ]
+  },
+  "expectedBucketCounts": {
+    "DONE": 1,
+    "ONGOING": 1,
+    "NEXT": 1,
+    "QUEUED": 1,
+    "RECONCILIATION_PENDING": 2,
+    "BLOCKED": 2
+  },
+  "trackedWorkDenominator": 8,
+  "bucketFixtures": "qa/fixtures/staging/buckets/",
+  "bucketFixtureId": "staging-expected-buckets-v1",
+  "pinAuthorityNote": "pin.canonicalHash is materializeAuthorityPin authority hash; forbidden placeholder a1b2c3d4… must never be used as live pin (DATA_INTEGRITY collapse)."
 }

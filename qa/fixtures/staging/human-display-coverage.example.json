@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "TM_HUMAN_DISPLAY_COVERAGE_V1",
+  "pin": {
+    "boardId": "mfs-rebuild",
+    "canonicalSnapshotId": "synth-c3-r2d-snap-001",
+    "canonicalHash": "e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b",
+    "boardRev": 7,
+    "lifecycleRev": 3
+  },
+  "generatedAt": "2026-07-14T00:00:00.000Z",
+  "totals": {
+    "entities": 12,
+    "byEntityKind": {
+      "task": 8,
+      "project": 4,
+      "feature": 0
+    },
+    "byLocale": {
+      "id-ID": 12
+    }
+  },
+  "byReviewStatus": {
+    "REVIEWED": 0,
+    "GENERATED_NEEDS_REVIEW": 4,
+    "BLOCKED_MISSING_SOURCE": 8,
+    "CONFLICT": 0,
+    "CONTENT_REVIEW_REQUIRED": 0,
+    "MISSING_DISPLAY": 0
+  },
+  "byPriority": {
+    "UNSET": 12
+  },
+  "contentDebt": {
+    "schemaVersion": "TM_HUMAN_DISPLAY_CONTENT_DEBT_V1",
+    "totalEntities": 12,
+    "totalTasks": 8,
+    "titleDebt": {
+      "fcNotation": 0,
+      "parityFramed": 0,
+      "integrationClosure": 0,
+      "apiPrimary": 0,
+      "e2ePrimary": 0,
+      "anyDebtTitle": 0,
+      "inspected": 12
+    },
+    "byEffectiveStatus": {
+      "REVIEWED": 0,
+      "GENERATED_NEEDS_REVIEW": 4,
+      "BLOCKED_MISSING_SOURCE": 8,
+      "CONFLICT": 0,
+      "CONTENT_REVIEW_REQUIRED": 0,
+      "MISSING_DISPLAY": 0
+    },
+    "omissionReasons": {
+      "MISSING_OBJECTIVE": 8
+    },
+    "p0ActiveProduct": {
+      "total": 0,
+      "independentlyReviewed": 0,
+      "ratio": "0/0",
+      "pass": false,
+      "releaseBlocked": true
+    },
+    "historicalBaselineNote": "Prior pinned audit cited ~639 tasks and 316 P0 active PRODUCT rows; live denominators are recomputed from the pin — never hard-coded."
+  },
+  "p0Coverage": {
+    "total": 0,
+    "independentlyReviewed": 0,
+    "ratio": "0/0",
+    "pass": false,
+    "releaseBlocked": true
+  },
+  "releaseBlockers": {
+    "count": 12,
+    "missingDisplay": 0,
+    "contentReviewRequired": 0,
+    "blockedMissingSource": 8,
+    "conflict": 0,
+    "generatedNeedsReview": 4,
+    "p0NotIndependentlyReviewed": 0
+  }
+}

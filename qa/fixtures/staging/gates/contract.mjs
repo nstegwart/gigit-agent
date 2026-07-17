@@ -384,7 +384,7 @@ export function runGateContractSelfTests() {
   ok('manifest.fixtureId', manifest.fixtureId === FIXTURE_ID)
   ok('manifest.syntheticOnly', manifest.syntheticOnly === true)
   ok('manifest.productionDerived_false', manifest.productionDerived === false)
-  ok('manifest.schema_006', manifest.schemaVersionExpected === '006')
+  ok('manifest.schema_008', manifest.schemaVersionExpected === '008')
   ok('manifest.idPrefix', manifest.idPrefix === ID_PREFIX)
   ok(
     'manifest.packets',

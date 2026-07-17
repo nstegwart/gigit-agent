@@ -147,9 +147,7 @@ export function assertStagingSeedAllowed(opts = {}) {
   const envName = String(opts.env ?? process.env.CAIRN_ENV ?? '')
     .trim()
     .toLowerCase()
-  const dbName = String(
-    opts.dbName ?? process.env.CAIRN_DB_NAME ?? '',
-  ).trim()
+  const dbName = String(opts.dbName ?? process.env.CAIRN_DB_NAME ?? '').trim()
   const host = String(
     opts.host ?? process.env.CAIRN_DB_HOST ?? resolveMysqlConfig().host,
   ).trim()
@@ -310,6 +308,57 @@ export async function ensureBaselineTables(db) {
     PRIMARY KEY (board_id, snapshot_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
 
+  // Existing product classification authority (001 + 004 shape). This is an
+  // IF-NOT-EXISTS compatibility create for disposable/staging seed setup, not a
+  // migration or schema variant.
+  await db.query(`CREATE TABLE IF NOT EXISTS control_plane_classification (
+    board_id VARCHAR(64) NOT NULL,
+    task_id VARCHAR(160) NOT NULL,
+    task_class VARCHAR(32) NOT NULL DEFAULT 'UNCLASSIFIED',
+    disposition VARCHAR(32) NOT NULL DEFAULT 'UNCLASSIFIED',
+    classification_receipt_id VARCHAR(64) NULL,
+    classification_receipt_hash CHAR(64) NULL,
+    proof_source VARCHAR(160) NULL,
+    board_rev BIGINT UNSIGNED NULL,
+    entity_rev BIGINT UNSIGNED NOT NULL DEFAULT 1,
+    receipt_json JSON NULL,
+    canonical_snapshot_id VARCHAR(64) NULL,
+    canonical_hash CHAR(64) NULL,
+    task_hash CHAR(64) NULL,
+    lifecycle_rev BIGINT UNSIGNED NULL,
+    control_plane_target_gate VARCHAR(160) NULL,
+    control_plane_gate_verified_pass TINYINT(1) NULL,
+    control_plane_root_accepted TINYINT(1) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (board_id, task_id),
+    KEY idx_class_task_class (board_id, task_class, disposition),
+    KEY idx_class_receipt (board_id, classification_receipt_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
+  await db.query(`CREATE TABLE IF NOT EXISTS control_plane_classification_receipts (
+    board_id VARCHAR(64) NOT NULL,
+    receipt_id VARCHAR(64) NOT NULL,
+    task_id VARCHAR(160) NOT NULL,
+    receipt_hash CHAR(64) NOT NULL,
+    task_class VARCHAR(32) NOT NULL DEFAULT 'UNCLASSIFIED',
+    disposition VARCHAR(32) NOT NULL DEFAULT 'UNCLASSIFIED',
+    membership_portfolio_id VARCHAR(160) NULL,
+    membership_proof_hash CHAR(64) NULL,
+    canonical_snapshot_id VARCHAR(64) NOT NULL,
+    canonical_hash CHAR(64) NOT NULL,
+    task_hash CHAR(64) NOT NULL,
+    board_rev BIGINT UNSIGNED NOT NULL,
+    lifecycle_rev BIGINT UNSIGNED NOT NULL,
+    issued_at DATETIME(3) NOT NULL,
+    expires_at DATETIME(3) NULL,
+    receipt_json JSON NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (board_id, receipt_id),
+    KEY idx_class_receipt_task (board_id, task_id),
+    KEY idx_class_receipt_hash (board_id, receipt_hash)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`)
+
   await db.query(`CREATE TABLE IF NOT EXISTS control_plane_evidence (
     board_id VARCHAR(64) NOT NULL,
     evidence_id VARCHAR(64) NOT NULL,
@@ -407,7 +456,9 @@ export function produceSyntheticCanonicalSnapshot({
   for (const t of boundTasks ?? []) {
     const id = String(t.id)
     const projectId = t.project_id ? String(t.project_id) : null
-    const featureId = t.feature_contract_id ? String(t.feature_contract_id) : null
+    const featureId = t.feature_contract_id
+      ? String(t.feature_contract_id)
+      : null
     if (projectId) projectIds.add(projectId)
     if (featureId) featureIds.add(featureId)
 
@@ -493,7 +544,8 @@ export function produceSyntheticCanonicalSnapshot({
   const byTaskId = (a, b) =>
     a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0
   const byDep = (a, b) => {
-    const f = a.fromTaskId < b.fromTaskId ? -1 : a.fromTaskId > b.fromTaskId ? 1 : 0
+    const f =
+      a.fromTaskId < b.fromTaskId ? -1 : a.fromTaskId > b.fromTaskId ? 1 : 0
     if (f !== 0) return f
     return a.toTaskId < b.toTaskId ? -1 : a.toTaskId > b.toTaskId ? 1 : 0
   }
@@ -613,18 +665,20 @@ export function isCanonicalCompleteSchema(schemaVersion) {
 export function materializeAuthorityPin(options = {}) {
   const now = options.now ?? new Date().toISOString()
   const boardId = options.boardId ?? DEFAULT_BOARD_ID
-  const producerVersion = options.producerVersion ?? 'seed-isolated-canonical-v1'
+  const producerVersion =
+    options.producerVersion ?? 'seed-isolated-canonical-v1'
   const taskIds =
     options.taskIds ??
-    (Array.isArray(options.tasks) ? options.tasks.map((t) => t.id) : CANONICAL_TASK_IDS)
+    (Array.isArray(options.tasks)
+      ? options.tasks.map((t) => t.id)
+      : CANONICAL_TASK_IDS)
 
   // Pass 1: build content with pre-materialization pin identity (hash may be null).
   const pinIdentity = buildHarnessPin(taskIds, {
     ...(options.pinBase ?? {}),
     canonicalHash: null,
   })
-  const tasksPass1 =
-    options.tasks ?? buildSyntheticTasks(now, pinIdentity)
+  const tasksPass1 = options.tasks ?? buildSyntheticTasks(now, pinIdentity)
 
   const canonicalPass1 = produceSyntheticCanonicalSnapshot({
     boardId,
@@ -633,13 +687,17 @@ export function materializeAuthorityPin(options = {}) {
     now,
     producerVersion,
   })
-  const pin = bindAuthorityCanonicalHash(pinIdentity, canonicalPass1.canonicalHash)
+  const pin = bindAuthorityCanonicalHash(
+    pinIdentity,
+    canonicalPass1.canonicalHash,
+  )
 
   // Pass 2: rebind all pin-bearing fixture rows to the authority hash.
   const boundTasks = buildSyntheticTasks(now, pin)
   const docs = options.docs ?? buildBoardDocs(now, pin)
   const dispatchSeed = options.dispatchSeed ?? buildDispatchPlanSeed(now, pin)
-  const accountSyncSeed = options.accountSyncSeed ?? buildAccountSyncSeed(now, pin)
+  const accountSyncSeed =
+    options.accountSyncSeed ?? buildAccountSyncSeed(now, pin)
 
   // Stability: content hash must not depend on pin.canonicalHash (definition payload).
   const canonical = produceSyntheticCanonicalSnapshot({
@@ -656,7 +714,9 @@ export function materializeAuthorityPin(options = {}) {
     )
   }
   if (pin.canonicalHash === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH) {
-    throw new Error('materializeAuthorityPin: authority is still forbidden placeholder')
+    throw new Error(
+      'materializeAuthorityPin: authority is still forbidden placeholder',
+    )
   }
 
   return {
@@ -727,7 +787,13 @@ export async function seedSchemaMigrationsThrough006(db) {
          classification = VALUES(classification),
          applied_by = VALUES(applied_by),
          dry_run = 0`,
-      [m.version, m.filename, m.sha256, m.classification, 'seed-isolated-schema-006'],
+      [
+        m.version,
+        m.filename,
+        m.sha256,
+        m.classification,
+        'seed-isolated-schema-006',
+      ],
     )
     if (!already.includes(version)) applied.push(version)
   }
@@ -818,7 +884,8 @@ export async function applyProductMigrations000Through006(dbName) {
 export function buildSeededOngoingDurableRunRecord(ctx) {
   const boardId = ctx.boardId
   const nowMs =
-    (typeof ctx.now === 'string' ? Date.parse(ctx.now) : Number(ctx.nowMs)) || Date.now()
+    (typeof ctx.now === 'string' ? Date.parse(ctx.now) : Number(ctx.nowMs)) ||
+    Date.now()
   const boardRev = Number(ctx.pin?.boardRev ?? 0) || 0
   const planId =
     ctx.dispatchSeed?.planId ??
@@ -928,6 +995,171 @@ async function insertDurableRunRow(db, rec) {
   )
 }
 
+function toMysqlDateTime(value) {
+  if (value == null || value === '') return null
+  const ms = Date.parse(String(value))
+  if (Number.isNaN(ms)) {
+    throw new Error(`invalid classification receipt datetime: ${String(value)}`)
+  }
+  return new Date(ms).toISOString().slice(0, 23).replace('T', ' ')
+}
+
+/**
+ * Persist the synthetic fixture's proven classifications into the product runtime
+ * authority. The canonical pin binding deliberately survives later volatile board
+ * revisions (dispatch/account bootstrap) while remaining invalid before publication.
+ * The one fixture without a receipt is intentionally omitted and therefore remains
+ * fail-closed UNCLASSIFIED at the durable left join.
+ */
+export async function persistDurableClassificationAuthority(db, ctx) {
+  const { boardId, boundTasks, pin, actor } = ctx
+  const boardRev = Number(pin.boardRev)
+  const lifecycleRev = Number(pin.lifecycleRev)
+  if (!Number.isSafeInteger(boardRev) || boardRev < 1) {
+    throw new Error(
+      `durable classification seed requires positive boardRev (got ${pin.boardRev})`,
+    )
+  }
+  if (!Number.isSafeInteger(lifecycleRev) || lifecycleRev < 0) {
+    throw new Error(
+      `durable classification seed requires non-negative lifecycleRev (got ${pin.lifecycleRev})`,
+    )
+  }
+
+  const records = []
+  for (const task of boundTasks) {
+    const source = task.data?.classification
+    const sourceReceipt = source?.receipt
+    if (!source || !sourceReceipt) continue
+
+    const receipt = {
+      ...sourceReceipt,
+      taskId: task.id,
+      taskClass: source.taskClass,
+      disposition: source.disposition,
+      canonicalSnapshotId: pin.canonicalSnapshotId,
+      canonicalHash: pin.canonicalHash,
+      taskHash: pin.taskHash,
+      boardRev,
+      lifecycleRev,
+      bindingMode: 'CANONICAL_PIN',
+      canonicalBoardRev: boardRev - 1,
+    }
+    records.push({ taskId: task.id, source, receipt })
+  }
+
+  // Exact current-set cleanup. Immutable receipt history is retained and replayed
+  // only when its receipt hash + canonical pin are identical.
+  await db.query('DELETE FROM control_plane_classification WHERE board_id=?', [
+    boardId,
+  ])
+
+  for (const { taskId, source, receipt } of records) {
+    const [existingRows] = await db.query(
+      `SELECT receipt_hash, canonical_snapshot_id, canonical_hash, task_hash
+       FROM control_plane_classification_receipts
+       WHERE board_id=? AND receipt_id=? LIMIT 1`,
+      [boardId, receipt.receiptId],
+    )
+    const existing = existingRows?.[0] ?? null
+    if (existing) {
+      const replayMatches =
+        String(existing.receipt_hash) === receipt.receiptHash &&
+        String(existing.canonical_snapshot_id) ===
+          receipt.canonicalSnapshotId &&
+        String(existing.canonical_hash) === receipt.canonicalHash &&
+        String(existing.task_hash) === receipt.taskHash
+      if (!replayMatches) {
+        throw new Error(
+          `durable classification receipt replay conflict for ${taskId}/${receipt.receiptId}`,
+        )
+      }
+    } else {
+      await db.query(
+        `INSERT INTO control_plane_classification_receipts (
+           board_id, receipt_id, task_id, receipt_hash, task_class, disposition,
+           membership_portfolio_id, membership_proof_hash, canonical_snapshot_id,
+           canonical_hash, task_hash, board_rev, lifecycle_rev, issued_at, expires_at,
+           receipt_json
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          boardId,
+          receipt.receiptId,
+          taskId,
+          receipt.receiptHash,
+          source.taskClass,
+          source.disposition,
+          receipt.membershipPortfolioId ?? null,
+          receipt.membershipProofHash ?? null,
+          receipt.canonicalSnapshotId,
+          receipt.canonicalHash,
+          receipt.taskHash,
+          receipt.boardRev,
+          receipt.lifecycleRev,
+          toMysqlDateTime(receipt.issuedAt),
+          toMysqlDateTime(receipt.expiresAt),
+          JSON.stringify(receipt),
+        ],
+      )
+    }
+
+    await db.query(
+      `INSERT INTO control_plane_classification (
+         board_id, task_id, task_class, disposition,
+         classification_receipt_id, classification_receipt_hash, proof_source,
+         board_rev, entity_rev, receipt_json, canonical_snapshot_id, canonical_hash,
+         task_hash, lifecycle_rev, control_plane_target_gate,
+         control_plane_gate_verified_pass, control_plane_root_accepted
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON DUPLICATE KEY UPDATE
+         task_class=VALUES(task_class), disposition=VALUES(disposition),
+         classification_receipt_id=VALUES(classification_receipt_id),
+         classification_receipt_hash=VALUES(classification_receipt_hash),
+         proof_source=VALUES(proof_source), board_rev=VALUES(board_rev),
+         entity_rev=VALUES(entity_rev), receipt_json=VALUES(receipt_json),
+         canonical_snapshot_id=VALUES(canonical_snapshot_id),
+         canonical_hash=VALUES(canonical_hash), task_hash=VALUES(task_hash),
+         lifecycle_rev=VALUES(lifecycle_rev),
+         control_plane_target_gate=VALUES(control_plane_target_gate),
+         control_plane_gate_verified_pass=VALUES(control_plane_gate_verified_pass),
+         control_plane_root_accepted=VALUES(control_plane_root_accepted)`,
+      [
+        boardId,
+        taskId,
+        source.taskClass,
+        source.disposition,
+        receipt.receiptId,
+        receipt.receiptHash,
+        actor,
+        receipt.boardRev,
+        1,
+        JSON.stringify(receipt),
+        receipt.canonicalSnapshotId,
+        receipt.canonicalHash,
+        receipt.taskHash,
+        receipt.lifecycleRev,
+        source.controlPlaneTargetGate ?? null,
+        source.controlPlaneGateVerifiedPass == null
+          ? null
+          : source.controlPlaneGateVerifiedPass
+            ? 1
+            : 0,
+        source.controlPlaneRootAccepted == null
+          ? null
+          : source.controlPlaneRootAccepted
+            ? 1
+            : 0,
+      ],
+    )
+  }
+
+  return {
+    classifiedCount: records.length,
+    unclassifiedCount: boundTasks.length - records.length,
+    taskIds: records.map((record) => record.taskId).sort(),
+  }
+}
+
 export async function replaceBoardScopedSyntheticRows(db, ctx) {
   const {
     boardId,
@@ -947,8 +1179,15 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
   // Durable runs cleared so ONGOING ownership comes only from product registry seed
   // (never legacy board_docs dual-read).
   await db.query('DELETE FROM control_plane_runs WHERE board_id=?', [boardId])
-  await db.query('DELETE FROM control_plane_evidence WHERE board_id=?', [boardId])
-  await db.query('DELETE FROM control_plane_snapshots WHERE board_id=?', [boardId])
+  await db.query('DELETE FROM control_plane_classification WHERE board_id=?', [
+    boardId,
+  ])
+  await db.query('DELETE FROM control_plane_evidence WHERE board_id=?', [
+    boardId,
+  ])
+  await db.query('DELETE FROM control_plane_snapshots WHERE board_id=?', [
+    boardId,
+  ])
   await db.query('DELETE FROM board_revisions WHERE board_id=?', [boardId])
   await db.query('DELETE FROM audit_log WHERE board_id=?', [boardId])
   await db.query('DELETE FROM tasks WHERE board_id=?', [boardId])
@@ -967,23 +1206,20 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
   )
 
   for (const [kind, data] of Object.entries(docs)) {
-    await db.query('INSERT INTO board_docs (board_id, kind, data) VALUES (?,?,?)', [
-      boardId,
-      kind,
-      JSON.stringify(data),
-    ])
+    await db.query(
+      'INSERT INTO board_docs (board_id, kind, data) VALUES (?,?,?)',
+      [boardId, kind, JSON.stringify(data)],
+    )
   }
 
-  await db.query('INSERT INTO board_docs (board_id, kind, data) VALUES (?,?,?)', [
-    boardId,
-    'synth_dispatch_plan',
-    JSON.stringify(dispatchSeed),
-  ])
-  await db.query('INSERT INTO board_docs (board_id, kind, data) VALUES (?,?,?)', [
-    boardId,
-    'synth_account_sync',
-    JSON.stringify(accountSyncSeed),
-  ])
+  await db.query(
+    'INSERT INTO board_docs (board_id, kind, data) VALUES (?,?,?)',
+    [boardId, 'synth_dispatch_plan', JSON.stringify(dispatchSeed)],
+  )
+  await db.query(
+    'INSERT INTO board_docs (board_id, kind, data) VALUES (?,?,?)',
+    [boardId, 'synth_account_sync', JSON.stringify(accountSyncSeed)],
+  )
 
   // Synthetic conventions only — keyed row, not a full globals wipe.
   await db.query(
@@ -1014,7 +1250,8 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
             taskClass: classification.taskClass ?? null,
             disposition: classification.disposition ?? null,
             classificationReceiptId: classification.receipt?.receiptId ?? null,
-            classificationReceiptHash: classification.receipt?.receiptHash ?? null,
+            classificationReceiptHash:
+              classification.receipt?.receiptHash ?? null,
           }
         : {}),
     }
@@ -1060,7 +1297,9 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
     )
   }
   if (canonical.schemaVersion === UI_CONTRACT_SCHEMA) {
-    throw new Error('seed refused TM_UI_CONTRACT_V1 as control_plane snapshot (not canonical complete)')
+    throw new Error(
+      'seed refused TM_UI_CONTRACT_V1 as control_plane snapshot (not canonical complete)',
+    )
   }
 
   // subject_hash must equal server canonicalSubjectHash(snapshot) for pin-complete load.
@@ -1111,6 +1350,8 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
       JSON.stringify(canonical.payload),
     ],
   )
+
+  await persistDurableClassificationAuthority(db, ctx)
 
   await db.query(
     `INSERT INTO control_plane_evidence
@@ -1187,11 +1428,17 @@ export async function replaceBoardScopedSyntheticRows(db, ctx) {
 
 /** Programmatic readback: counts + pin + taskHash. No secrets. */
 export async function readbackSeedProof(db, boardId) {
-  const [bc] = await db.query('SELECT COUNT(*) AS n FROM boards WHERE id=?', [boardId])
-  const [tc] = await db.query('SELECT COUNT(*) AS n FROM tasks WHERE board_id=?', [boardId])
-  const [dc] = await db.query('SELECT COUNT(*) AS n FROM board_docs WHERE board_id=?', [
+  const [bc] = await db.query('SELECT COUNT(*) AS n FROM boards WHERE id=?', [
     boardId,
   ])
+  const [tc] = await db.query(
+    'SELECT COUNT(*) AS n FROM tasks WHERE board_id=?',
+    [boardId],
+  )
+  const [dc] = await db.query(
+    'SELECT COUNT(*) AS n FROM board_docs WHERE board_id=?',
+    [boardId],
+  )
   const [rc] = await db.query(
     'SELECT COUNT(*) AS n FROM board_revisions WHERE board_id=?',
     [boardId],
@@ -1222,6 +1469,46 @@ export async function readbackSeedProof(db, boardId) {
     `SELECT lifecycle_stage AS s FROM tasks WHERE board_id=? AND id='task-done-1'`,
     [boardId],
   )
+  const [durableClassificationRows] = await db.query(
+    `SELECT task_id, task_class, disposition, classification_receipt_id,
+            classification_receipt_hash, board_rev, receipt_json,
+            canonical_snapshot_id, canonical_hash, task_hash, lifecycle_rev
+     FROM control_plane_classification
+     WHERE board_id=? ORDER BY task_id`,
+    [boardId],
+  )
+  const durableClassifications = (durableClassificationRows ?? []).map(
+    (row) => {
+      let receipt = null
+      try {
+        receipt =
+          typeof row.receipt_json === 'string'
+            ? JSON.parse(row.receipt_json)
+            : row.receipt_json
+      } catch {
+        receipt = null
+      }
+      return {
+        taskId: row.task_id,
+        taskClass: row.task_class,
+        disposition: row.disposition,
+        receiptId: row.classification_receipt_id,
+        receiptHash: row.classification_receipt_hash,
+        boardRev: Number(row.board_rev),
+        canonicalSnapshotId: row.canonical_snapshot_id,
+        canonicalHash: row.canonical_hash,
+        taskHash: row.task_hash,
+        lifecycleRev: Number(row.lifecycle_rev),
+        receipt,
+      }
+    },
+  )
+  const durableCanonicalPinCount = durableClassifications.filter(
+    (record) =>
+      record.receipt?.bindingMode === 'CANONICAL_PIN' &&
+      Number(record.receipt?.canonicalBoardRev) + 1 ===
+        Number(record.receipt?.boardRev),
+  ).length
 
   // Durable ONGOING run readback (product control_plane_runs — not board_docs).
   let durableOngoingRunning = 0
@@ -1293,6 +1580,11 @@ export async function readbackSeedProof(db, boardId) {
     seedProof: {
       classifiedTasks: Number(classifiedRows[0].n),
       missingProofUnclassified: Number(missingRows[0].n) === 1,
+      durableClassifiedTasks: durableClassifications.length,
+      durableCanonicalPinCount,
+      durableClassificationTaskIds: durableClassifications.map(
+        (record) => record.taskId,
+      ),
       doneLifecycleStage: doneStage[0]?.s ?? null,
       durableOngoingRunningCount: durableOngoingRunning,
       durableOngoingRunId: durableOngoingRun?.run_id ?? null,
@@ -1307,11 +1599,46 @@ export async function readbackSeedProof(db, boardId) {
       ),
       durableOngoingFreshTimes: Boolean(
         durableOngoingRun?.registered_at_ms != null &&
-          durableOngoingRun?.heartbeat_at_ms != null &&
-          durableOngoingRun?.material_progress_at_ms != null,
+        durableOngoingRun?.heartbeat_at_ms != null &&
+        durableOngoingRun?.material_progress_at_ms != null,
       ),
     },
+    durableClassifications,
     schemaMigrationsPresent,
+  }
+}
+
+function assertDurableClassificationSeedProof(readback, ctx, label) {
+  const expectedTaskIds = ctx.boundTasks
+    .filter((task) => task.data?.classification?.receipt)
+    .map((task) => task.id)
+    .sort()
+  const actualTaskIds = [
+    ...(readback.seedProof?.durableClassificationTaskIds ?? []),
+  ].sort()
+  const expectedClassified = Number(ctx.contract.classifiedCount)
+  const expectedUnclassified = Number(ctx.contract.unclassifiedCount)
+  const actualUnclassified = Number(readback.tasks) - actualTaskIds.length
+  const valid =
+    actualTaskIds.length === expectedClassified &&
+    Number(readback.seedProof?.durableCanonicalPinCount) ===
+      expectedClassified &&
+    actualUnclassified === expectedUnclassified &&
+    JSON.stringify(actualTaskIds) === JSON.stringify(expectedTaskIds)
+  if (!valid) {
+    throw new Error(
+      `${label}: durable classification authority mismatch: ` +
+        JSON.stringify({
+          expectedTaskIds,
+          actualTaskIds,
+          expectedClassified,
+          actualClassified: actualTaskIds.length,
+          expectedUnclassified,
+          actualUnclassified,
+          durableCanonicalPinCount:
+            readback.seedProof?.durableCanonicalPinCount ?? null,
+        }),
+    )
   }
 }
 
@@ -1336,7 +1663,8 @@ function buildSeedContext(options = {}) {
     pinOverride &&
     typeof pinOverride.canonicalHash === 'string' &&
     /^[0-9a-f]{64}$/i.test(pinOverride.canonicalHash) &&
-    pinOverride.canonicalHash.toLowerCase() !== FORBIDDEN_PLACEHOLDER_CANONICAL_HASH
+    pinOverride.canonicalHash.toLowerCase() !==
+      FORBIDDEN_PLACEHOLDER_CANONICAL_HASH
 
   if (
     hasMaterializedOverride &&
@@ -1380,10 +1708,17 @@ function buildSeedContext(options = {}) {
 
   const contract = validateFixtureContract(boundTasks, docs, pin)
   if (!contract.ok) {
-    throw new Error(`seed fixture contract failed: ${contract.errors.join('; ')}`)
+    throw new Error(
+      `seed fixture contract failed: ${contract.errors.join('; ')}`,
+    )
   }
-  if (!pin.canonicalHash || pin.canonicalHash === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH) {
-    throw new Error('seed fixture pin.canonicalHash missing or forbidden placeholder')
+  if (
+    !pin.canonicalHash ||
+    pin.canonicalHash === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH
+  ) {
+    throw new Error(
+      'seed fixture pin.canonicalHash missing or forbidden placeholder',
+    )
   }
   return {
     now,
@@ -1453,6 +1788,11 @@ export async function seedIsolatedControlCenter(options = {}) {
     await ensureBaselineTables(db)
     await replaceBoardScopedSyntheticRows(db, ctx)
     const readback = await readbackSeedProof(db, ctx.boardId)
+    assertDurableClassificationSeedProof(
+      readback,
+      ctx,
+      'seedIsolatedControlCenter',
+    )
 
     // Fail-closed: subject_hash must equal materialized authority (parity source).
     if (
@@ -1503,7 +1843,8 @@ export async function seedIsolatedControlCenter(options = {}) {
         lifecycleRev: ctx.pin.lifecycleRev,
       },
       schemaMigrations: {
-        tip: schemaApply.finalApplied[schemaApply.finalApplied.length - 1] ?? null,
+        tip:
+          schemaApply.finalApplied[schemaApply.finalApplied.length - 1] ?? null,
         versions: schemaApply.finalApplied,
         appliedThisRun: schemaApply.applied,
         skippedThisRun: schemaApply.skipped,
@@ -1603,7 +1944,10 @@ export async function ensureStagingDatabaseExists(dbName = STAGING_DB_NAME) {
     )
   }
   const cfg = resolveMysqlConfig()
-  const root = await mysql.createConnection({ ...cfg, multipleStatements: true })
+  const root = await mysql.createConnection({
+    ...cfg,
+    multipleStatements: true,
+  })
   try {
     await root.query(
       `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
@@ -1647,7 +1991,10 @@ export async function seedStagingSynthetic(options = {}) {
     producerVersion: options.producerVersion ?? 'staging-synthetic-seed',
   })
 
-  if (ctx.boardId !== DEFAULT_BOARD_ID && options.allowNonDefaultBoard !== true) {
+  if (
+    ctx.boardId !== DEFAULT_BOARD_ID &&
+    options.allowNonDefaultBoard !== true
+  ) {
     throw new Error(
       `FAIL-CLOSED staging-seed: boardId must be "${DEFAULT_BOARD_ID}" (got "${ctx.boardId}")`,
     )
@@ -1662,6 +2009,7 @@ export async function seedStagingSynthetic(options = {}) {
     const schemaSeed = await seedSchemaMigrationsThrough006(db)
     await replaceBoardScopedSyntheticRows(db, ctx)
     const readback = await readbackSeedProof(db, ctx.boardId)
+    assertDurableClassificationSeedProof(readback, ctx, 'seedStagingSynthetic')
 
     // Idempotency check: second replace in-process optional via options.verifyIdempotent
     let idempotent = null
@@ -1669,13 +2017,20 @@ export async function seedStagingSynthetic(options = {}) {
       const schemaSeed2 = await seedSchemaMigrationsThrough006(db)
       await replaceBoardScopedSyntheticRows(db, ctx)
       const readback2 = await readbackSeedProof(db, ctx.boardId)
+      assertDurableClassificationSeedProof(
+        readback2,
+        ctx,
+        'seedStagingSynthetic:idempotent',
+      )
       idempotent = {
         tasksMatch: readback2.tasks === readback.tasks,
         taskHashMatch: readback2.taskHash === readback.taskHash,
         pinBoardRevMatch: readback2.pin?.boardRev === readback.pin?.boardRev,
         snapshotMatch:
-          readback2.pin?.canonicalSnapshotId === readback.pin?.canonicalSnapshotId,
-        subjectHashMatch: readback2.pin?.subjectHash === readback.pin?.subjectHash,
+          readback2.pin?.canonicalSnapshotId ===
+          readback.pin?.canonicalSnapshotId,
+        subjectHashMatch:
+          readback2.pin?.subjectHash === readback.pin?.subjectHash,
         schemaTipMatch:
           schemaSeed2.finalVersions[schemaSeed2.finalVersions.length - 1] ===
           schemaSeed.finalVersions[schemaSeed.finalVersions.length - 1],
@@ -1751,7 +2106,8 @@ export async function seedStagingSynthetic(options = {}) {
         lifecycleRev: ctx.pin.lifecycleRev,
       },
       schemaMigrations: {
-        tip: schemaSeed.finalVersions[schemaSeed.finalVersions.length - 1] ?? null,
+        tip:
+          schemaSeed.finalVersions[schemaSeed.finalVersions.length - 1] ?? null,
         versions: schemaSeed.finalVersions,
       },
       readback: {
@@ -1803,7 +2159,11 @@ export function runSeedSelfTests() {
   const docs = mat.docs
   const contract = validateFixtureContract(tasks, docs, pin)
   ok('fixture-contract', contract.ok, contract.errors?.join('; ') || null)
-  ok('canonical-task-count', tasks.length === CANONICAL_TASK_IDS.length, String(tasks.length))
+  ok(
+    'canonical-task-count',
+    tasks.length === CANONICAL_TASK_IDS.length,
+    String(tasks.length),
+  )
   ok(
     'task-hash-hex',
     /^[0-9a-f]{64}$/i.test(pin.taskHash),
@@ -1852,7 +2212,8 @@ export function runSeedSelfTests() {
   )
   ok(
     'canonical-payload-has-tasks',
-    Array.isArray(synthCanon.payload.tasks) && synthCanon.payload.tasks.length === tasks.length,
+    Array.isArray(synthCanon.payload.tasks) &&
+      synthCanon.payload.tasks.length === tasks.length,
     String(synthCanon.payload.tasks?.length),
   )
   ok(
@@ -1917,15 +2278,20 @@ export function runSeedSelfTests() {
     )
     ok(
       'schema-greenfield-chain-through-006',
-      FP_C_GREENFIELD_CHAIN_VERSIONS[FP_C_GREENFIELD_CHAIN_VERSIONS.length - 1] ===
-        '006' && FP_C_GREENFIELD_CHAIN_VERSIONS.includes('000'),
+      FP_C_GREENFIELD_CHAIN_VERSIONS[
+        FP_C_GREENFIELD_CHAIN_VERSIONS.length - 1
+      ] === '006' && FP_C_GREENFIELD_CHAIN_VERSIONS.includes('000'),
       FP_C_GREENFIELD_CHAIN_VERSIONS.join(','),
     )
     ok(
       'healthz-required-tables-004-006-named',
       HEALTHZ_REQUIRED_TABLES_004_006.length === 6 &&
-        HEALTHZ_REQUIRED_TABLES_004_006.includes('control_plane_dispatch_plans') &&
-        HEALTHZ_REQUIRED_TABLES_004_006.includes('control_plane_stage_evidence_receipts'),
+        HEALTHZ_REQUIRED_TABLES_004_006.includes(
+          'control_plane_dispatch_plans',
+        ) &&
+        HEALTHZ_REQUIRED_TABLES_004_006.includes(
+          'control_plane_stage_evidence_receipts',
+        ),
       HEALTHZ_REQUIRED_TABLES_004_006.join(','),
     )
   } catch (e) {
@@ -1979,7 +2345,11 @@ export function runSeedSelfTests() {
     host: 'cairn-tm-v3-mysql',
     approved: '1',
   })
-  ok('gate-refuse-wrong-db', !g3.ok && /CAIRN_DB_NAME/.test(g3.reason), g3.reason)
+  ok(
+    'gate-refuse-wrong-db',
+    !g3.ok && /CAIRN_DB_NAME/.test(g3.reason),
+    g3.reason,
+  )
 
   // Gate: production host
   const g4 = assertStagingSeedAllowed({
@@ -2039,7 +2409,10 @@ export function runSeedSelfTests() {
   // Host classifier
   ok('class-local', classifySeedHost('localhost') === 'LOCAL')
   ok('class-staging-label', classifySeedHost('cairn-tm-v3-mysql') === 'STAGING')
-  ok('class-prod', classifySeedHost('api.production.mfsdev.net') === 'PRODUCTION')
+  ok(
+    'class-prod',
+    classifySeedHost('api.production.mfsdev.net') === 'PRODUCTION',
+  )
   ok('class-unknown', classifySeedHost('10.0.0.5') === 'UNKNOWN_REMOTE')
 
   // Constants
@@ -2121,7 +2494,9 @@ export function runSeedSelfTests() {
   )
   ok(
     'baseline-creates-control-plane-runs',
-    /CREATE TABLE IF NOT EXISTS control_plane_runs/.test(ensureBaselineTables.toString()),
+    /CREATE TABLE IF NOT EXISTS control_plane_runs/.test(
+      ensureBaselineTables.toString(),
+    ),
   )
 
   const failCount = results.filter((r) => !r.pass).length
@@ -2140,7 +2515,8 @@ export async function runDisposableUpsertProof(options = {}) {
     ...options,
     actor: SEED_ACTOR_STAGING,
     boardName: 'MFS Rebuild (DISPOSABLE PROOF)',
-    boardDescription: 'Disposable local proof of staging upsert path. Not production.',
+    boardDescription:
+      'Disposable local proof of staging upsert path. Not production.',
     producerVersion: 'disposable-staging-upsert-proof',
   })
 
@@ -2186,8 +2562,18 @@ export async function runDisposableUpsertProof(options = {}) {
 
       await replaceBoardScopedSyntheticRows(db, ctx)
       const r1 = await readbackSeedProof(db, ctx.boardId)
+      assertDurableClassificationSeedProof(
+        r1,
+        ctx,
+        'runDisposableUpsertProof:first',
+      )
       await replaceBoardScopedSyntheticRows(db, ctx)
       const r2 = await readbackSeedProof(db, ctx.boardId)
+      assertDurableClassificationSeedProof(
+        r2,
+        ctx,
+        'runDisposableUpsertProof:second',
+      )
 
       const [siblingBoards] = await db.query(
         `SELECT COUNT(*) AS n FROM boards WHERE id='unrelated-board'`,
@@ -2241,7 +2627,8 @@ export async function runDisposableUpsertProof(options = {}) {
           taskHashMatch: r1.taskHash === r2.taskHash,
           pinMatch: r1.pin?.canonicalSnapshotId === r2.pin?.canonicalSnapshotId,
           durableOngoingMatch:
-            r1.seedProof?.durableOngoingRunId === r2.seedProof?.durableOngoingRunId &&
+            r1.seedProof?.durableOngoingRunId ===
+              r2.seedProof?.durableOngoingRunId &&
             r1.seedProof?.durableOngoingRunningCount ===
               r2.seedProof?.durableOngoingRunningCount,
         },

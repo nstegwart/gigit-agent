@@ -11,6 +11,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export const FIXTURE_DIR = __dirname
 
+/** Former hard-coded pin hash — MUST NOT be used as authority (DATA_INTEGRITY collapse). */
+export const FORBIDDEN_PLACEHOLDER_CANONICAL_HASH =
+  'a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890ab'
+
+/** Main work buckets (AC-BUCKET / trackedWorkDenominator). STALE is overlay only. */
+export const MAIN_WORK_BUCKETS = Object.freeze([
+  'DONE',
+  'ONGOING',
+  'NEXT',
+  'QUEUED',
+  'RECONCILIATION_PENDING',
+  'BLOCKED',
+])
+
 function readJson(name) {
   const raw = readFileSync(join(__dirname, name), 'utf8')
   return JSON.parse(raw)
@@ -91,6 +105,92 @@ export function loadAgentRunSeed() {
 
 export function loadCleanupRules() {
   return readJson('cleanup-rules.json')
+}
+
+/**
+ * Owner progress expectedBuckets from MANIFEST (or buckets/expected-buckets.json).
+ * @returns {Record<string, string[]>}
+ */
+export function loadExpectedBuckets() {
+  const manifest = loadStagingManifest()
+  const fromManifest = manifest.expectedBuckets || manifest.buckets || manifest.workBuckets
+  if (fromManifest && typeof fromManifest === 'object') {
+    return fromManifest
+  }
+  const file = readJson('buckets/expected-buckets.json')
+  return file.expectedBuckets
+}
+
+/**
+ * Per-bucket durable task fixture (pin-bound classification receipts).
+ * @param {string} bucket  e.g. ONGOING
+ */
+export function loadBucketFixture(bucket) {
+  const name = String(bucket).toLowerCase()
+  return readJson(`buckets/${name}.json`)
+}
+
+/**
+ * Validate expectedBuckets: six keys present, DISTINCT coverage of taskIds, sum = tracked denom.
+ * @param {object} [manifest]
+ * @returns {{ ok: boolean, errors: string[], buckets: object|null }}
+ */
+export function validateExpectedBuckets(manifest) {
+  const errors = []
+  const m = manifest ?? loadStagingManifest()
+  const buckets = m.expectedBuckets || m.buckets || m.workBuckets
+  if (!buckets || typeof buckets !== 'object') {
+    return { ok: false, errors: ['expectedBuckets missing on MANIFEST'], buckets: null }
+  }
+  for (const k of MAIN_WORK_BUCKETS) {
+    if (buckets[k] == null) errors.push(`expectedBuckets missing key ${k}`)
+  }
+  const seen = new Set()
+  let sum = 0
+  for (const k of MAIN_WORK_BUCKETS) {
+    const ids = buckets[k]
+    if (ids == null) continue
+    if (!Array.isArray(ids)) {
+      // allow numeric counts as long as non-null (acceptance only checks != null)
+      if (typeof ids === 'number' && Number.isFinite(ids) && ids >= 0) {
+        sum += ids
+        continue
+      }
+      errors.push(`expectedBuckets.${k} must be array of task ids or non-neg count`)
+      continue
+    }
+    sum += ids.length
+    for (const id of ids) {
+      if (seen.has(id)) errors.push(`duplicate taskId across buckets: ${id}`)
+      seen.add(id)
+    }
+  }
+  const taskIds = Array.isArray(m.taskIds) ? m.taskIds : []
+  for (const id of taskIds) {
+    if (!seen.has(id) && typeof buckets.DONE === 'object') {
+      // only enforce full coverage when buckets use task-id arrays
+      const usesArrays = MAIN_WORK_BUCKETS.every((k) => Array.isArray(buckets[k]))
+      if (usesArrays) errors.push(`taskId not in any expectedBucket: ${id}`)
+    }
+  }
+  if (
+    typeof buckets.DONE === 'object' &&
+    Array.isArray(buckets.DONE) &&
+    m.trackedWorkDenominator != null &&
+    Number(m.trackedWorkDenominator) !== sum
+  ) {
+    errors.push(
+      `trackedWorkDenominator ${m.trackedWorkDenominator} != sum of buckets ${sum}`,
+    )
+  }
+  // Progress buckets used by ART S04–S06/S08 must be non-empty when task-id arrays used
+  for (const k of ['ONGOING', 'NEXT', 'QUEUED', 'RECONCILIATION_PENDING']) {
+    const v = buckets[k]
+    if (Array.isArray(v) && v.length < 1) {
+      errors.push(`progress bucket ${k} empty — owner screenshots residual`)
+    }
+  }
+  return { ok: errors.length === 0, errors, buckets }
 }
 
 /**
@@ -253,16 +353,27 @@ export function validateStagingFixtureContract() {
   if (!pin.canonicalSnapshotId || !pin.canonicalHash || pin.boardRev == null) {
     errors.push('pin incomplete')
   }
-  // Authority pin hash from control-center-fixture HARNESS_PIN_BASE may be 32–128 hex
-  // (canonical synth seed uses a 60-hex content pin, not necessarily full sha256).
+  // Authority pin hash is 64-hex materializeAuthorityPin subject hash (never placeholder).
   if (!/^[0-9a-f]{32,128}$/i.test(String(pin.canonicalHash))) {
     errors.push('canonicalHash must be 32–128 hex')
+  }
+  if (
+    String(pin.canonicalHash).toLowerCase() === FORBIDDEN_PLACEHOLDER_CANONICAL_HASH
+  ) {
+    errors.push(
+      'pin.canonicalHash is FORBIDDEN_PLACEHOLDER — collapses classified work to BLOCKED:DATA_INTEGRITY',
+    )
   }
   if (!/^[0-9a-f]{64}$/i.test(String(pin.taskHash))) {
     errors.push('taskHash must be 64 hex')
   }
   if (pin.taskHash !== computeTaskHash(manifest.taskIds)) {
     errors.push('taskHash mismatch vs MANIFEST.taskIds')
+  }
+
+  const bucketCheck = validateExpectedBuckets(manifest)
+  if (!bucketCheck.ok) {
+    for (const e of bucketCheck.errors) errors.push(e)
   }
   if (Number(manifest.counts?.tasks) !== manifest.taskIds.length) {
     errors.push('counts.tasks must equal taskIds.length')
@@ -388,6 +499,62 @@ export function runFixtureContractSelfTests() {
       pin.taskHash ===
         '49a5b4891fe7efe9a095545d2a21061ed60ee2a2c2d8279064092bf8403f70c4',
   )
+  ok(
+    'pin-not-forbidden-placeholder',
+    String(pin.canonicalHash).toLowerCase() !== FORBIDDEN_PLACEHOLDER_CANONICAL_HASH &&
+      /^[0-9a-f]{64}$/i.test(String(pin.canonicalHash)),
+  )
+  ok(
+    'pin-authority-matches-materialized-seed',
+    pin.canonicalHash ===
+      'e471e022328aa15e35ab0039ea5ac47f4f4b12dda2a3006371e930da6428f46b',
+  )
+
+  const bucketCheck = validateExpectedBuckets(v.manifest)
+  ok('expected-buckets-valid', bucketCheck.ok, bucketCheck.errors.join('; ') || null)
+  ok(
+    'expected-buckets-progress-nonempty',
+    Array.isArray(bucketCheck.buckets?.ONGOING) &&
+      bucketCheck.buckets.ONGOING.length >= 1 &&
+      Array.isArray(bucketCheck.buckets?.NEXT) &&
+      bucketCheck.buckets.NEXT.length >= 1 &&
+      Array.isArray(bucketCheck.buckets?.QUEUED) &&
+      bucketCheck.buckets.QUEUED.length >= 1 &&
+      Array.isArray(bucketCheck.buckets?.RECONCILIATION_PENDING) &&
+      bucketCheck.buckets.RECONCILIATION_PENDING.length >= 1,
+  )
+  ok(
+    'expected-buckets-only-one-data-integrity-repair',
+    Array.isArray(bucketCheck.buckets?.BLOCKED) &&
+      bucketCheck.buckets.BLOCKED.includes('task-missing-proof-1') &&
+      bucketCheck.buckets.BLOCKED.includes('task-blocked-1'),
+  )
+
+  // Durable per-bucket fixtures pin-bound (classification receipts match authority pin)
+  try {
+    const ongoingFx = loadBucketFixture('ONGOING')
+    const reconFx = loadBucketFixture('RECONCILIATION_PENDING')
+    const ongoingTask = ongoingFx.tasks?.[0]
+    const rcpt = ongoingTask?.data?.classification?.receipt
+    ok(
+      'bucket-ongoing-fixture-pin-bound',
+      ongoingFx.bucket === 'ONGOING' &&
+        rcpt?.canonicalHash === pin.canonicalHash &&
+        rcpt?.taskHash === pin.taskHash &&
+        ongoingTask?.data?.claimState === 'VALID_CURRENT' &&
+        ongoingFx.durableOwnership?.run?.runId === 'run-synth-ongoing',
+    )
+    ok(
+      'bucket-recon-fixture-orphan-or-stale',
+      reconFx.bucket === 'RECONCILIATION_PENDING' &&
+        reconFx.taskIds?.includes('task-recon-1') &&
+        (reconFx.tasks ?? []).some((t) => t.data?.claimState === 'ORPHAN') &&
+        (reconFx.tasks ?? []).some((t) => t.data?.claimState === 'STALE'),
+    )
+  } catch (e) {
+    ok('bucket-ongoing-fixture-pin-bound', false, String(e?.message || e))
+    ok('bucket-recon-fixture-orphan-or-stale', false, String(e?.message || e))
+  }
 
   const sync = buildAccountSyncArgs({ pin, ids: ids1, now: '2026-07-13T12:00:00.000Z' })
   const secretKeys = JSON.stringify(sync.accounts).match(
