@@ -1,25 +1,49 @@
-// Unit tests for the pure DAG layout in src/lib/graph.ts. Runs layoutDag over the
-// REAL board (buildModel of data/plan.json + runs.json) so the assertions double as
-// a contract check on the committed SSOT, plus a tiny hand-made chain for exact cols.
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-
+// Unit tests for the pure DAG layout in src/lib/graph.ts. The board fixture is
+// deterministic and test-owned so collection never depends on gitignored
+// runtime data under data/boards/*.
 import { describe, expect, it } from 'vitest'
 
 import { edgePath, layoutDag } from '#/lib/graph'
 import { buildModel } from '#/lib/model'
 import type { Feature, RawBoard } from '#/lib/types'
 
-// vitest runs with cwd = project root; the ibils board now lives under
-// data/boards/ibils/ (multi-board layout). Merge exactly like the server store
-// (readBoard): plan.json + runs.json's `runs`.
-const dataDir = join(process.cwd(), 'data', 'boards', 'ibils')
-function readJSON<T>(name: string): T {
-  return JSON.parse(readFileSync(join(dataDir, name), 'utf8')) as T
+const raw: RawBoard = {
+  fase_label: { build: 'Build' },
+  fase_persen: { build: 60 },
+  projects: [
+    {
+      id: 'synthetic-project',
+      nama: 'Synthetic project',
+      status: 'planned',
+      tracks: ['synthetic'],
+    },
+  ],
+  features: [
+    { id: 'root', nama: 'Root', track: 'synthetic', fase: 'build', deps: [] },
+    {
+      id: 'middle',
+      nama: 'Middle',
+      track: 'synthetic',
+      fase: 'build',
+      deps: ['root'],
+    },
+    {
+      id: 'leaf',
+      nama: 'Leaf',
+      track: 'synthetic',
+      fase: 'build',
+      deps: ['middle'],
+    },
+    {
+      id: 'side',
+      nama: 'Side',
+      track: 'synthetic',
+      fase: 'build',
+      deps: ['root'],
+    },
+  ],
+  runs: [],
 }
-const plan = readJSON<Omit<RawBoard, 'runs'>>('plan.json')
-const runsFile = readJSON<{ runs: RawBoard['runs'] }>('runs.json')
-const raw: RawBoard = { ...plan, runs: runsFile.runs ?? [] }
 const m = buildModel(raw)
 
 // Minimal Feature factory for the hand-made subset test.
@@ -45,7 +69,7 @@ function mkFeat(id: string, deps: Array<string>): Feature {
   }
 }
 
-describe('layoutDag — real board data', () => {
+describe('layoutDag — deterministic board fixture', () => {
   const layout = layoutDag(m.features)
 
   it('produces exactly one node per feature', () => {

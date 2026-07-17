@@ -5,8 +5,35 @@
  * - list/get runs/accounts/decisions/G5 from durable stores
  * - public MCP service: shared materialization + pin invalidation + rate limit
  * - typedError never echoes ER_* codes/details
+ *
+ * Hermetic unit DI (UNIT-DB-HERMETIC): board-store + tasks-store ambient MySQL
+ * producers are intercepted via vi.mock → in-memory adapters so default unit
+ * suite never requires 127.0.0.1:3306. Foreign CP0/account-sync dirty bytes
+ * in this file are preserved as-is.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import {
+  hermeticBoardStoreApi,
+  hermeticTasksStoreApi,
+  resetHermeticBoardStore,
+} from './helpers/board-mcp-unit-hermetic'
+
+vi.mock('#/server/board-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#/server/board-store')>()
+  return {
+    ...actual,
+    ...hermeticBoardStoreApi,
+  }
+})
+
+vi.mock('#/server/tasks-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#/server/tasks-store')>()
+  return {
+    ...actual,
+    ...hermeticTasksStoreApi,
+  }
+})
 
 import {
   advanceTaskProduct,
@@ -139,6 +166,7 @@ function authRoot(): McpAuthContext {
 /** Capture tool handler outputs via a thin McpServer double is hard; call deps directly. */
 
 beforeEach(() => {
+  resetHermeticBoardStore()
   resetMcpControlPlaneDeps()
   resetControlPlaneRuntimeContextForTests()
   resetPublicSnapshotServiceForTests()
@@ -169,6 +197,7 @@ afterEach(() => {
   resetMcpControlPlaneDeps()
   resetControlPlaneRuntimeContextForTests()
   resetPublicSnapshotServiceForTests()
+  resetHermeticBoardStore()
 })
 
 describe('durable MCP runtime context', () => {
@@ -3701,6 +3730,7 @@ describe('submit_stage_evidence MCP tool + WAVE_CLOSE + add_comment real MCP', (
           reason: null,
           statusChangedAt: null,
           tombstone: false,
+          // Runtime projection must strip unknown secret-looking fields.
           token: 'must-not-leak',
         } as never,
       ],

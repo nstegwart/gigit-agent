@@ -1,29 +1,157 @@
-// Unit tests for buildModel — the pure adapter that turns raw plan.json + runs.json
-// into the derived, UI-ready Model. Feeds it the REAL board data on disk so the
-// assertions double as a contract check on the committed SSOT.
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+// Unit tests for buildModel — the pure adapter that turns raw board data into
+// the derived, UI-ready Model. The generated fixture is deterministic,
+// repository-owned test code and contains no production board data.
 import { describe, expect, it } from 'vitest'
 
 import { buildModel } from '#/lib/model'
 import type { Feature, RawBoard } from '#/lib/types'
 
-// vitest runs with cwd = project root; the ibils board now lives under
-// data/boards/ibils/ (multi-board layout).
-const dataDir = join(process.cwd(), 'data', 'boards', 'ibils')
+const PROJECT_SPECS = [
+  {
+    id: 'ibils-business',
+    track: 'business',
+    featureCount: 16,
+    parkedCount: 8,
+    livePhases: [
+      'review-owner',
+      'review-owner',
+      'review-owner',
+      'review-owner',
+      'build',
+      'build',
+      'build',
+      'build',
+    ],
+    sampledId: 'f4-m0-backend-foundation',
+  },
+  {
+    id: 'qurasi',
+    track: 'qurasi',
+    featureCount: 10,
+    parkedCount: 5,
+    livePhases: ['design', 'design', 'design', 'build', 'qa'],
+    sampledId: 'qurasi-post-artikel',
+  },
+  {
+    id: 'cs-ai-service',
+    track: 'cs-service',
+    featureCount: 10,
+    parkedCount: 5,
+    livePhases: ['design', 'design', 'design', 'design', 'build'],
+    sampledId: 'cs-core-service',
+  },
+  {
+    id: 'ops-console',
+    track: 'ops',
+    featureCount: 10,
+    parkedCount: 5,
+    livePhases: ['build', 'build', 'build', 'build', 'build'],
+    sampledId: 'ops-core',
+  },
+  {
+    id: 'platform-api',
+    track: 'platform',
+    featureCount: 10,
+    parkedCount: 5,
+    livePhases: ['design', 'review-owner', 'build', 'qa', 'uat'],
+    sampledId: 'platform-core',
+  },
+] as const
 
-function readJSON<T>(name: string): T {
-  return JSON.parse(readFileSync(join(dataDir, name), 'utf8')) as T
+function buildSyntheticBoard(): RawBoard {
+  const features: RawBoard['features'] = []
+
+  for (const spec of PROJECT_SPECS) {
+    const liveCount = spec.featureCount - spec.parkedCount
+    for (let i = 0; i < liveCount; i += 1) {
+      const id = i === 0 ? spec.sampledId : `${spec.track}-live-${i}`
+      features.push({
+        id,
+        nama: `Synthetic ${spec.track} live ${i}`,
+        track: spec.track,
+        fase: spec.livePhases[i],
+        blocked: i === liveCount - 1 ? 'Synthetic blocked case' : null,
+        deps: i === 0 ? [] : [features[features.length - 1].id],
+        checklist:
+          id === 'f4-m0-backend-foundation'
+            ? Array.from({ length: 9 }, (_, index) => ({
+                teks: `Synthetic checkpoint ${index + 1}`,
+                done: index < 3,
+              }))
+            : [],
+      })
+    }
+
+    for (let i = 0; i < spec.parkedCount; i += 1) {
+      features.push({
+        id: `${spec.track}-parked-${i}`,
+        nama: `Synthetic ${spec.track} parked ${i}`,
+        track: spec.track,
+        fase: 'backlog',
+        bucket: 'nanti',
+        deps: [],
+        checklist: [],
+      })
+    }
+  }
+
+  const runningProjects = [
+    'ibils-business',
+    'ibils-business',
+    'qurasi',
+    'qurasi',
+    'cs-ai-service',
+    'ops-console',
+  ]
+
+  return {
+    fase_label: {
+      backlog: 'Backlog',
+      design: 'Design',
+      'review-owner': 'Owner review',
+      build: 'Build',
+      qa: 'QA',
+      uat: 'UAT',
+    },
+    fase_persen: {
+      backlog: 0,
+      design: 40,
+      'review-owner': 50,
+      build: 60,
+      qa: 80,
+      uat: 100,
+    },
+    projects: PROJECT_SPECS.map((spec) => ({
+      id: spec.id,
+      nama: `Synthetic ${spec.id}`,
+      status: 'planned',
+      tracks: [spec.track],
+    })),
+    features,
+    queue: {
+      now: ['f4-m0-backend-foundation', 'qurasi-post-artikel'],
+      next: ['cs-core-service', 'ops-core'],
+      catatan: 'Deterministic synthetic queue',
+    },
+    runs: runningProjects.map((project, index) => ({
+      id: `synthetic-run-${index + 1}`,
+      agent: `fixture-agent-${index + 1}`,
+      agentType: index % 2 === 0 ? 'codex' : 'grok',
+      model: 'fixture-model',
+      effort: 'fixture',
+      task: `Synthetic run ${index + 1}`,
+      project,
+      status: 'running',
+    })),
+  }
 }
 
-// Merge exactly like the server store (readBoard): plan + runs.json's `runs`.
-const plan = readJSON<Omit<RawBoard, 'runs'>>('plan.json')
-const runsFile = readJSON<{ runs: RawBoard['runs'] }>('runs.json')
-const raw: RawBoard = { ...plan, runs: runsFile.runs ?? [] }
+const raw = buildSyntheticBoard()
+const plan = raw
 
 const m = buildModel(raw)
 
-describe('buildModel — real board data', () => {
+describe('buildModel — deterministic board fixture', () => {
   it('produces 5 projects and 56 features', () => {
     expect(m.projects).toHaveLength(5)
     expect(m.features).toHaveLength(56)
@@ -33,7 +161,9 @@ describe('buildModel — real board data', () => {
 
   it('maps feature.projectId from track -> project for sampled features', () => {
     // business track -> ibils-business
-    expect(m.featById['f4-m0-backend-foundation'].projectId).toBe('ibils-business')
+    expect(m.featById['f4-m0-backend-foundation'].projectId).toBe(
+      'ibils-business',
+    )
     // qurasi track -> qurasi
     expect(m.featById['qurasi-post-artikel'].projectId).toBe('qurasi')
     // cs-service track -> cs-ai-service
@@ -50,7 +180,9 @@ describe('buildModel — real board data', () => {
 
   it('computes taskDone/taskTotal from the checklist for a known feature', () => {
     const f = m.featById['f4-m0-backend-foundation']
-    const rawFeat = plan.features.find((x) => x.id === 'f4-m0-backend-foundation')!
+    const rawFeat = plan.features.find(
+      (x) => x.id === 'f4-m0-backend-foundation',
+    )!
     const cl = rawFeat.checklist ?? []
     expect(f.taskTotal).toBe(cl.length)
     expect(f.taskTotal).toBe(9)
@@ -83,7 +215,9 @@ describe('buildModel — real board data', () => {
 
     // blocked = features with a truthy blocked field
     expect(m.blocked.every((f) => f.isBlocked)).toBe(true)
-    expect(m.blocked).toHaveLength(m.features.filter((f) => Boolean(f.blocked)).length)
+    expect(m.blocked).toHaveLength(
+      m.features.filter((f) => Boolean(f.blocked)).length,
+    )
 
     // parked = bucket 'nanti'
     expect(m.parked.every((f) => f.parked && f.bucket === 'nanti')).toBe(true)

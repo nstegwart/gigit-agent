@@ -2,7 +2,6 @@
  * C3-R5S: authoritative pin + claim/stale projection + DecisionV3 redaction.
  * Support evidence only (LOCAL ONLY) — no browser/MCP.
  */
-import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 
 import type { ClassificationReceipt } from '#/lib/control-plane-types'
@@ -42,12 +41,6 @@ const PIN: ControlCenterPin = {
   freshnessAgeSeconds: 0,
   stale: false,
   staleReason: null,
-}
-
-function boardTaskHash(ids: string[]): string {
-  return createHash('sha256')
-    .update([...ids].sort().join('|') || 'empty-tasks')
-    .digest('hex')
 }
 
 function makeReceipt(
@@ -234,12 +227,13 @@ describe('C3-R5S Acceptance A — authoritative pin', () => {
   })
 
   it('persisted authority wins over boardHash; all nine surfaces share pin; mismatch blocks', () => {
-    const taskIds = ['task-auth-ok', 'task-mismatch']
-    const taskHash = boardTaskHash(taskIds)
+    // Under pinAuthorityComplete, product aliases taskHash = canonicalHash
+    // (classification-sync CANONICAL_PIN bind). Receipts must use that alias —
+    // ids-only boardTaskHash would fail pin match → false DATA_INTEGRITY.
     const authPin = {
       canonicalSnapshotId: AUTH_SNAP,
       canonicalHash: AUTH_HASH,
-      taskHash,
+      taskHash: AUTH_HASH,
       boardRev: 7,
       lifecycleRev: 3,
     }
@@ -383,18 +377,11 @@ describe('C3-R5S Acceptance B — claim / stale control-plane projection', () =>
   })
 
   it('bucket truth: DONE+stale exception, ONGOING, RECON, STALE overlay, UNCLASSIFIED once', () => {
-    const taskIds = [
-      'task-done-1',
-      'task-ongoing-1',
-      'task-recon-1',
-      'task-stale-1',
-      'task-missing-proof-1',
-    ]
-    const taskHash = boardTaskHash(taskIds)
+    // taskHash = canonicalHash under complete authority pin (origin alias).
     const authPin = {
       canonicalSnapshotId: AUTH_SNAP,
       canonicalHash: AUTH_HASH,
-      taskHash,
+      taskHash: AUTH_HASH,
       boardRev: 7,
       lifecycleRev: 3,
     }

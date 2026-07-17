@@ -1,24 +1,41 @@
-// Unit tests for the Tasks adapter (buildTasks in src/lib/tasks.ts). Reads the
-// real mfs-rebuild board tasks.json from disk (node:fs) and asserts the derived
-// done/total/pct fields, a known task's counts, and byId lookup. Pure — no
-// server, no temp dir; the SSOT file is only read, never written.
-import fs from 'node:fs'
-import path from 'node:path'
-
+// Unit tests for the pure Tasks adapter (buildTasks in src/lib/tasks.ts).
+// The fixture is intentionally test-owned: the default unit suite must not
+// depend on a gitignored runtime board under data/boards/*.
 import { describe, expect, it } from 'vitest'
 
 import { buildTasks } from '#/lib/tasks'
 import type { WorkTask } from '#/lib/types'
 
-const tasksFile = path.resolve(
-  process.cwd(),
-  'data/boards/mfs-rebuild/tasks.json',
-)
-
-const raw = JSON.parse(fs.readFileSync(tasksFile, 'utf8')) as {
-  tasks: Array<WorkTask>
-}
-const rawTasks = raw.tasks
+const rawTasks: Array<WorkTask> = [
+  {
+    id: 'T-AFF-INTEGRATION-E2E',
+    title: 'Synthetic integration task',
+    dependencies: ['T-AFF-FOUNDATION'],
+    impacts: ['affiliate'],
+    checkpoints: [
+      { id: 'map', label: 'Map contract', done: true },
+      { id: 'build', label: 'Build adapter', done: true },
+      { id: 'verify', label: 'Verify target layer', done: false },
+    ],
+  },
+  {
+    id: 'T-AFF-FOUNDATION',
+    title: 'Synthetic foundation task',
+    dependencies: [],
+    impacts: ['affiliate'],
+    checkpoints: [
+      { id: 'map', label: 'Map foundation', done: true },
+      { id: 'verify', label: 'Verify foundation', done: false },
+    ],
+  },
+  {
+    id: 'T-EMPTY-CHECKPOINTS',
+    title: 'Synthetic empty-checkpoint task',
+    dependencies: [],
+    impacts: [],
+    checkpoints: [],
+  },
+]
 
 const { tasks, byId } = buildTasks(rawTasks)
 

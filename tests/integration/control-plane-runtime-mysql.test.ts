@@ -55,7 +55,9 @@ async function probeLocalMysql(): Promise<boolean> {
   }
 }
 
-function sampleCollision(overrides: Partial<CollisionLockRecord> = {}): CollisionLockRecord {
+function sampleCollision(
+  overrides: Partial<CollisionLockRecord> = {},
+): CollisionLockRecord {
   return {
     boardId: 'board-race',
     lockId: 'lock-1',
@@ -77,7 +79,9 @@ function sampleCollision(overrides: Partial<CollisionLockRecord> = {}): Collisio
   }
 }
 
-function sampleIntegration(overrides: Partial<IntegrationLockRecord> = {}): IntegrationLockRecord {
+function sampleIntegration(
+  overrides: Partial<IntegrationLockRecord> = {},
+): IntegrationLockRecord {
   return {
     boardId: 'board-race',
     lockId: 'ilock-1',
@@ -106,8 +110,12 @@ async function applyLockTables(conn: mysql.Connection): Promise<void> {
   const sql = fs.readFileSync(sqlPath, 'utf8')
   const stmts = splitSqlStatements(sql).filter(
     (s) =>
-      /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+control_plane_collision_locks/i.test(s) ||
-      /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+control_plane_integration_locks/i.test(s),
+      /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+control_plane_collision_locks/i.test(
+        s,
+      ) ||
+      /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+control_plane_integration_locks/i.test(
+        s,
+      ),
   )
   expect(stmts.length).toBe(2)
   for (const s of stmts) {
@@ -159,20 +167,28 @@ describe('control-plane-runtime MySQL lock insert race', () => {
   }, 30_000)
 
   it('lock INSERT SQL is insert-only (no ODKU)', () => {
-    expect(RUNTIME_SQL.putCollisionLock).not.toMatch(/ON\s+DUPLICATE\s+KEY\s+UPDATE/i)
-    expect(RUNTIME_SQL.putIntegrationLock).not.toMatch(/ON\s+DUPLICATE\s+KEY\s+UPDATE/i)
+    expect(RUNTIME_SQL.putCollisionLock).not.toMatch(
+      /ON\s+DUPLICATE\s+KEY\s+UPDATE/i,
+    )
+    expect(RUNTIME_SQL.putIntegrationLock).not.toMatch(
+      /ON\s+DUPLICATE\s+KEY\s+UPDATE/i,
+    )
   })
 
   it('createMysql factory cannot bypass named locks', () => {
     if (!itCtx.available) return
     const pool = makePool()
     const exec = createMysqlPoolExecutor(pool)
-    expect(() => createMysqlControlPlaneRuntimePersistence(exec)).toThrow(RuntimePersistenceError)
+    expect(() => createMysqlControlPlaneRuntimePersistence(exec)).toThrow(
+      RuntimePersistenceError,
+    )
     expect(() =>
       createMysqlControlPlaneRuntimePersistence(exec, { useNamedLock: false }),
     ).toThrow(RuntimePersistenceError)
     // With pin + useNamedLock true: allowed
-    const ok = createMysqlControlPlaneRuntimePersistence(exec, { useNamedLock: true })
+    const ok = createMysqlControlPlaneRuntimePersistence(exec, {
+      useNamedLock: true,
+    })
     expect(ok.mode).toBe('mysql')
     void pool.end()
   })
@@ -203,12 +219,15 @@ describe('control-plane-runtime MySQL lock insert race', () => {
         scopeId: scope,
         fencingToken: 'fence-rB',
       })
-      const results = await Promise.allSettled([storeA.putCollision(a), storeB.putCollision(b)])
+      const results = await Promise.allSettled([
+        storeA.putCollision(a),
+        storeB.putCollision(b),
+      ])
       const fulfilled = results.filter((r) => r.status === 'fulfilled')
       const rejected = results.filter((r) => r.status === 'rejected')
       expect(fulfilled).toHaveLength(1)
       expect(rejected).toHaveLength(1)
-      const reason = (rejected[0] as PromiseRejectedResult).reason as RuntimePersistenceError
+      const reason = rejected[0].reason as RuntimePersistenceError
       expect(reason).toBeInstanceOf(RuntimePersistenceError)
       expect(['CLAIM_COLLISION', 'DATA_INTEGRITY']).toContain(reason.code)
 
@@ -233,8 +252,8 @@ describe('control-plane-runtime MySQL lock insert race', () => {
         ['board-race', scope],
       )
       expect(rows).toHaveLength(1)
-      expect(rows[0]!.lock_id).toBe(held!.lockId)
-      expect(rows[0]!.run_id).toBe(held!.runId)
+      expect(rows[0].lock_id).toBe(held!.lockId)
+      expect(rows[0].run_id).toBe(held!.runId)
     } finally {
       await poolA.end()
       await poolB.end()
@@ -274,10 +293,14 @@ describe('control-plane-runtime MySQL lock insert race', () => {
       const rejected = results.filter((r) => r.status === 'rejected')
       expect(fulfilled).toHaveLength(1)
       expect(rejected).toHaveLength(1)
-      const reason = (rejected[0] as PromiseRejectedResult).reason as RuntimePersistenceError
+      const reason = rejected[0].reason as RuntimePersistenceError
       expect(['CLAIM_COLLISION', 'DATA_INTEGRITY']).toContain(reason.code)
 
-      const held = await storeA.getIntegration('board-race', 'repo-race', branch)
+      const held = await storeA.getIntegration(
+        'board-race',
+        'repo-race',
+        branch,
+      )
       expect(held).not.toBeNull()
       if (held!.lockId === 'ilock-rA') {
         expect(held!.runId).toBe('run-rA')
@@ -292,8 +315,8 @@ describe('control-plane-runtime MySQL lock insert race', () => {
         ['board-race', 'repo-race', branch],
       )
       expect(rows).toHaveLength(1)
-      expect(rows[0]!.lock_id).toBe(held!.lockId)
-      expect(rows[0]!.run_id).toBe(held!.runId)
+      expect(rows[0].lock_id).toBe(held!.lockId)
+      expect(rows[0].run_id).toBe(held!.runId)
     } finally {
       await poolA.end()
       await poolB.end()
@@ -320,7 +343,9 @@ describe('control-plane-runtime MySQL lock insert race', () => {
       await expect(
         locks.putCollision({ ...base, runId: 'run-hijack' }),
       ).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
-      expect((await locks.getCollision('board-race', 'lock-idem'))?.runId).toBe('run-orig')
+      expect((await locks.getCollision('board-race', 'lock-idem'))?.runId).toBe(
+        'run-orig',
+      )
     } finally {
       await pool.end()
     }
@@ -328,7 +353,9 @@ describe('control-plane-runtime MySQL lock insert race', () => {
 
   it('INSERT/readback collision lock_id with runId len 160 stays ≤64 (no ER_DATA_TOO_LONG)', async () => {
     if (!itCtx.available) {
-      console.warn('SKIP long-run collision lock_id INSERT: local MySQL not reachable')
+      console.warn(
+        'SKIP long-run collision lock_id INSERT: local MySQL not reachable',
+      )
       return
     }
     const pool = makePool()
@@ -367,10 +394,10 @@ describe('control-plane-runtime MySQL lock insert race', () => {
         ['board-race', lockId],
       )
       expect(rows).toHaveLength(1)
-      expect(rows[0]!.lock_id).toBe(lockId)
-      expect(Number(rows[0]!.lock_len)).toBeLessThanOrEqual(64)
-      expect(Number(rows[0]!.run_len)).toBe(160)
-      expect(String(rows[0]!.run_id)).toBe(runId)
+      expect(rows[0].lock_id).toBe(lockId)
+      expect(Number(rows[0].lock_len)).toBeLessThanOrEqual(64)
+      expect(Number(rows[0].run_len)).toBe(160)
+      expect(String(rows[0].run_id)).toBe(runId)
     } finally {
       await pool.end()
     }
@@ -378,7 +405,9 @@ describe('control-plane-runtime MySQL lock insert race', () => {
 
   it('INSERT/readback integration lock_id with max repo/branch/run stays ≤64', async () => {
     if (!itCtx.available) {
-      console.warn('SKIP long integration lock_id INSERT: local MySQL not reachable')
+      console.warn(
+        'SKIP long integration lock_id INSERT: local MySQL not reachable',
+      )
       return
     }
     const pool = makePool()
@@ -400,7 +429,11 @@ describe('control-plane-runtime MySQL lock insert race', () => {
       })
       await locks.putIntegration(rec)
 
-      const got = await locks.getIntegration('board-race', repoId, trackingBranch)
+      const got = await locks.getIntegration(
+        'board-race',
+        repoId,
+        trackingBranch,
+      )
       expect(got).not.toBeNull()
       expect(got!.lockId).toBe(lockId)
       expect(got!.lockId.length).toBeLessThanOrEqual(64)
@@ -412,7 +445,7 @@ describe('control-plane-runtime MySQL lock insert race', () => {
         ['board-race', lockId],
       )
       expect(rows).toHaveLength(1)
-      expect(Number(rows[0]!.lock_len)).toBeLessThanOrEqual(64)
+      expect(Number(rows[0].lock_len)).toBeLessThanOrEqual(64)
     } finally {
       await pool.end()
     }
@@ -420,7 +453,9 @@ describe('control-plane-runtime MySQL lock insert race', () => {
 
   it('held-scope uniqueness: two hashed long-run lock_ids same scope → one winner', async () => {
     if (!itCtx.available) {
-      console.warn('SKIP held-scope uniqueness long-run: local MySQL not reachable')
+      console.warn(
+        'SKIP held-scope uniqueness long-run: local MySQL not reachable',
+      )
       return
     }
     const poolA = makePool()
@@ -451,12 +486,15 @@ describe('control-plane-runtime MySQL lock insert race', () => {
       expect(a.lockId.length).toBeLessThanOrEqual(64)
       expect(b.lockId.length).toBeLessThanOrEqual(64)
 
-      const results = await Promise.allSettled([storeA.putCollision(a), storeB.putCollision(b)])
+      const results = await Promise.allSettled([
+        storeA.putCollision(a),
+        storeB.putCollision(b),
+      ])
       const fulfilled = results.filter((r) => r.status === 'fulfilled')
       const rejected = results.filter((r) => r.status === 'rejected')
       expect(fulfilled).toHaveLength(1)
       expect(rejected).toHaveLength(1)
-      const reason = (rejected[0] as PromiseRejectedResult).reason as RuntimePersistenceError
+      const reason = rejected[0].reason as RuntimePersistenceError
       expect(reason).toBeInstanceOf(RuntimePersistenceError)
       expect(['CLAIM_COLLISION', 'DATA_INTEGRITY']).toContain(reason.code)
 
@@ -472,8 +510,8 @@ describe('control-plane-runtime MySQL lock insert race', () => {
         ['board-race', scope],
       )
       expect(rows).toHaveLength(1)
-      expect(rows[0]!.lock_id).toBe(held!.lockId)
-      expect(String(rows[0]!.run_id)).toBe(held!.runId)
+      expect(rows[0].lock_id).toBe(held!.lockId)
+      expect(String(rows[0].run_id)).toBe(held!.runId)
     } finally {
       await poolA.end()
       await poolB.end()

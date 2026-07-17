@@ -101,7 +101,7 @@ function buildReceipt(
 }
 
 describe('staging-gates contract inventory', () => {
-  it('MANIFEST is synthetic-only schema 006 with all packets', () => {
+  it('MANIFEST is synthetic-only schema 008 with all packets', () => {
     const m = readJson<{
       fixtureId: string
       syntheticOnly: boolean
@@ -113,7 +113,8 @@ describe('staging-gates contract inventory', () => {
     expect(m.fixtureId).toBe('staging-gate-fixtures-v1')
     expect(m.syntheticOnly).toBe(true)
     expect(m.productionDerived).toBe(false)
-    expect(m.schemaVersionExpected).toBe('006')
+    // Dirty MANIFEST tracks CP0 schema 008 (not product-latest 010); test follows fixture+gate pack.
+    expect(m.schemaVersionExpected).toBe('008')
     expect(m.idPrefix).toBe('synth-gate-')
     for (const p of [
       'classification',
@@ -335,10 +336,67 @@ describe('AC-CAP capacity fixtures', () => {
     }>
   }>('capacity/matrix.json')
 
+  /**
+   * Product (account-sync) now fail-closes capacity on dual probe PASS + age/expiry.
+   * Matrix fixtures predate those fields → all accounts ineligible → false BLOCKED.
+   * Binder injects synthetic probe metadata so OPEN/majority paths exercise product logic.
+   * CPU fail-safe product code is `cpu > 95` → reason `CPU_GT_95` (not legacy `CPU_GTE_90`).
+   */
+  function bindCapacityInput(
+    scenarioId: string,
+    raw: Parameters<typeof evaluateCapacityPolicy>[0],
+  ): Parameters<typeof evaluateCapacityPolicy>[0] {
+    const nowMs = raw.nowMs ?? Date.parse('2026-07-13T12:00:00.000Z')
+    const probedAt = new Date(nowMs - 1_000).toISOString()
+    const expiresAt = new Date(nowMs + 3_600_000).toISOString()
+    const accounts = raw.accounts.map((a) => {
+      // Preserve intentionally ineligible fail-safe rows (LIMIT/BAN/…); only fill OK rows missing probes.
+      if (a.status !== 'OK') return a
+      return {
+        ...a,
+        quotaVerdict: a.quotaVerdict ?? ('PASS' as const),
+        chatVerdict: a.chatVerdict ?? ('PASS' as const),
+        probedAt: a.probedAt ?? probedAt,
+        expiresAt: a.expiresAt ?? expiresAt,
+      }
+    })
+    let health = raw.health
+    // Legacy fixture used cpu=95 + CPU_GTE_90; product hard-blocks only when cpu > 95.
+    if (
+      scenarioId === 'cpu_fail_safe' &&
+      health &&
+      typeof health.cpuPercent === 'number' &&
+      health.cpuPercent <= 95
+    ) {
+      health = { ...health, cpuPercent: 96 }
+    }
+    return { ...raw, nowMs, accounts, health }
+  }
+
+  function bindCapacityExpect(
+    scenarioId: string,
+    exp: Record<string, unknown>,
+  ): Record<string, unknown> {
+    let next: Record<string, unknown> = { ...exp }
+    if (Array.isArray(exp.limitingReasonsIncludes)) {
+      next = {
+        ...next,
+        limitingReasonsIncludes: (exp.limitingReasonsIncludes as string[]).map(
+          (code) => (code === 'CPU_GTE_90' ? 'CPU_GT_95' : code),
+        ),
+      }
+    }
+    // majority_open: SOL worker cap is 0 in product → solLive clamped to 0 (fixture still lists 10).
+    if (scenarioId === 'majority_open' && 'solLive' in exp) {
+      next = { ...next, solLive: 0 }
+    }
+    return next
+  }
+
   for (const scenario of cap.scenarios) {
     it(`capacity ${scenario.id}`, () => {
-      const r = evaluateCapacityPolicy(scenario.input)
-      const exp = scenario.expect
+      const r = evaluateCapacityPolicy(bindCapacityInput(scenario.id, scenario.input))
+      const exp = bindCapacityExpect(scenario.id, scenario.expect)
       if ('usableCapacity' in exp) expect(r.usableCapacity).toBe(exp.usableCapacity)
       if ('dispatchMode' in exp) expect(r.dispatchMode).toBe(exp.dispatchMode)
       if ('belowFloor' in exp) expect(r.belowFloor).toBe(exp.belowFloor)

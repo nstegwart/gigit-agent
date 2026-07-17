@@ -431,8 +431,9 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
         listHref={found.listHref}
       />,
     )
+    // V1.1 C / ADDENDUM C: placeholder must not be the title; chip is short "perlu tinjauan".
     expect(screen.getByTestId('feature-progress-content-review').textContent).toMatch(
-      /Perlu peninjauan konten/,
+      /perlu tinjauan/i,
     )
     expect(screen.getByTestId('feature-progress-technical').textContent).toMatch(
       /Integration closure/,

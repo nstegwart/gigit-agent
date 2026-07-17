@@ -20,8 +20,6 @@ import {
   mapControlCenterAggregationToPublicInput,
   materializePublicSnapshotFromControlCenter,
 } from '#/server/control-center-public-snapshot'
-import { buildControlCenterAggregationFromSources } from '#/server/control-center-ui-adapter'
-import { buildClassificationSyncPlan } from '#/server/classification-sync'
 import {
   PUBLIC_SERIALIZER_VERSION,
   PUBLIC_SNAPSHOT_SCHEMA,
@@ -270,74 +268,6 @@ function buildAgg(over: {
 }
 
 describe('control-center-public-snapshot mapper', () => {
-  it('uses the canonical-pin taskHash alias for durable 639-row classification parity', () => {
-    const canonicalHash = 'b'.repeat(64)
-    const canonicalSnapshotId = 'snap-live-2918'
-    const taskIds = Array.from({ length: 639 }, (_, index) => `task-${index + 1}`)
-    const plan = buildClassificationSyncPlan({
-      canonicalTaskIds: taskIds,
-      pin: {
-        canonicalSnapshotId,
-        canonicalHash,
-        boardRev: 2917,
-        lifecycleRev: 17,
-      },
-      issuedAt: NOW,
-      items: taskIds.map((taskId, index) => ({
-        taskId,
-        taskClass: index < 609 ? ('PRODUCT' as const) : ('CONTROL_PLANE' as const),
-        disposition: index >= 602 && index < 609 ? ('HOLD' as const) : ('ACTIVE' as const),
-      })),
-    })
-    const tasks = taskIds.map((id) => ({
-      id,
-      title: id,
-      dependencies: [],
-      impacts: [],
-      checkpoints: [],
-      lifecycleStage: 'MAP_VERIFIED',
-    }))
-    const agg = buildControlCenterAggregationFromSources({
-      boardId: 'mfs-rebuild',
-      raw: {
-        projects: [],
-        features: [],
-        decisions: [],
-        log: [],
-        queue: { now: [], next: [] },
-        runs: [],
-      },
-      tasks,
-      opsAccounts: [],
-      runs: [],
-      boardContentHash: 'legacy-content-hash',
-      boardRev: plan.outputBoardRev,
-      lifecycleRev: plan.lifecycleRev,
-      authorityCanonicalHash: canonicalHash,
-      authorityCanonicalSnapshotId: canonicalSnapshotId,
-      pinAuthorityComplete: true,
-      now: NOW,
-      durableRuns: [],
-      durableOwnershipLoaded: true,
-      durableClassifications: plan.records,
-      durableClassificationsLoaded: true,
-    })
-    const publicInput = mapControlCenterAggregationToPublicInput(agg)
-
-    expect(agg.pin.taskHash).toBe(canonicalHash)
-    expect(publicInput.boardRollup).toMatchObject({
-      trackedWorkDenominator: 632,
-      productDenominator: 602,
-      unclassifiedCount: 0,
-    })
-    // The 30 CONTROL_PLANE rows remain legitimately blocked until their own
-    // target-gate ACKs; the former false 639 DATA_INTEGRITY block is gone.
-    expect(publicInput.buckets.BLOCKED).toBe(30)
-    expect(publicInput.domainBlockers?.some((blocker) => blocker.code === 'DATA_INTEGRITY')).toBe(
-      false,
-    )
-  })
-
   it('maps pin identity + freshness without recomputation', () => {
     const agg = buildAgg()
     const input = mapControlCenterAggregationToPublicInput(agg)

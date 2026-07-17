@@ -18,10 +18,11 @@ import type { KnowledgeDomainScreenProps } from '#/components/control-center/kno
 function baseScreenProps(
   over: Partial<KnowledgeDomainScreenProps> = {},
 ): KnowledgeDomainScreenProps {
-  return {
+  const base: KnowledgeDomainScreenProps = {
     surfaceState: 'populated',
     boardId: 'mfs-rebuild',
     domain: 'AFFILIATE',
+    domainId: 'AFFILIATE',
     availability: 'available',
     title: 'AFFILIATE',
     summary: 'Domain AFFILIATE: data tersedia dari pin.',
@@ -38,6 +39,15 @@ function baseScreenProps(
     decisions: [{ decisionId: 'D-1', title: 'Payout cadence', status: 'OPEN' }],
     evidence: [{ id: 'E-1', kind: 'receipt', summary: 'staging readback' }],
     gaps: [],
+    knowledgeGaps: null,
+    coverageManifest: null,
+    relations: null,
+    flows: null,
+    boundaries: null,
+    conflictSources: [],
+    redactions: [],
+    knowledgeState: 'PROVEN',
+    lastValidGeneratedAt: null,
     pin: {
       canonicalSnapshotId: 'snap-k-1',
       canonicalHash: 'hashabcdef0123456789',
@@ -47,8 +57,8 @@ function baseScreenProps(
       staleReason: null,
     },
     error: null,
-    ...over,
   }
+  return { ...base, ...over }
 }
 
 describe('resolveKnowledgeConflictView (presentation-only)', () => {

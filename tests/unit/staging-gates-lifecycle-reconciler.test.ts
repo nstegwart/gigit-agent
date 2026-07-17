@@ -1,6 +1,7 @@
 /**
  * Staging gate lifecycle negatives + one valid MAPPING evidence + reconciler
  * dry-run/apply idempotency against product engines (memory stores).
+ * Also binds AC-BUCKET expectedBuckets from qa/fixtures/staging (TM-06).
  * LOCAL ONLY — no staging mutation.
  */
 import { readFileSync } from 'node:fs'
@@ -40,9 +41,14 @@ import type { LifecycleStageKey } from '#/lib/control-plane-types'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const GATES = join(__dirname, '../../qa/fixtures/staging/gates')
+const STAGING = join(__dirname, '../../qa/fixtures/staging')
 
 function readJson<T>(rel: string): T {
   return JSON.parse(readFileSync(join(GATES, rel), 'utf8')) as T
+}
+
+function readStagingJson<T>(rel: string): T {
+  return JSON.parse(readFileSync(join(STAGING, rel), 'utf8')) as T
 }
 
 const BOARD = 'mfs-rebuild'
@@ -676,5 +682,98 @@ describe('reconciler dry-run/apply idempotency from gate fixture', () => {
       }),
     ).rejects.toMatchObject({ code: 'NOT_LEADER' })
     expect(leader.fencingToken).toBeTruthy()
+  })
+})
+
+/**
+ * TM-06 / AC-BUCKET-01..07 fixture binding:
+ * Owner progress buckets must be populated under authority pin (not FORBIDDEN_PLACEHOLDER).
+ * Incomplete stale/orphan ownership → RECONCILIATION_PENDING; completed STALE stays DONE.
+ */
+describe('AC-BUCKET staging seed expectedBuckets (TM-06)', () => {
+  const MAIN = [
+    'ONGOING',
+    'NEXT',
+    'QUEUED',
+    'RECONCILIATION_PENDING',
+    'BLOCKED',
+    'DONE',
+  ] as const
+
+  it('MANIFEST expectedBuckets has all six main work buckets non-null', () => {
+    const manifest = readStagingJson<{
+      expectedBuckets?: Record<string, string[]>
+      trackedWorkDenominator?: number
+      pin?: { canonicalHash?: string }
+      taskIds?: string[]
+    }>('MANIFEST.json')
+    const b = manifest.expectedBuckets
+    expect(b).toBeTruthy()
+    for (const k of MAIN) {
+      expect(b![k], `missing ${k}`).not.toBeNull()
+      expect(b![k], `missing ${k}`).not.toBeUndefined()
+    }
+    expect(manifest.trackedWorkDenominator).toBe(8)
+    // DISTINCT coverage: each taskId exactly once
+    const flat = MAIN.flatMap((k) => b![k] ?? [])
+    expect(new Set(flat).size).toBe(flat.length)
+    expect(flat.length).toBe(manifest.taskIds?.length ?? 8)
+  })
+
+  it('pin authority is not FORBIDDEN_PLACEHOLDER (DATA_INTEGRITY collapse root cause)', () => {
+    const pin = readStagingJson<{ canonicalHash: string; taskHash?: string }>(
+      'pin.json',
+    )
+    const forbidden =
+      'a1b2c3d4e5f60718293a4b5c6d7e8f901234567890abcdef1234567890ab'
+    expect(String(pin.canonicalHash).toLowerCase()).not.toBe(forbidden)
+    expect(pin.canonicalHash).toMatch(/^[0-9a-f]{64}$/i)
+  })
+
+  it('AC-BUCKET-07: recon/orphan → RECONCILIATION_PENDING; done+stale claim stays DONE', () => {
+    const buckets = readStagingJson<{
+      expectedBuckets: Record<string, string[]>
+      acBucket: Record<string, string>
+    }>('buckets/expected-buckets.json')
+    expect(buckets.expectedBuckets.RECONCILIATION_PENDING).toEqual(
+      expect.arrayContaining(['task-recon-1', 'task-stale-1']),
+    )
+    expect(buckets.expectedBuckets.DONE).toContain('task-done-1')
+    // Done fixture keeps STALE claim as overlay (not primary RECON bucket)
+    const doneFx = readStagingJson<{
+      tasks: Array<{ id: string; data: { claimState: string | null } }>
+    }>('buckets/done.json')
+    const done = doneFx.tasks.find((t) => t.id === 'task-done-1')
+    expect(done?.data.claimState).toBe('STALE')
+    const reconFx = readStagingJson<{
+      tasks: Array<{ id: string; data: { claimState: string | null } }>
+    }>('buckets/reconciliation_pending.json')
+    expect(reconFx.tasks.some((t) => t.data.claimState === 'ORPHAN')).toBe(true)
+    expect(buckets.acBucket['AC-BUCKET-07']).toMatch(/RECONCILIATION_PENDING/)
+  })
+
+  it('progress fixtures ONGOING/NEXT/QUEUED are pin-bound and non-empty', () => {
+    const pin = readStagingJson<{ canonicalHash: string; taskHash: string }>(
+      'pin.json',
+    )
+    for (const name of ['ongoing', 'next', 'queued'] as const) {
+      const fx = readStagingJson<{
+        bucket: string
+        taskIds: string[]
+        tasks: Array<{
+          data: {
+            classification?: {
+              receipt?: { canonicalHash?: string; taskHash?: string }
+            } | null
+          }
+        }>
+      }>(`buckets/${name}.json`)
+      expect(fx.taskIds.length).toBeGreaterThanOrEqual(1)
+      for (const t of fx.tasks) {
+        const rcpt = t.data.classification?.receipt
+        expect(rcpt?.canonicalHash, `${name} receipt pin`).toBe(pin.canonicalHash)
+        expect(rcpt?.taskHash, `${name} receipt taskHash`).toBe(pin.taskHash)
+      }
+    }
   })
 })

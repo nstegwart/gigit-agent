@@ -12,9 +12,11 @@ import {
   evaluateAccountSyncFreshness,
   recordAccountReadbacks,
   syncAccounts,
-  type AccountSyncDeps,
-  type MaskedAccountRecord,
   AccountSyncError,
+} from '#/server/account-sync'
+import type {
+  AccountSyncDeps,
+  MaskedAccountRecord,
 } from '#/server/account-sync'
 import { createMemoryControlPlaneAtomicStore } from '#/server/board-store'
 import {
@@ -35,7 +37,10 @@ const itCtx = {
   available: false,
 }
 
-const receiptDir = path.join(process.cwd(), '.artifact/fix-final-account-sync-r2')
+const receiptDir = path.join(
+  process.cwd(),
+  '.artifact/fix-final-account-sync-r2',
+)
 const receiptPath = path.join(receiptDir, 'mysql-churn-receipt.json')
 
 const receipt: {
@@ -188,7 +193,8 @@ describe('real-MySQL account-sync churn bounds + recovery', () => {
     })
     const snap1 = await deps.accounts.get('board-churn')
     step('sync_create_usable5', {
-      ok: r1.usableCapacity === 5 && r1.stale === false && snap1?.entityRev === 1,
+      ok:
+        r1.usableCapacity === 5 && r1.stale === false && snap1?.entityRev === 1,
       usableCapacity: r1.usableCapacity,
       dispatchMode: r1.capacity.dispatchMode,
       entityRev: snap1?.entityRev,
@@ -214,8 +220,14 @@ describe('real-MySQL account-sync churn bounds + recovery', () => {
     })
     expect(rb.entityRev).toBe(2)
     expect(rb.usableCapacity).toBe(5)
-    expect(rb.readbackSurfaces.mcp).toEqual({ sourceRevision: 1, generatedAt: gen1 })
-    expect(rb.readbackSurfaces.ops).toEqual({ sourceRevision: 1, generatedAt: gen1 })
+    expect(rb.readbackSurfaces.mcp).toEqual({
+      sourceRevision: 1,
+      generatedAt: gen1,
+    })
+    expect(rb.readbackSurfaces.ops).toEqual({
+      sourceRevision: 1,
+      generatedAt: gen1,
+    })
 
     // Exact same coalesced readback → no bump
     const rb2 = await recordAccountReadbacks(deps, {
@@ -267,7 +279,7 @@ describe('real-MySQL account-sync churn bounds + recovery', () => {
     step('first_fail_close_material', {
       ok:
         stale1?.stale === true &&
-        stale1?.usableCapacity === 0 &&
+        stale1.usableCapacity === 0 &&
         typeof revAfterFirstStale === 'number',
       entityRev: revAfterFirstStale,
       staleReason: stale1?.staleReason,
@@ -282,7 +294,8 @@ describe('real-MySQL account-sync churn bounds + recovery', () => {
     })
     const stale2 = await evaluateAccountSyncFreshness(deps, 'board-churn')
     step('already_stale_no_entity_bump', {
-      ok: stale2?.entityRev === revAfterFirstStale && stale2?.usableCapacity === 0,
+      ok:
+        stale2?.entityRev === revAfterFirstStale && stale2.usableCapacity === 0,
       entityRevBefore: revAfterFirstStale,
       entityRevAfter: stale2?.entityRev,
       staleReason: stale2?.staleReason,
@@ -298,7 +311,8 @@ describe('real-MySQL account-sync churn bounds + recovery', () => {
         sourceRevision: 2,
         generatedAt: new Date(t).toISOString(),
         entityExpectedRev: 1,
-        expectedBoardRev: (await deps.atomic.getBoardState('board-churn')).boardRev,
+        expectedBoardRev: (await deps.atomic.getBoardState('board-churn'))
+          .boardRev,
         canonicalHash: 'pinhash-churn-1',
         accounts: [grok],
         trigger: 'PERIODIC_HEALTH',
@@ -313,12 +327,12 @@ describe('real-MySQL account-sync churn bounds + recovery', () => {
     step('stale_revision_current_entity', {
       ok:
         err?.code === 'STALE_REVISION' &&
-        Number(err?.details?.currentEntityRev) === revAfterFirstStale,
+        Number(err.details.currentEntityRev) === revAfterFirstStale,
       code: err?.code,
       details: err?.details,
     })
     expect(err?.code).toBe('STALE_REVISION')
-    expect(Number(err?.details?.currentEntityRev)).toBe(revAfterFirstStale)
+    expect(Number(err?.details.currentEntityRev)).toBe(revAfterFirstStale)
 
     // Recover with live entityExpectedRev → usableCapacity 5
     const live = await deps.accounts.get('board-churn')

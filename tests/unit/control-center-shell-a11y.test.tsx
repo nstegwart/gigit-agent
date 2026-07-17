@@ -279,7 +279,7 @@ describe('focus + reduced motion shell contracts', () => {
     expect(stylesSrc).toMatch(/\.icon-btn:focus-visible/)
     expect(stylesSrc).toMatch(/\.switcher-btn:focus-visible/)
     expect(stylesSrc).toMatch(
-      /box-shadow:\s*0 0 0 2px var\(--surface\),\s*0 0 0 4px var\(--accent\)/,
+      /0 0 0 2px var\(--surface\),\s*\n?\s*0 0 0 4px var\(--focus-ring\)/,
     )
   })
 

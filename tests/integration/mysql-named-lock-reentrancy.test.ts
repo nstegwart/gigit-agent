@@ -10,7 +10,10 @@ import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import mysql from 'mysql2/promise'
 
-import { createFakeClock, createMemoryControlPlaneAtomicStore } from '#/server/board-store'
+import {
+  createFakeClock,
+  createMemoryControlPlaneAtomicStore,
+} from '#/server/board-store'
 import {
   RUNTIME_PERSISTENCE_MIGRATION_FILE,
   createMysqlControlPlaneRuntimePersistence,
@@ -18,12 +21,8 @@ import {
 } from '#/server/control-plane-runtime-persistence'
 import { createMemoryIdempotencyStorage } from '#/server/idempotency'
 import { splitSqlStatements } from '#/server/migrations'
-import {
-  heartbeatRun,
-  registerRun,
-  terminateRun,
-  type RunRegistryDeps,
-} from '#/server/run-registry'
+import { heartbeatRun, registerRun, terminateRun } from '#/server/run-registry'
+import type { RunRegistryDeps } from '#/server/run-registry'
 
 const cwd = process.cwd()
 const stamp = Date.now().toString(36)
@@ -70,7 +69,9 @@ async function probeLocalMysql(): Promise<boolean> {
 async function applyRuntimeTables(conn: mysql.Connection): Promise<void> {
   const sqlPath = path.join(cwd, RUNTIME_PERSISTENCE_MIGRATION_FILE)
   const sql = fs.readFileSync(sqlPath, 'utf8')
-  const stmts = splitSqlStatements(sql).filter((s) => /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS/i.test(s))
+  const stmts = splitSqlStatements(sql).filter((s) =>
+    /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS/i.test(s),
+  )
   expect(stmts.length).toBeGreaterThanOrEqual(2)
   for (const s of stmts) {
     await conn.query(s)
@@ -91,10 +92,14 @@ function makePool() {
   })
 }
 
-async function isUsedLock(pool: mysql.Pool, lockName: string): Promise<number | null> {
-  const [rows] = await pool.query<mysql.RowDataPacket[]>('SELECT IS_USED_LOCK(?) AS holder', [
-    lockName,
-  ])
+async function isUsedLock(
+  pool: mysql.Pool,
+  lockName: string,
+): Promise<number | null> {
+  const [rows] = await pool.query<mysql.RowDataPacket[]>(
+    'SELECT IS_USED_LOCK(?) AS holder',
+    [lockName],
+  )
   const v = rows[0]?.holder
   if (v == null) return null
   return Number(v)
@@ -136,7 +141,9 @@ describe('MySQL named lock reentrancy (register/heartbeat/terminate)', () => {
     const t0 = Date.now()
     try {
       const exec = createMysqlPoolExecutor(pool)
-      const rt = createMysqlControlPlaneRuntimePersistence(exec, { useNamedLock: true })
+      const rt = createMysqlControlPlaneRuntimePersistence(exec, {
+        useNamedLock: true,
+      })
       const clock = createFakeClock(Date.parse('2026-07-14T12:00:00.000Z'))
       const atomic = createMemoryControlPlaneAtomicStore([
         {
@@ -204,8 +211,8 @@ describe('MySQL named lock reentrancy (register/heartbeat/terminate)', () => {
         (l) => l.runId === reg.runId && l.state === 'HELD',
       )
       expect(heldLocks.length).toBeGreaterThanOrEqual(1)
-      expect(heldLocks[0]!.scopeId).toBe(scope)
-      expect(heldLocks[0]!.fencingToken).toBe(reg.fencingToken)
+      expect(heldLocks[0].scopeId).toBe(scope)
+      expect(heldLocks[0].fencingToken).toBe(reg.fencingToken)
 
       // Direct SQL readback
       const [runRows] = await pool.query<mysql.RowDataPacket[]>(
@@ -213,7 +220,7 @@ describe('MySQL named lock reentrancy (register/heartbeat/terminate)', () => {
         [BOARD, reg.runId],
       )
       expect(runRows).toHaveLength(1)
-      expect(runRows[0]!.state).toBe('STARTING')
+      expect(runRows[0].state).toBe('STARTING')
 
       const [lockRows] = await pool.query<mysql.RowDataPacket[]>(
         `SELECT lock_id, scope_id, state, run_id FROM control_plane_collision_locks
@@ -221,7 +228,7 @@ describe('MySQL named lock reentrancy (register/heartbeat/terminate)', () => {
         [BOARD, reg.runId],
       )
       expect(lockRows.length).toBeGreaterThanOrEqual(1)
-      expect(lockRows[0]!.scope_id).toBe(scope)
+      expect(lockRows[0].scope_id).toBe(scope)
 
       // Named lock must not remain held after register returns
       expect(await isUsedLock(pool, LOCK_NAME)).toBeNull()
@@ -286,7 +293,8 @@ describe('MySQL named lock reentrancy (register/heartbeat/terminate)', () => {
     const pool = makePool()
     try {
       const exec = createMysqlPoolExecutor(pool)
-      const { withMysqlNamedLock } = await import('#/server/control-plane-runtime-persistence')
+      const { withMysqlNamedLock } =
+        await import('#/server/control-plane-runtime-persistence')
       let depth = 0
       await withMysqlNamedLock(exec, BOARD, async () => {
         depth++

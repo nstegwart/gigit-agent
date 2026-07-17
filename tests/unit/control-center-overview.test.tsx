@@ -12,7 +12,19 @@ import {
   NeedsYourDecision,
   OngoingZeroClick,
   BucketStrip,
+  reconcileAuthenticatedOverviewProps,
 } from '#/components/control-center/overview'
+import { buildAuthenticatedOverviewProps } from '#/routes/b.$boardId.index'
+import {
+  aggregateControlCenter,
+  projectAgents,
+  projectOverview,
+  projectWork,
+} from '#/server/control-center-ui'
+import type {
+  ControlCenterPin,
+  ControlCenterTaskInput,
+} from '#/server/control-center-ui'
 import type {
   OverviewProps,
   OverviewOngoingItem,
@@ -120,10 +132,7 @@ function decisionSection(
           ...(forceShell
             ? {}
             : {
-                ownerPrimaryTitle:
-                  topOverride.ownerPrimaryTitle ??
-                  topOverride.title ??
-                  baseTop.ownerPrimaryTitle,
+                ownerPrimaryTitle: topOverride.ownerPrimaryTitle ?? topOverride.title,
                 contentReviewRequired:
                   topOverride.contentReviewRequired ?? false,
                 effectiveReviewStatus:
@@ -225,7 +234,302 @@ function populatedProps(overrides: Partial<OverviewProps> = {}): OverviewProps {
   }
 }
 
+function projectedHarnessRouteInput() {
+  const pin: ControlCenterPin = {
+    boardId: 'mfs-rebuild',
+    canonicalSnapshotId: 'synth-c3-r2d-snap-001',
+    canonicalHash: 'a'.repeat(64),
+    taskHash: 'b'.repeat(64),
+    boardRev: 7,
+    lifecycleRev: 3,
+    generatedAt: '2026-07-15T12:00:00.000Z',
+    freshnessAgeSeconds: 0,
+    stale: false,
+    staleReason: null,
+  }
+  const task: ControlCenterTaskInput = {
+    taskId: 'task-ongoing-1',
+    title: 'SYNTH ONGOING implementer work',
+    classification: {
+      taskId: 'task-ongoing-1',
+      taskClass: 'PRODUCT',
+      disposition: 'ACTIVE',
+      receipt: {
+        receiptId: 'rcpt-task-ongoing-1',
+        receiptHash: 'abcdef0123456789abcdef01',
+        taskId: 'task-ongoing-1',
+        taskClass: 'PRODUCT',
+        disposition: 'ACTIVE',
+        canonicalSnapshotId: pin.canonicalSnapshotId,
+        canonicalHash: pin.canonicalHash,
+        taskHash: pin.taskHash,
+        boardRev: pin.boardRev,
+        lifecycleRev: pin.lifecycleRev,
+        issuedAt: pin.generatedAt,
+      },
+    },
+    lifecycleStage: 'IMPL_IN_PROGRESS',
+    productStageMode: 'STAGE_2',
+    eligible: false,
+    claimState: 'VALID_CURRENT',
+    runLiveness: 'RUNNING',
+    targetGate: 'PROD_READY',
+    agentId: 'run-synth-ongoing',
+    role: 'Worker',
+    model: 'grok-4.5',
+    effort: 'high',
+    accountRef: 'acc_synth_r2d_001',
+    startedAt: '2026-07-15T11:50:00.000Z',
+    heartbeatAt: '2026-07-15T11:59:52.000Z',
+    materialProgressAt: '2026-07-15T11:58:00.000Z',
+    evidenceLink: 'qa/e2e/out/runtime/synth/ongoing-evidence.md',
+    createdAt: '2026-07-15T11:50:00.000Z',
+  }
+  const agg = aggregateControlCenter({
+    pin,
+    now: pin.generatedAt,
+    tasks: [task],
+    g5Domains: [],
+    runs: [
+      {
+        runId: 'run-synth-ongoing',
+        taskId: task.taskId,
+        agentId: task.agentId ?? null,
+        role: task.role ?? null,
+        model: task.model ?? null,
+        effort: task.effort ?? null,
+        maskedAccount: task.accountRef ?? null,
+        status: 'RUNNING',
+        startedAt: task.startedAt ?? null,
+        heartbeatAt: task.heartbeatAt ?? null,
+        materialProgressAt: task.materialProgressAt ?? null,
+        productiveSubstate: 'PRODUCTIVE',
+        createdAt: task.createdAt ?? pin.generatedAt,
+        id: 'run-synth-ongoing',
+        // Durable runtime shape: raw Agents run deliberately has no evidence.
+        evidenceLink: null,
+      },
+    ],
+  })
+  const overview = projectOverview(agg)
+  return {
+    overview: {
+      ...overview,
+      surfaceState: 'partial' as const,
+      data: {
+        ...overview.data,
+        ongoing: [],
+        sectionErrors: [
+          {
+            section: 'overview',
+            code: 'PARTIAL_SOURCE',
+            message: 'deterministic Overview projection omitted ongoing',
+          },
+        ],
+      },
+    },
+    work: projectWork(agg, { bucket: 'ONGOING', pageSize: 50 }),
+    agents: projectAgents(agg, { pageSize: 100 }),
+  }
+}
+
 describe('control-center overview components', () => {
+  it('route composition recovers the actual durable harness envelope shape', () => {
+    const input = projectedHarnessRouteInput()
+
+    // The R1 mock put evidence on raw runs. The durable projector intentionally
+    // exposes it only on the complete zero-click `AgentsData.ongoing` row.
+    expect(input.agents.data.runs[0]?.evidenceLink).toBeNull()
+    expect(input.agents.data.ongoing[0]?.evidenceLink).toBe(
+      'qa/e2e/out/runtime/synth/ongoing-evidence.md',
+    )
+
+    const props = buildAuthenticatedOverviewProps(
+      input.overview,
+      input.work,
+      input.agents,
+      {
+        boardLabel: 'MFS Rebuild',
+        liveStage: 'mfs-rebuild control center',
+        transport: 'online',
+      },
+    )
+    render(<Overview {...props} />)
+
+    expect(screen.queryByText('Ringkasan sebagian')).toBeNull()
+    expect(
+      attr(screen.getByTestId('control-center-overview'), 'data-surface-state'),
+    ).toBe('populated')
+    const card = screen.getByTestId('overview-ongoing-card')
+    expect(attr(card, 'data-task-id')).toBe('task-ongoing-1')
+    expect(within(card).getByText('SYNTH ONGOING implementer work')).toBeTruthy()
+    expect(within(card).getByText('PROD_READY')).toBeTruthy()
+    expect(within(card).getByText('run-synth-ongoing')).toBeTruthy()
+    expect(within(card).getByText('Worker')).toBeTruthy()
+    expect(within(card).getByText('grok-4.5')).toBeTruthy()
+    expect(within(card).getByText(/effort high/i)).toBeTruthy()
+    const maskedAccount = input.agents.data.ongoing[0]?.maskedAccount
+    expect(maskedAccount).toBeTruthy()
+    expect(within(card).getByText(maskedAccount ?? '__missing__')).toBeTruthy()
+    expect(card.querySelector('[data-field="started-age"]')?.textContent).toBe('10m')
+    expect(card.querySelector('[data-field="heartbeat-age"]')?.textContent).toBe('8s')
+    expect(card.querySelector('[data-field="material-age"]')?.textContent).toBe('2m')
+    expect(
+      attr(within(card).getByText('evidence'), 'href'),
+    ).toBe('qa/e2e/out/runtime/synth/ongoing-evidence.md')
+    expect(attr(card, 'data-productive-state')).toBe('PRODUCTIVE')
+  })
+
+  it('recovers a complete same-pin authenticated ONGOING card without partial summary', () => {
+    const pin = {
+      boardId: 'mfs-rebuild',
+      canonicalSnapshotId: 'snap-auth-1',
+      canonicalHash: 'a'.repeat(64),
+      boardRev: 12,
+      lifecycleRev: 8,
+      generatedAt: '2026-07-15T12:00:00.000Z',
+    }
+    const base = populatedProps({
+      surfaceState: 'partial',
+      pin: {
+        canonicalSnapshotId: pin.canonicalSnapshotId,
+        canonicalHash: pin.canonicalHash,
+        boardRev: pin.boardRev,
+        lifecycleRev: pin.lifecycleRev,
+      },
+      buckets: baseBuckets({
+        counts: { ...baseBuckets().counts, ONGOING: 1 },
+      }),
+      ongoing: [],
+      partialErrors: [
+        {
+          code: 'PARTIAL_SOURCE',
+          message: 'non-blocking auxiliary section unavailable',
+        },
+      ],
+    })
+    const overview = { ...pin, data: {} }
+    const work = {
+      ...pin,
+      data: {
+        items: [
+          {
+            taskId: 'task-ongoing-1',
+            title: 'SYNTH ongoing implementer',
+            bucket: 'ONGOING',
+            targetGate: 'PROD_READY',
+            ownerHumanDisplay: {
+              ownerPrimaryTitle: 'Selesaikan implementasi sintetis',
+              statusSentence: 'Sedang dikerjakan oleh implementer.',
+              contentReviewRequired: false,
+              effectiveReviewStatus: 'REVIEWED',
+            },
+          },
+        ],
+      },
+    }
+    const agents = {
+      ...pin,
+      data: {
+        runs: [
+          {
+            taskId: 'task-ongoing-1',
+            agentId: 'run-synth-ongoing',
+            role: 'Worker',
+            model: 'grok-4.5',
+            effort: 'high',
+            maskedAccount: 'acc_***001',
+            status: 'running',
+            startedAt: '2026-07-15T11:50:00.000Z',
+            heartbeatAt: '2026-07-15T11:59:52.000Z',
+            materialProgressAt: '2026-07-15T11:58:00.000Z',
+            productiveSubstate: 'PRODUCTIVE',
+            evidenceLink: '/b/mfs-rebuild/evidence/run-synth-ongoing',
+          },
+        ],
+      },
+    }
+
+    const repaired = reconcileAuthenticatedOverviewProps(
+      base,
+      overview,
+      work,
+      agents,
+    )
+    render(<Overview {...repaired} />)
+
+    expect(screen.queryByText('Ringkasan sebagian')).toBeNull()
+    expect(attr(screen.getByTestId('control-center-overview'), 'data-surface-state')).toBe(
+      'needs-human',
+    )
+    const card = screen.getByTestId('overview-ongoing-card')
+    expect(attr(card, 'data-task-id')).toBe('task-ongoing-1')
+    expect(within(card).getByText('Selesaikan implementasi sintetis')).toBeTruthy()
+    expect(within(card).getByText('SYNTH ongoing implementer')).toBeTruthy()
+    expect(within(card).getByText('PROD_READY')).toBeTruthy()
+    expect(within(card).getByText('run-synth-ongoing')).toBeTruthy()
+    expect(within(card).getByText('Worker')).toBeTruthy()
+    expect(within(card).getByText('grok-4.5')).toBeTruthy()
+    expect(within(card).getByText(/effort high/i)).toBeTruthy()
+    expect(within(card).getByText('acc_***001')).toBeTruthy()
+    expect(card.querySelector('[data-field="started-age"]')?.textContent).toBe('10m')
+    expect(card.querySelector('[data-field="heartbeat-age"]')?.textContent).toBe('8s')
+    expect(card.querySelector('[data-field="material-age"]')?.textContent).toBe('2m')
+    expect(attr(within(card).getByText('evidence'), 'href')).toBe(
+      '/b/mfs-rebuild/evidence/run-synth-ongoing',
+    )
+    expect(attr(card, 'data-productive-state')).toBe('PRODUCTIVE')
+  })
+
+  it('refuses authenticated ONGOING recovery across a pin mismatch', () => {
+    const pin = {
+      boardId: 'mfs-rebuild',
+      canonicalSnapshotId: 'snap-auth-1',
+      canonicalHash: 'a'.repeat(64),
+      boardRev: 12,
+      lifecycleRev: 8,
+      generatedAt: '2026-07-15T12:00:00.000Z',
+    }
+    const base = populatedProps({
+      surfaceState: 'partial',
+      pin: {
+        canonicalSnapshotId: pin.canonicalSnapshotId,
+        canonicalHash: pin.canonicalHash,
+        boardRev: pin.boardRev,
+        lifecycleRev: pin.lifecycleRev,
+      },
+      buckets: baseBuckets({
+        counts: { ...baseBuckets().counts, ONGOING: 1 },
+      }),
+      ongoing: [],
+    })
+    const work = {
+      ...pin,
+      canonicalHash: 'b'.repeat(64),
+      data: {
+        items: [
+          {
+            taskId: 'task-ongoing-1',
+            title: 'must not render',
+            bucket: 'ONGOING',
+            targetGate: 'PROD_READY',
+          },
+        ],
+      },
+    }
+    const agents = { ...pin, data: { runs: [] } }
+
+    const repaired = reconcileAuthenticatedOverviewProps(
+      base,
+      { ...pin, data: {} },
+      work,
+      agents,
+    )
+
+    expect(repaired.surfaceState).toBe('partial')
+    expect(repaired.ongoing).toEqual([])
+  })
+
   it('renders populated mission surfaces in ART narrative order', () => {
     const { container } = render(<Overview {...populatedProps()} />)
     const root = screen.getByTestId('control-center-overview')
@@ -252,26 +556,97 @@ describe('control-center overview components', () => {
     expect(screen.getByRole('heading', { name: /^Berikutnya$/i })).toBeTruthy()
   })
 
-  it('exposes six exclusive primary buckets plus STALE overlay chip', () => {
+  it('shows adaptive mapping progress banner (not readiness) when mappingVersion is present', () => {
+    const baseSummary = populatedProps().appSummary
+    if (!baseSummary) throw new Error('populatedProps must provide appSummary')
+    render(
+      <Overview
+        {...populatedProps({
+          appSummary: {
+            ...baseSummary,
+            boardId: baseSummary.boardId,
+            mappingVersion: {
+              schemaVersion: 'MFS_CANONICAL_TASK_SNAPSHOT_V2',
+              knownSchema: true,
+              mode: 'FULL',
+              snapshotId: 'snap-abc',
+              canonicalHashShort: 'deadbeef12',
+              payloadShaShort: null,
+              boardRev: 12,
+              lifecycleRev: 8,
+              freshnessAgeSeconds: 4,
+              stale: false,
+              staleReason: null,
+              dynamicDenominator: 642,
+              presentFieldCount: 18,
+              unknownFieldCount: 0,
+              warnings: [],
+              mappingIsNotReadiness: true,
+              summaryLabel:
+                'mapping: MFS_CANONICAL_TASK_SNAPSHOT_V2 · 642 mapped tasks',
+            },
+          },
+        })}
+      />,
+    )
+    const banner = screen.getByTestId('overview-mapping-banner')
+    expect(banner.getAttribute('data-mapping-not-readiness')).toBe('true')
+    expect(banner.textContent).toMatch(/Progres pemetaan/)
+    expect(banner.textContent).toMatch(/642 mapped tasks/)
+    expect(banner.textContent).toMatch(/Bukan kesiapan produksi/)
+    expect(banner.textContent).not.toMatch(/639/)
+    expect(screen.getByTestId('overview-mapping-hash').textContent).toMatch(/deadbeef/)
+  })
+
+  it('separates five active owner buckets from reconciliation and STALE integrity controls', () => {
     render(<Overview {...populatedProps()} />)
     const strip = screen.getByTestId('overview-buckets')
-    // Owner labels id-ID; data-bucket keeps English enum
+    // Owner labels id-ID; data-bucket keeps canonical English enum.
     const idLabels: Record<string, string> = {
       DONE: 'Selesai',
-      RECONCILIATION_PENDING: 'Sedang dicocokkan',
       ONGOING: 'Sedang dikerjakan',
       NEXT: 'Berikutnya',
       QUEUED: 'Menunggu giliran',
       BLOCKED: 'Terhambat',
     }
-    for (const b of PRIMARY_BUCKETS) {
+    const activeBuckets = PRIMARY_BUCKETS.filter((b) => b !== 'RECONCILIATION_PENDING')
+    for (const b of activeBuckets) {
       const tab = within(strip).getByRole('tab', { name: new RegExp(idLabels[b], 'i') })
       expect(attr(tab, 'data-bucket')).toBe(b)
     }
-    const stale = within(strip).getByRole('tab', { name: /Basi/i })
+    expect(within(strip).getAllByRole('tab')).toHaveLength(5)
+
+    const integrity = screen.getByTestId('overview-integrity-rail')
+    const reconciliation = within(integrity).getByRole('button', {
+      name: /Sedang dicocokkan/i,
+    })
+    expect(attr(reconciliation, 'data-bucket')).toBe('RECONCILIATION_PENDING')
+    expect(attr(reconciliation, 'data-integrity-exception')).toBe('true')
+
+    const stale = within(integrity).getByRole('button', { name: /Basi/i })
     expect(attr(stale, 'data-overlay')).toBe('true')
     expect(attr(stale, 'data-bucket')).toBe('STALE')
-    expect(within(strip).getAllByRole('tab')).toHaveLength(7)
+    expect(integrity.textContent).toMatch(/bukti dan kepemilikan/i)
+    expect(integrity.textContent).toMatch(/hanya menyaring/i)
+  })
+
+  it('keeps editorial hierarchy tokenized and removes pulsing/decorative loading motion', () => {
+    const cssPath = path.join(
+      process.cwd(),
+      'src/components/control-center/overview/overview.module.css',
+    )
+    const css = fs.readFileSync(cssPath, 'utf8')
+    expect(css).toMatch(
+      /\.priorityGlobal\s*\{[^}]*grid-template-columns:\s*minmax\(0, 2fr\) minmax\(0, 1fr\)/s,
+    )
+    expect(css).toMatch(/\.integrityRail\s*\{[^}]*var\(--reconcile-bg\)/s)
+    expect(css).toMatch(
+      /\.integrityTitle\s*\{[^}]*var\(--type-secondary-size\)/s,
+    )
+    expect(css).not.toMatch(/animation:\s*ovPulse/)
+    expect(css).not.toMatch(/animation:\s*ovShimmer/)
+    expect(css).not.toMatch(/@keyframes\s+ovPulse/)
+    expect(css).not.toMatch(/@keyframes\s+ovShimmer/)
   })
 
   it('zero-click ONGOING shows required fields with text+icon productive state', () => {
@@ -296,6 +671,54 @@ describe('control-center overview components', () => {
 
     const productive = cards.find((c) => c.getAttribute('data-task-id') === 't-prod')!
     expect(within(productive).getByRole('status', { name: /Produktif|PRODUCTIVE/i })).toBeTruthy()
+  })
+
+  it('keeps long ONGOING metadata shrinkable and readable at 360/390 mobile widths', () => {
+    const longTargetGate = `PROD_READY_${'UNBROKEN'.repeat(8)}`
+    const longAgentId = `run-${'agent'.repeat(18)}`
+    const longModel = `grok-${'model'.repeat(18)}`
+    const longAccount = `acc_${'masked'.repeat(18)}`
+
+    render(
+      <OngoingZeroClick
+        items={[
+          ongoingItem({
+            taskId: 'task-mobile-containment',
+            title: 'Long authenticated ONGOING content remains readable on mobile',
+            productiveState: 'PRODUCTIVE',
+            targetGate: longTargetGate,
+            agentId: longAgentId,
+            role: `IMPLEMENTER_${'ROLE'.repeat(12)}`,
+            model: longModel,
+            effort: `xhigh-${'effort'.repeat(12)}`,
+            maskedAccount: longAccount,
+          }),
+        ]}
+      />,
+    )
+
+    const card = screen.getByTestId('overview-ongoing-card')
+    const meta = screen.getByTestId('overview-ongoing-meta')
+    expect(card.contains(meta)).toBe(true)
+    expect(meta.children).toHaveLength(6)
+    expect(within(meta).getByText(longTargetGate)).toBeTruthy()
+    expect(within(meta).getByText(longAgentId)).toBeTruthy()
+    expect(within(meta).getByText(longModel)).toBeTruthy()
+    expect(within(meta).getByText(longAccount)).toBeTruthy()
+
+    const css = fs.readFileSync(
+      path.join(process.cwd(), 'src/components/control-center/overview/overview.module.css'),
+      'utf8',
+    )
+    expect(css).toMatch(
+      /\.chip\s*\{[^}]*flex:\s*0 1 auto;[^}]*flex-wrap:\s*wrap;[^}]*box-sizing:\s*border-box;[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/s,
+    )
+    expect(css).toMatch(
+      /\.chip\s*>\s*strong\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*overflow-wrap:\s*anywhere;/s,
+    )
+    expect(css).toMatch(
+      /@media\s*\(max-width:\s*768px\)[\s\S]*\.ongoingMeta[\s\S]*max-width:\s*100%;[\s\S]*\.chipMono\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/,
+    )
   })
 
   it('does not re-sort ONGOING — preserves server order', () => {
@@ -860,7 +1283,9 @@ describe('control-center overview components', () => {
     )
     fireEvent.click(screen.getByRole('tab', { name: /Terhambat/i }))
     expect(onSelect).toHaveBeenCalledWith('BLOCKED')
-    fireEvent.click(screen.getByRole('tab', { name: /Basi/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Sedang dicocokkan/i }))
+    expect(onSelect).toHaveBeenCalledWith('RECONCILIATION_PENDING')
+    fireEvent.click(screen.getByRole('button', { name: /Basi/i }))
     expect(onStale).toHaveBeenCalled()
   })
 
@@ -1006,7 +1431,8 @@ describe('control-center overview components', () => {
     expect(screen.getByRole('heading', { name: /Di mana posisi program sekarang/i })).toBeTruthy()
     expect(screen.getAllByRole('heading', { name: /Prioritas/i }).length).toBeGreaterThan(0)
     expect(screen.getByRole('heading', { name: /Kesiapan program/i })).toBeTruthy()
-    expect(screen.getByRole('tablist', { name: /Bucket pekerjaan utama/i })).toBeTruthy()
+    expect(screen.getByRole('tablist', { name: /Lima bucket pekerjaan aktif/i })).toBeTruthy()
+    expect(screen.getByRole('group', { name: /Pengecualian integritas/i })).toBeTruthy()
   })
 
   it('lower panels render projects, lifecycle, G5, decisions, material events', () => {

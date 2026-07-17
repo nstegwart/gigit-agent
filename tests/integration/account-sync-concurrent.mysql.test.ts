@@ -9,11 +9,10 @@ import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import mysql from 'mysql2/promise'
 
-import {
-  AccountSyncError,
-  syncAccounts,
-  type AccountSyncDeps,
-  type MaskedAccountRecord,
+import { AccountSyncError, syncAccounts } from '#/server/account-sync'
+import type {
+  AccountSyncDeps,
+  MaskedAccountRecord,
 } from '#/server/account-sync'
 import {
   createAccountSyncScheduler,
@@ -38,7 +37,10 @@ const itCtx = {
   available: false,
 }
 
-const receiptDir = path.join(process.cwd(), '.artifact/repair-final-account-sync-residuals')
+const receiptDir = path.join(
+  process.cwd(),
+  '.artifact/repair-final-account-sync-residuals',
+)
 const receiptPath = path.join(receiptDir, 'mysql-concurrent-receipt.json')
 
 const receipt: {
@@ -87,7 +89,7 @@ const PIN = 'pinhash-race-concurrent-1'
 describe('real-MySQL concurrent authority vs fail-close (no newer snapshot loss)', () => {
   let pool: mysql.Pool | undefined
   let deps: AccountSyncDeps
-  let t = 3_000_000
+  const t = 3_000_000
   let admin: mysql.Connection | undefined
 
   beforeAll(async () => {
@@ -153,14 +155,17 @@ describe('real-MySQL concurrent authority vs fail-close (no newer snapshot loss)
     }
     try {
       fs.mkdirSync(receiptDir, { recursive: true })
-      receipt.allOk = receipt.steps.length > 0 && receipt.steps.every((s) => s.ok !== false)
+      receipt.allOk =
+        receipt.steps.length > 0 && receipt.steps.every((s) => s.ok !== false)
       fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2))
     } catch {
       /* ignore */
     }
   })
 
-  it('authority sourceRevision survives concurrent failClosedStale thrash', async ({ skip }) => {
+  it('authority sourceRevision survives concurrent failClosedStale thrash', async ({
+    skip,
+  }) => {
     if (!itCtx.available) {
       step('skip', { reason: 'local MySQL unavailable', ok: false })
       skip()
@@ -206,15 +211,17 @@ describe('real-MySQL concurrent authority vs fail-close (no newer snapshot loss)
       surfacePublisher: surfaces,
     })
 
-    let authorityOk = false
+    const flags = { authorityOk: false }
     const isRetryableLockOrCas = (e: unknown): boolean => {
-      if (e instanceof AccountSyncError && e.code === 'STALE_REVISION') return true
+      if (e instanceof AccountSyncError && e.code === 'STALE_REVISION')
+        return true
       if (e && typeof e === 'object' && 'message' in e) {
-        const msg = String((e as { message: unknown }).message)
-        if (/failed to acquire board named lock|named lock/i.test(msg)) return true
+        const msg = String(e.message)
+        if (/failed to acquire board named lock|named lock/i.test(msg))
+          return true
       }
       if (e && typeof e === 'object' && 'code' in e) {
-        const code = String((e as { code: unknown }).code)
+        const code = String(e.code)
         if (code === 'DATA_INTEGRITY' || code === 'STALE_REVISION') return true
       }
       return false
@@ -263,7 +270,7 @@ describe('real-MySQL concurrent authority vs fail-close (no newer snapshot loss)
             callerRole: 'ROOT_ORCHESTRATOR',
             actorId: 'race-it',
           })
-          if (!r.replayed) authorityOk = true
+          if (!r.replayed) flags.authorityOk = true
           return
         } catch (e) {
           if (isRetryableLockOrCas(e)) {
@@ -281,7 +288,7 @@ describe('real-MySQL concurrent authority vs fail-close (no newer snapshot loss)
     const final = await deps.accounts.get(BOARD)
     const board = await deps.atomic.getBoardState(BOARD)
     const preserved =
-      authorityOk &&
+      flags.authorityOk &&
       final != null &&
       final.sourceRevision === AUTH_SOURCE &&
       final.accounts[0]?.maskedAccountId === AUTH_MASK &&
@@ -289,7 +296,7 @@ describe('real-MySQL concurrent authority vs fail-close (no newer snapshot loss)
 
     step('concurrent_authority_vs_fail_close', {
       ok: preserved,
-      authorityOk,
+      authorityOk: flags.authorityOk,
       finalSourceRevision: final?.sourceRevision,
       finalMask: final?.accounts[0]?.maskedAccountId,
       finalEntityRev: final?.entityRev,
@@ -298,7 +305,7 @@ describe('real-MySQL concurrent authority vs fail-close (no newer snapshot loss)
       dispatchBlocked: board.dispatchBlocked,
     })
 
-    expect(authorityOk).toBe(true)
+    expect(flags.authorityOk).toBe(true)
     expect(final).not.toBeNull()
     expect(final!.sourceRevision).toBe(AUTH_SOURCE)
     expect(final!.accounts[0]?.maskedAccountId).toBe(AUTH_MASK)

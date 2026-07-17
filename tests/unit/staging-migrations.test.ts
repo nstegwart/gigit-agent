@@ -144,13 +144,25 @@ describe('mysql migration config + authority', () => {
     await exec.close()
   })
 
-  it('manifestLatestVersion is 007', () => {
-    expect(manifestLatestVersion()).toBe('007')
+  it('manifestLatestVersion is 010', () => {
+    expect(manifestLatestVersion()).toBe('010')
   })
 
-  it('manifest includes 004/005/006 after 003 with REVERSIBLE classification', () => {
+  it('manifest includes 004..010 after 003 with classifications matching MIGRATION_MANIFEST', () => {
     const loaded = loadMigrationManifest(cwd)
-    expect(loaded.map((m) => m.version)).toEqual(['000', '001', '002', '003', '004', '005', '006', '007'])
+    expect(loaded.map((m) => m.version)).toEqual([
+      '000',
+      '001',
+      '002',
+      '003',
+      '004',
+      '005',
+      '006',
+      '007',
+      '008',
+      '009',
+      '010',
+    ])
     expect(loaded.map((m) => m.filename)).toEqual([
       '000_baseline_core.sql',
       '001_control_plane_expand.sql',
@@ -160,26 +172,43 @@ describe('mysql migration config + authority', () => {
       '005_control_plane_runtime_persistence.sql',
       '006_stage_evidence_receipts.sql',
       '007_globals_table.sql',
+      '008_cp0_control_plane.sql',
+      '009_rebuild_lineage.sql',
+      '010_product_features.sql',
     ])
     const m004 = loaded.find((m) => m.version === '004')!
     const m005 = loaded.find((m) => m.version === '005')!
     const m006 = loaded.find((m) => m.version === '006')!
     const m007 = loaded.find((m) => m.version === '007')!
+    const m008 = loaded.find((m) => m.version === '008')!
+    const m009 = loaded.find((m) => m.version === '009')!
+    const m010 = loaded.find((m) => m.version === '010')!
     expect(m004.classification).toBe('REVERSIBLE')
     expect(m005.classification).toBe('REVERSIBLE')
     expect(m006.classification).toBe('REVERSIBLE')
     expect(m007.classification).toBe('REVERSIBLE')
+    // 008/009/010: product manifest marks all REVERSIBLE (additive tables only)
+    expect(m008.classification).toBe('REVERSIBLE')
+    expect(m009.classification).toBe('REVERSIBLE')
+    expect(m010.classification).toBe('REVERSIBLE')
     expect(m004.sha256).toMatch(/^[a-f0-9]{64}$/)
     expect(m005.sha256).toMatch(/^[a-f0-9]{64}$/)
     expect(m006.sha256).toMatch(/^[a-f0-9]{64}$/)
     expect(m007.sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(m008.sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(m009.sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(m010.sha256).toMatch(/^[a-f0-9]{64}$/)
     expect(m004.statements.length).toBeGreaterThan(0)
     expect(m005.statements.length).toBeGreaterThan(0)
     expect(m006.statements.length).toBeGreaterThan(0)
     expect(m007.statements.length).toBeGreaterThan(0)
-    // 006/007 registered exactly once
-    expect(loaded.filter((m) => m.version === '006')).toHaveLength(1)
-    expect(loaded.filter((m) => m.version === '007')).toHaveLength(1)
+    expect(m008.statements.length).toBeGreaterThan(0)
+    expect(m009.statements.length).toBeGreaterThan(0)
+    expect(m010.statements.length).toBeGreaterThan(0)
+    // each later version registered exactly once
+    for (const v of ['006', '007', '008', '009', '010'] as const) {
+      expect(loaded.filter((m) => m.version === v)).toHaveLength(1)
+    }
   })
 })
 
@@ -237,7 +266,19 @@ describe('migrate CLI parse + mapping loader', () => {
     })
     expect(result.exitCode).toBe(0)
     expect(result.plan?.status).toBe('READY')
-    expect(result.plan?.orderedVersions).toEqual(['000', '001', '002', '003', '004', '005', '006', '007'])
+    expect(result.plan?.orderedVersions).toEqual([
+      '000',
+      '001',
+      '002',
+      '003',
+      '004',
+      '005',
+      '006',
+      '007',
+      '008',
+      '009',
+      '010',
+    ])
     expect(result.plan?.items.map((i) => i.version)).toEqual([
       '000',
       '001',
@@ -247,21 +288,30 @@ describe('migrate CLI parse + mapping loader', () => {
       '005',
       '006',
       '007',
+      '008',
+      '009',
+      '010',
     ])
     expect(result.plan?.items.every((i) => i.action === 'APPLY')).toBe(true)
     expect(result.plan?.items.filter((i) => i.version === '006')).toHaveLength(1)
     expect(result.plan?.items.filter((i) => i.version === '007')).toHaveLength(1)
+    expect(result.plan?.items.filter((i) => i.version === '008')).toHaveLength(1)
+    expect(result.plan?.items.filter((i) => i.version === '009')).toHaveLength(1)
+    expect(result.plan?.items.filter((i) => i.version === '010')).toHaveLength(1)
   })
 
-  it('help text documents plan range 000..007', async () => {
+  it('help text documents plan range 000..010', async () => {
     const result = await runMigrateCli(['--help'], {
       log: () => {},
       logErr: () => {},
     })
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toMatch(/Plan migrations 000\.\.007/)
+    expect(result.stdout).toMatch(/Plan migrations 000\.\.010/)
     expect(result.stdout).not.toMatch(/Plan migrations 001\.\.003/)
     expect(result.stdout).not.toMatch(/Plan migrations 000\.\.005[^.0-9]/)
+    expect(result.stdout).not.toMatch(/Plan migrations 000\.\.007[^.0-9]/)
+    expect(result.stdout).not.toMatch(/Plan migrations 000\.\.008[^.0-9]/)
+    expect(result.stdout).not.toMatch(/Plan migrations 000\.\.009[^.0-9]/)
   })
 })
 
@@ -307,7 +357,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
     })
     expect(schema.status).toBe('UNKNOWN')
     expect(schema.schemaVersion).toBe('')
-    expect(schema.expectedLatestVersion).toBe('007')
+    expect(schema.expectedLatestVersion).toBe('010')
     expect(schema.appliedVersions).toEqual([])
   })
 
@@ -334,11 +384,23 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       },
     })
     expect(schema.status).toBe('IDEMPOTENT_NOOP')
-    expect(schema.schemaVersion).toBe('007')
-    expect(schema.appliedVersions).toEqual(['000', '001', '002', '003', '004', '005', '006', '007'])
+    expect(schema.schemaVersion).toBe('010')
+    expect(schema.appliedVersions).toEqual([
+      '000',
+      '001',
+      '002',
+      '003',
+      '004',
+      '005',
+      '006',
+      '007',
+      '008',
+      '009',
+      '010',
+    ])
   })
 
-  it('plan/apply/idempotency for 004+005+006 without real DB (memory executor)', async () => {
+  it('plan/apply/idempotency for 004..010 without real DB (memory executor)', async () => {
     const loaded = loadMigrationManifest(cwd)
     const through003 = loaded
       .filter((m) => m.version <= '003')
@@ -357,7 +419,19 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       mode: 'plan',
     })
     expect(planPending.status).toBe('READY')
-    expect(planPending.orderedVersions).toEqual(['000', '001', '002', '003', '004', '005', '006', '007'])
+    expect(planPending.orderedVersions).toEqual([
+      '000',
+      '001',
+      '002',
+      '003',
+      '004',
+      '005',
+      '006',
+      '007',
+      '008',
+      '009',
+      '010',
+    ])
     const byVersion = Object.fromEntries(planPending.items.map((i) => [i.version, i.action]))
     expect(byVersion['000']).toBe('SKIP_ALREADY_APPLIED')
     expect(byVersion['001']).toBe('SKIP_ALREADY_APPLIED')
@@ -367,7 +441,11 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
     expect(byVersion['005']).toBe('APPLY')
     expect(byVersion['006']).toBe('APPLY')
     expect(byVersion['007']).toBe('APPLY')
+    expect(byVersion['008']).toBe('APPLY')
+    expect(byVersion['009']).toBe('APPLY')
+    expect(byVersion['010']).toBe('APPLY')
     expect(planPending.items.filter((i) => i.version === '006')).toHaveLength(1)
+    expect(planPending.items.filter((i) => i.version === '010')).toHaveLength(1)
 
     const exec = createMemoryMigrationExecutor(through003)
     const first = await applyMigrations({
@@ -378,7 +456,7 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       lifecycleMapping: SAFE_MAPPING,
     })
     expect(first.ok).toBe(true)
-    expect(first.applied).toEqual(['004', '005', '006', '007'])
+    expect(first.applied).toEqual(['004', '005', '006', '007', '008', '009', '010'])
     expect(first.skipped).toEqual(['000', '001', '002', '003'])
     expect(exec.history.map((h) => h.version)).toEqual([
       '000',
@@ -389,8 +467,11 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
       '005',
       '006',
       '007',
+      '008',
+      '009',
+      '010',
     ])
-    for (const v of ['004', '005', '006', '007'] as const) {
+    for (const v of ['004', '005', '006', '007', '008', '009', '010'] as const) {
       const hist = exec.history.find((h) => h.version === v)!
       const man = loaded.find((m) => m.version === v)!
       expect(hist.sha256).toBe(man.sha256)
@@ -409,7 +490,19 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
     })
     expect(second.ok).toBe(true)
     expect(second.applied).toEqual([])
-    expect(second.skipped).toEqual(['000', '001', '002', '003', '004', '005', '006', '007'])
+    expect(second.skipped).toEqual([
+      '000',
+      '001',
+      '002',
+      '003',
+      '004',
+      '005',
+      '006',
+      '007',
+      '008',
+      '009',
+      '010',
+    ])
     expect(second.plan.status).toBe('IDEMPOTENT_NOOP')
   })
 
@@ -434,7 +527,19 @@ describe('resolveAppliedHistory + schema readback (memory)', () => {
 // Disposable local MySQL integration (skip when unreachable)
 // ---------------------------------------------------------------------------
 
-const EXPECTED_VERSIONS = ['000', '001', '002', '003', '004', '005', '006', '007'] as const
+const EXPECTED_VERSIONS = [
+  '000',
+  '001',
+  '002',
+  '003',
+  '004',
+  '005',
+  '006',
+  '007',
+  '008',
+  '009',
+  '010',
+] as const
 
 type ItCtx = {
   /** Pre-existing BASE_DDL path (legacy tables present, empty schema_migrations). */
@@ -730,10 +835,10 @@ describe('disposable local MySQL migration integration', () => {
         cwd,
         executor: exec,
       })
-      expect(schema.schemaVersion).toBe('007')
+      expect(schema.schemaVersion).toBe('010')
       expect(schema.status).toBe('IDEMPOTENT_NOOP')
       expect(schema.appliedVersions).toEqual([...EXPECTED_VERSIONS])
-      expect(schema.expectedLatestVersion).toBe('007')
+      expect(schema.expectedLatestVersion).toBe('010')
 
       // Physical control_plane_stage_evidence_receipts after 006 (history alone insufficient)
       const stageEv = (await exec.query(
@@ -974,7 +1079,7 @@ describe('disposable local MySQL migration integration', () => {
         cwd,
         executor: exec,
       })
-      expect(schema.schemaVersion).toBe('007')
+      expect(schema.schemaVersion).toBe('010')
       expect(schema.status).toBe('IDEMPOTENT_NOOP')
       expect(schema.appliedVersions).toContain('006')
     } finally {
@@ -997,7 +1102,7 @@ describe('disposable local MySQL migration integration', () => {
     )
     expect([0, 2]).toContain(result.exitCode)
     expect(result.schema).toBeDefined()
-    expect(result.schema!.expectedLatestVersion).toBe('007')
+    expect(result.schema!.expectedLatestVersion).toBe('010')
     if (result.schema!.status !== 'CHECKSUM_MISMATCH') {
       expect(result.schema!.appliedVersions.length).toBeGreaterThan(0)
     }

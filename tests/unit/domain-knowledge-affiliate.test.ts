@@ -109,6 +109,58 @@ describe('buildAffiliateDomainKnowledgeBundle', () => {
     expect(dispositions.has('omitted-with-reason')).toBe(true)
   })
 
+  it('accounts for every known project, feature, and flow with no silent omission', () => {
+    const b = buildAffiliateDomainKnowledgeBundle()
+    const included = new Set(
+      b.coverageManifest
+        .filter((row) => row.disposition === 'included')
+        .map(
+          (row) =>
+            `${row.kind}:${row.id.replace(/^cov-(?:project|feature|flow)-/, '')}`,
+        ),
+    )
+    for (const project of b.projects)
+      expect(included.has(`project:${project.id}`)).toBe(true)
+    for (const feature of b.features)
+      expect(included.has(`feature:${feature.id}`)).toBe(true)
+    for (const flow of b.flows)
+      expect(included.has(`flow:${flow.id}`)).toBe(true)
+    for (const row of b.coverageManifest.filter(
+      (item) => item.disposition !== 'included',
+    )) {
+      expect(row.reason, row.id).toBeTruthy()
+    }
+    expect(
+      b.citations.every((citation) => citation.field && citation.path),
+    ).toBe(true)
+  })
+
+  it('covers required outcomes and keeps every relation endpoint resolvable', () => {
+    const b = buildAffiliateDomainKnowledgeBundle()
+    const outcomes = new Set(b.flows.flatMap((flow) => flow.outcomes))
+    for (const outcome of [
+      'success',
+      'fail',
+      'expired',
+      'refund',
+      'revoke',
+      'recurring',
+    ]) {
+      expect(outcomes.has(outcome), outcome).toBe(true)
+    }
+    const ids = new Set([
+      b.domainId,
+      ...b.projects.map((row) => row.id),
+      ...b.features.map((row) => row.id),
+      ...b.flows.map((row) => row.id),
+      ...b.entities.map((row) => row.id),
+    ])
+    for (const relation of b.relations) {
+      expect(ids.has(relation.fromId), `${relation.id}:from`).toBe(true)
+      expect(ids.has(relation.toId), `${relation.id}:to`).toBe(true)
+    }
+  })
+
   it('cross-project graph spans portal, Sales, backend, public web, payment', () => {
     const b = buildAffiliateDomainKnowledgeBundle()
     const ids = new Set(b.projects.map((p) => p.id))
@@ -136,17 +188,19 @@ describe('buildAffiliateDomainKnowledgeBundle', () => {
             ownerPrimaryTitle: 'Komisi kedaluwarsa',
           },
         ],
-        decisions: [{ decisionId: 'D-AFF-1', title: 'Tahan payout', status: 'OPEN' }],
+        decisions: [
+          { decisionId: 'D-AFF-1', title: 'Tahan payout', status: 'OPEN' },
+        ],
         evidence: [{ id: 'ev-1', kind: 'receipt', summary: 'proof' }],
       },
     })
-    expect(withHits.blockers.some((x) => x.id === 'T-AFF-N16-MONEY-EXPIRED-UNPAID')).toBe(
-      true,
-    )
+    expect(
+      withHits.blockers.some((x) => x.id === 'T-AFF-N16-MONEY-EXPIRED-UNPAID'),
+    ).toBe(true)
     expect(withHits.decisions).toHaveLength(1)
-    expect(withHits.knowledgeGaps.every((g) => g.code !== 'NO_MATCHING_PIN_TASKS')).toBe(
-      true,
-    )
+    expect(
+      withHits.knowledgeGaps.every((g) => g.code !== 'NO_MATCHING_PIN_TASKS'),
+    ).toBe(true)
 
     const emptyPin = buildAffiliateDomainKnowledgeBundle({
       pinHits: { tasks: [], decisions: [], evidence: [] },
@@ -160,7 +214,10 @@ describe('buildAffiliateDomainKnowledgeBundle', () => {
 
 describe('staging fixture domain-affiliate.bundle.json', () => {
   it('matches acceptance shape and pack domainId', () => {
-    const raw = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as Record<string, unknown>
+    const raw = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as Record<
+      string,
+      unknown
+    >
     expect(raw.domainId).toBe('AFFILIATE')
     expect(raw.coverageManifest).toBeDefined()
     expect(raw.knowledgeGaps).not.toBeNull()
@@ -180,7 +237,9 @@ describe('affiliateBundleToKnowledgeDomainData / documentation', () => {
     const bundle = buildAffiliateDomainKnowledgeBundle()
     const data = affiliateBundleToKnowledgeDomainData(bundle)
     expect(data.domainId).toBe('AFFILIATE')
-    expect(data.availability === 'available' || data.availability === 'partial').toBe(true)
+    expect(
+      data.availability === 'available' || data.availability === 'partial',
+    ).toBe(true)
     expect(data.coverageManifest.length).toBeGreaterThan(0)
     expect(data.knowledgeGaps.length).toBeGreaterThan(0)
     expect(data.projects.length).toBeGreaterThanOrEqual(5)
@@ -220,10 +279,13 @@ describe('projectKnowledgeDomainFromAgg AFFILIATE overlay', () => {
     expect(data.redactions.length).toBeGreaterThanOrEqual(1)
     expect(data.knowledgeState).toBe('CONFLICT')
 
-    const vm = knowledgeDomainEnvelopeToViewModel(env as PinnedEnvelope<unknown>, {
-      boardId: 'mfs-rebuild',
-      domain: 'AFFILIATE',
-    })
+    const vm = knowledgeDomainEnvelopeToViewModel(
+      env as PinnedEnvelope<unknown>,
+      {
+        boardId: 'mfs-rebuild',
+        domain: 'AFFILIATE',
+      },
+    )
     expect(vm.availability).not.toBe('unavailable')
     expect(vm.coverageManifest).not.toBeNull()
     expect(vm.knowledgeGaps).not.toBeNull()
@@ -254,16 +316,21 @@ describe('projectKnowledgeDomainFromAgg AFFILIATE overlay', () => {
       ] as ControlCenterAggregation['workRows'],
     })
     const env = projectKnowledgeDomainFromAgg(agg, 'AFFILIATE')
-    const data = env.data as { tasks: Array<{ taskId: string }>; availability: string }
-    expect(data.tasks.some((t) => t.taskId === 'T-AFF-N16-MONEY-EXPIRED-UNPAID')).toBe(
-      true,
-    )
+    const data = env.data as {
+      tasks: Array<{ taskId: string }>
+      availability: string
+    }
+    expect(
+      data.tasks.some((t) => t.taskId === 'T-AFF-N16-MONEY-EXPIRED-UNPAID'),
+    ).toBe(true)
     expect(data.availability).not.toBe('unavailable')
   })
 
   it('non-AFFILIATE domain stays unavailable on empty pin', () => {
     const env = projectKnowledgeDomainFromAgg(emptyAgg(), 'PAYMENTS')
-    expect((env.data as { availability: string }).availability).toBe('unavailable')
+    expect((env.data as { availability: string }).availability).toBe(
+      'unavailable',
+    )
   })
 })
 
@@ -283,10 +350,13 @@ describe('projectDocumentationDomainFromAgg AFFILIATE', () => {
     expect(data.knowledgeGaps).not.toBeNull()
     expect(data.citations.length).toBeGreaterThan(0)
 
-    const vm = documentationDomainEnvelopeToViewModel(env as PinnedEnvelope<unknown>, {
-      boardId: 'mfs-rebuild',
-      domain: 'AFFILIATE',
-    })
+    const vm = documentationDomainEnvelopeToViewModel(
+      env as PinnedEnvelope<unknown>,
+      {
+        boardId: 'mfs-rebuild',
+        domain: 'AFFILIATE',
+      },
+    )
     expect(vm.availability).not.toBe('unavailable')
     expect(vm.bodyMarkdown).toContain('Affiliate')
     expect(vm.coverageManifest).not.toBeNull()

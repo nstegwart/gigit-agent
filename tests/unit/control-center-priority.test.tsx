@@ -2,7 +2,16 @@
  * C3-F4 Priority components — prop-driven render + fail-closed display contracts.
  * LOCAL ONLY support evidence (jsdom). Does not claim visual DONE.
  */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react'
+import { act } from 'react'
+import { hydrateRoot } from 'react-dom/client'
+import { renderToString } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -52,6 +61,14 @@ const baseDenominators: PriorityRollupDenominatorsProps = {
   unclassifiedCount: 0,
   productTaskIds: ['p1', 'p2'],
   trackedTaskIds: ['t1', 't2', 't3'],
+}
+
+const emptyProductDenominators: PriorityRollupDenominatorsProps = {
+  productDenominator: 0,
+  trackedWorkDenominator: 5,
+  stageProdReady: 0,
+  prodReadyWithEvidence: 0,
+  unclassifiedCount: 0,
 }
 
 const baseReadiness: PriorityReadinessProps = {
@@ -141,7 +158,9 @@ describe('display helpers — fail-closed N-A (AC-PRIORITY-02)', () => {
       'PRIORITY_FRONTIER_BLOCKED',
       'PRIORITY_FRONTIER_EXHAUSTED',
     ])
-    expect(isAllowlistedNonPriorityReason('STRICT_DIRECT_DEPENDENCY')).toBe(true)
+    expect(isAllowlistedNonPriorityReason('STRICT_DIRECT_DEPENDENCY')).toBe(
+      true,
+    )
     expect(isAllowlistedNonPriorityReason('JUST_BECAUSE')).toBe(false)
     const { allowed, rejected } = filterAllowlistedReasons([
       { reason: 'NON_DELAYING_SPARE_CAPACITY' },
@@ -158,9 +177,15 @@ describe('PriorityMembershipPanel', () => {
     expect(screen.getByTestId('priority-portfolio-id').textContent).toBe(
       'SALES_WEB_RELATED_BACKEND',
     )
-    expect(screen.getByTestId('priority-membership-denominator').textContent).toBe('2')
-    expect(screen.getByTestId('priority-membership-receipt-valid').textContent).toMatch(/Valid/)
-    const ids = within(screen.getByTestId('priority-membership-ids')).getAllByRole('listitem')
+    expect(
+      screen.getByTestId('priority-membership-denominator').textContent,
+    ).toBe('2')
+    expect(
+      screen.getByTestId('priority-membership-receipt-valid').textContent,
+    ).toMatch(/Valid/)
+    const ids = within(
+      screen.getByTestId('priority-membership-ids'),
+    ).getAllByRole('listitem')
     expect(ids.map((li) => li.textContent)).toEqual(['task-a', 'task-b'])
   })
 
@@ -182,26 +207,28 @@ describe('PriorityMembershipPanel', () => {
 describe('PriorityDenominatorsPanel + readiness empty product scope', () => {
   it('shows DISTINCT product/tracked denominators', () => {
     render(<PriorityDenominatorsPanel {...baseDenominators} />)
-    expect(screen.getByTestId('priority-product-denominator').textContent).toBe('10')
-    expect(screen.getByTestId('priority-tracked-denominator').textContent).toBe('40')
-    expect(screen.getByTestId('priority-stage-prod-ready').textContent).toBe('4')
-    expect(screen.getByTestId('priority-prod-ready-evidence').textContent).toBe('3')
+    expect(screen.getByTestId('priority-product-denominator').textContent).toBe(
+      '10',
+    )
+    expect(screen.getByTestId('priority-tracked-denominator').textContent).toBe(
+      '40',
+    )
+    expect(screen.getByTestId('priority-stage-prod-ready').textContent).toBe(
+      '4',
+    )
+    expect(screen.getByTestId('priority-prod-ready-evidence').textContent).toBe(
+      '3',
+    )
   })
 
   it('productDenominator=0 warns and readiness null/complete false stay non-PASS', () => {
-    render(
-      <PriorityDenominatorsPanel
-        productDenominator={0}
-        trackedWorkDenominator={5}
-        stageProdReady={0}
-        prodReadyWithEvidence={0}
-        unclassifiedCount={0}
-      />,
-    )
+    render(<PriorityDenominatorsPanel {...emptyProductDenominators} />)
     expect(screen.getByTestId('priority-empty-product-scope')).toBeTruthy()
-    expect(screen.getByTestId('priority-denominators').getAttribute('data-empty-product')).toBe(
-      'true',
-    )
+    expect(
+      screen
+        .getByTestId('priority-denominators')
+        .getAttribute('data-empty-product'),
+    ).toBe('true')
 
     render(
       <PriorityReadinessPanel
@@ -212,12 +239,84 @@ describe('PriorityDenominatorsPanel + readiness empty product scope', () => {
         g5Pass={false}
       />,
     )
-    expect(screen.getByTestId('priority-board-readiness').textContent).toBe('N-A')
+    expect(screen.getByTestId('priority-board-readiness').textContent).toBe(
+      'N-A',
+    )
     expect(screen.getByTestId('priority-complete').textContent).toMatch(/false/)
-    expect(screen.getByTestId('priority-capped-by').textContent).toBe('EMPTY_PRODUCT_SCOPE')
+    expect(screen.getByTestId('priority-capped-by').textContent).toBe(
+      'EMPTY_PRODUCT_SCOPE',
+    )
     // Never renders 100
-    expect(screen.getByTestId('priority-board-readiness').textContent).not.toBe('100.0')
-    expect(screen.getByTestId('priority-board-readiness').textContent).not.toBe('100')
+    expect(screen.getByTestId('priority-board-readiness').textContent).not.toBe(
+      '100.0',
+    )
+    expect(screen.getByTestId('priority-board-readiness').textContent).not.toBe(
+      '100',
+    )
+  })
+
+  it('serializes and hydrates valid empty-product disclosure markup without losing content', async () => {
+    const view = <PriorityDenominatorsPanel {...emptyProductDenominators} />
+    const serverHtml = renderToString(view)
+
+    // A <p> may not contain interactive flow content. Assert the serialized SSR tree itself,
+    // before a browser parser can silently repair invalid markup and hide the hydration defect.
+    expect(serverHtml).not.toMatch(/<p\b(?:(?!<\/p>).)*<(?:details|summary)\b/s)
+    expect(serverHtml).toContain('role="status"')
+    expect(serverHtml).toContain('Detail teknis')
+    expect(serverHtml).toContain('productDenominator=0')
+
+    const host = document.createElement('div')
+    host.innerHTML = serverHtml
+    document.body.appendChild(host)
+    const consoleErrors: string[] = []
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation((...args: unknown[]) => {
+        consoleErrors.push(args.map(String).join(' '))
+      })
+    let root: ReturnType<typeof hydrateRoot> | undefined
+
+    try {
+      await act(async () => {
+        root = hydrateRoot(host, view)
+        await Promise.resolve()
+      })
+
+      const warning = host.querySelector<HTMLElement>(
+        '[data-testid="priority-empty-product-scope"]',
+      )
+      expect(warning?.tagName).toBe('DIV')
+      expect(warning?.querySelector('p details, p summary')).toBeNull()
+      expect(warning?.textContent).toContain(
+        'Belum ada tugas produk pada cakupan ini, jadi kesiapan belum dapat dihitung',
+      )
+      expect(warning?.textContent).toContain(
+        'tidak pernah dibulatkan menjadi 100%',
+      )
+      expect(warning?.textContent).toContain(
+        'productDenominator=0 — readiness must stay null / N-A; complete must stay false',
+      )
+
+      const disclosure = warning?.querySelector<HTMLDetailsElement>('details')
+      const summary = disclosure?.querySelector<HTMLElement>('summary')
+      expect(summary?.textContent).toBe('Detail teknis')
+      expect(summary?.tabIndex).toBe(0)
+      expect(disclosure?.open).toBe(false)
+      fireEvent.click(summary!)
+      expect(disclosure?.open).toBe(true)
+      expect(consoleErrors.join('\n')).not.toMatch(
+        /hydration|cannot be a descendant|cannot contain a nested/i,
+      )
+    } finally {
+      if (root) {
+        await act(async () => {
+          root?.unmount()
+        })
+      }
+      consoleError.mockRestore()
+      host.remove()
+    }
   })
 })
 
@@ -227,7 +326,9 @@ describe('PriorityCapacityPanel — AC-PRIORITY-02 display', () => {
     const el = screen.getByTestId('priority-majority-pass')
     expect(el.textContent).toMatch(/PASS/)
     expect(el.getAttribute('data-majority-raw')).toBe('true')
-    expect(screen.getByTestId('priority-capacity-share').textContent).toBe('0.6000')
+    expect(screen.getByTestId('priority-capacity-share').textContent).toBe(
+      '0.6000',
+    )
   })
 
   it('zero allClosureCapacity → majority FAIL (false), share N-A — not PASS', () => {
@@ -246,13 +347,17 @@ describe('PriorityCapacityPanel — AC-PRIORITY-02 display', () => {
     expect(el.textContent).toMatch(/FAIL/)
     expect(el.textContent).not.toMatch(/PASS/)
     expect(el.getAttribute('data-majority-raw')).toBe('false')
-    expect(screen.getByTestId('priority-capacity-share').textContent).toBe('N-A')
+    expect(screen.getByTestId('priority-capacity-share').textContent).toBe(
+      'N-A',
+    )
     expect(screen.getByTestId('priority-capacity-reason').textContent).toBe(
       'ZERO SCHEDULABLE CAPACITY',
     )
-    expect(screen.getByTestId('priority-capacity-reason').getAttribute('data-reason-raw')).toBe(
-      'ZERO_SCHEDULABLE_CAPACITY',
-    )
+    expect(
+      screen
+        .getByTestId('priority-capacity-reason')
+        .getAttribute('data-reason-raw'),
+    ).toBe('ZERO_SCHEDULABLE_CAPACITY')
     expect(screen.getByTestId('priority-fail-closed-notice')).toBeTruthy()
   })
 
@@ -275,9 +380,11 @@ describe('PriorityCapacityPanel — AC-PRIORITY-02 display', () => {
     expect(screen.getByTestId('priority-frontier-state').textContent).toBe(
       'PRIORITY FRONTIER EMPTY',
     )
-    expect(screen.getByTestId('priority-frontier-state').getAttribute('data-frontier-raw')).toBe(
-      'PRIORITY_FRONTIER_EMPTY',
-    )
+    expect(
+      screen
+        .getByTestId('priority-frontier-state')
+        .getAttribute('data-frontier-raw'),
+    ).toBe('PRIORITY_FRONTIER_EMPTY')
   })
 
   it('share 0.5 with majority false does not display PASS', () => {
@@ -292,8 +399,12 @@ describe('PriorityCapacityPanel — AC-PRIORITY-02 display', () => {
         reason={null}
       />,
     )
-    expect(screen.getByTestId('priority-majority-pass').textContent).toMatch(/FAIL/)
-    expect(screen.getByTestId('priority-capacity-share').textContent).toBe('0.5000')
+    expect(screen.getByTestId('priority-majority-pass').textContent).toMatch(
+      /FAIL/,
+    )
+    expect(screen.getByTestId('priority-capacity-share').textContent).toBe(
+      '0.5000',
+    )
   })
 })
 
@@ -305,7 +416,9 @@ describe('PriorityG5Panel — nine domains', () => {
       expect(screen.getByTestId(`priority-g5-row-${id}`)).toBeTruthy()
       expect(screen.getByTestId(`priority-g5-card-${id}`)).toBeTruthy()
     }
-    const rows = screen.getByTestId('priority-g5-table').querySelectorAll('tbody tr')
+    const rows = screen
+      .getByTestId('priority-g5-table')
+      .querySelectorAll('tbody tr')
     expect(rows.length).toBe(9)
   })
 
@@ -318,16 +431,20 @@ describe('PriorityG5Panel — nine domains', () => {
   })
 
   it('does not flip g5Pass client-side when domains are mixed', () => {
-    const domains = G5_REQUIRED_DOMAINS.map((domainId, i) => ({
-      domainId,
-      status: (i === 0 ? 'PASS' : 'FAIL') as 'PASS' | 'FAIL',
-      pass: i === 0,
-      reason: i === 0 ? null : 'blocked',
-      evidenceReceiptIds: [],
-    }))
+    const domains = G5_REQUIRED_DOMAINS.map(
+      (domainId, i): PriorityG5Props['domains'][number] => ({
+        domainId,
+        status: i === 0 ? 'PASS' : 'FAIL',
+        pass: i === 0,
+        reason: i === 0 ? null : 'blocked',
+        evidenceReceiptIds: [],
+      }),
+    )
     // Server says false even if one domain "looks" pass — UI must honor server g5Pass
     render(<PriorityG5Panel g5Pass={false} domains={domains} />)
-    expect(screen.getByTestId('priority-g5').getAttribute('data-g5-pass')).toBe('false')
+    expect(screen.getByTestId('priority-g5').getAttribute('data-g5-pass')).toBe(
+      'false',
+    )
     expect(screen.getByTestId('priority-g5-pass').textContent).toMatch(/false/)
   })
 })
@@ -352,13 +469,15 @@ describe('NonPriorityReasonsPanel — allowlist + proof', () => {
     )
     const items = screen.getAllByTestId('priority-non-priority-item')
     expect(items).toHaveLength(1)
-    expect(items[0]!.getAttribute('data-reason')).toBe('PRIORITY_FRONTIER_BLOCKED')
+    expect(items[0].getAttribute('data-reason')).toBe(
+      'PRIORITY_FRONTIER_BLOCKED',
+    )
     expect(screen.getByTestId('priority-reason-proof').textContent).toBe(
       'frontier-blocked-rcpt-9',
     )
-    expect(screen.getByTestId('priority-non-priority-rejected').textContent).toMatch(
-      /outside allowlist/,
-    )
+    expect(
+      screen.getByTestId('priority-non-priority-rejected').textContent,
+    ).toMatch(/outside allowlist/)
   })
 
   it('flags missing proof on allowlisted reason', () => {
@@ -374,9 +493,9 @@ describe('NonPriorityReasonsPanel — allowlist + proof', () => {
 describe('PriorityScreen — UI states + composition', () => {
   it('populated composes all panels with pin revs', () => {
     render(<PriorityScreen {...populatedScreen()} />)
-    expect(screen.getByTestId('priority-screen').getAttribute('data-ui-state')).toBe(
-      'populated',
-    )
+    expect(
+      screen.getByTestId('priority-screen').getAttribute('data-ui-state'),
+    ).toBe('populated')
     expect(screen.getByTestId('priority-body')).toBeTruthy()
     expect(screen.getByTestId('priority-membership')).toBeTruthy()
     expect(screen.getByTestId('priority-denominators')).toBeTruthy()
@@ -399,19 +518,28 @@ describe('PriorityScreen — UI states + composition', () => {
     for (const state of ['empty', 'zero-results', 'forbidden'] as const) {
       cleanup()
       render(<PriorityScreen uiState={state} />)
-      expect(screen.getByTestId('priority-screen').getAttribute('data-ui-state')).toBe(state)
+      expect(
+        screen.getByTestId('priority-screen').getAttribute('data-ui-state'),
+      ).toBe(state)
       expect(screen.getByTestId(`priority-state-${state}`)).toBeTruthy()
       expect(screen.queryByTestId('priority-body')).toBeNull()
     }
     cleanup()
     render(<PriorityScreen uiState="disconnected" errorCode="TRANSPORT_DOWN" />)
-    expect(screen.getByTestId('priority-error-code').textContent).toBe('TRANSPORT_DOWN')
+    expect(screen.getByTestId('priority-error-code').textContent).toBe(
+      'TRANSPORT_DOWN',
+    )
   })
 
   it('error retry invokes handler', () => {
     const onRetry = vi.fn()
     render(
-      <PriorityScreen uiState="error" errorCode="E_PRIORITY" errorMessage="boom" onRetry={onRetry} />,
+      <PriorityScreen
+        uiState="error"
+        errorCode="E_PRIORITY"
+        errorMessage="boom"
+        onRetry={onRetry}
+      />,
     )
     fireEvent.click(screen.getByTestId('priority-retry'))
     expect(onRetry).toHaveBeenCalledTimes(1)
@@ -457,16 +585,16 @@ describe('PriorityScreen — UI states + composition', () => {
       />,
     )
     expect(screen.getByTestId('priority-membership')).toBeTruthy()
-    expect(screen.getByTestId('priority-majority-pass').textContent).toMatch(/N-A/)
+    expect(screen.getByTestId('priority-majority-pass').textContent).toMatch(
+      /N-A/,
+    )
   })
 
   it('needs-human banner does not hide capacity truth', () => {
-    render(
-      <PriorityScreen
-        {...populatedScreen({ uiState: 'needs-human' })}
-      />,
+    render(<PriorityScreen {...populatedScreen({ uiState: 'needs-human' })} />)
+    expect(screen.getByTestId('priority-state-banner').textContent).toMatch(
+      /human/i,
     )
-    expect(screen.getByTestId('priority-state-banner').textContent).toMatch(/human/i)
     expect(screen.getByTestId('priority-capacity')).toBeTruthy()
   })
 })
@@ -507,9 +635,15 @@ describe('no client invent of PASS from empty props', () => {
         }}
       />,
     )
-    expect(screen.getByTestId('priority-majority-pass').textContent).toBeTruthy()
-    expect(screen.getByTestId('priority-majority-pass').textContent).not.toMatch(/PASS/)
-    expect(screen.getByTestId('priority-board-readiness').textContent).toBe('N-A')
+    expect(
+      screen.getByTestId('priority-majority-pass').textContent,
+    ).toBeTruthy()
+    expect(
+      screen.getByTestId('priority-majority-pass').textContent,
+    ).not.toMatch(/PASS/)
+    expect(screen.getByTestId('priority-board-readiness').textContent).toBe(
+      'N-A',
+    )
     expect(screen.getByTestId('priority-complete').textContent).toMatch(/false/)
   })
 })

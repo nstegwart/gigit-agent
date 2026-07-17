@@ -304,8 +304,10 @@ describe('DISTINCT counts + six exclusive buckets + STALE overlay', () => {
         {
           id: 'p1',
           name: 'proj',
+          status: null,
           taskCount: 3,
           doneCount: 0,
+          blockedCount: 0,
           readinessPercent: null,
           readinessStage: null,
           readinessEvidenceOk: null,

@@ -6,10 +6,35 @@
  * / authGate remain real). Bearer fixtures use the designed injectable token registry only.
  *
  * Does not edit product code. Failures are real product gaps, not test soft-passes.
+ *
+ * Hermetic unit DI (UNIT-DB-HERMETIC case 12): board-store + tasks-store ambient MySQL
+ * producers intercepted via vi.mock → in-memory adapters (no 127.0.0.1:3306).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
+
+import {
+  hermeticBoardStoreApi,
+  hermeticTasksStoreApi,
+  resetHermeticBoardStore,
+} from './helpers/board-mcp-unit-hermetic'
+
+vi.mock('#/server/board-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#/server/board-store')>()
+  return {
+    ...actual,
+    ...hermeticBoardStoreApi,
+  }
+})
+
+vi.mock('#/server/tasks-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#/server/tasks-store')>()
+  return {
+    ...actual,
+    ...hermeticTasksStoreApi,
+  }
+})
 
 import { authGate, resolveMcpAuthContext } from '#/routes/mcp'
 import { resolvePublicSnapshotClientIp } from '#/routes/api.public-snapshot'
@@ -273,6 +298,7 @@ function sessionAdmin(): SessionUser {
 }
 
 beforeEach(() => {
+  resetHermeticBoardStore()
   resetBearerInjection()
   resetMcpControlPlaneDeps()
   resetControlPlaneRuntimeContextForTests()
