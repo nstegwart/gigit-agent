@@ -239,6 +239,7 @@ import {
 import { createHash } from 'node:crypto'
 import { registerDomainKnowledgeTools } from '#/server/domain-knowledge-mcp'
 import { registerExportDocumentationTool } from '#/server/mcp-register-export-documentation'
+import { registerRebuildParityTools } from '#/server/rebuild-parity-mcp'
 
 // Stable aliases are exported from the live registration module so tests and
 // clients cannot drift to a second spelling of the knowledge tool ids.
@@ -4287,6 +4288,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
   // exact same RBAC filter as the rest of the production MCP catalog.
   registerDomainKnowledgeTools({ secureTool: secureTool as never, jsonText })
   registerExportDocumentationTool({ secureTool: secureTool as never, jsonText })
+  registerRebuildParityTools({ secureTool: secureTool as never, jsonText })
 
 
   // ---- boards ----
@@ -5679,7 +5681,8 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
             }),
           )
           .min(1)
-          .max(2_000),
+          // Complete-set boards exceed 2k tasks (e.g. 2501); headroom for growth.
+          .max(10_000),
       },
     },
     async (args) => {

@@ -619,6 +619,12 @@ export const MCP_TOOL_SPECS: ReadonlyArray<ToolAuthSpec> = [
   { name: 'get_related_entities', kind: 'read', scopes: ['board:read'] },
   { name: 'get_change_history', kind: 'read', scopes: ['board:read'] },
   { name: 'export_documentation', kind: 'read', scopes: ['board:read'] },
+  // Rebuild parity / feature-360 / blindspot tracer (SPEC §3.F + addendum B).
+  // Handlers in rebuild-parity-mcp; board-mcp calls registerRebuildParityTools.
+  // Single catalog entry each — do not duplicate (W-FIX-2 lesson).
+  { name: 'get_rebuild_parity', kind: 'read', scopes: ['board:read'] },
+  { name: 'get_feature_360', kind: 'read', scopes: ['board:read'] },
+  { name: 'trace_blindspot', kind: 'read', scopes: ['board:read'] },
 
   // Legacy writes
   { name: 'create_board', kind: 'write', scopes: ['import:write', 'lifecycle:write'], roles: ['OWNER', 'ROOT_ORCHESTRATOR'] },
