@@ -23,13 +23,19 @@ import {
   type TraceBlindspotPayload,
   type UnavailablePayload,
 } from '#/server/rebuild-parity-mcp'
-import type { FeatureDirectoryRow } from '#/server/rebuild-lineage-store'
+import type {
+  FeatureDirectoryRow,
+  FeatureUnitRow,
+} from '#/server/rebuild-lineage-store'
 import {
   STABLE_DOMAINS,
+  defaultProductFeaturesSeedPath,
   listFeatureTaskMaps,
   listProductFeatures,
+  loadProductFeaturesSeed,
   type FeatureTaskMapRow,
   type ProductFeatureRow,
+  type ProductFeatureSeedEntry,
 } from '#/server/product-features-store'
 
 const boardArgs = z.object({
@@ -1870,5 +1876,531 @@ export const getTaskLineageFn = createServerFn({ method: 'GET' })
         data.taskId,
         REBUILD_DATA_TABLES_NOT_MIGRATED,
       )
+    }
+  })
+
+// ===========================================================================
+// W-UI-5 — Grouped global search (Fitur / Tugas / Dokumen / Unit)
+// SPEC-TM-KOMPAT-VISUAL-V1 §1 + §3.E. Narrow add-only; does not alter existing fns.
+// ===========================================================================
+
+const groupedSearchArgs = z.object({
+  boardId: z.string().min(1),
+  q: z.string().max(200).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+})
+
+export type GroupedSearchEntityKey = 'fitur' | 'tugas' | 'dokumen' | 'unit'
+
+export type GroupedSearchHitWire = {
+  id: string
+  title: string
+  breadcrumb: string | null
+  kind: GroupedSearchEntityKey
+  kindLabelId: string
+  href: string
+  technicalAlias: string | null
+}
+
+export type GroupedSearchSectionWire = {
+  key: GroupedSearchEntityKey
+  labelId: string
+  tone: string
+  items: Array<GroupedSearchHitWire>
+}
+
+export type GroupedSearchUnavailable = {
+  available: false
+  reason: string
+  boardId: string
+  query: string
+  sections: Array<GroupedSearchSectionWire>
+  totalCount: number
+  dataGaps: Array<string>
+  emptyStateLabelId: string
+}
+
+export type GroupedSearchAvailable = {
+  available: true
+  boardId: string
+  query: string
+  sections: Array<GroupedSearchSectionWire>
+  totalCount: number
+  dataGaps: Array<string>
+}
+
+export type GroupedSearchData = GroupedSearchAvailable | GroupedSearchUnavailable
+
+const SECTION_META: Record<
+  GroupedSearchEntityKey,
+  { labelId: string; tone: string }
+> = {
+  fitur: { labelId: 'Fitur', tone: 'accent' },
+  tugas: { labelId: 'Tugas', tone: 'ok' },
+  dokumen: { labelId: 'Dokumen', tone: 'warn' },
+  unit: { labelId: 'Unit', tone: 'muted' },
+}
+
+const SECTION_ORDER: ReadonlyArray<GroupedSearchEntityKey> = [
+  'fitur',
+  'tugas',
+  'dokumen',
+  'unit',
+]
+
+function featureBreadcrumb(
+  namaId: string | null | undefined,
+  domainBisnis: string | null | undefined,
+): string | null {
+  const parts = [namaId, domainBisnis]
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .filter((p) => p.length > 0)
+  return parts.length ? parts.join(' · ') : null
+}
+
+function textBlob(...parts: Array<string | null | undefined>): string {
+  return parts
+    .filter((p): p is string => typeof p === 'string' && p.length > 0)
+    .join('\n')
+    .toLowerCase()
+}
+
+/** True when needle matches haystack tokens / substrings (id-ID + EN friendly). */
+export function searchTextMatches(haystack: string, needle: string): boolean {
+  const h = haystack.toLowerCase()
+  const n = needle.toLowerCase().trim()
+  if (!n) return false
+  if (h.includes(n)) return true
+  // Token split: "meditasi wellness" vs "meditation"
+  const tokens = n.split(/[\s_./-]+/).filter((t) => t.length >= 3)
+  if (tokens.length === 0) return false
+  return tokens.every((t) => h.includes(t))
+}
+
+type FeatureJoinHints = {
+  keywords: Array<string>
+  idIncludes: Array<string>
+}
+
+function buildJoinHintsByFeatureId(
+  seedEntries: ReadonlyArray<ProductFeatureSeedEntry> | null | undefined,
+): Map<string, FeatureJoinHints> {
+  const map = new Map<string, FeatureJoinHints>()
+  for (const e of seedEntries ?? []) {
+    const join = e.join
+    map.set(e.feature_id, {
+      keywords: (join?.keywords ?? []).map((k) => k.toLowerCase()),
+      idIncludes: (join?.id_includes ?? []).map((k) => k.toUpperCase()),
+    })
+  }
+  return map
+}
+
+function featureMatchesQuery(
+  f: ProductFeatureRow,
+  needle: string,
+  hints: FeatureJoinHints | undefined,
+): boolean {
+  const caps = asStringArray(f.capabilitiesJson)
+  const fcs = asStringArray(f.fcRefsJson)
+  const hay = textBlob(
+    f.featureId,
+    f.namaId,
+    f.domainBisnis,
+    f.ringkasanId,
+    ...caps,
+    ...fcs,
+  )
+  if (searchTextMatches(hay, needle)) return true
+  if (hints) {
+    const n = needle.toLowerCase()
+    for (const kw of hints.keywords) {
+      if (!kw) continue
+      if (n.includes(kw) || kw.includes(n)) return true
+    }
+    const nUp = needle.toUpperCase().replace(/[\s_-]+/g, '')
+    if (nUp.length >= 3) {
+      for (const id of hints.idIncludes) {
+        const token = id.replace(/[\s_-]+/g, '')
+        if (!token) continue
+        if (token.includes(nUp) || nUp.includes(token)) return true
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * Pure grouped search projector over product_features + task maps + units + docs.
+ * Never invents rows. Section order: Fitur → Tugas → Dokumen → Unit.
+ * Meditation query lands feature first, then related tasks under Tugas with breadcrumb.
+ */
+export function projectGroupedSearch(input: {
+  boardId: string
+  query: string
+  available: boolean
+  reason?: string
+  features?: ReadonlyArray<ProductFeatureRow>
+  maps?: ReadonlyArray<FeatureTaskMapRow>
+  units?: ReadonlyArray<FeatureUnitRow>
+  directory?: ReadonlyArray<FeatureDirectoryRow>
+  /** Optional seed join hints (keywords / id_includes) for synonym match. */
+  seedEntries?: ReadonlyArray<ProductFeatureSeedEntry> | null
+  limit?: number
+}): GroupedSearchData {
+  const boardId = input.boardId.trim() || DEFAULT_BOARD_ID
+  const q = (input.query ?? '').trim()
+  const limit = input.limit ?? 40
+  const dataGaps: Array<string> = []
+
+  if (!input.available) {
+    return {
+      available: false,
+      reason: input.reason ?? REBUILD_DATA_TABLES_NOT_MIGRATED,
+      boardId,
+      query: q,
+      sections: [],
+      totalCount: 0,
+      dataGaps: [
+        'PRODUCT_SEARCH_TABLES_UNAVAILABLE — pin-flat grouping masih dipakai di UI',
+      ],
+      emptyStateLabelId: EMPTY_STATE_ID,
+    }
+  }
+
+  if (!q) {
+    return {
+      available: true,
+      boardId,
+      query: '',
+      sections: [],
+      totalCount: 0,
+      dataGaps: [],
+    }
+  }
+
+  const features = input.features ?? []
+  const maps = input.maps ?? []
+  const units = input.units ?? []
+  const directory = input.directory ?? []
+  const hintsById = buildJoinHintsByFeatureId(input.seedEntries)
+
+  const featureById = new Map(features.map((f) => [f.featureId, f] as const))
+  const mapsByFeature = new Map<string, Array<FeatureTaskMapRow>>()
+  const mapsByTask = new Map<string, Array<FeatureTaskMapRow>>()
+  for (const m of maps) {
+    const fl = mapsByFeature.get(m.featureId) ?? []
+    fl.push(m)
+    mapsByFeature.set(m.featureId, fl)
+    const tl = mapsByTask.get(m.taskId) ?? []
+    tl.push(m)
+    mapsByTask.set(m.taskId, tl)
+  }
+
+  // FC → product feature (first ref wins for breadcrumb)
+  const featureByFc = new Map<string, ProductFeatureRow>()
+  for (const f of features) {
+    for (const fc of asStringArray(f.fcRefsJson)) {
+      if (!featureByFc.has(fc)) featureByFc.set(fc, f)
+    }
+  }
+
+  const fiturHits: Array<GroupedSearchHitWire> = []
+  const matchedFeatureIds = new Set<string>()
+
+  for (const f of features) {
+    if (!featureMatchesQuery(f, q, hintsById.get(f.featureId))) continue
+    matchedFeatureIds.add(f.featureId)
+    fiturHits.push({
+      id: f.featureId,
+      title: f.namaId,
+      breadcrumb: featureBreadcrumb(f.namaId, f.domainBisnis),
+      kind: 'fitur',
+      kindLabelId: SECTION_META.fitur.labelId,
+      href: featureDetailHref(boardId, f.featureId),
+      technicalAlias: f.featureId,
+    })
+  }
+
+  // Prefer exact id / nama starts-with first (meditation → Meditasi / FEAT-MEDITATION)
+  const nLow = q.toLowerCase()
+  fiturHits.sort((a, b) => {
+    const aId = a.technicalAlias?.toLowerCase() ?? ''
+    const bId = b.technicalAlias?.toLowerCase() ?? ''
+    const aExact =
+      aId.includes(nLow) || a.title.toLowerCase().includes(nLow) ? 0 : 1
+    const bExact =
+      bId.includes(nLow) || b.title.toLowerCase().includes(nLow) ? 0 : 1
+    if (aExact !== bExact) return aExact - bExact
+    return a.title.localeCompare(b.title, 'id')
+  })
+
+  const tugasHits: Array<GroupedSearchHitWire> = []
+  const seenTasks = new Set<string>()
+
+  // Tasks mapped to matched features (related tasks for meditation feature)
+  for (const fid of matchedFeatureIds) {
+    const f = featureById.get(fid)
+    for (const m of mapsByFeature.get(fid) ?? []) {
+      if (seenTasks.has(m.taskId)) continue
+      seenTasks.add(m.taskId)
+      tugasHits.push({
+        id: m.taskId,
+        title: m.taskId,
+        breadcrumb: featureBreadcrumb(f?.namaId, f?.domainBisnis),
+        kind: 'tugas',
+        kindLabelId: SECTION_META.tugas.labelId,
+        href: `/b/${encodeURIComponent(boardId)}/work/${encodeURIComponent(m.taskId)}`,
+        technicalAlias: m.taskId,
+      })
+    }
+  }
+
+  // Direct task-id matches not already included
+  for (const m of maps) {
+    if (seenTasks.has(m.taskId)) continue
+    if (!searchTextMatches(m.taskId, q)) continue
+    seenTasks.add(m.taskId)
+    const f = featureById.get(m.featureId)
+    tugasHits.push({
+      id: m.taskId,
+      title: m.taskId,
+      breadcrumb: featureBreadcrumb(f?.namaId, f?.domainBisnis),
+      kind: 'tugas',
+      kindLabelId: SECTION_META.tugas.labelId,
+      href: `/b/${encodeURIComponent(boardId)}/work/${encodeURIComponent(m.taskId)}`,
+      technicalAlias: m.taskId,
+    })
+  }
+
+  const dokumenHits: Array<GroupedSearchHitWire> = []
+  for (const d of directory) {
+    const hay = textBlob(d.featureContractId, d.judulId, d.deliveryStatus)
+    if (!searchTextMatches(hay, q)) {
+      // Also include docs for matched features
+      const parent = featureByFc.get(d.featureContractId)
+      if (!parent || !matchedFeatureIds.has(parent.featureId)) continue
+    }
+    const parent = featureByFc.get(d.featureContractId)
+    dokumenHits.push({
+      id: d.featureContractId,
+      title: d.judulId?.trim() || d.featureContractId,
+      breadcrumb: featureBreadcrumb(parent?.namaId, parent?.domainBisnis),
+      kind: 'dokumen',
+      kindLabelId: SECTION_META.dokumen.labelId,
+      href: featureDetailHref(boardId, parent?.featureId ?? d.featureContractId),
+      technicalAlias: d.featureContractId,
+    })
+  }
+
+  const unitHits: Array<GroupedSearchHitWire> = []
+  for (const u of units) {
+    const hay = textBlob(
+      u.unitId,
+      u.unitType,
+      u.identifier,
+      u.anchor,
+      u.featureContractId,
+      u.repo,
+    )
+    const parent = u.featureContractId
+      ? featureByFc.get(u.featureContractId)
+      : undefined
+    const relatedToMatch =
+      parent != null && matchedFeatureIds.has(parent.featureId)
+    if (!searchTextMatches(hay, q) && !relatedToMatch) continue
+    unitHits.push({
+      id: u.unitId,
+      title: u.identifier?.trim() || u.unitType?.trim() || u.unitId,
+      breadcrumb: featureBreadcrumb(parent?.namaId, parent?.domainBisnis),
+      kind: 'unit',
+      kindLabelId: SECTION_META.unit.labelId,
+      href: parent
+        ? featureDetailHref(boardId, parent.featureId)
+        : featureDirectoryHref(boardId),
+      technicalAlias: u.unitId,
+    })
+  }
+
+  if (features.length === 0) {
+    dataGaps.push('PRODUCT_FEATURES_EMPTY — tidak ada baris product_features')
+  }
+  if (maps.length === 0) {
+    dataGaps.push(
+      'FEATURE_TASK_MAP_EMPTY — tugas terkait hanya dari pin-flat bila ada',
+    )
+  }
+  if (units.length === 0) {
+    dataGaps.push('FEATURE_UNITS_EMPTY — section Unit mungkin kosong')
+  }
+  if (directory.length === 0) {
+    dataGaps.push('FEATURE_DIRECTORY_EMPTY — section Dokumen mungkin kosong')
+  }
+
+  const trim = (items: Array<GroupedSearchHitWire>) => items.slice(0, limit)
+  const sections: Array<GroupedSearchSectionWire> = []
+  const packs: Array<[GroupedSearchEntityKey, Array<GroupedSearchHitWire>]> = [
+    ['fitur', trim(fiturHits)],
+    ['tugas', trim(tugasHits)],
+    ['dokumen', trim(dokumenHits)],
+    ['unit', trim(unitHits)],
+  ]
+  for (const [key, items] of packs) {
+    if (items.length === 0) continue
+    sections.push({
+      key,
+      labelId: SECTION_META[key].labelId,
+      tone: SECTION_META[key].tone,
+      items,
+    })
+  }
+
+  // Keep section order stable even if some empty
+  sections.sort(
+    (a, b) => SECTION_ORDER.indexOf(a.key) - SECTION_ORDER.indexOf(b.key),
+  )
+
+  const totalCount = sections.reduce((n, s) => n + s.items.length, 0)
+
+  return {
+    available: true,
+    boardId,
+    query: q,
+    sections,
+    totalCount,
+    dataGaps,
+  }
+}
+
+function tryLoadSeedEntries(): Array<ProductFeatureSeedEntry> | null {
+  try {
+    const seed = loadProductFeaturesSeed(defaultProductFeaturesSeedPath())
+    return seed.features
+  } catch {
+    return null
+  }
+}
+
+export async function loadGroupedSearch(
+  boardId: string,
+  q: string,
+  opts: {
+    features?: ReadonlyArray<ProductFeatureRow>
+    maps?: ReadonlyArray<FeatureTaskMapRow>
+    units?: ReadonlyArray<FeatureUnitRow>
+    directory?: ReadonlyArray<FeatureDirectoryRow>
+    seedEntries?: ReadonlyArray<ProductFeatureSeedEntry> | null
+    forceUnavailable?: boolean
+    limit?: number
+  } = {},
+): Promise<GroupedSearchData> {
+  const bid = boardId.trim() || DEFAULT_BOARD_ID
+  const query = (q ?? '').trim()
+  if (opts.forceUnavailable) {
+    return projectGroupedSearch({
+      boardId: bid,
+      query,
+      available: false,
+      limit: opts.limit,
+    })
+  }
+
+  try {
+    const access = getRebuildParityDataAccess()
+    const tablesOk = await access.tablesAvailable().catch(() => false)
+    if (!tablesOk && !opts.features) {
+      return projectGroupedSearch({
+        boardId: bid,
+        query,
+        available: false,
+        reason: REBUILD_DATA_TABLES_NOT_MIGRATED,
+        limit: opts.limit,
+      })
+    }
+
+    const features =
+      opts.features ??
+      (await listProductFeatures({}).catch(() => [] as Array<ProductFeatureRow>))
+    const maps =
+      opts.maps ??
+      (await listFeatureTaskMaps({}).catch(() => [] as Array<FeatureTaskMapRow>))
+
+    let units = opts.units
+    let directory = opts.directory
+    if ((!units || !directory) && features.length > 0) {
+      const allFc = new Set<string>()
+      for (const f of features) {
+        for (const r of asStringArray(f.fcRefsJson)) allFc.add(r)
+      }
+      const fcList = [...allFc]
+      if (!units) {
+        units = await access.listUnitsByFcIds(fcList).catch(() => [] as Array<FeatureUnitRow>)
+      }
+      if (!directory) {
+        directory = await access
+          .listDirectoryByFcIds(fcList)
+          .catch(() => [] as Array<FeatureDirectoryRow>)
+      }
+    }
+
+    const seedEntries =
+      opts.seedEntries !== undefined ? opts.seedEntries : tryLoadSeedEntries()
+
+    return projectGroupedSearch({
+      boardId: bid,
+      query,
+      available: true,
+      features,
+      maps,
+      units: units ?? [],
+      directory: directory ?? [],
+      seedEntries,
+      limit: opts.limit,
+    })
+  } catch {
+    return projectGroupedSearch({
+      boardId: bid,
+      query,
+      available: false,
+      reason: REBUILD_DATA_TABLES_NOT_MIGRATED,
+      limit: opts.limit,
+    })
+  }
+}
+
+/** Narrow W-UI-5 server fn — product/rebuild grouped search only. */
+export const getControlCenterGroupedSearchFn = createServerFn({ method: 'GET' })
+  .validator(groupedSearchArgs)
+  .handler(async ({ data }): Promise<GroupedSearchData> => {
+    try {
+      await requireView(data.boardId)
+      return await loadGroupedSearch(data.boardId, data.q ?? '', {
+        limit: data.limit,
+      })
+    } catch (e) {
+      if (e instanceof AuthError) {
+        return {
+          available: false,
+          reason: 'FORBIDDEN',
+          boardId: data.boardId,
+          query: data.q ?? '',
+          sections: [],
+          totalCount: 0,
+          dataGaps: ['FORBIDDEN'],
+          emptyStateLabelId: EMPTY_STATE_ID,
+        }
+      }
+      return {
+        available: false,
+        reason: REBUILD_DATA_TABLES_NOT_MIGRATED,
+        boardId: data.boardId,
+        query: data.q ?? '',
+        sections: [],
+        totalCount: 0,
+        dataGaps: [
+          'PRODUCT_SEARCH_TABLES_UNAVAILABLE — pin-flat grouping masih dipakai di UI',
+        ],
+        emptyStateLabelId: EMPTY_STATE_ID,
+      }
     }
   })

@@ -24,6 +24,7 @@ import {
   toggleTask,
   upsertRun,
 } from './board-store'
+import type { RawBoard, RawFeature, RawProject, Run } from '#/lib/types'
 import { computeRollup, readLifecycle, writeLifecycle } from './lifecycle-store'
 import { taskLifecycle } from './tasks-store'
 import { currentUser, requireAdminWrite, requireView } from './auth'
@@ -56,11 +57,72 @@ export const createBoardFn = createServerFn({ method: 'POST' })
   })
 
 // ---- board data ----
+
+/**
+ * W-PERF-1: shell/meta board projection for layout + control-center nav.
+ * Same RawBoard keys as full readBoard — strips checklist bodies, design/collab/
+ * conventions overlays, and caps runs. Non-breaking shape for buildModel / shell
+ * crumbs; pages that need full checklists/design/collab must use mode:'full'
+ * (default) or keep calling getBoardFn without mode.
+ *
+ * Residual: boardQueryOptions / route loaders still default to full until the UI
+ * package opts into mode:'shell' for CC overview/work/agents.
+ */
+export function toBoardShell(raw: RawBoard): RawBoard {
+  const projects: Array<RawProject> = (raw.projects ?? []).map((p) => ({
+    ...p,
+    // Keep identity + tracks for breadcrumb / project grouping; drop free-form bulk.
+  }))
+  const features: Array<RawFeature> = (raw.features ?? []).map((f) => {
+    const { checklist: _checklist, ...rest } = f as RawFeature & {
+      checklist?: unknown
+    }
+    return {
+      ...rest,
+      // Empty checklist keeps taskTotal/taskDone at 0 in buildModel — shell only.
+      checklist: [],
+    }
+  })
+  // Cap runs for shell badge/model; full history stays on full board / agents envelope.
+  const runs: Array<Run> = (raw.runs ?? [])
+    .filter((r) => r.status === 'running' || r.status === 'blocked' || r.status === 'queued')
+    .slice(0, 50)
+  return {
+    fase_label: raw.fase_label,
+    fase_persen: raw.fase_persen,
+    projects,
+    features,
+    decisions: raw.decisions ?? [],
+    log: raw.log ?? [],
+    queue: raw.queue,
+    runs,
+    docs: raw.docs,
+    updated: raw.updated,
+    // Heavy overlays omitted (undefined) — buildModel treats as empty.
+  }
+}
+
 export const getBoardFn = createServerFn({ method: 'GET' })
+  .validator(
+    z.object({
+      boardId: board,
+      /** 'full' (default) = legacy complete RawBoard; 'shell' = narrow transport. */
+      mode: z.enum(['full', 'shell']).optional(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    await requireView(data.boardId)
+    const raw = await readBoard(data.boardId)
+    if (data.mode === 'shell') return toBoardShell(raw)
+    return raw
+  })
+
+/** Explicit shell board fetch (same as getBoardFn mode:'shell'). */
+export const getBoardShellFn = createServerFn({ method: 'GET' })
   .validator(z.object({ boardId: board }))
   .handler(async ({ data }) => {
     await requireView(data.boardId)
-    return readBoard(data.boardId)
+    return toBoardShell(await readBoard(data.boardId))
   })
 
 export const toggleTaskFn = createServerFn({ method: 'POST' })

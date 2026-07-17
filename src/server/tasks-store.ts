@@ -423,6 +423,12 @@ const COLS = '(board_id, id, project_id, feature_contract_id, grp, phase, scope,
 export function lightFromRow(r: Record<string, unknown>): WorkTask {
   const sRaw = parseJsonCell(r.summary)
   const s = (sRaw && typeof sRaw === 'object' ? sRaw : {}) as Record<string, unknown>
+  // human_title: optional LEFT JOIN extract from control_plane_human_display.content_json.title
+  const humanRaw = r.human_title
+  const humanTitle =
+    typeof humanRaw === 'string' && humanRaw.trim() && humanRaw !== 'null'
+      ? humanRaw.trim()
+      : null
   const base: WorkTask = {
     id: r.id as string,
     title: (r.title as string) ?? '',
@@ -443,6 +449,7 @@ export function lightFromRow(r: Record<string, unknown>): WorkTask {
     blockedReason: (r.blocked_reason as string) ?? null,
     lastReceiptAt: (r.last_receipt_at as string) ?? null,
   }
+  if (humanTitle) base.humanTitle = humanTitle
   const cls = projectLightTaskClassification({
     summary: s,
     dataClassification: r.data_classification,
@@ -523,24 +530,51 @@ export async function taskSummaries(boardId: string, projectId?: string): Promis
   // control-plane fields for V3. Never SELECT full `data` blob (no N+1 / full load).
   // V3 columns (task_class, …) may be absent pre-migration — only extract from data/summary.
   // selectedForNextDispatch is intentionally NOT extracted (NEXT = active dispatch plan only).
-  const sql = `SELECT id, project_id, feature_contract_id, grp, phase, scope, title, updated, lifecycle_stage, blocked_reason, last_receipt_at, summary,
-    JSON_EXTRACT(data, '$.classification') AS data_classification,
-    JSON_EXTRACT(data, '$.classificationReceipt') AS data_classification_receipt,
-    JSON_UNQUOTE(JSON_EXTRACT(data, '$.taskClass')) AS data_task_class,
-    JSON_UNQUOTE(JSON_EXTRACT(data, '$.disposition')) AS data_disposition,
-    JSON_UNQUOTE(JSON_EXTRACT(data, '$.claimState')) AS data_claim_state,
-    JSON_EXTRACT(data, '$.staleDataSource') AS data_stale_data_source,
-    JSON_EXTRACT(data, '$.staleDispatchPlan') AS data_stale_dispatch_plan,
-    JSON_EXTRACT(data, '$.staleAccountSync') AS data_stale_account_sync,
-    JSON_UNQUOTE(JSON_EXTRACT(data, '$.productStageMode')) AS data_product_stage_mode,
-    JSON_EXTRACT(data, '$.p0Blocker') AS data_p0_blocker,
-    JSON_UNQUOTE(JSON_EXTRACT(data, '$.targetGate')) AS data_target_gate,
-    JSON_UNQUOTE(JSON_EXTRACT(data, '$.evidence_path')) AS data_evidence_path,
-    JSON_EXTRACT(data, '$.hasBlockingDecision') AS data_has_blocking_decision,
-    JSON_EXTRACT(data, '$.hasNonBlockingDecision') AS data_has_non_blocking_decision
-    FROM tasks WHERE board_id=?${projectId ? ' AND project_id=?' : ''}`
-  const [rows] = await db().query(sql, projectId ? [boardId, projectId] : [boardId])
-  return (rows as Array<Record<string, unknown>>).map(lightFromRow)
+  // W-CONTENT-3: optional humanTitle via single LEFT JOIN on control_plane_human_display
+  // (PK board_id+entity_kind+entity_id — not N+1; title only, not full content blob).
+  const selectCore = `SELECT t.id, t.project_id, t.feature_contract_id, t.grp, t.phase, t.scope, t.title, t.updated, t.lifecycle_stage, t.blocked_reason, t.last_receipt_at, t.summary,
+    JSON_EXTRACT(t.data, '$.classification') AS data_classification,
+    JSON_EXTRACT(t.data, '$.classificationReceipt') AS data_classification_receipt,
+    JSON_UNQUOTE(JSON_EXTRACT(t.data, '$.taskClass')) AS data_task_class,
+    JSON_UNQUOTE(JSON_EXTRACT(t.data, '$.disposition')) AS data_disposition,
+    JSON_UNQUOTE(JSON_EXTRACT(t.data, '$.claimState')) AS data_claim_state,
+    JSON_EXTRACT(t.data, '$.staleDataSource') AS data_stale_data_source,
+    JSON_EXTRACT(t.data, '$.staleDispatchPlan') AS data_stale_dispatch_plan,
+    JSON_EXTRACT(t.data, '$.staleAccountSync') AS data_stale_account_sync,
+    JSON_UNQUOTE(JSON_EXTRACT(t.data, '$.productStageMode')) AS data_product_stage_mode,
+    JSON_EXTRACT(t.data, '$.p0Blocker') AS data_p0_blocker,
+    JSON_UNQUOTE(JSON_EXTRACT(t.data, '$.targetGate')) AS data_target_gate,
+    JSON_UNQUOTE(JSON_EXTRACT(t.data, '$.evidence_path')) AS data_evidence_path,
+    JSON_EXTRACT(t.data, '$.hasBlockingDecision') AS data_has_blocking_decision,
+    JSON_EXTRACT(t.data, '$.hasNonBlockingDecision') AS data_has_non_blocking_decision`
+  const where = `WHERE t.board_id=?${projectId ? ' AND t.project_id=?' : ''}`
+  const params = projectId ? [boardId, projectId] : [boardId]
+  // Prefer id-ID title; PK is one row per entity so locale filter is soft preference.
+  const sqlWithHd = `${selectCore},
+    JSON_UNQUOTE(JSON_EXTRACT(hd.content_json, '$.title')) AS human_title
+    FROM tasks t
+    LEFT JOIN control_plane_human_display hd
+      ON hd.board_id = t.board_id
+     AND hd.entity_kind = 'task'
+     AND hd.entity_id = t.id
+     AND (hd.locale = 'id-ID' OR hd.locale IS NULL OR hd.locale = '')
+    ${where}`
+  const sqlBare = `${selectCore}
+    FROM tasks t
+    ${where}`
+  try {
+    const [rows] = await db().query(sqlWithHd, params)
+    return (rows as Array<Record<string, unknown>>).map(lightFromRow)
+  } catch (e) {
+    // Graceful: table missing (pre-004) or join unavailable — list still works without humanTitle.
+    const errno = (e as { errno?: number }).errno
+    const msg = String((e as { message?: string }).message ?? e)
+    if (errno === 1146 || /control_plane_human_display/i.test(msg)) {
+      const [rows] = await db().query(sqlBare, params)
+      return (rows as Array<Record<string, unknown>>).map(lightFromRow)
+    }
+    throw e
+  }
 }
 export async function taskFull(boardId: string, id: string): Promise<WorkTask | null> {
   await ensureBackfilled(boardId)

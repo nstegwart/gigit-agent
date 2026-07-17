@@ -44,6 +44,8 @@ import {
 } from './cursor'
 import { contributesUsableCapacity, type MaskedAccountStatus } from './account-sync'
 import {
+  DEFAULT_HUMAN_LOCALE,
+  HUMAN_DISPLAY_SCHEMA_VERSION,
   resolveOwnerHumanDisplay,
   type HumanDisplayCitation,
   type HumanDisplayEntityKind,
@@ -53,6 +55,9 @@ import {
   type HumanDisplayReviewStatus,
   type HumanDisplayV1,
 } from './human-display'
+
+/** Overview lower-panel material events bound (full trail lives on Evidence surface). */
+export const OVERVIEW_MATERIAL_EVENTS_PAGE_SIZE = DEFAULT_PAGE_SIZE
 
 // ---------------------------------------------------------------------------
 // Schema / pin / envelope
@@ -1070,6 +1075,93 @@ export function attachOwnerHumanDisplayToWorkSurfaces(
   return { ...agg, workRows, ongoing }
 }
 
+/**
+ * W-PERF-1: list/surface wire projection for owner humanDisplay.
+ *
+ * Route adapters (`mapOwnerHumanDisplayView`) only consume flattened fields
+ * (ownerPrimaryTitle, statusSentence, citations, pin, …). Nested `primary` +
+ * full `blockedShell` HumanDisplayV1 duplicates that payload on every list row
+ * and dominates overview/work/agents envelope bytes at scale.
+ *
+ * Shape-preserving: same OwnerHumanDisplayUiProjection keys; `primary` is null;
+ * `blockedShell` is a minimal type-complete shell rebuilt from flat fields
+ * (empty nested citation/link arrays). Flat `citations` remain for list chrome;
+ * `acceptanceLinks` / `missionQuestionLinks` are empty on list wire (task detail
+ * keeps full projectOwnerHumanDisplayUi via projectTaskDetail).
+ */
+export function toListWireOwnerHumanDisplay(
+  hd: OwnerHumanDisplayUiProjection,
+  entityId = '',
+): OwnerHumanDisplayUiProjection {
+  const id =
+    entityId ||
+    (typeof hd.blockedShell?.entityId === 'string' && hd.blockedShell.entityId) ||
+    (typeof hd.primary?.entityId === 'string' && hd.primary.entityId) ||
+    ''
+  const reviewStatus: HumanDisplayReviewStatus = hd.contentReviewRequired
+    ? 'CONTENT_REVIEW_REQUIRED'
+    : hd.effectiveReviewStatus === 'REVIEWED' ||
+        hd.effectiveReviewStatus === 'GENERATED_NEEDS_REVIEW' ||
+        hd.effectiveReviewStatus === 'BLOCKED_MISSING_SOURCE' ||
+        hd.effectiveReviewStatus === 'CONFLICT' ||
+        hd.effectiveReviewStatus === 'CONTENT_REVIEW_REQUIRED'
+      ? hd.effectiveReviewStatus
+      : 'CONTENT_REVIEW_REQUIRED'
+
+  const blockedShell: HumanDisplayV1 = {
+    schemaVersion: HUMAN_DISPLAY_SCHEMA_VERSION,
+    locale: DEFAULT_HUMAN_LOCALE,
+    title: hd.ownerPrimaryTitle,
+    outcome: '',
+    why: hd.whyItMatters,
+    current: hd.statusSentence,
+    remaining: '',
+    next: hd.next,
+    doneWhen: '',
+    blocker: hd.blocker,
+    ownerAction: hd.ownerAction,
+    reviewStatus,
+    sourceHash: hd.pin.sourceHash || '',
+    reviewedAt: null,
+    contentVersion: 0,
+    entityKind: 'task',
+    entityId: id,
+    parentFeatureTitle: '',
+    businessArea: '',
+    actor: '',
+    snapshotId: hd.pin.snapshotId,
+    boardRev: hd.pin.boardRev,
+    lifecycleRev: hd.pin.lifecycleRev,
+    canonicalHash: hd.pin.canonicalHash,
+    citations: [],
+    acceptanceLinks: [],
+    missionQuestionLinks: [],
+  }
+
+  return {
+    primary: null,
+    blockedShell,
+    effectiveReviewStatus: hd.effectiveReviewStatus,
+    contentReviewRequired: hd.contentReviewRequired,
+    ownerPrimaryTitle: hd.ownerPrimaryTitle,
+    statusSentence: hd.statusSentence,
+    ownerAction: hd.ownerAction,
+    whyItMatters: hd.whyItMatters,
+    next: hd.next,
+    blocker: hd.blocker,
+    // Overview/list surfaces render citations; acceptance/mission stay on task detail full HD.
+    citations: hd.citations,
+    acceptanceLinks: [],
+    missionQuestionLinks: [],
+    pin: { ...hd.pin },
+  }
+}
+
+/** Program-emitted UTF-8 wire byte length (JSON). */
+export function measureWireBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8')
+}
+
 /** Task detail DTO for a single task id (fail-closed humanDisplay). */
 export function projectTaskDetail(
   agg: ControlCenterAggregation,
@@ -1390,7 +1482,16 @@ export function projectOverview(
     (d) => d.blocking && (d.status === 'OPEN' || d.status === 'ACKNOWLEDGED'),
   )
   const lifecycle = buildOverviewLifecycle(agg)
-  const materialEvents = agg.auditEvents.map((e) => ({ ...e }))
+  // Bound material events on Overview; full trail is Evidence (paginated).
+  const materialEvents = agg.auditEvents
+    .slice(0, OVERVIEW_MATERIAL_EVENTS_PAGE_SIZE)
+    .map((e) => ({ ...e }))
+  // Overview priority strip uses denominators/share only — not the full membership id list
+  // (priority surface still ships membershipTaskIds). Keeps shape, drops O(n) id payload.
+  const priorityForOverview = {
+    ...agg.priority,
+    membershipTaskIds: [] as string[],
+  }
   const data: OverviewData = stripSensitiveFields({
     surfaceVersion: CONTROL_CENTER_UI_SURFACE_VERSION,
     buckets: { ...agg.rollup.buckets },
@@ -1405,19 +1506,22 @@ export function projectOverview(
     rawTaskReadinessPercent: agg.rollup.rawTaskReadinessPercent,
     boardReadinessPercent: agg.rollup.boardReadinessPercent,
     cappedBy: agg.rollup.cappedBy,
-    priority: { ...agg.priority, membershipTaskIds: [...agg.priority.membershipTaskIds] },
+    priority: priorityForOverview,
     g5: {
       g5Pass: agg.g5.g5Pass,
       domainResults: agg.g5.domainResults.map((d) => ({ ...d })),
       missingDomains: [...agg.g5.missingDomains],
     },
     dispatchNext: agg.dispatchNext,
-    ongoing: agg.ongoing.map((o) => ({
-      ...o,
-      overlays: [...o.overlays],
-      ownerHumanDisplay:
-        o.ownerHumanDisplay ?? resolveTaskOwnerHumanDisplay(agg, o.taskId),
-    })),
+    ongoing: agg.ongoing.map((o) => {
+      const full =
+        o.ownerHumanDisplay ?? resolveTaskOwnerHumanDisplay(agg, o.taskId)
+      return {
+        ...o,
+        overlays: [...o.overlays],
+        ownerHumanDisplay: toListWireOwnerHumanDisplay(full, o.taskId),
+      }
+    }),
     decisionCount: agg.decisions.length,
     topDecision: top
       ? {
@@ -1484,12 +1588,15 @@ export function projectWork(
     overlays: { ...agg.rollup.overlays },
     trackedWorkDenominator: agg.rollup.trackedWorkDenominator,
     filter: { bucket, overlay, staleFamily },
-    items: page.items.map((i) => ({
-      ...i,
-      overlays: [...i.overlays],
-      ownerHumanDisplay:
-        i.ownerHumanDisplay ?? resolveTaskOwnerHumanDisplay(agg, i.taskId),
-    })),
+    items: page.items.map((i) => {
+      const full =
+        i.ownerHumanDisplay ?? resolveTaskOwnerHumanDisplay(agg, i.taskId)
+      return {
+        ...i,
+        overlays: [...i.overlays],
+        ownerHumanDisplay: toListWireOwnerHumanDisplay(full, i.taskId),
+      }
+    }),
     pageSize: page.pageSize,
     dispatchNext: agg.dispatchNext,
   })
@@ -1619,6 +1726,23 @@ export function withOwnerFacingProgressNodeTitles(
   })
 }
 
+/**
+ * Catalog row for `features[]` identity/count lookups — omits progressNodes and
+ * heavy context arrays. Current page `items` keep full FeatureUiSummary (nodes).
+ * Non-breaking: same FeatureUiSummary keys; optional fields omitted when empty.
+ */
+function toFeatureCatalogSummary(f: FeatureUiSummary): FeatureUiSummary {
+  return {
+    id: f.id,
+    projectId: f.projectId,
+    name: f.name,
+    phase: f.phase,
+    flowBranch: f.flowBranch,
+    taskCount: f.taskCount,
+    // progressNodes / stageCounts / context arrays intentionally omitted on catalog
+  }
+}
+
 export function projectFeatures(
   agg: ControlCenterAggregation,
   opts: { cursor?: string | null; pageSize?: number | null } = {},
@@ -1637,9 +1761,11 @@ export function projectFeatures(
   })
   const data: FeaturesData = stripSensitiveFields({
     surfaceVersion: CONTROL_CENTER_UI_SURFACE_VERSION,
-    features: features.map((f) => ({ ...f })),
+    // Full id catalog for detail pool / nav count without O(n) progressNodes bloat.
+    features: features.map((f) => toFeatureCatalogSummary(f)),
     // Strip pagination-only createdAt; KEEP FeatureUiSummary.id (detailHref needs it).
     // Previously `id` was destructured away → /features/undefined → "Feature not found".
+    // Page items retain progressNodes for list/detail on the current page.
     items: page.items.map(({ createdAt: _c, ...rest }) => rest as FeatureUiSummary),
     pageSize: page.pageSize,
   })
@@ -1662,17 +1788,23 @@ export function projectAgents(
     expectedBoardRev: agg.pin.boardRev,
     expectedSnapshotRev: agg.pin.canonicalSnapshotId,
   })
+  // Single page materialization — runs + items stay shape-compatible aliases
+  // (both keys required by adapters); avoid double-transform of row bodies.
+  const runPage = page.items.map((r) => ({ ...r }))
   const data: AgentsData = stripSensitiveFields({
     surfaceVersion: CONTROL_CENTER_UI_SURFACE_VERSION,
-    runs: page.items.map((r) => ({ ...r })),
-    items: page.items.map((r) => ({ ...r })),
+    runs: runPage,
+    items: runPage,
     pageSize: page.pageSize,
-    ongoing: agg.ongoing.map((o) => ({
-      ...o,
-      overlays: [...o.overlays],
-      ownerHumanDisplay:
-        o.ownerHumanDisplay ?? resolveTaskOwnerHumanDisplay(agg, o.taskId),
-    })),
+    ongoing: agg.ongoing.map((o) => {
+      const full =
+        o.ownerHumanDisplay ?? resolveTaskOwnerHumanDisplay(agg, o.taskId)
+      return {
+        ...o,
+        overlays: [...o.overlays],
+        ownerHumanDisplay: toListWireOwnerHumanDisplay(full, o.taskId),
+      }
+    }),
   })
   let surfaceState = baseSurfaceState(agg)
   surfaceState = withEmptyIfZero(surfaceState, page.items.length + agg.ongoing.length, false)
