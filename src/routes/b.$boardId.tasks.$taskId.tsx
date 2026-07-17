@@ -1,66 +1,136 @@
-// Task detail (Batch 5) — first-class WorkTask view for /b/$boardId/tasks/$taskId.
-// Hero + objective/next + story + CheckpointList + dependencies (BoardLinks) + impacts + refs.
-// Board-scoped: data via useTasks() (tasksQueryOptions loader); AppShell provides the chrome.
-import { createFileRoute } from '@tanstack/react-router'
-import { BoardLink as Link } from '#/components/BoardLink'
+// Task detail (board-scoped /tasks/$taskId) — Direction B presentation.
+// Data loaders + existing functional panels preserved; chrome via UI kit.
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import type { ReactNode } from 'react'
 
-import { boardQueryOptions, lifecycleQueryOptions, taskLifecycleQueryOptions, tasksQueryOptions, useBoard, useLifecycle, useTaskLazy, useTaskLifecycle, useTasks } from '#/lib/board-query'
-import { stageReadiness } from '#/lib/readiness'
-import { fmtDate } from '#/lib/format'
-import { Icon } from '#/lib/icons'
-import { EmptyState, ProgressBar } from '#/components/primitives'
+import { BoardLink as Link } from '#/components/BoardLink'
+import { resolveTaskDisplayTitle } from '#/components/TasksTable'
 import { LifecycleRail } from '#/components/LifecycleRail'
 import { RunCard } from '#/components/RunCard'
 import { TaskMapping } from '#/components/TaskMapping'
 import { TaskSections } from '#/components/TaskSections'
+import {
+  Badge,
+  Breadcrumb,
+  Button,
+  Card,
+  Disclosure,
+  EmptyState,
+  PageHeader,
+  ProgressBar,
+  StatusChip,
+  type StatusChipVariant,
+} from '#/components/ui'
+import {
+  boardQueryOptions,
+  lifecycleQueryOptions,
+  taskLifecycleQueryOptions,
+  tasksQueryOptions,
+  useBoard,
+  useBoardId,
+  useLifecycle,
+  useTaskLazy,
+  useTaskLifecycle,
+  useTasks,
+} from '#/lib/board-query'
+import { formatLifecycleStageLabel } from '#/lib/display-label'
+import { fmtDate } from '#/lib/format'
+import { stageReadiness } from '#/lib/readiness'
+
+import styles from './b.$boardId.tasks.$taskId.module.css'
 
 export const Route = createFileRoute('/b/$boardId/tasks/$taskId')({
-  // Light summary + board + rail load in the loader; the heavy 20-point mapping
-  // (~MBs) is fetched lazily on the client so first paint is instant.
   loader: async ({ context, params }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(lifecycleQueryOptions(params.boardId)),
-      // hydrate the task's lifecycle server-side so the hero/rail render the real stage
-      // on first paint (not 0% / uninitialized)
-      context.queryClient.ensureQueryData(taskLifecycleQueryOptions(params.boardId, params.taskId)),
+      context.queryClient.ensureQueryData(
+        taskLifecycleQueryOptions(params.boardId, params.taskId),
+      ),
     ])
   },
   component: View,
 })
 
-function BackLink() {
+function stageVariant(stage: string | null | undefined): StatusChipVariant {
+  if (!stage) return 'pending'
+  const s = stage.toUpperCase()
+  if (/PROD_READY|LIVE_VERIFIED|DONE|SELESAI|PASS/.test(s)) return 'done'
+  if (/BLOCK|HOLD|STOP|FAIL/.test(s)) return 'blocked'
+  if (/MAP|DRAFT|QUEUED|PENDING|INIT/.test(s)) return 'pending'
+  if (/WARN|REVIEW|CONTENT/.test(s)) return 'warn'
+  if (/NEXT|READY_FOR/.test(s)) return 'next'
+  return 'ongoing'
+}
+
+function MetaRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <Link to="/tasks" className="back">
-      <Icon name="chevL" /> Back
-    </Link>
+    <div className={styles.metaRow}>
+      <span className={styles.metaKey}>{label}</span>
+      <span className={styles.metaVal}>{children}</span>
+    </div>
   )
 }
 
 function View() {
-  const { byId } = useTasks() // light summaries — instant shell + dependency titles
+  const { byId } = useTasks()
   const m = useBoard()
   const cfg = useLifecycle()
+  const boardId = useBoardId()
+  const navigate = useNavigate()
   const { taskId } = Route.useParams()
   const { data: lc } = useTaskLifecycle(taskId)
-  const { data: full, isLoading: loadingFull } = useTaskLazy(taskId) // heavy mapping, lazy
+  const { data: full, isLoading: loadingFull } = useTaskLazy(taskId)
   const agents = m.runsByTask[taskId] ?? []
+  const tasksHref = `/b/${boardId}/tasks`
+  const goList = () =>
+    navigate({ to: '/b/$boardId/tasks', params: { boardId } })
 
-  const base = full ?? byId[taskId] // render the shell from the light summary immediately
+  const base = full ?? byId[taskId]
   if (!base) {
     return (
-      <>
-        <BackLink />
-        {loadingFull ? <EmptyState icon="clock">Loading…</EmptyState> : <EmptyState icon="alert">Task not found.</EmptyState>}
-      </>
+      <div className={styles.root} data-testid="task-detail-missing">
+        <PageHeader
+          eyebrow="Detail tugas"
+          title="Tugas tidak ditemukan"
+          breadcrumb={
+            <Breadcrumb
+              items={[
+                { label: 'Tugas', href: tasksHref },
+                { label: taskId },
+              ]}
+            />
+          }
+          actions={
+            <Button variant="secondary" size="sm" onClick={goList}>
+              Kembali ke daftar
+            </Button>
+          }
+        />
+        {loadingFull ? (
+          <EmptyState title="Memuat…" description="Menarik ringkasan tugas." />
+        ) : (
+          <EmptyState
+            title="Tugas tidak ditemukan"
+            description={`ID ${taskId} tidak ada di board ini.`}
+            action={
+              <Button variant="primary" size="sm" onClick={goList}>
+                Ke daftar tugas
+              </Button>
+            }
+          />
+        )}
+      </div>
     )
   }
+
   const total = base.checkpoints.length
   const done = base.checkpoints.filter((c) => c.done).length
   const t = { ...base, total, done, pct: total ? Math.round((done / total) * 100) : 0 }
-  const stage = lc?.stage ?? base.lifecycleStage ?? null // SSR-safe: light summary carries the stage
+  const stage = lc?.stage ?? base.lifecycleStage ?? null
   const readyPct = stageReadiness(cfg, stage)
+  const humanTitle = resolveTaskDisplayTitle(t)
 
   const story = full?.story
   const hasStory = !!(story && (story.userStory || story.currentGap || story.targetScope))
@@ -69,276 +139,261 @@ function View() {
   const pages = refs?.pages ?? []
   const hasRefs = !!(refs && (refs.evidence || api.length || pages.length))
 
+  const sourceHash = (() => {
+    const f = (full ?? {}) as Record<string, unknown>
+    return (f.canonicalSha ??
+      f.sourceSha ??
+      f.canonicalHash ??
+      f.sourceHash ??
+      f.sha) as string | undefined
+  })()
+
   return (
-    <>
-      <BackLink />
-      <div className="detail-head">
-        <div className="detail-title">
-          <div style={{ flex: 1 }}>
-            <h1>{t.title}</h1>
-            <div className="detail-sub">
-              <span className="chip chip-mono task-id">{t.id}</span>
-              {stage ? <span className="task-phase">{stage}</span> : t.phase ? <span className="task-phase">{t.phase}</span> : null}
-              {t.projectId ? <span className="chip">{t.projectId}</span> : null}
-              {t.scope ? <span className="chip">{t.scope}</span> : null}
-            </div>
-            <div style={{ marginTop: 12, maxWidth: 340 }}>
-              <ProgressBar pct={readyPct} ok={readyPct >= 100} right={`${readyPct}% ready-production`} />
-            </div>
-          </div>
-        </div>
-      </div>
+    <div className={styles.root} data-testid="task-detail-route">
+      <PageHeader
+        eyebrow="Detail tugas"
+        title={humanTitle}
+        subtitle={
+          <span className={styles.subtitleRow}>
+            <Badge mono variant="neutral">
+              {t.id}
+            </Badge>
+            {stage ? (
+              <StatusChip variant={stageVariant(stage)} showDot>
+                {formatLifecycleStageLabel(stage) || stage}
+              </StatusChip>
+            ) : t.phase ? (
+              <StatusChip variant="pending" showDot>
+                {t.phase}
+              </StatusChip>
+            ) : null}
+            {t.projectId ? (
+              <Badge mono variant="neutral">
+                {t.projectId}
+              </Badge>
+            ) : null}
+            {t.scope ? <Badge variant="neutral">{t.scope}</Badge> : null}
+          </span>
+        }
+        breadcrumb={
+          <Breadcrumb
+            items={[
+              { label: 'Tugas', href: tasksHref },
+              { label: humanTitle },
+            ]}
+          />
+        }
+        actions={
+          <Button variant="secondary" size="sm" onClick={goList}>
+            ← Daftar tugas
+          </Button>
+        }
+      />
+
+      <Card title="Kesiapan produksi" subtitle="Dari rel lifecycle board">
+        <ProgressBar
+          value={readyPct}
+          max={100}
+          ok={readyPct >= 100}
+          label={`${readyPct}% siap produksi`}
+        />
+      </Card>
 
       <LifecycleRail taskId={taskId} checkpoints={t.checkpoints} fallbackStage={stage} />
 
       <TaskSections sections={full?.sections} />
 
-      <div className="grid-2">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className={styles.grid2}>
+        <div className={styles.col}>
           {agents.length > 0 ? (
-            <div className="card">
-              <div className="card-head">
-                <Icon name="agents" className="nav-ico" />
-                <h3>Agents on this task</h3>
-                <span className="count">{agents.length}</span>
-              </div>
-              <div
-                className="card-body"
-                style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 12 }}
-              >
+            <Card
+              title="Agen pada tugas ini"
+              headerActions={<Badge variant="neutral">{agents.length}</Badge>}
+            >
+              <div className={styles.stack}>
                 {agents.map((r) => (
-                  <RunCard key={r.id} run={r} model={m} taskTitle={t.title} />
+                  <RunCard key={r.id} run={r} model={m} taskTitle={humanTitle} />
                 ))}
               </div>
-            </div>
+            </Card>
           ) : null}
+
           {t.objective || t.next ? (
-            <div className="card">
-              <div className="card-head">
-                <Icon name="flag" className="nav-ico" />
-                <h3>Objective</h3>
-              </div>
-              <div className="card-body">
-                {t.objective ? (
-                  <p className="note" style={{ border: 0, padding: '4px 0' }}>
-                    {t.objective}
-                  </p>
-                ) : null}
-                {t.next ? (
-                  <div className="meta-row">
-                    <span className="k">Next</span>
-                    <span className="v">{t.next}</span>
-                  </div>
-                ) : null}
-              </div>
-            </div>
+            <Card title="Tujuan">
+              {t.objective ? <p className={styles.bodyText}>{t.objective}</p> : null}
+              {t.next ? (
+                <MetaRow label="Berikutnya">{t.next}</MetaRow>
+              ) : null}
+            </Card>
           ) : null}
 
           {hasStory ? (
-            <div className="card">
-              <div className="card-head">
-                <Icon name="inbox" className="nav-ico" />
-                <h3>Story</h3>
-              </div>
-              <div className="card-body">
-                {story?.userStory ? (
-                  <div className="meta-row">
-                    <span className="k">User story</span>
-                    <span className="v">{story.userStory}</span>
-                  </div>
-                ) : null}
-                {story?.currentGap ? (
-                  <div className="meta-row">
-                    <span className="k">Current gap</span>
-                    <span className="v">{story.currentGap}</span>
-                  </div>
-                ) : null}
-                {story?.targetScope ? (
-                  <div className="meta-row">
-                    <span className="k">Target scope</span>
-                    <span className="v">{story.targetScope}</span>
-                  </div>
-                ) : null}
-              </div>
-            </div>
+            <Card title="Cerita">
+              {story?.userStory ? (
+                <MetaRow label="User story">{story.userStory}</MetaRow>
+              ) : null}
+              {story?.currentGap ? (
+                <MetaRow label="Kesenjangan saat ini">{story.currentGap}</MetaRow>
+              ) : null}
+              {story?.targetScope ? (
+                <MetaRow label="Cakupan target">{story.targetScope}</MetaRow>
+              ) : null}
+            </Card>
           ) : null}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div className="card">
-            <div className="card-head">
-              <Icon name="layers" className="nav-ico" />
-              <h3>Details</h3>
-            </div>
-            <div className="card-body">
-              <div className="meta-row">
-                <span className="k">Progress</span>
-                <span className="v" style={{ flex: 1 }}>
-                  <ProgressBar pct={t.pct} ok={t.pct === 100} />
-                </span>
-              </div>
-              {t.group ? (
-                <div className="meta-row">
-                  <span className="k">Group</span>
-                  <span className="v">
-                    <span className="chip">{t.group}</span>
-                  </span>
-                </div>
-              ) : null}
-              {t.status ? (
-                <div className="meta-row">
-                  <span className="k">Status</span>
-                  <span className="v">{t.status}</span>
-                </div>
-              ) : null}
-              {typeof t.mappingPct === 'number' ? (
-                <div className="meta-row">
-                  <span className="k">Mapping</span>
-                  <span className="v">{t.mappingPct}%</span>
-                </div>
-              ) : null}
-              {t.featureContractId ? (
-                <div className="meta-row">
-                  <span className="k">Contract</span>
-                  <span className="v">
-                    <span className="chip chip-mono">{t.featureContractId}</span>
-                  </span>
-                </div>
-              ) : null}
-              {(() => {
-                const f = (full ?? {}) as Record<string, unknown>
-                const hash = (f.canonicalSha ?? f.sourceSha ?? f.canonicalHash ?? f.sourceHash ?? f.sha) as string | undefined
-                return hash ? (
-                  <div className="meta-row">
-                    <span className="k">Source hash</span>
-                    <span className="v"><span className="chip chip-mono">{hash}</span></span>
-                  </div>
-                ) : null
-              })()}
-              {lc?.rev != null ? (
-                <div className="meta-row">
-                  <span className="k">Revision</span>
-                  <span className="v" style={{ fontVariantNumeric: 'tabular-nums' }}>{lc.rev}</span>
-                </div>
-              ) : null}
-              {lc?.implementerRun ? (
-                <div className="meta-row">
-                  <span className="k">Owner run</span>
-                  <span className="v"><span className="chip chip-mono">{lc.implementerRun}</span></span>
-                </div>
-              ) : null}
-              {t.updated ? (
-                <div className="meta-row">
-                  <span className="k">Updated</span>
-                  <span className="v">{fmtDate(t.updated)}</span>
-                </div>
-              ) : null}
-            </div>
-          </div>
+        <div className={styles.col}>
+          <Card title="Ringkasan">
+            <MetaRow label="Progress checkpoint">
+              <ProgressBar
+                value={t.done}
+                max={t.total || 1}
+                ok={t.pct === 100}
+                label={`${t.done}/${t.total} (${t.pct}%)`}
+              />
+            </MetaRow>
+            {t.group ? (
+              <MetaRow label="Grup">
+                <Badge variant="neutral">{t.group}</Badge>
+              </MetaRow>
+            ) : null}
+            {t.status ? <MetaRow label="Status">{t.status}</MetaRow> : null}
+            {typeof t.mappingPct === 'number' ? (
+              <MetaRow label="Pemetaan">{t.mappingPct}%</MetaRow>
+            ) : null}
+            {t.updated ? (
+              <MetaRow label="Diperbarui">{fmtDate(t.updated)}</MetaRow>
+            ) : null}
+          </Card>
 
           {t.dependencies.length ? (
-            <div className="card">
-              <div className="card-head">
-                <Icon name="branch" className="nav-ico" />
-                <h3>Dependencies</h3>
-                <span className="count">{t.dependencies.length}</span>
+            <Card
+              title="Dependensi"
+              headerActions={<Badge variant="neutral">{t.dependencies.length}</Badge>}
+            >
+              <div className={styles.chipRow}>
+                {t.dependencies.map((d) => (
+                  <Link
+                    key={d}
+                    to="/tasks/$taskId"
+                    params={{ taskId: d }}
+                    className={styles.depLink}
+                  >
+                    <StatusChip variant="warn" showDot>
+                      {byId[d] ? resolveTaskDisplayTitle(byId[d]) : d}
+                    </StatusChip>
+                  </Link>
+                ))}
               </div>
-              <div className="card-body">
-                <div className="meta-row">
-                  <span className="v">
-                    {t.dependencies.map((d) => (
-                      <Link
-                        key={d}
-                        to="/tasks/$taskId"
-                        params={{ taskId: d }}
-                        className="chip"
-                        style={{ color: 'var(--warn)', background: 'var(--warn-bg)' }}
-                      >
-                        <Icon name="lock" />
-                        {byId[d]?.title ?? d}
-                      </Link>
-                    ))}
-                  </span>
-                </div>
-              </div>
-            </div>
+            </Card>
           ) : null}
 
           {t.impacts.length ? (
-            <div className="card">
-              <div className="card-head">
-                <Icon name="bolt" className="nav-ico" />
-                <h3>Impacts</h3>
-                <span className="count">{t.impacts.length}</span>
+            <Card
+              title="Dampak"
+              headerActions={<Badge variant="neutral">{t.impacts.length}</Badge>}
+            >
+              <div className={styles.chipRow}>
+                {t.impacts.map((x) => (
+                  <Badge key={x} variant="neutral">
+                    {x}
+                  </Badge>
+                ))}
               </div>
-              <div className="card-body">
-                <div className="meta-row">
-                  <span className="v">
-                    {t.impacts.map((x) => (
-                      <span className="chip" key={x}>
-                        {x}
-                      </span>
-                    ))}
-                  </span>
-                </div>
-              </div>
-            </div>
+            </Card>
           ) : null}
 
           {hasRefs ? (
-            <div className="card">
-              <div className="card-head">
-                <Icon name="link" className="nav-ico" />
-                <h3>References</h3>
-              </div>
-              <div className="card-body">
-                {api.length ? (
-                  <div className="meta-row">
-                    <span className="k">API</span>
-                    <span className="v">
-                      {api.map((x) => (
-                        <span className="chip chip-mono" key={x}>
-                          {x}
-                        </span>
-                      ))}
-                    </span>
+            <Card title="Referensi">
+              {api.length ? (
+                <MetaRow label="API">
+                  <div className={styles.chipRow}>
+                    {api.map((x) => (
+                      <Badge key={x} mono variant="neutral">
+                        {x}
+                      </Badge>
+                    ))}
                   </div>
-                ) : null}
-                {pages.length ? (
-                  <div className="meta-row">
-                    <span className="k">Pages</span>
-                    <span className="v">
-                      {pages.map((x) => (
-                        <span className="chip chip-mono" key={x}>
-                          {x}
-                        </span>
-                      ))}
-                    </span>
+                </MetaRow>
+              ) : null}
+              {pages.length ? (
+                <MetaRow label="Halaman">
+                  <div className={styles.chipRow}>
+                    {pages.map((x) => (
+                      <Badge key={x} mono variant="neutral">
+                        {x}
+                      </Badge>
+                    ))}
                   </div>
-                ) : null}
-                {refs?.evidence ? (
-                  <div className="meta-row">
-                    <span className="k">Evidence</span>
-                    <span className="v">{refs.evidence}</span>
-                  </div>
-                ) : null}
-              </div>
-            </div>
+                </MetaRow>
+              ) : null}
+              {refs?.evidence ? (
+                <MetaRow label="Bukti">{refs.evidence}</MetaRow>
+              ) : null}
+            </Card>
           ) : null}
+
+          <Disclosure summary="Detail teknis" data-testid="task-detail-technical-disclosure">
+            <dl className={styles.techDl}>
+              <dt>taskId</dt>
+              <dd>
+                <code className={styles.mono}>{t.id}</code>
+              </dd>
+              <dt>technicalTitle</dt>
+              <dd>{t.title || '—'}</dd>
+              {t.featureContractId ? (
+                <>
+                  <dt>featureContractId</dt>
+                  <dd>
+                    <code className={styles.mono}>{t.featureContractId}</code>
+                  </dd>
+                </>
+              ) : null}
+              {sourceHash ? (
+                <>
+                  <dt>sourceHash</dt>
+                  <dd>
+                    <code className={styles.mono}>{sourceHash}</code>
+                  </dd>
+                </>
+              ) : null}
+              {lc?.rev != null ? (
+                <>
+                  <dt>revision</dt>
+                  <dd className={styles.mono}>{lc.rev}</dd>
+                </>
+              ) : null}
+              {lc?.implementerRun ? (
+                <>
+                  <dt>implementerRun</dt>
+                  <dd>
+                    <code className={styles.mono}>{lc.implementerRun}</code>
+                  </dd>
+                </>
+              ) : null}
+              {stage ? (
+                <>
+                  <dt>lifecycleStage</dt>
+                  <dd>
+                    <code className={styles.mono}>{stage}</code>
+                  </dd>
+                </>
+              ) : null}
+            </dl>
+          </Disclosure>
         </div>
       </div>
 
       {full ? (
         <TaskMapping task={t} />
       ) : loadingFull ? (
-        <section className="section">
-          <div className="sec-head"><h2>Rebuild mapping</h2><span className="desc">loading…</span></div>
-          <div className="map-skeleton">
-            <span className="spinner" />
-            <span className="page-loading-txt">Loading the 20-point mapping…</span>
-          </div>
-        </section>
+        <Card title="Pemetaan rebuild" subtitle="Memuat…">
+          <EmptyState
+            title="Memuat pemetaan"
+            description="Menarik pemetaan 20 poin untuk tugas ini."
+          />
+        </Card>
       ) : null}
-    </>
+    </div>
   )
 }

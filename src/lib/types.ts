@@ -104,6 +104,11 @@ export interface TaskSection {
 export interface WorkTask {
   id: string
   title: string
+  /**
+   * Owner-facing primary title from control_plane_human_display (locale id-ID).
+   * Optional list projection only — never invent; TasksTable falls back to cleaned title / id.
+   */
+  humanTitle?: string | null
   projectId?: string | null
   group?: string | null
   phase?: string | null

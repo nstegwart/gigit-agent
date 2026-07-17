@@ -311,6 +311,7 @@ function WorkRoute() {
 
   const state = q.isLoading && !q.data ? 'loading' : props.state
 
+  // Presentation lives in WorkScreen (Direction B kit). Route owns query + deep-link only.
   return (
     <div className="wrap" data-testid="control-center-work-route">
       <WorkScreen

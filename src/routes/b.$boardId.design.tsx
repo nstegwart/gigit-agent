@@ -22,9 +22,9 @@ function DesignView() {
       {m.docs.length > 0 && (
         <section className="section">
           <div className="sec-head">
-            <h2>Design docs</h2>
+            <h2>Dokumen desain</h2>
             <span className="count">{m.docs.length}</span>
-            <span className="desc">plans &amp; journey catalogs for the whole board</span>
+            <span className="desc">rencana &amp; katalog journey untuk seluruh board</span>
           </div>
           <div className="link-list">
             {m.docs.map((d, i) => (
@@ -41,7 +41,7 @@ function DesignView() {
       )}
 
       <div className="sec-head" style={{ marginTop: 4 }}>
-        <h2>System design by project</h2>
+        <h2>Desain sistem per proyek</h2>
         <span className="count">{m.projects.length}</span>
       </div>
 
@@ -66,9 +66,9 @@ function DesignView() {
                   <div className="design-proj-meta">
                     <span className={`tag ${scls}`}>{slbl}</span>
                     <span>·</span>
-                    <span>Stage: {p.stage ?? p.status}</span>
+                    <span>Tahap: {p.stage ?? p.status}</span>
                     <span>·</span>
-                    <span>{p.features.filter((f) => !f.parked).length} features</span>
+                    <span>{p.features.filter((f) => !f.parked).length} fitur</span>
                   </div>
                 </div>
               </div>
@@ -77,10 +77,10 @@ function DesignView() {
                 {hasDesign ? (
                   <Architecture project={p} />
                 ) : (
-                  <div className="design-empty">No system-design catalog yet for this project.</div>
+                  <div className="design-empty">Belum ada katalog desain sistem untuk proyek ini.</div>
                 )}
                 <div className="arch-block">
-                  <div className="block-label">Design links</div>
+                  <div className="block-label">Tautan desain</div>
                   <DesignLinks scope="project" id={p.id} links={p.design} />
                 </div>
               </div>

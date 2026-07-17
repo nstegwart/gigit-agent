@@ -68,7 +68,7 @@ function LegacyOps() {
     <div className="wrap">
       <section className="section">
         <div className="sec-head">
-          <h2>Agent accounts</h2>
+          <h2>Akun agen</h2>
         </div>
         <AccountsGrid ops={ops} />
       </section>

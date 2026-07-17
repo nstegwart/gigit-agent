@@ -1,0 +1,112 @@
+/* Tasks list — Direction B layout tokens only (no raw hex, no shadow). */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4, 16px);
+  min-width: 0;
+  width: 100%;
+  color: var(--text);
+}
+
+.kpiRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--sp-2, 8px);
+}
+
+.rollupSlot {
+  min-width: 0;
+}
+
+.toolbarSlot {
+  padding: var(--sp-3, 12px) var(--sp-4, 16px) 0;
+}
+
+.pagerSlot {
+  padding: var(--sp-3, 12px) var(--sp-4, 16px);
+  border-top: 1px solid var(--border);
+}
+
+.filterSep {
+  display: inline-block;
+  width: 1px;
+  align-self: stretch;
+  min-height: 1.5rem;
+  background: var(--border);
+  margin: 0 var(--sp-1, 4px);
+}
+
+.rowLink {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.rowLink:focus-visible {
+  outline: 2px solid var(--border-focus, var(--text));
+  outline-offset: 2px;
+  border-radius: var(--r-sm, 6px);
+}
+
+.taskTitle {
+  font-size: var(--type-body-size, 14px);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.taskMeta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.domainHint {
+  font-size: var(--type-caption-size, 12px);
+  color: var(--text-faint);
+}
+
+.stageCell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.blockedHint {
+  font-size: var(--type-caption-size, 12px);
+  color: var(--blocked);
+  font-weight: 600;
+}
+
+.nextGate {
+  font-family: var(--mono);
+  font-size: var(--type-caption-size, 12px);
+  color: var(--text-dim);
+}
+
+.date {
+  font-size: var(--type-caption-size, 12px);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.na {
+  color: var(--text-faint);
+}

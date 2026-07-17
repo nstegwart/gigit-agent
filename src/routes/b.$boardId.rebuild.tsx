@@ -1,5 +1,6 @@
 // Rebuild dashboard route — control-center boards (mfs-rebuild) only.
-// SPEC-TM-KOMPAT-VISUAL-V1 §3.A + §4 + ADDENDUM V1.1 §B.
+// SPEC-TM-KOMPAT-VISUAL-V1 §3.A + §4 + ADDENDUM V1.1 §B · FAN-REBUILD Direction B.
+// Presentation lives in control-center/rebuild/*; this route only wires data.
 import { Navigate, createFileRoute } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'

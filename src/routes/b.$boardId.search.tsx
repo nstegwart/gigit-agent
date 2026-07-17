@@ -1,5 +1,6 @@
 /**
- * ART S15–S16 board search over pinned control-center data.
+ * ART S15–S16 board search + W-UI-5 entity-grouped results.
+ * Pin-flat path remains for decisions/evidence; product path supplies Fitur/Tugas/Unit/Dokumen.
  */
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -9,8 +10,13 @@ import { z } from 'zod'
 import { SearchScreen } from '#/components/control-center/search'
 import { safeBoardReturnHref } from '#/components/control-center/search/CommandSearch'
 import { boardQueryOptions, useBoardId } from '#/lib/board-query'
+import {
+  groupedSearchQueryKey,
+  searchQueryKey,
+} from '#/lib/control-center-query'
 import { coerceControlCenterSearchString } from '#/lib/control-center-search'
 import { searchEnvelopeToViewModel } from '#/lib/control-center-route-adapters'
+import { getControlCenterGroupedSearchFn } from '#/server/control-center-rebuild-fns'
 import { getControlCenterSearchFn } from '#/server/control-center-ui-fns'
 
 const searchSchema = z.object({
@@ -38,37 +44,74 @@ function SearchRoute() {
   const q = search.q ?? ''
   const qc = useQueryClient()
 
-  const query = useQuery({
-    queryKey: ['control-center', 'search', boardId, q],
+  const pinQuery = useQuery({
+    queryKey: searchQueryKey(boardId, q),
     queryFn: async () => {
       const wire = await getControlCenterSearchFn({ data: { boardId, q } })
       return wire
     },
   })
 
+  const groupedQuery = useQuery({
+    queryKey: groupedSearchQueryKey(boardId, q),
+    queryFn: async () => {
+      return await getControlCenterGroupedSearchFn({ data: { boardId, q } })
+    },
+  })
+
   const onRetry = useCallback(() => {
-    void qc.invalidateQueries({
-      queryKey: ['control-center', 'search', boardId, q],
-    })
+    void qc.invalidateQueries({ queryKey: searchQueryKey(boardId, q) })
+    void qc.invalidateQueries({ queryKey: groupedSearchQueryKey(boardId, q) })
   }, [qc, boardId, q])
 
-  const vm = useMemo(
-    () => searchEnvelopeToViewModel(query.data, { boardId, query: q }),
-    [query.data, boardId, q],
+  const pinVm = useMemo(
+    () => searchEnvelopeToViewModel(pinQuery.data, { boardId, query: q }),
+    [pinQuery.data, boardId, q],
   )
 
+  const grouped = groupedQuery.data ?? null
+  const productCount =
+    grouped && grouped.available === true ? grouped.totalCount : 0
+  const pinCount = pinVm.results.length
+  const hasAny = productCount + pinCount > 0
+
   const surfaceState =
-    query.isLoading && !query.data
+    (pinQuery.isLoading || groupedQuery.isLoading) &&
+    !pinQuery.data &&
+    !groupedQuery.data
       ? 'loading'
-      : query.isError
+      : pinQuery.isError && groupedQuery.isError
         ? 'error'
-        : vm.surfaceState
+        : q.trim().length === 0
+          ? 'empty'
+          : hasAny
+            ? pinVm.surfaceState === 'stale'
+              ? 'stale'
+              : 'populated'
+            : 'zero-results'
+
+  const error =
+    pinQuery.isError && groupedQuery.isError
+      ? pinVm.error ?? { code: 'SEARCH_ERROR', message: 'Pencarian gagal' }
+      : pinVm.error
 
   return (
     <div className="wrap" data-testid="control-center-search-route">
       <SearchScreen
-        {...vm}
         surfaceState={surfaceState}
+        boardId={boardId}
+        query={q}
+        results={pinVm.results}
+        grouped={grouped}
+        pin={pinVm.pin}
+        error={error}
+        dataGaps={
+          grouped && grouped.available === true
+            ? grouped.dataGaps
+            : grouped && grouped.available === false
+              ? grouped.dataGaps
+              : undefined
+        }
         onRetry={onRetry}
         returnHref={
           search.returnTo

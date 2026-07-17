@@ -90,7 +90,11 @@ function WorkTaskDetailRoute() {
         : ('unavailable' as const)
 
   return (
-    <div className="wrap" data-testid="control-center-work-task-route">
+    <div
+      className="wrap"
+      data-testid="control-center-work-task-route"
+      data-direction="b"
+    >
       <TaskDetailScreen
         {...vm}
         surfaceState={surfaceState}

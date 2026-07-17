@@ -29,6 +29,8 @@ import type {
   Feature360UiData,
   FeatureDirectoryData,
   FeatureDocMdData,
+  GroupedSearchData,
+  RebuildBlindspotWire,
   RebuildDashboardData,
   TaskLineageData,
 } from '#/server/control-center-rebuild-fns'
@@ -73,6 +75,8 @@ export type ControlCenterQueryKey =
   | readonly ['control-center', 'feature-360', string, string]
   | readonly ['control-center', 'feature-doc-md', string, string]
   | readonly ['control-center', 'task-lineage', string, string]
+  | readonly ['control-center', 'search', string, string]
+  | readonly ['control-center', 'grouped-search', string, string]
   | readonly ['control-center', 'work', string, WorkFilterKey]
   | readonly ['control-center', 'priority', string]
   | readonly ['control-center', 'projects', string]
@@ -103,6 +107,14 @@ export function rebuildQueryKey(boardId: string): ControlCenterQueryKey {
   return ['control-center', 'rebuild', boardId]
 }
 
+/** W-UI-4 blindspot tracer query key (term-scoped; not a primary surface envelope). */
+export function rebuildBlindspotQueryKey(
+  boardId: string,
+  term: string,
+): readonly ['control-center', 'rebuild-blindspot', string, string] {
+  return ['control-center', 'rebuild-blindspot', boardId, term.trim()]
+}
+
 export function featureDirectoryQueryKey(boardId: string): ControlCenterQueryKey {
   return ['control-center', 'feature-directory', boardId]
 }
@@ -127,6 +139,22 @@ export function taskLineageQueryKey(
   taskId: string,
 ): ControlCenterQueryKey {
   return ['control-center', 'task-lineage', boardId, taskId]
+}
+
+/** Pin-flat ART search (existing). */
+export function searchQueryKey(
+  boardId: string,
+  q: string,
+): ControlCenterQueryKey {
+  return ['control-center', 'search', boardId, q]
+}
+
+/** W-UI-5 product/rebuild grouped search (Fitur / Tugas / Dokumen / Unit). */
+export function groupedSearchQueryKey(
+  boardId: string,
+  q: string,
+): ControlCenterQueryKey {
+  return ['control-center', 'grouped-search', boardId, q]
 }
 
 export function workQueryKey(boardId: string, filter: Partial<WorkFilterKey> = {}): ControlCenterQueryKey {
@@ -210,6 +238,13 @@ export type RebuildDashboardFetcher = (args: {
   boardId: string
 }) => Promise<RebuildDashboardData>
 
+/** W-UI-4 blindspot tracer fetcher — reuses getControlCenterRebuildBlindspotFn (W-API-1). */
+export type RebuildBlindspotFetcher = (args: {
+  boardId: string
+  term: string
+  limit?: number
+}) => Promise<RebuildBlindspotWire>
+
 /** Product feature directory (W-UI-2). */
 export type FeatureDirectoryFetcher = (args: {
   boardId: string
@@ -233,6 +268,12 @@ export type TaskLineageFetcher = (args: {
   taskId: string
 }) => Promise<TaskLineageData>
 
+/** W-UI-5 grouped global search. */
+export type GroupedSearchFetcher = (args: {
+  boardId: string
+  q: string
+}) => Promise<GroupedSearchData>
+
 export interface ControlCenterFetchers {
   overview: ControlCenterFetcher<OverviewData>
   rebuild: RebuildDashboardFetcher
@@ -240,6 +281,7 @@ export interface ControlCenterFetchers {
   feature360: Feature360Fetcher
   featureDocMd: FeatureDocMdFetcher
   taskLineage: TaskLineageFetcher
+  groupedSearch: GroupedSearchFetcher
   work: ControlCenterFetcher<WorkData>
   priority: ControlCenterFetcher<PriorityData>
   projects: ControlCenterFetcher<ProjectsData>
@@ -274,6 +316,40 @@ export function rebuildQueryOptions(
   })
 }
 
+/** W-UI-4 — term-scoped blindspot trace (enabled only when term non-empty). */
+export function rebuildBlindspotQueryOptions(
+  boardId: string,
+  term: string,
+  fetch: RebuildBlindspotFetcher,
+  limit?: number,
+) {
+  const trimmed = term.trim()
+  return queryOptions({
+    queryKey: rebuildBlindspotQueryKey(boardId, trimmed),
+    queryFn: () => fetch({ boardId, term: trimmed, limit }),
+    staleTime: DEFAULT_STALE_TIME_MS,
+    enabled: trimmed.length > 0,
+  })
+}
+
+/** Default authenticated blindspot fetcher (server fn). */
+export async function fetchRebuildBlindspot(args: {
+  boardId: string
+  term: string
+  limit?: number
+}): Promise<RebuildBlindspotWire> {
+  const { getControlCenterRebuildBlindspotFn } = await import(
+    '#/server/control-center-rebuild-fns'
+  )
+  return (await getControlCenterRebuildBlindspotFn({
+    data: {
+      boardId: args.boardId,
+      term: args.term,
+      limit: args.limit,
+    },
+  })) as RebuildBlindspotWire
+}
+
 export function featureDirectoryQueryOptions(
   boardId: string,
   fetch: FeatureDirectoryFetcher,
@@ -293,6 +369,18 @@ export function feature360QueryOptions(
   return queryOptions({
     queryKey: feature360QueryKey(boardId, featureId),
     queryFn: () => fetch({ boardId, featureId }),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  })
+}
+
+export function groupedSearchQueryOptions(
+  boardId: string,
+  q: string,
+  fetch: GroupedSearchFetcher,
+) {
+  return queryOptions({
+    queryKey: groupedSearchQueryKey(boardId, q),
+    queryFn: () => fetch({ boardId, q }),
     staleTime: DEFAULT_STALE_TIME_MS,
   })
 }
@@ -564,6 +652,14 @@ export function createDefaultControlCenterFetchers(): ControlCenterFetchers {
         data: { boardId, taskId },
       })) as TaskLineageData
     },
+    groupedSearch: async ({ boardId, q }) => {
+      const { getControlCenterGroupedSearchFn } = await import(
+        '#/server/control-center-rebuild-fns'
+      )
+      return (await getControlCenterGroupedSearchFn({
+        data: { boardId, q },
+      })) as GroupedSearchData
+    },
     work: async ({ boardId, bucket, overlay, staleFamily, cursor, pageSize }) => {
       const { getControlCenterWorkFn } = await import('#/server/control-center-ui-fns')
       return asPinned<WorkData>(
@@ -659,7 +755,10 @@ export type {
 
 export type {
   RebuildDashboardData,
+  RebuildBlindspotWire,
   FeatureDirectoryData,
   Feature360UiData,
   FeatureDocMdData,
+  GroupedSearchData,
+  TaskLineageData,
 }

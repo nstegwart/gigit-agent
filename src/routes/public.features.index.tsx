@@ -1,13 +1,31 @@
 /**
  * Public unauthenticated features list (01A public surface).
  * Loads allowlisted /api/public-snapshot — no board session required.
- * W-UI-QW: always-visible cards, client search + project filter, §4.3 card hierarchy.
+ * FAN-PUBLIC: Direction B presentation via #/components/ui kit only.
  */
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import styles from '#/components/control-center/features/features.module.css'
 import type { FeatureRowView } from '#/components/control-center/features/types'
+import {
+  Badge,
+  Breadcrumb,
+  Button,
+  Card,
+  Disclosure,
+  EmptyState,
+  KpiStat,
+  MonoCell,
+  PageHeader,
+  Pagination,
+  Pill,
+  ProgressBar,
+  StatusChip,
+  Table,
+  Toolbar,
+  type StatusChipVariant,
+  type TableColumn,
+} from '#/components/ui'
 import { formatLifecycleStageLabel } from '#/lib/display-label'
 import {
   DEFAULT_PUBLIC_BOARD_ID,
@@ -19,6 +37,8 @@ import {
 } from '#/lib/public-features'
 
 type Search = { boardId?: string }
+
+const PAGE_SIZE_DEFAULT = 25
 
 /** Lifecycle stages treated as progressed for the mini bar (semantic green). */
 const PROGRESSED_STAGES = new Set([
@@ -48,6 +68,41 @@ function miniProgress(row: FeatureRowView): {
   return { total, done, pct }
 }
 
+/** Owner human title: name first; clean technical fallback; never raw placeholder. */
+function humanFeatureTitle(row: FeatureRowView): string {
+  const name = typeof row.name === 'string' ? row.name.trim() : ''
+  if (name && name !== row.featureId) return name
+  let s = (name || row.featureId).trim()
+  s = s.replace(/\[[^\]]*\]\s*/g, '')
+  s = s.replace(/\b(?:T|FC|BE|WEB|RN|AFF|SALES)-[A-Z0-9._-]+\b/gi, ' ')
+  s = s.replace(/[_/.-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!s) return row.featureId
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+function dominantStage(row: FeatureRowView): { label: string; variant: StatusChipVariant } | null {
+  const entries = Object.entries(row.stageCounts).sort((a, b) => b[1] - a[1])
+  if (entries.length === 0) return null
+  const [stage] = entries[0]!
+  const u = stage.toUpperCase()
+  let variant: StatusChipVariant = 'pending'
+  if (u === 'PROD_READY' || u === 'LIVE_VERIFIED' || u === 'DONE') variant = 'done'
+  else if (u === 'STAGING_PROVEN' || u === 'INTEGRATED' || u === 'FUNCTIONAL' || u === 'BUILT')
+    variant = 'ongoing'
+  else if (u === 'MAPPED' || u === 'MAP_VERIFIED' || u === 'MAPPING') variant = 'next'
+  else if (/BLOCK|FAIL|HOLD/.test(u)) variant = 'blocked'
+  else if (/WARN|REVIEW/.test(u)) variant = 'warn'
+  return { label: formatLifecycleStageLabel(stage) || stage, variant }
+}
+
+function humanProjectLabel(projectId: string): string {
+  const s = projectId.trim()
+  if (!s) return '—'
+  // Keep short technical project keys mono-friendly; light humanize hyphens/underscores.
+  const human = s.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return human.charAt(0).toUpperCase() + human.slice(1)
+}
+
 export const Route = createFileRoute('/public/features/')({
   validateSearch: (raw: Record<string, unknown>): Search => {
     const boardId =
@@ -75,6 +130,8 @@ function PublicFeaturesPage() {
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [projectFilter, setProjectFilter] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -110,217 +167,437 @@ function PublicFeaturesPage() {
     return rows.filter((row) => {
       if (projectFilter && row.projectId !== projectFilter) return false
       if (!q) return true
-      const name = row.name.toLowerCase()
+      const name = humanFeatureTitle(row).toLowerCase()
       const id = row.featureId.toLowerCase()
-      return name.includes(q) || id.includes(q)
+      const project = (row.projectId ?? '').toLowerCase()
+      return name.includes(q) || id.includes(q) || project.includes(q)
     })
   }, [rows, query, projectFilter])
 
-  return (
-    <div className="wrap" data-testid="public-features-page" data-board-id={boardId}>
-      <section className={styles.root} data-testid="public-features-list">
-        <header className={styles.pageHead}>
-          <div>
-            <p className={styles.eyebrow}>Publik · Tanpa login</p>
-            <h1 className={styles.pageTitle}>Fitur / Alur</h1>
-            <p className={styles.pageSub}>
-              Daftar fitur dari snapshot publik board <code>{boardId}</code>. Klik fitur untuk
-              melihat node progres tugas — tidak memerlukan sesi board.
-            </p>
-          </div>
-          <div className={styles.summaryStrip}>
-            <span
-              className={`${styles.chip} ${styles.chipAccent}`}
-              data-testid="public-features-count"
-            >
-              {filtered.length}
-              {filtered.length !== rows.length ? ` / ${rows.length}` : ''} fitur
-            </span>
-            {pin ? (
-              <span className={styles.chip} title={pin.canonicalSnapshotId}>
-                pin · rev {pin.boardRev}
-              </span>
-            ) : null}
-            <button type="button" className={styles.retryBtn} onClick={() => void load()}>
-              Muat ulang
-            </button>
-          </div>
-        </header>
+  // Reset page when filter/search changes.
+  useEffect(() => {
+    setPage(1)
+  }, [query, projectFilter, pageSize, boardId])
 
-        {rows.length > 0 ? (
-          <div className={styles.filterBar} data-testid="public-features-filters">
-            <label className="sr-only" htmlFor="public-features-search">
-              Cari fitur
-            </label>
-            <input
-              id="public-features-search"
-              type="search"
-              className={styles.searchInput}
-              placeholder="Cari fitur…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              autoComplete="off"
-              data-testid="public-features-search"
-            />
+  const totalFiltered = filtered.length
+  const pageCount = Math.max(1, Math.ceil(totalFiltered / pageSize))
+  const safePage = Math.min(Math.max(1, page), pageCount)
+  const pageStart = totalFiltered === 0 ? 0 : (safePage - 1) * pageSize
+  const pageRows = filtered.slice(pageStart, pageStart + pageSize)
+
+  const totalTasks = useMemo(
+    () => rows.reduce((s, r) => s + (r.taskCount > 0 ? r.taskCount : 0), 0),
+    [rows],
+  )
+  const progressedTasks = useMemo(() => {
+    let done = 0
+    for (const r of rows) {
+      done += miniProgress(r).done
+    }
+    return done
+  }, [rows])
+
+  const columns: Array<TableColumn<FeatureRowView>> = useMemo(
+    () => [
+      {
+        id: 'name',
+        header: 'Fitur',
+        cell: (row) => {
+          const title = humanFeatureTitle(row)
+          return (
             <div
-              className={styles.projectChips}
-              role="group"
-              aria-label="Filter proyek"
-              data-testid="public-features-project-filters"
+              data-testid="public-feature-row"
+              data-feature-id={row.featureId}
+              style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-1)', minWidth: 0 }}
             >
-              <button
-                type="button"
-                className={`${styles.projectChip}${projectFilter == null ? ` ${styles.projectChipActive}` : ''}`}
-                aria-pressed={projectFilter == null}
-                onClick={() => setProjectFilter(null)}
-                data-testid="public-features-project-all"
+              <Link
+                to="/public/features/$featureId"
+                params={{ featureId: row.featureId }}
+                search={{ boardId }}
+                data-testid="public-feature-link"
+                style={{
+                  color: 'var(--text)',
+                  fontWeight: 600,
+                  textDecoration: 'none',
+                  fontSize: 'var(--type-body-size)',
+                  lineHeight: 'var(--type-body-line)',
+                }}
               >
-                Semua proyek
-              </button>
-              {projectIds.map((pid) => (
-                <button
-                  key={pid}
-                  type="button"
-                  className={`${styles.projectChip}${projectFilter === pid ? ` ${styles.projectChipActive}` : ''}`}
-                  aria-pressed={projectFilter === pid}
-                  title={pid}
-                  onClick={() => setProjectFilter(pid)}
-                  data-testid="public-features-project-chip"
-                  data-project-id={pid}
-                >
-                  {pid}
-                </button>
-              ))}
+                {title}
+              </Link>
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 'var(--type-caption-size)',
+                  lineHeight: 'var(--type-caption-line)',
+                  color: 'var(--text-faint)',
+                }}
+                title={row.featureId}
+              >
+                {row.featureId}
+              </span>
             </div>
-          </div>
-        ) : null}
+          )
+        },
+      },
+      {
+        id: 'project',
+        header: 'Proyek',
+        cell: (row) =>
+          row.projectId ? (
+            <span title={row.projectId}>{humanProjectLabel(row.projectId)}</span>
+          ) : (
+            <span style={{ color: 'var(--text-faint)' }}>—</span>
+          ),
+      },
+      {
+        id: 'tasks',
+        header: 'Tugas',
+        align: 'right',
+        mono: true,
+        cell: (row) => <span>{row.taskCount}</span>,
+      },
+      {
+        id: 'progress',
+        header: 'Progres',
+        cell: (row) => {
+          const prog = miniProgress(row)
+          return (
+            <div data-testid="public-feature-progress" style={{ minWidth: 140 }}>
+              <ProgressBar
+                value={prog.done}
+                max={prog.total}
+                ok={prog.pct >= 100 && prog.total > 0}
+                label={
+                  prog.total > 0
+                    ? `${prog.done}/${prog.total} (${prog.pct}%)`
+                    : '0 tugas'
+                }
+              />
+            </div>
+          )
+        },
+      },
+      {
+        id: 'stage',
+        header: 'Tahap utama',
+        cell: (row) => {
+          const dom = dominantStage(row)
+          if (!dom) return <span style={{ color: 'var(--text-faint)' }}>—</span>
+          return <StatusChip variant={dom.variant}>{dom.label}</StatusChip>
+        },
+      },
+      {
+        id: 'phase',
+        header: 'Fase',
+        cell: (row) =>
+          row.phase ? (
+            <Badge variant="neutral">{row.phase}</Badge>
+          ) : (
+            <span style={{ color: 'var(--text-faint)' }}>—</span>
+          ),
+      },
+      {
+        id: 'open',
+        header: '',
+        align: 'right',
+        cell: (row) => (
+          <Link
+            to="/public/features/$featureId"
+            params={{ featureId: row.featureId }}
+            search={{ boardId }}
+            data-testid="public-feature-open"
+            style={{
+              color: 'var(--accent)',
+              fontSize: 'var(--type-small-size)',
+              textDecoration: 'none',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Buka →
+          </Link>
+        ),
+      },
+    ],
+    [boardId],
+  )
 
-        {loading && !snap ? (
-          <p className={styles.empty} data-testid="public-features-loading" role="status">
-            Memuat snapshot publik…
-          </p>
-        ) : null}
+  const kpiHint =
+    filtered.length !== rows.length
+      ? `${filtered.length} cocok filter · ${rows.length} total`
+      : undefined
+
+  return (
+    <div data-testid="public-features-page" data-board-id={boardId}>
+      <div
+        data-testid="public-features-list"
+        style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)' }}
+      >
+        <PageHeader
+          eyebrow="Publik · Tanpa login"
+          title="Fitur publik"
+          subtitle={
+            <>
+              Daftar fitur dari snapshot publik board{' '}
+              <MonoCell>{boardId}</MonoCell>. Klik baris untuk melihat node progres tugas — tidak
+              memerlukan sesi board.
+            </>
+          }
+          breadcrumb={
+            <Breadcrumb
+              items={[
+                { label: 'Publik', href: publicFeaturesListHref(boardId) },
+                { label: 'Fitur' },
+              ]}
+            />
+          }
+          actions={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void load()}
+              disabled={loading}
+            >
+              Muat ulang
+            </Button>
+          }
+        />
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+            gap: 'var(--sp-3)',
+          }}
+        >
+          <Card>
+            <KpiStat
+              size="sm"
+              value={
+                <span data-testid="public-features-count">
+                  {filtered.length}
+                  {filtered.length !== rows.length ? ` / ${rows.length}` : ''}
+                </span>
+              }
+              label="Fitur"
+              hint={kpiHint}
+            />
+          </Card>
+          <Card>
+            <KpiStat size="sm" value={totalTasks} label="Tugas terhubung" />
+          </Card>
+          <Card>
+            <KpiStat
+              size="sm"
+              value={
+                totalTasks > 0 ? (
+                  <ProgressBar
+                    value={progressedTasks}
+                    max={totalTasks}
+                    ok={progressedTasks >= totalTasks}
+                  />
+                ) : (
+                  '—'
+                )
+              }
+              label="Progres agregat"
+              hint={totalTasks > 0 ? `${progressedTasks}/${totalTasks} tahap lanjut` : 'Belum ada tugas'}
+            />
+          </Card>
+          {pin ? (
+            <Card>
+              <KpiStat
+                size="sm"
+                value={pin.stale ? 'Usang' : 'Segar'}
+                label="Snapshot"
+                hint={`rev ${pin.boardRev}`}
+              />
+            </Card>
+          ) : null}
+        </div>
 
         {error ? (
-          <div
-            className={`${styles.banner} ${styles.banner_error}`}
-            role="alert"
-            data-testid="public-features-error"
-          >
-            <p className={styles.bannerTitle}>Snapshot publik tidak tersedia</p>
-            <p className={styles.bannerBody}>{error}</p>
-            <button type="button" className={styles.retryBtn} onClick={() => void load()}>
-              Coba lagi
-            </button>
-          </div>
+          <Card data-testid="public-features-error">
+            <EmptyState
+              title="Snapshot publik tidak tersedia"
+              description={error}
+              action={
+                <Button variant="primary" size="sm" onClick={() => void load()}>
+                  Coba lagi
+                </Button>
+              }
+            />
+          </Card>
+        ) : null}
+
+        {!error && loading && !snap ? (
+          <Card>
+            <EmptyState
+              title="Memuat snapshot publik…"
+              description="Mengambil daftar fitur dari endpoint publik."
+              data-testid="public-features-loading"
+            />
+          </Card>
         ) : null}
 
         {!loading && !error && rows.length === 0 ? (
-          <p className={styles.empty} data-testid="public-features-empty">
-            Tidak ada fitur pada snapshot publik ini (jujur kosong).
-          </p>
+          <Card>
+            <EmptyState
+              title="Tidak ada fitur"
+              description="Tidak ada fitur pada snapshot publik ini (jujur kosong)."
+              data-testid="public-features-empty"
+            />
+          </Card>
         ) : null}
 
-        {!loading && !error && rows.length > 0 && filtered.length === 0 ? (
-          <p className={styles.empty} data-testid="public-features-zero-filter">
-            Tidak ada fitur yang cocok dengan pencarian/filter.
-          </p>
-        ) : null}
-
-        {filtered.length > 0 ? (
-          <ul
-            className={`${styles.cardList} ${styles.cardListAlways}`}
+        {!error && rows.length > 0 ? (
+          <Card
+            title="Daftar fitur"
+            subtitle="Tabel + pencarian + filter proyek. ID teknis ditampilkan sekunder mono."
+            flush
             data-testid="public-features-card-list"
+            headerActions={
+              pin?.stale ? (
+                <StatusChip variant="warn">Snapshot usang</StatusChip>
+              ) : null
+            }
+            footer={
+              totalFiltered > 0 ? (
+                <Pagination
+                  page={safePage}
+                  pageSize={pageSize}
+                  total={totalFiltered}
+                  onPageChange={setPage}
+                  onPageSizeChange={(n) => {
+                    setPageSize(n)
+                    setPage(1)
+                  }}
+                />
+              ) : null
+            }
           >
-            {filtered.map((row) => {
-              const stageEntries = Object.entries(row.stageCounts).sort((a, b) => b[1] - a[1])
-              const reviewCount = row.progressNodes.filter((n) => n.contentReviewRequired).length
-              const prog = miniProgress(row)
-              const fillClass =
-                prog.pct <= 0
-                  ? styles.miniProgressFillEmpty
-                  : prog.pct < 100
-                    ? styles.miniProgressFillPartial
-                    : ''
-              return (
-                <li
-                  key={row.featureId}
-                  className={styles.card}
-                  data-testid="public-feature-row"
-                  data-feature-id={row.featureId}
-                >
-                  {/* §4.3: nama bold → mini bar → meta → chip (tanpa ID teknis di permukaan) */}
-                  <p className={styles.cardName}>
-                    <Link
-                      to="/public/features/$featureId"
-                      params={{ featureId: row.featureId }}
-                      search={{ boardId }}
-                      data-testid="public-feature-link"
-                    >
-                      {row.name}
-                    </Link>
-                  </p>
+            <div
+              data-testid="public-features-filters"
+              style={{ padding: 'var(--sp-3) var(--sp-4) 0' }}
+            >
+              <Toolbar
+                searchProps={{
+                  id: 'public-features-search',
+                  value: query,
+                  onChange: (e) => setQuery(e.currentTarget.value),
+                  placeholder: 'Cari fitur…',
+                  'aria-label': 'Cari fitur',
+                  autoComplete: 'off',
+                  name: 'public-features-search',
+                }}
+                filters={
                   <div
-                    className={styles.miniProgress}
-                    data-testid="public-feature-progress"
-                    title={`${prog.done}/${prog.total} tahap lanjut (${prog.pct}%)`}
+                    role="group"
+                    aria-label="Filter proyek"
+                    data-testid="public-features-project-filters"
+                    style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)' }}
                   >
-                    <div className={styles.miniProgressTrack} aria-hidden="true">
-                      <div
-                        className={`${styles.miniProgressFill}${fillClass ? ` ${fillClass}` : ''}`}
-                        style={{ width: `${prog.pct}%` }}
-                      />
-                    </div>
-                    <span className={styles.miniProgressMeta}>
-                      {prog.total > 0
-                        ? `${prog.done}/${prog.total} (${prog.pct}%)`
-                        : '0 tugas'}
-                    </span>
-                  </div>
-                  <div className={styles.progressNodeMeta}>
-                    <span className={styles.chip}>{row.taskCount} tugas</span>
-                    {row.phase ? <span className={styles.chip}>Fase {row.phase}</span> : null}
-                    {row.projectId ? (
-                      <span className={styles.chip} title={row.projectId}>
-                        {row.projectId}
-                      </span>
-                    ) : null}
-                    {reviewCount > 0 ? (
-                      <span className={styles.progressContentReview}>
-                        {reviewCount} perlu tinjauan
-                      </span>
-                    ) : null}
-                  </div>
-                  {stageEntries.length > 0 ? (
-                    <div className={styles.stageChipStrip} style={{ marginTop: 2 }}>
-                      {stageEntries.slice(0, 4).map(([stage, count]) => (
-                        <span key={stage} className={styles.stageChip} title={stage}>
-                          {formatLifecycleStageLabel(stage)} · {count}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                  <p className={styles.pageSub} style={{ marginTop: 4, marginBottom: 0 }}>
-                    <Link
-                      to="/public/features/$featureId"
-                      params={{ featureId: row.featureId }}
-                      search={{ boardId }}
-                      data-testid="public-feature-open"
+                    <Pill
+                      active={projectFilter == null}
+                      onClick={() => setProjectFilter(null)}
+                      data-testid="public-features-project-all"
                     >
-                      Buka detail progres →
-                    </Link>
-                  </p>
-                </li>
-              )
-            })}
-          </ul>
+                      Semua proyek
+                    </Pill>
+                    {projectIds.map((pid) => (
+                      <Pill
+                        key={pid}
+                        active={projectFilter === pid}
+                        title={pid}
+                        onClick={() => setProjectFilter(pid)}
+                        data-testid="public-features-project-chip"
+                        data-project-id={pid}
+                      >
+                        {humanProjectLabel(pid)}
+                      </Pill>
+                    ))}
+                  </div>
+                }
+              />
+            </div>
+
+            {!loading && filtered.length === 0 ? (
+              <div style={{ padding: 'var(--sp-4)' }}>
+                <EmptyState
+                  title="Tidak ada hasil"
+                  description="Tidak ada fitur yang cocok dengan pencarian/filter."
+                  data-testid="public-features-zero-filter"
+                  action={
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setQuery('')
+                        setProjectFilter(null)
+                      }}
+                    >
+                      Hapus filter
+                    </Button>
+                  }
+                />
+              </div>
+            ) : (
+              <Table
+                columns={columns}
+                rows={pageRows}
+                rowKey={(r) => r.featureId}
+                loading={loading && !snap}
+                empty="Tidak ada fitur."
+                caption="Daftar fitur publik"
+                aria-label="Daftar fitur publik"
+              />
+            )}
+          </Card>
         ) : null}
 
-        <p className={styles.pageSub} data-testid="public-features-note">
-          Surface board lengkap memerlukan login. URL daftar publik:{' '}
-          <code>{publicFeaturesListHref(boardId)}</code>
-        </p>
-      </section>
+        <Disclosure summary="Detail teknis" data-testid="public-features-technical">
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 'var(--sp-2)',
+              fontSize: 'var(--type-small-size)',
+              color: 'var(--text-dim)',
+            }}
+          >
+            <p style={{ margin: 0 }}>
+              <span style={{ color: 'var(--text-faint)' }}>boardId </span>
+              <MonoCell>{boardId}</MonoCell>
+            </p>
+            {pin ? (
+              <>
+                <p style={{ margin: 0 }} title={pin.canonicalSnapshotId}>
+                  <span style={{ color: 'var(--text-faint)' }}>pin </span>
+                  <MonoCell>{pin.canonicalSnapshotId}</MonoCell>
+                </p>
+                <p style={{ margin: 0 }}>
+                  <span style={{ color: 'var(--text-faint)' }}>boardRev </span>
+                  <MonoCell>{String(pin.boardRev)}</MonoCell>
+                  {pin.lifecycleRev != null ? (
+                    <>
+                      {' · '}
+                      <span style={{ color: 'var(--text-faint)' }}>lifecycleRev </span>
+                      <MonoCell>{String(pin.lifecycleRev)}</MonoCell>
+                    </>
+                  ) : null}
+                </p>
+                {pin.stale ? (
+                  <StatusChip variant="warn">{pin.staleReason ?? 'PUBLIC_SNAPSHOT_STALE'}</StatusChip>
+                ) : null}
+              </>
+            ) : null}
+            <p style={{ margin: 0 }} data-testid="public-features-note">
+              Surface board lengkap memerlukan login. URL daftar publik:{' '}
+              <MonoCell>{publicFeaturesListHref(boardId)}</MonoCell>
+            </p>
+          </div>
+        </Disclosure>
+      </div>
     </div>
   )
 }

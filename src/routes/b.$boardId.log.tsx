@@ -20,7 +20,7 @@ function View() {
     <div className="wrap">
       <section className="section">
         <div className="sec-head">
-          <h2>Activity log</h2>
+          <h2>Log aktivitas</h2>
           <span className="count">{ls.length}</span>
         </div>
         <Timeline log={ls} />

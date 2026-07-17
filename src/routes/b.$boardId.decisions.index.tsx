@@ -17,6 +17,7 @@ import {
   type DecisionActionKind,
   type DecisionActionPayload,
 } from '#/components/control-center/decisions'
+import { Button } from '#/components/ui'
 import {
   buildDecisionOwnerIdempotencyKey,
 } from '#/components/control-center/decisions/decisionActions'
@@ -114,7 +115,7 @@ function ControlCenterDecisions() {
     (kind: DecisionActionKind, decisionId: string, result: DecisionMutationResult) => {
       if (result.ok) {
         clearActionError(decisionId)
-        setLiveMessage(`${kind} ok · ${decisionId} → ${result.status}`)
+        setLiveMessage(`${kind} berhasil · ${decisionId} → ${result.status}`)
         void qc.invalidateQueries({ queryKey: ['control-center', 'decisions', boardId] })
         return
       }
@@ -126,7 +127,7 @@ function ControlCenterDecisions() {
           action: kind,
         },
       }))
-      setLiveMessage(`${kind} failed · ${result.code}`)
+      setLiveMessage(`${kind} gagal · ${result.code}`)
     },
     [boardId, clearActionError, qc],
   )
@@ -181,7 +182,7 @@ function ControlCenterDecisions() {
           result = {
             ok: false,
             code: 'INVALID_INPUT',
-            message: 'selectedOptionId required for resolve',
+            message: 'selectedOptionId wajib untuk resolve',
           }
         } else {
           result = await csrfServerCall(resolveDecisionOwnerFn, {
@@ -200,7 +201,7 @@ function ControlCenterDecisions() {
           result = {
             ok: false,
             code: 'INVALID_INPUT',
-            message: 'snoozedUntil required for snooze',
+            message: 'snoozedUntil wajib untuk tunda',
           }
         } else {
           result = await csrfServerCall(snoozeDecisionOwnerFn, {
@@ -223,7 +224,7 @@ function ControlCenterDecisions() {
           action: vars.kind,
         },
       }))
-      setLiveMessage(`${vars.kind} transport error`)
+      setLiveMessage(`${vars.kind} error transport`)
     },
     onSettled: () => {
       setPendingDecisionId(null)
@@ -275,19 +276,27 @@ function ControlCenterDecisions() {
       />
       {props.nextCursor ? (
         <div
-          className="sec-head"
-          style={{ marginTop: 12, gap: 8, alignItems: 'center' }}
+          style={{
+            marginTop: 'var(--sp-3)',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 'var(--sp-2)',
+            alignItems: 'center',
+          }}
           data-testid="decisions-next-page-bar"
         >
-          <span className="desc">More pages available (server cursor)</span>
-          <button
+          <span style={{ color: 'var(--text-dim)', fontSize: 'var(--type-small-size)' }}>
+            Ada halaman berikutnya (kursor server)
+          </span>
+          <Button
             type="button"
-            className="btn"
+            variant="secondary"
+            size="sm"
             onClick={onNextPage}
             data-testid="decisions-next-page"
           >
-            Next page
-          </button>
+            Halaman berikutnya
+          </Button>
         </div>
       ) : null}
     </div>
@@ -309,12 +318,12 @@ function LegacyDecisions() {
     <>
       <section className="section">
         <div className="sec-head">
-          <h2>Open — waiting on you</h2>
+          <h2>Terbuka — menunggu Anda</h2>
           <span className="count">{open.length}</span>
-          <span className="desc">owner calls that unblock the work</span>
+          <span className="desc">keputusan pemilik yang membuka hambatan kerja</span>
         </div>
         {open.length === 0 ? (
-          <p className="desc">Nothing waiting on you right now.</p>
+          <p className="desc">Tidak ada yang menunggu Anda saat ini.</p>
         ) : (
           open.map((d) => <DecidePanel key={d.id} decision={d} />)
         )}
@@ -322,7 +331,7 @@ function LegacyDecisions() {
 
       <section className="section">
         <div className="sec-head">
-          <h2>Decided</h2>
+          <h2>Sudah diputuskan</h2>
           <span className="count">{decided.length}</span>
         </div>
         {decided.map((d) => (
