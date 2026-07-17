@@ -261,12 +261,61 @@
   border-bottom: none;
 }
 
+/* Technical IDs: mono + single-line ellipsis (never mid-token wrap shred). */
 .idCell {
   font-family: var(--sec-mono);
   font-size: 0.78rem;
   color: var(--sec-text-dim);
-  word-break: break-all;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   max-width: 14rem;
+  min-width: 0;
+}
+
+.idLink {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  display: block;
+  min-width: 0;
+  max-width: 14rem;
+}
+
+.idLink .idCell {
+  max-width: 100%;
+}
+
+.mutedDash {
+  color: var(--sec-text-faint);
+  font-size: 0.9rem;
+}
+
+.groupSection {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.groupHeading {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--sec-text);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.groupCount {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--sec-text-faint);
+  font-variant-numeric: tabular-nums;
 }
 
 .nameCell {
@@ -710,15 +759,17 @@
 }
 
 .progressContentReview {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.02em;
   color: var(--sec-warn);
   background: var(--sec-warn-bg);
   border: 1px solid color-mix(in srgb, var(--sec-warn) 35%, var(--sec-border));
   border-radius: 999px;
-  padding: 4px 10px;
+  padding: 3px 8px;
   line-height: 1.2;
+  flex: none;
+  white-space: nowrap;
 }
 
 .progressBlocker {
@@ -727,6 +778,111 @@
   font-weight: 600;
   max-width: 100%;
   word-break: break-word;
+}
+
+/* W-FIX-FIRM: owner summary + progress pagination (detail only) */
+.ownerSummaryStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.chipBlocked {
+  border-color: color-mix(in srgb, var(--sec-blocked) 40%, var(--sec-border));
+  background: var(--sec-blocked-bg);
+  color: var(--sec-blocked);
+}
+
+.chipReview {
+  border-color: color-mix(in srgb, var(--sec-warn) 40%, var(--sec-border));
+  background: var(--sec-warn-bg);
+  color: var(--sec-warn);
+}
+
+.stageChipUnprojected {
+  border-color: color-mix(in srgb, var(--sec-warn) 35%, var(--sec-border));
+  background: var(--sec-warn-bg);
+  color: var(--sec-warn);
+}
+
+.dataLimitationNote {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed color-mix(in srgb, var(--sec-warn) 40%, var(--sec-border));
+  background: color-mix(in srgb, var(--sec-warn) 6%, var(--sec-surface));
+  color: var(--sec-text-dim);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.progressToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.progressSearchLabel {
+  display: flex;
+  flex: 1 1 220px;
+  min-width: 0;
+  margin: 0;
+}
+
+.progressPageMeta {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--sec-text-dim);
+  white-space: nowrap;
+}
+
+.progressPagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--sec-border);
+}
+
+.pageBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--sec-touch);
+  min-width: var(--sec-touch);
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--sec-border);
+  background: var(--sec-surface);
+  color: var(--sec-text);
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.pageBtn:hover:not(:disabled) {
+  border-color: var(--sec-accent);
+  background: color-mix(in srgb, var(--sec-accent) 8%, var(--sec-surface));
+  color: var(--sec-accent);
+}
+
+.pageBtn:focus-visible {
+  outline: 2px solid var(--sec-accent);
+  outline-offset: 3px;
+}
+
+.pageBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 @media (max-width: 768px) {
