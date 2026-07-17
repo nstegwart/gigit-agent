@@ -2,6 +2,9 @@
  * Screenshot-manifest schema + collector (UI_CONTRACT §13 / AC-UI-07).
  * Foundation stage: schema validation + row assembly only.
  * Do not fabricate staging pins (boardRev/lifecycleRev/canonical*) — mark MISSING.
+ *
+ * ART S01–S24 visual gate (01B RELEASE-BLOCKING): maxDiffPixelRatio 0.002;
+ * baselines bound to full release SHA under qa/e2e/out/baselines/<fullSha>/.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -11,6 +14,19 @@ import {
   resolveSchemaVersion,
   resolveStagingUrl,
 } from './env'
+
+/** 01B / ART-UX-DIRECTION visual regression threshold — unexpected ratio above this fails. */
+export const MAX_DIFF_PIXEL_RATIO = 0.002 as const
+
+/** Default roots for promoted harness outputs. */
+export const AXE_OUT_DIR = path.join(process.cwd(), 'qa/e2e/out/axe')
+export const BASELINES_OUT_DIR = path.join(process.cwd(), 'qa/e2e/out/baselines')
+
+/** ART S01–S24 ids (exact staging screenshot matrix). */
+export const ART_SID_IDS = Array.from(
+  { length: 24 },
+  (_, i) => `S${String(i + 1).padStart(2, '0')}`,
+) as readonly string[]
 
 /** UI_CONTRACT §5 states. */
 export const MANIFEST_STATES = [
@@ -27,6 +43,8 @@ export const MANIFEST_STATES = [
 ] as const
 
 export type ManifestState = (typeof MANIFEST_STATES)[number]
+
+export type ArtSidId = (typeof ART_SID_IDS)[number]
 
 export type ScreenshotManifestRow = {
   route: string
@@ -48,6 +66,12 @@ export type ScreenshotManifestRow = {
   /** Foundation marker when server pin fields are unavailable. */
   pinFields?: 'PRESENT' | 'MISSING'
   screenshotPath?: string
+  /** ART matrix id S01–S24 when row maps to a visual/axe scenario. */
+  artSid?: string
+  /** Pixel-diff gate for SHA-bound baseline compare (default 0.002). */
+  maxDiffPixelRatio?: number
+  /** Path to SHA-bound baseline PNG when present. */
+  baselinePath?: string
 }
 
 export type ScreenshotManifest = {
@@ -87,6 +111,9 @@ export type BuildRowInput = {
   missionQuestionLink?: string | null
   visualDiff?: string
   screenshotPath?: string
+  artSid?: string
+  maxDiffPixelRatio?: number
+  baselinePath?: string
   /** When omitted, pin fields default to MISSING (fail-honest, no fabrication). */
   pins?: {
     canonicalSnapshotId?: string
@@ -99,12 +126,69 @@ export type BuildRowInput = {
   schemaVersion?: string
 }
 
+/**
+ * SHA-bound baseline directory for a release (qa/e2e/out/baselines/<fullSha>/).
+ * @throws if fullSha is not 40-char hex
+ */
+export function baselineDirForFullSha(
+  fullSha: string,
+  baselinesRoot: string = BASELINES_OUT_DIR,
+): string {
+  const s = String(fullSha).trim().toLowerCase()
+  if (!/^[0-9a-f]{40}$/.test(s)) {
+    throw new Error(
+      `baselineDirForFullSha: fullSha must be 40-char hex (got length=${fullSha?.length ?? 0})`,
+    )
+  }
+  return path.join(baselinesRoot, s)
+}
+
+/**
+ * Paths for one ART SID under a release SHA.
+ */
+export function artSidBaselinePaths(
+  artSid: string,
+  fullSha: string,
+  baselinesRoot: string = BASELINES_OUT_DIR,
+): { baselineDir: string; baselinePng: string; receiptPath: string } {
+  if (!/^S\d{2}$/.test(artSid)) {
+    throw new Error(`artSidBaselinePaths: invalid artSid ${artSid}`)
+  }
+  const baselineDir = baselineDirForFullSha(fullSha, baselinesRoot)
+  return {
+    baselineDir,
+    baselinePng: path.join(baselineDir, `${artSid}.png`),
+    receiptPath: path.join(baselineDir, `${artSid}.receipt.json`),
+  }
+}
+
+/**
+ * Default axe receipt path for an ART SID under qa/e2e/out/axe/.
+ */
+export function artSidAxePath(artSid: string, axeRoot: string = AXE_OUT_DIR): string {
+  if (!/^S\d{2}$/.test(artSid)) {
+    throw new Error(`artSidAxePath: invalid artSid ${artSid}`)
+  }
+  return path.join(axeRoot, `axe-${artSid}.json`)
+}
+
 export function buildManifestRow(input: BuildRowInput): ScreenshotManifestRow {
   if (!input.viewport && !input.zoom) {
     throw new Error('screenshot-manifest row requires viewport or zoom')
   }
   if (!MANIFEST_STATES.includes(input.state)) {
     throw new Error(`invalid manifest state: ${input.state}`)
+  }
+  if (input.artSid != null && !/^S\d{2}$/.test(input.artSid)) {
+    throw new Error(`invalid artSid: ${input.artSid}`)
+  }
+  if (
+    input.maxDiffPixelRatio != null &&
+    input.maxDiffPixelRatio !== MAX_DIFF_PIXEL_RATIO
+  ) {
+    throw new Error(
+      `maxDiffPixelRatio must be ${MAX_DIFF_PIXEL_RATIO} (got ${input.maxDiffPixelRatio})`,
+    )
   }
 
   const pins = input.pins ?? {}
@@ -139,6 +223,10 @@ export function buildManifestRow(input: BuildRowInput): ScreenshotManifestRow {
     visualDiff: input.visualDiff,
     pinFields,
     screenshotPath: input.screenshotPath,
+    artSid: input.artSid,
+    maxDiffPixelRatio:
+      input.maxDiffPixelRatio ?? (input.artSid ? MAX_DIFF_PIXEL_RATIO : undefined),
+    baselinePath: input.baselinePath,
   }
 }
 

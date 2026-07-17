@@ -72,14 +72,15 @@ const {
 const BASELINE = {
   tokenIssues: 0,
   tokenVerdict: 'PASS' as const,
-  cssResiduals: 263,
-  outsideWriteFence: 263,
+  // W-RD-TASKS: deleted orphaned tasks route module.css (4 off-scale-spacing residuals).
+  cssResiduals: 259,
+  outsideWriteFence: 259,
   rawColor: 0,
   byRule: {
     'decorative-gradient': 2,
     'motion-over-300ms': 3,
     'off-scale-radius': 17,
-    'off-scale-spacing': 155,
+    'off-scale-spacing': 151,
     'off-scale-type': 85,
     'pulsing-status': 1,
   },

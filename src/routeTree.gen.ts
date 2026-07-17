@@ -40,6 +40,7 @@ import { Route as BBoardIdLogRouteImport } from './routes/b.$boardId.log'
 import { Route as BBoardIdEvidenceRouteImport } from './routes/b.$boardId.evidence'
 import { Route as BBoardIdDesignRouteImport } from './routes/b.$boardId.design'
 import { Route as BBoardIdDecisionsRouteImport } from './routes/b.$boardId.decisions'
+import { Route as BBoardIdAlurRouteImport } from './routes/b.$boardId.alur'
 import { Route as BBoardIdAgentsRouteImport } from './routes/b.$boardId.agents'
 import { Route as BBoardIdWorkIndexRouteImport } from './routes/b.$boardId.work.index'
 import { Route as BBoardIdTasksIndexRouteImport } from './routes/b.$boardId.tasks.index'
@@ -212,6 +213,11 @@ const BBoardIdDecisionsRoute = BBoardIdDecisionsRouteImport.update({
   path: '/decisions',
   getParentRoute: () => BBoardIdRoute,
 } as any)
+const BBoardIdAlurRoute = BBoardIdAlurRouteImport.update({
+  id: '/alur',
+  path: '/alur',
+  getParentRoute: () => BBoardIdRoute,
+} as any)
 const BBoardIdAgentsRoute = BBoardIdAgentsRouteImport.update({
   id: '/agents',
   path: '/agents',
@@ -311,6 +317,7 @@ export interface FileRoutesByFullPath {
   '/public/features': typeof PublicFeaturesRouteWithChildren
   '/work/$taskId': typeof WorkTaskIdRoute
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
+  '/b/$boardId/alur': typeof BBoardIdAlurRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRouteWithChildren
   '/b/$boardId/design': typeof BBoardIdDesignRoute
   '/b/$boardId/evidence': typeof BBoardIdEvidenceRoute
@@ -357,6 +364,7 @@ export interface FileRoutesByTo {
   '/decisions/$decisionId': typeof DecisionsDecisionIdRoute
   '/work/$taskId': typeof WorkTaskIdRoute
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
+  '/b/$boardId/alur': typeof BBoardIdAlurRoute
   '/b/$boardId/design': typeof BBoardIdDesignRoute
   '/b/$boardId/evidence': typeof BBoardIdEvidenceRoute
   '/b/$boardId/log': typeof BBoardIdLogRoute
@@ -404,6 +412,7 @@ export interface FileRoutesById {
   '/public/features': typeof PublicFeaturesRouteWithChildren
   '/work/$taskId': typeof WorkTaskIdRoute
   '/b/$boardId/agents': typeof BBoardIdAgentsRoute
+  '/b/$boardId/alur': typeof BBoardIdAlurRoute
   '/b/$boardId/decisions': typeof BBoardIdDecisionsRouteWithChildren
   '/b/$boardId/design': typeof BBoardIdDesignRoute
   '/b/$boardId/evidence': typeof BBoardIdEvidenceRoute
@@ -454,6 +463,7 @@ export interface FileRouteTypes {
     | '/public/features'
     | '/work/$taskId'
     | '/b/$boardId/agents'
+    | '/b/$boardId/alur'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
     | '/b/$boardId/evidence'
@@ -500,6 +510,7 @@ export interface FileRouteTypes {
     | '/decisions/$decisionId'
     | '/work/$taskId'
     | '/b/$boardId/agents'
+    | '/b/$boardId/alur'
     | '/b/$boardId/design'
     | '/b/$boardId/evidence'
     | '/b/$boardId/log'
@@ -546,6 +557,7 @@ export interface FileRouteTypes {
     | '/public/features'
     | '/work/$taskId'
     | '/b/$boardId/agents'
+    | '/b/$boardId/alur'
     | '/b/$boardId/decisions'
     | '/b/$boardId/design'
     | '/b/$boardId/evidence'
@@ -815,6 +827,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BBoardIdDecisionsRouteImport
       parentRoute: typeof BBoardIdRoute
     }
+    '/b/$boardId/alur': {
+      id: '/b/$boardId/alur'
+      path: '/alur'
+      fullPath: '/b/$boardId/alur'
+      preLoaderRoute: typeof BBoardIdAlurRouteImport
+      parentRoute: typeof BBoardIdRoute
+    }
     '/b/$boardId/agents': {
       id: '/b/$boardId/agents'
       path: '/agents'
@@ -974,6 +993,7 @@ const BBoardIdWorkRouteWithChildren = BBoardIdWorkRoute._addFileChildren(
 
 interface BBoardIdRouteChildren {
   BBoardIdAgentsRoute: typeof BBoardIdAgentsRoute
+  BBoardIdAlurRoute: typeof BBoardIdAlurRoute
   BBoardIdDecisionsRoute: typeof BBoardIdDecisionsRouteWithChildren
   BBoardIdDesignRoute: typeof BBoardIdDesignRoute
   BBoardIdEvidenceRoute: typeof BBoardIdEvidenceRoute
@@ -999,6 +1019,7 @@ interface BBoardIdRouteChildren {
 
 const BBoardIdRouteChildren: BBoardIdRouteChildren = {
   BBoardIdAgentsRoute: BBoardIdAgentsRoute,
+  BBoardIdAlurRoute: BBoardIdAlurRoute,
   BBoardIdDecisionsRoute: BBoardIdDecisionsRouteWithChildren,
   BBoardIdDesignRoute: BBoardIdDesignRoute,
   BBoardIdEvidenceRoute: BBoardIdEvidenceRoute,

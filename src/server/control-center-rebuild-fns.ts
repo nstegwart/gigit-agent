@@ -8,35 +8,54 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 
 import { requireView, AuthError } from '#/server/auth'
-import {
-  DEFAULT_BOARD_ID,
-  type RebuildLineageRecord,
-} from '#/server/rebuild-lineage-store'
-import {
-  REBUILD_DATA_TABLES_NOT_MIGRATED,
-  getRebuildParityDataAccess,
-  handleGetFeature360,
-  handleGetRebuildParity,
-  handleTraceBlindspot,
-  type Feature360Payload,
-  type RebuildParityPayload,
-  type TraceBlindspotPayload,
-  type UnavailablePayload,
-} from '#/server/rebuild-parity-mcp'
+// Type-only store imports — NEVER value-import rebuild-lineage-store /
+// rebuild-parity-mcp / product-features-store at module top level.
+// Those modules static-import mysql2/db; a top-level value import leaks the
+// DB runtime into the client chunk of createServerFn modules
+// (TypeError: Cannot read properties of undefined (reading 'prototype')).
 import type {
   FeatureDirectoryRow,
   FeatureUnitRow,
+  RebuildLineageRecord,
 } from '#/server/rebuild-lineage-store'
-import {
-  STABLE_DOMAINS,
-  defaultProductFeaturesSeedPath,
-  listFeatureTaskMaps,
-  listProductFeatures,
-  loadProductFeaturesSeed,
-  type FeatureTaskMapRow,
-  type ProductFeatureRow,
-  type ProductFeatureSeedEntry,
+import type {
+  Feature360Payload,
+  RebuildParityPayload,
+  TraceBlindspotPayload,
+  UnavailablePayload,
+} from '#/server/rebuild-parity-mcp'
+import type {
+  FeatureTaskMapRow,
+  ProductFeatureRow,
+  ProductFeatureSeedEntry,
 } from '#/server/product-features-store'
+
+/**
+ * Local mirrors of store constants — same string values as source modules.
+ * Keeps pure projectors / createServerFn client stubs free of mysql2 graph.
+ */
+const DEFAULT_BOARD_ID = 'mfs-rebuild' as const
+const REBUILD_DATA_TABLES_NOT_MIGRATED = 'REBUILD_DATA_TABLES_NOT_MIGRATED' as const
+const STABLE_DOMAINS = [
+  'Latihan & Program',
+  'Kesehatan & Wellness',
+  'Pembayaran & Langganan',
+  'Konten & Media',
+  'Akun & Profil',
+  'Sosial & Komunitas',
+  'Admin & Operasional',
+  'Platform & Infrastruktur',
+] as const
+
+/** Server-only runtime: dynamic import keeps mysql2 out of client graph. */
+async function importRebuildParityMcp() {
+  return import('#/server/rebuild-parity-mcp')
+}
+
+/** Server-only runtime: dynamic import keeps mysql2 out of client graph. */
+async function importProductFeaturesStore() {
+  return import('#/server/product-features-store')
+}
 
 const boardArgs = z.object({
   boardId: z.string().min(1),
@@ -159,7 +178,7 @@ export type RebuildBlindspotWire =
     }
 
 function toBlindspotWire(
-  raw: RebuildBlindspotData | Awaited<ReturnType<typeof handleTraceBlindspot>>,
+  raw: RebuildBlindspotData | TraceBlindspotPayload | UnavailablePayload,
 ): RebuildBlindspotWire {
   if (!raw || typeof raw !== 'object') {
     return {
@@ -467,9 +486,10 @@ export async function loadRebuildDashboard(
   } = {},
 ): Promise<RebuildDashboardData> {
   const bid = boardId.trim() || DEFAULT_BOARD_ID
+  const parityMcp = await importRebuildParityMcp()
   const parity =
     opts.parity ??
-    (await handleGetRebuildParity({
+    (await parityMcp.handleGetRebuildParity({
       boardId: bid,
       historyLimit: opts.historyLimit ?? 12,
     }))
@@ -492,13 +512,18 @@ export async function loadRebuildDashboard(
 
   // Taxonomy aggregation — graceful if product tables fail mid-flight
   try {
-    const access = getRebuildParityDataAccess()
+    const productStore = await importProductFeaturesStore()
+    const access = parityMcp.getRebuildParityDataAccess()
     const features =
       opts.features ??
-      (await listProductFeatures({}).catch(() => [] as Array<ProductFeatureRow>))
+      (await productStore
+        .listProductFeatures({})
+        .catch(() => [] as Array<ProductFeatureRow>))
     const maps =
       opts.maps ??
-      (await listFeatureTaskMaps({}).catch(() => [] as Array<FeatureTaskMapRow>))
+      (await productStore
+        .listFeatureTaskMaps({})
+        .catch(() => [] as Array<FeatureTaskMapRow>))
     const lineage =
       opts.lineage ??
       (await access.listLineageForBoard(bid).catch(() => [] as Array<RebuildLineageRecord>))
@@ -559,6 +584,7 @@ export async function loadRebuildBlindspot(
   term: string,
   limit?: number,
 ): Promise<RebuildBlindspotData> {
+  const { handleTraceBlindspot } = await importRebuildParityMcp()
   return handleTraceBlindspot({
     boardId: boardId.trim() || DEFAULT_BOARD_ID,
     term,
@@ -996,7 +1022,9 @@ export async function loadFeatureDirectory(
   }
 
   try {
-    const access = getRebuildParityDataAccess()
+    const parityMcp = await importRebuildParityMcp()
+    const productStore = await importProductFeaturesStore()
+    const access = parityMcp.getRebuildParityDataAccess()
     const tablesOk = await access.tablesAvailable().catch(() => false)
     if (!tablesOk && !opts.features) {
       return projectFeatureDirectory({
@@ -1008,10 +1036,14 @@ export async function loadFeatureDirectory(
 
     const features =
       opts.features ??
-      (await listProductFeatures({}).catch(() => [] as Array<ProductFeatureRow>))
+      (await productStore
+        .listProductFeatures({})
+        .catch(() => [] as Array<ProductFeatureRow>))
     const maps =
       opts.maps ??
-      (await listFeatureTaskMaps({}).catch(() => [] as Array<FeatureTaskMapRow>))
+      (await productStore
+        .listFeatureTaskMaps({})
+        .catch(() => [] as Array<FeatureTaskMapRow>))
     const lineage =
       opts.lineage ??
       (await access.listLineageForBoard(bid).catch(() => [] as Array<RebuildLineageRecord>))
@@ -1240,9 +1272,10 @@ export async function loadFeature360Ui(
   const bid = boardId.trim() || DEFAULT_BOARD_ID
   const fid = featureId.trim()
 
+  const parityMcp = await importRebuildParityMcp()
   const payload =
     opts.payload ??
-    (await handleGetFeature360({ boardId: bid, feature_id: fid }))
+    (await parityMcp.handleGetFeature360({ boardId: bid, feature_id: fid }))
 
   if (!payload.available) {
     return projectFeature360Ui({ boardId: bid, featureId: fid, payload })
@@ -1250,7 +1283,7 @@ export async function loadFeature360Ui(
 
   // Enrich with lineage + directory doc_md when not injected
   try {
-    const access = getRebuildParityDataAccess()
+    const access = parityMcp.getRebuildParityDataAccess()
     const p = payload as Feature360Payload
     const taskIds = p.tasks.map((t) => t.task_id)
     const lineage =
@@ -1292,6 +1325,7 @@ export async function loadFeatureDocMd(
     }
   }
   try {
+    const { getRebuildParityDataAccess } = await importRebuildParityMcp()
     const access = getRebuildParityDataAccess()
     if (!opts.directory) {
       const ok = await access.tablesAvailable().catch(() => false)
@@ -1843,6 +1877,7 @@ export async function loadTaskLineage(
   }
 
   try {
+    const { getRebuildParityDataAccess } = await importRebuildParityMcp()
     const access = getRebuildParityDataAccess()
     const tablesOk =
       opts.tablesAvailable ?? (await access.tablesAvailable().catch(() => false))
@@ -2272,8 +2307,12 @@ export function projectGroupedSearch(input: {
   }
 }
 
-function tryLoadSeedEntries(): Array<ProductFeatureSeedEntry> | null {
+async function tryLoadSeedEntries(): Promise<Array<ProductFeatureSeedEntry> | null> {
   try {
+    const {
+      loadProductFeaturesSeed,
+      defaultProductFeaturesSeedPath,
+    } = await importProductFeaturesStore()
     const seed = loadProductFeaturesSeed(defaultProductFeaturesSeedPath())
     return seed.features
   } catch {
@@ -2306,7 +2345,9 @@ export async function loadGroupedSearch(
   }
 
   try {
-    const access = getRebuildParityDataAccess()
+    const parityMcp = await importRebuildParityMcp()
+    const productStore = await importProductFeaturesStore()
+    const access = parityMcp.getRebuildParityDataAccess()
     const tablesOk = await access.tablesAvailable().catch(() => false)
     if (!tablesOk && !opts.features) {
       return projectGroupedSearch({
@@ -2320,10 +2361,14 @@ export async function loadGroupedSearch(
 
     const features =
       opts.features ??
-      (await listProductFeatures({}).catch(() => [] as Array<ProductFeatureRow>))
+      (await productStore
+        .listProductFeatures({})
+        .catch(() => [] as Array<ProductFeatureRow>))
     const maps =
       opts.maps ??
-      (await listFeatureTaskMaps({}).catch(() => [] as Array<FeatureTaskMapRow>))
+      (await productStore
+        .listFeatureTaskMaps({})
+        .catch(() => [] as Array<FeatureTaskMapRow>))
 
     let units = opts.units
     let directory = opts.directory
@@ -2344,7 +2389,7 @@ export async function loadGroupedSearch(
     }
 
     const seedEntries =
-      opts.seedEntries !== undefined ? opts.seedEntries : tryLoadSeedEntries()
+      opts.seedEntries !== undefined ? opts.seedEntries : await tryLoadSeedEntries()
 
     return projectGroupedSearch({
       boardId: bid,

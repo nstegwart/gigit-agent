@@ -1,0 +1,710 @@
+/* Flow Ultimate — in-app canvas. Bridges design-canon vars to app styles.css tokens. */
+
+.flow-ultimate-root {
+  /* Canon → app design-system bridge (no raw hex/px fallbacks — token fence) */
+  --panel: var(--surface);
+  --panel2: var(--surface-2);
+  --line: var(--border);
+  --line2: var(--border-strong);
+  --tx: var(--text);
+  --t2: var(--text-dim);
+  --t3: var(--text-tertiary);
+  --acc: var(--accent);
+  --acc-ring: var(--accent-line);
+  --bad: var(--blocked);
+  --fu-border: 1px solid var(--line);
+  --r: var(--r-xl);
+  --r-full: var(--r-pill);
+  --font-sans: var(--font);
+  --font-mono: var(--mono);
+  --fs-body: var(--type-body-size);
+  --fs-body-sm: var(--type-small-size);
+  --fs-ui: var(--type-body-size);
+  --fs-caption: var(--type-caption-size);
+  --fs-heading: var(--type-h1-size);
+  --fs-title: var(--type-h2-size);
+  --lh-body: var(--type-body-line);
+  --lh-tight: 1.25;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --dot-size: var(--sp-3);
+  --dot-size-sm: var(--sp-2);
+  --dot-halo: 0 0 0 2px color-mix(in srgb, var(--dc, var(--t3)) 22%, transparent);
+  --shadow-none: none;
+
+  /* Project identity — map to existing semantic palette tokens (no raw hex) */
+  --proj-rn: var(--next);
+  --proj-web: var(--ok);
+  --proj-sales: var(--warn);
+  --proj-affiliate: var(--accent);
+  --proj-backend: var(--next);
+
+  display: flex;
+  flex-direction: column;
+  /* Fill main column under AppShell header */
+  height: calc(100vh - 0px);
+  min-height: 0;
+  width: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--tx);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  position: relative;
+}
+
+/* When rendered inside shell .main, steal full viewport of the content pane */
+.main > .flow-ultimate-root,
+.shell-main > .flow-ultimate-root,
+[data-shell-main] > .flow-ultimate-root {
+  height: 100%;
+  min-height: calc(100vh - 56px);
+}
+
+.flow-ultimate-root .flow-top {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: var(--fu-border);
+  background: var(--panel);
+  z-index: 20;
+  position: relative;
+  min-height: 52px;
+}
+
+.flow-ultimate-root .flow-brand {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+}
+
+.flow-ultimate-root .flow-brand .logo {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-md);
+  background: var(--acc);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.flow-ultimate-root .flow-brand > div {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-ui);
+}
+
+.flow-ultimate-root .flow-brand small {
+  font-weight: 400;
+  color: var(--t2);
+  font-size: var(--fs-caption);
+}
+
+.flow-ultimate-root .flow-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+}
+
+.flow-ultimate-root .flow-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: var(--fu-border);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--t2);
+  font: inherit;
+  font-size: var(--fs-ui);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--motion-hover) ease,
+    color var(--motion-hover) ease,
+    border-color var(--motion-hover) ease;
+}
+
+.flow-ultimate-root .flow-pill:hover {
+  background: var(--panel2);
+  color: var(--tx);
+}
+
+.flow-ultimate-root .flow-pill.on {
+  background: var(--panel2);
+  color: var(--tx);
+  border-color: var(--line2);
+  box-shadow: 0 0 0 1px var(--acc-ring);
+}
+
+.flow-ultimate-root .flow-pill-dot {
+  width: var(--sp-2);
+  height: var(--sp-2);
+  border-radius: var(--r-full);
+  flex: none;
+}
+
+.flow-ultimate-root .flow-legend {
+  flex: none;
+  display: flex;
+  gap: var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--t2);
+}
+
+.flow-ultimate-root .flow-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.flow-ultimate-root .flow-legend i {
+  width: var(--sp-2);
+  height: var(--sp-2);
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.flow-ultimate-root .flow-stage {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      ellipse at 50% 0%,
+      color-mix(in srgb, var(--acc) 6%, transparent),
+      transparent 55%
+    ),
+    var(--bg);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  min-height: 0;
+}
+
+.flow-ultimate-root .flow-stage.is-panning {
+  cursor: grabbing;
+}
+
+.flow-ultimate-root .flow-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.flow-ultimate-root .flow-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.flow-ultimate-root .flow-nodes {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 1;
+}
+
+.flow-ultimate-root .flow-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  color: var(--t3);
+  font-size: var(--fs-caption);
+  pointer-events: none;
+  z-index: 5;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  border: var(--fu-border);
+  border-radius: var(--r-full);
+  padding: var(--sp-2) var(--sp-4);
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
+.flow-ultimate-root .flow-hint.is-hidden {
+  opacity: 0;
+  transition: opacity var(--motion-loader) ease;
+}
+
+.flow-ultimate-root .fnode {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  width: 200px;
+  min-width: 200px;
+  max-width: 200px;
+  height: 64px;
+  box-sizing: border-box;
+  cursor: grab;
+  touch-action: none;
+  transition:
+    box-shadow var(--motion-hover) ease,
+    border-color var(--motion-hover) ease,
+    background var(--motion-hover) ease;
+  z-index: 1;
+}
+
+.flow-ultimate-root .fnode:active {
+  cursor: grabbing;
+}
+
+.flow-ultimate-root .fnode:hover {
+  background: var(--panel2);
+}
+
+.flow-ultimate-root .fnode.is-dragging {
+  z-index: 10;
+  box-shadow: var(--shadow-lg);
+  border-color: var(--line2);
+}
+
+.flow-ultimate-root .fnode.is-hl,
+.flow-ultimate-root .fnode.on {
+  border-color: var(--acc);
+  box-shadow: 0 0 0 2px var(--acc-ring);
+  background: var(--panel2);
+}
+
+.flow-ultimate-root .fnode.has-proj {
+  border-left: 3px solid var(--proj-c, var(--line2));
+  padding-left: var(--sp-3);
+}
+
+.flow-ultimate-root .fdot {
+  width: var(--dot-size);
+  height: var(--dot-size);
+  border-radius: var(--r-full);
+  background: var(--dc, var(--t3));
+  flex: none;
+  box-shadow: var(--dot-halo);
+  position: relative;
+}
+
+.flow-ultimate-root .fdot.ok {
+  --dc: var(--ok);
+}
+.flow-ultimate-root .fdot.warn {
+  --dc: var(--warn);
+}
+.flow-ultimate-root .fdot.bad {
+  --dc: var(--bad);
+}
+
+.flow-ultimate-root .fnode .ft {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+  font-weight: var(--fw-medium);
+  color: var(--tx);
+  font-size: var(--fs-ui);
+  line-height: 1.25;
+}
+
+.flow-ultimate-root .fnode .flow-meta {
+  display: block;
+  font-size: var(--fs-caption);
+  color: var(--t3);
+  margin-top: 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-ultimate-root .fnode .flow-proj-tag {
+  display: inline-block;
+  font-size: var(--type-caption-size);
+  letter-spacing: 0.02em;
+  color: var(--proj-c, var(--t2));
+  margin-top: 0;
+  font-weight: var(--fw-medium);
+}
+
+.flow-ultimate-root .flow-zoom {
+  position: absolute;
+  right: var(--sp-4);
+  bottom: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  z-index: 30;
+}
+
+.flow-ultimate-root .flow-zoom button {
+  width: 36px;
+  height: 36px;
+  border: var(--fu-border);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  color: var(--tx);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.flow-ultimate-root .flow-zoom button:hover {
+  background: var(--panel2);
+  border-color: var(--line2);
+}
+
+.flow-ultimate-root .flow-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--text) 35%, transparent);
+  z-index: 40;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-context) ease;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.flow-ultimate-root .flow-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.flow-ultimate-root .flow-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 65%;
+  max-height: 65%;
+  background: var(--panel);
+  border-top: var(--fu-border);
+  border-radius: var(--r-xl) var(--r-xl) 0 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  transform: translateY(110%);
+  transition: transform var(--motion-loader) cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: var(--shadow-lg);
+}
+
+.flow-ultimate-root .flow-sheet.is-open {
+  transform: translateY(0);
+}
+
+.flow-ultimate-root .flow-sheet-handle {
+  width: 40px;
+  height: 4px;
+  border-radius: var(--r-sm);
+  background: var(--line2);
+  margin: var(--sp-3) auto 0;
+  flex: none;
+  cursor: grab;
+}
+
+.flow-ultimate-root .flow-sheet-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-5) var(--sp-2);
+  border-bottom: var(--fu-border);
+  flex: none;
+}
+
+.flow-ultimate-root .flow-sheet-head-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.flow-ultimate-root .flow-sheet-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-caption);
+  color: var(--proj-c, var(--t2));
+  font-weight: var(--fw-medium);
+  margin-bottom: var(--sp-1);
+}
+
+.flow-ultimate-root .flow-sheet-badge i {
+  width: var(--sp-2);
+  height: var(--sp-2);
+  border-radius: 50%;
+  background: var(--proj-c, var(--t3));
+  display: inline-block;
+}
+
+.flow-ultimate-root .flow-sheet-title {
+  margin: 0;
+  font-size: var(--fs-heading);
+  font-weight: var(--fw-semibold);
+  color: var(--tx);
+  line-height: var(--lh-tight);
+}
+
+.flow-ultimate-root .flow-sheet-sub {
+  margin: var(--sp-2) 0 0;
+  color: var(--t2);
+  font-size: var(--fs-body-sm);
+  line-height: 1.45;
+}
+
+.flow-ultimate-root .flow-sheet-close {
+  width: 36px;
+  height: 36px;
+  border: var(--fu-border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--t2);
+  font-size: var(--type-h1-size);
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+
+.flow-ultimate-root .flow-sheet-close:hover {
+  color: var(--tx);
+  background: var(--panel2);
+}
+
+.flow-ultimate-root .flow-sheet-body {
+  flex: 1;
+  overflow: auto;
+  padding: var(--sp-4) var(--sp-5) var(--sp-6);
+}
+
+.flow-ultimate-root .flow-sec {
+  margin-bottom: var(--sp-5);
+}
+
+.flow-ultimate-root .flow-sec h3 {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  color: var(--tx);
+}
+
+.flow-ultimate-root .flow-sec-hint {
+  color: var(--t3);
+  font-size: var(--fs-caption);
+  margin-left: var(--sp-2);
+  font-weight: 400;
+}
+
+.flow-ultimate-root .flow-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3) var(--sp-4);
+  align-items: center;
+  margin-bottom: var(--sp-2);
+}
+
+.flow-ultimate-root .flow-bar {
+  flex: 1;
+  min-width: 120px;
+  height: 6px;
+  background: var(--line);
+  border-radius: var(--r-full);
+  overflow: hidden;
+}
+
+.flow-ultimate-root .flow-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--acc);
+  border-radius: var(--r-full);
+}
+
+.flow-ultimate-root .flow-bar.ok > i {
+  background: var(--ok);
+}
+.flow-ultimate-root .flow-bar.warn > i {
+  background: var(--warn);
+}
+.flow-ultimate-root .flow-bar.bad > i {
+  background: var(--bad);
+}
+
+.flow-ultimate-root .flow-list-plain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: var(--fu-border);
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.flow-ultimate-root .flow-list-plain li {
+  padding: var(--sp-3) var(--sp-3);
+  border-bottom: var(--fu-border);
+  color: var(--tx);
+  font-size: var(--fs-ui);
+}
+
+.flow-ultimate-root .flow-list-plain li:last-child {
+  border-bottom: 0;
+}
+
+.flow-ultimate-root .flow-list-plain li button {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  color: inherit;
+  font: inherit;
+}
+
+.flow-ultimate-root .flow-list-plain li button:hover .flow-link-nm {
+  color: var(--acc);
+}
+
+.flow-ultimate-root .flow-link-nm {
+  color: var(--tx);
+  font-weight: var(--fw-medium);
+}
+
+.flow-ultimate-root .flow-link-meta {
+  color: var(--t3);
+  font-size: var(--fs-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.flow-ultimate-root .flow-api {
+  font-family: var(--font-mono);
+  font-size: var(--type-caption-size);
+  background: var(--bg);
+  border: 1px solid var(--line2);
+  border-radius: var(--r-xs);
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--t2);
+  margin: 0 0 var(--sp-2);
+  word-break: break-all;
+}
+
+.flow-ultimate-root .flow-api b {
+  color: var(--acc);
+  font-weight: 600;
+  margin-right: var(--sp-3);
+}
+
+.flow-ultimate-root .flow-doc {
+  color: var(--t2);
+  font-size: var(--fs-body-sm);
+  line-height: 1.55;
+}
+
+.flow-ultimate-root .flow-doc p {
+  margin: 0 0 var(--sp-3);
+}
+
+.flow-ultimate-root .flow-empty {
+  color: var(--t3);
+  font-size: var(--fs-caption);
+  padding: var(--sp-2) 0;
+}
+
+.flow-ultimate-root .flow-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  z-index: 100;
+  color: var(--t2);
+  font-size: var(--fs-ui);
+}
+
+.flow-ultimate-root .flow-task-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.flow-ultimate-root .flow-task-title {
+  color: var(--tx);
+  font-size: var(--fs-ui);
+  min-width: 0;
+  flex: 1;
+}
+
+.flow-ultimate-root .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-caption);
+  color: var(--t2);
+  white-space: nowrap;
+}
+
+.flow-ultimate-root .chip b {
+  width: var(--dot-size-sm);
+  height: var(--dot-size-sm);
+  border-radius: var(--r-full);
+  background: var(--t3);
+  flex: none;
+}
+
+.flow-ultimate-root .chip.ok b {
+  background: var(--ok);
+}
+.flow-ultimate-root .chip.warn b {
+  background: var(--warn);
+}
+.flow-ultimate-root .chip.bad b {
+  background: var(--bad);
+}
+
+.flow-ultimate-root .pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--t2);
+  font-size: var(--fs-caption);
+}
+
+/* Full-bleed: collapse shell content padding on alur route */
+html[data-page='alur'] .main,
+body[data-page='alur'] .main {
+  padding: 0 !important;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+html[data-page='alur'] .main > .flow-ultimate-root,
+body[data-page='alur'] .main > .flow-ultimate-root {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}

@@ -1,5 +1,5 @@
-// Tasks list (board-scoped) — Direction B: PageHeader + Toolbar + Table + Pagination.
-// Data/logic from board-query + readiness helpers preserved; presentation only via UI kit.
+// Tasks list (board-scoped) — Direction B design system.
+// Data/logic from board-query + readiness helpers preserved; presentation via UI kit + design-system.
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
@@ -26,6 +26,24 @@ import {
   type TableColumn,
 } from '#/components/ui'
 import {
+  BlockedHint,
+  DateCell,
+  DomainHint,
+  FilterSep,
+  KpiRow,
+  Na,
+  NextGate,
+  PageStack,
+  PagerSlot,
+  ShellPageTitle,
+  Stack,
+  StageCell,
+  TaskMeta,
+  TaskRowLink,
+  TaskTitle,
+  ToolbarSlot,
+} from '#/design-system'
+import {
   boardQueryOptions,
   lifecycleQueryOptions,
   rollupQueryOptions,
@@ -41,8 +59,6 @@ import { formatDenseTimestamp, formatLifecycleStageLabel } from '#/lib/display-l
 import { nextStage, rowReadiness } from '#/lib/readiness'
 import type { TaskView } from '#/lib/tasks'
 import type { Run } from '#/lib/types'
-
-import styles from './b.$boardId.tasks.index.module.css'
 
 export const Route = createFileRoute('/b/$boardId/tasks/')({
   loader: async ({ context, params }) => {
@@ -200,9 +216,7 @@ function View() {
           const human = resolveTaskDisplayTitle(row)
           const domain = domainGroupKeyOf(row)
           return (
-            <button
-              type="button"
-              className={styles.rowLink}
+            <TaskRowLink
               onClick={() =>
                 navigate({
                   to: '/b/$boardId/tasks/$taskId',
@@ -210,14 +224,14 @@ function View() {
                 })
               }
             >
-              <span className={styles.taskTitle}>{human}</span>
-              <span className={styles.taskMeta}>
+              <TaskTitle>{human}</TaskTitle>
+              <TaskMeta>
                 <Badge mono variant="neutral">
                   {row.id}
                 </Badge>
-                {domain ? <span className={styles.domainHint}>{domain}</span> : null}
-              </span>
-            </button>
+                {domain ? <DomainHint>{domain}</DomainHint> : null}
+              </TaskMeta>
+            </TaskRowLink>
           )
         },
       },
@@ -229,16 +243,14 @@ function View() {
           const stage = row.lifecycleStage
           const label = stage ? formatLifecycleStageLabel(stage) || stage : 'Belum diinisialisasi'
           return (
-            <div className={styles.stageCell}>
+            <StageCell>
               <StatusChip variant={stageVariant(stage, row.blockedReason)} showDot>
                 {label}
               </StatusChip>
               {row.blockedReason ? (
-                <span className={styles.blockedHint} title={row.blockedReason}>
-                  Terblokir
-                </span>
+                <BlockedHint title={row.blockedReason}>Terblokir</BlockedHint>
               ) : null}
-            </div>
+            </StageCell>
           )
         },
       },
@@ -248,11 +260,11 @@ function View() {
         mono: true,
         cell: (row) => {
           const ng = nextOf(row)
-          if (!ng) return <span className={styles.na}>—</span>
+          if (!ng) return <Na />
           return (
-            <span className={styles.nextGate} title={ng}>
+            <NextGate title={ng}>
               {formatLifecycleStageLabel(ng) || ng}
-            </span>
+            </NextGate>
           )
         },
       },
@@ -266,7 +278,7 @@ function View() {
               {row.projectId}
             </Badge>
           ) : (
-            <span className={styles.na}>—</span>
+            <Na />
           ),
       },
       {
@@ -290,7 +302,7 @@ function View() {
         header: 'Run',
         cell: (row) => {
           const r = runOf(m.runsByTask[row.id])
-          if (!r) return <span className={styles.na}>—</span>
+          if (!r) return <Na />
           const variant: StatusChipVariant =
             r.status === 'running' ? 'ongoing' : r.status === 'queued' ? 'pending' : 'pending'
           return (
@@ -308,9 +320,9 @@ function View() {
         cell: (row) => {
           const iso = row.lastReceiptAt ?? row.updated
           return (
-            <span className={styles.date} title={iso ?? undefined}>
+            <DateCell title={iso ?? undefined}>
               {iso ? formatDenseTimestamp(iso) : '—'}
-            </span>
+            </DateCell>
           )
         },
       },
@@ -331,7 +343,7 @@ function View() {
       ))}
       {cfg?.stages?.length ? (
         <>
-          <span className={styles.filterSep} aria-hidden="true" />
+          <FilterSep />
           <Pill active={filterStage === ''} onClick={() => setFilterStage('')}>
             Semua tahap
           </Pill>
@@ -346,7 +358,7 @@ function View() {
           ))}
         </>
       ) : null}
-      <span className={styles.filterSep} aria-hidden="true" />
+      <FilterSep />
       {(
         [
           ['blocked', 'Terblokir'],
@@ -367,7 +379,11 @@ function View() {
   )
 
   return (
-    <div className={styles.root} data-testid="control-center-tasks-list">
+    <PageStack data-testid="control-center-tasks-list">
+      <ShellPageTitle
+        title="Tasks · Tugas"
+        subtitle="Daftar tugas first-class — buka baris untuk peta checkpoint dan detail pemilik."
+      />
       <PageHeader
         eyebrow="Pekerjaan"
         title="Tugas"
@@ -381,7 +397,7 @@ function View() {
         }
       />
 
-      <div className={styles.kpiRow} data-testid="tasks-kpi-row">
+      <KpiRow data-testid="tasks-kpi-row">
         <KpiStat size="sm" value={tasks.length} label="Total tugas" />
         <KpiStat size="sm" value={kpiReady} label="Siap (100%)" hint={`${kpiReady}/${tasks.length}`} />
         <KpiStat size="sm" value={kpiBlocked} label="Terblokir" />
@@ -389,12 +405,11 @@ function View() {
         {rollup.milestone ? (
           <KpiStat size="sm" value={rollup.milestone} label="Milestone" />
         ) : null}
-      </div>
+      </KpiRow>
 
-      {/* Existing rollup strip — data continuity; chrome remains external. */}
-      <div className={styles.rollupSlot}>
+      <Stack data-testid="tasks-rollup-slot">
         <RollupBar />
-      </div>
+      </Stack>
 
       <Card
         flush
@@ -406,7 +421,7 @@ function View() {
         }
         data-testid="tasks-table-card"
       >
-        <div className={styles.toolbarSlot}>
+        <ToolbarSlot>
           <Toolbar
             searchProps={{
               value: search,
@@ -416,7 +431,7 @@ function View() {
             }}
             filters={filterPills}
           />
-        </div>
+        </ToolbarSlot>
 
         {tasks.length === 0 ? (
           <EmptyState
@@ -438,7 +453,7 @@ function View() {
               aria-label="Tabel tugas"
               data-testid="tasks-table"
             />
-            <div className={styles.pagerSlot}>
+            <PagerSlot>
               <Pagination
                 page={safePage}
                 pageSize={pageSize}
@@ -449,12 +464,12 @@ function View() {
                   setPage(1)
                 }}
               />
-            </div>
+            </PagerSlot>
           </>
         )}
       </Card>
 
       {editRail && canEdit ? <LifecycleEditor onClose={() => setEditRail(false)} /> : null}
-    </div>
+    </PageStack>
   )
 }

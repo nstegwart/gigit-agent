@@ -37,7 +37,8 @@ const EXPECTED_CC_LABELS = [
 
 /**
  * Live CONTROL_CENTER_NAV order after W-UI-1: Rebuild sits after Overview/Ringkasan
- * (SPEC-TM-KOMPAT-VISUAL-V1 §3.A / §4.6). Export CONTROL_CENTER_NAV_LABELS stays 9.
+ * (SPEC-TM-KOMPAT-VISUAL-V1 §3.A / §4.6). Alur is an intentional extra route between
+ * Features / Flows and Agents / Runs. Export CONTROL_CENTER_NAV_LABELS stays 9.
  */
 const EXPECTED_CC_NAV_MARKUP_LABELS = [
   'Overview',
@@ -46,6 +47,7 @@ const EXPECTED_CC_NAV_MARKUP_LABELS = [
   'Priority',
   'Projects',
   'Features / Flows',
+  'Alur',
   'Agents / Runs',
   'Ops / Accounts',
   'Decisions',

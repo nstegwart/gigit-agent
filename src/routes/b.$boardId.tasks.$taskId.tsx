@@ -1,7 +1,6 @@
-// Task detail (board-scoped /tasks/$taskId) — Direction B presentation.
-// Data loaders + existing functional panels preserved; chrome via UI kit.
+// Task detail (board-scoped /tasks/$taskId) — Direction B design system.
+// Data loaders + existing functional panels preserved; chrome via UI kit + design-system.
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import type { ReactNode } from 'react'
 
 import { BoardLink as Link } from '#/components/BoardLink'
 import { resolveTaskDisplayTitle } from '#/components/TasksTable'
@@ -22,6 +21,20 @@ import {
   type StatusChipVariant,
 } from '#/components/ui'
 import {
+  BodyText,
+  ChipRow,
+  DetailCol,
+  DetailGrid,
+  MetaRow,
+  MonoCode,
+  PageStack,
+  ShellPageTitle,
+  Stack,
+  SubtitleRow,
+  TechDl,
+  depLinkClassName,
+} from '#/design-system'
+import {
   boardQueryOptions,
   lifecycleQueryOptions,
   taskLifecycleQueryOptions,
@@ -36,8 +49,6 @@ import {
 import { formatLifecycleStageLabel } from '#/lib/display-label'
 import { fmtDate } from '#/lib/format'
 import { stageReadiness } from '#/lib/readiness'
-
-import styles from './b.$boardId.tasks.$taskId.module.css'
 
 export const Route = createFileRoute('/b/$boardId/tasks/$taskId')({
   loader: async ({ context, params }) => {
@@ -64,15 +75,6 @@ function stageVariant(stage: string | null | undefined): StatusChipVariant {
   return 'ongoing'
 }
 
-function MetaRow({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className={styles.metaRow}>
-      <span className={styles.metaKey}>{label}</span>
-      <span className={styles.metaVal}>{children}</span>
-    </div>
-  )
-}
-
 function View() {
   const { byId } = useTasks()
   const m = useBoard()
@@ -90,7 +92,11 @@ function View() {
   const base = full ?? byId[taskId]
   if (!base) {
     return (
-      <div className={styles.root} data-testid="task-detail-missing">
+      <PageStack data-testid="task-detail-missing">
+        <ShellPageTitle
+          title="Tasks · Tugas"
+          subtitle="Tugas tidak ditemukan pada board ini."
+        />
         <PageHeader
           eyebrow="Detail tugas"
           title="Tugas tidak ditemukan"
@@ -121,7 +127,7 @@ function View() {
             }
           />
         )}
-      </div>
+      </PageStack>
     )
   }
 
@@ -149,12 +155,16 @@ function View() {
   })()
 
   return (
-    <div className={styles.root} data-testid="task-detail-route">
+    <PageStack data-testid="task-detail-route">
+      <ShellPageTitle
+        title={`Tasks · Tugas / ${humanTitle}`}
+        subtitle="Detail tugas, kesiapan, dan peta checkpoint."
+      />
       <PageHeader
         eyebrow="Detail tugas"
         title={humanTitle}
         subtitle={
-          <span className={styles.subtitleRow}>
+          <SubtitleRow>
             <Badge mono variant="neutral">
               {t.id}
             </Badge>
@@ -173,7 +183,7 @@ function View() {
               </Badge>
             ) : null}
             {t.scope ? <Badge variant="neutral">{t.scope}</Badge> : null}
-          </span>
+          </SubtitleRow>
         }
         breadcrumb={
           <Breadcrumb
@@ -203,24 +213,24 @@ function View() {
 
       <TaskSections sections={full?.sections} />
 
-      <div className={styles.grid2}>
-        <div className={styles.col}>
+      <DetailGrid>
+        <DetailCol>
           {agents.length > 0 ? (
             <Card
               title="Agen pada tugas ini"
               headerActions={<Badge variant="neutral">{agents.length}</Badge>}
             >
-              <div className={styles.stack}>
+              <Stack>
                 {agents.map((r) => (
                   <RunCard key={r.id} run={r} model={m} taskTitle={humanTitle} />
                 ))}
-              </div>
+              </Stack>
             </Card>
           ) : null}
 
           {t.objective || t.next ? (
             <Card title="Tujuan">
-              {t.objective ? <p className={styles.bodyText}>{t.objective}</p> : null}
+              {t.objective ? <BodyText>{t.objective}</BodyText> : null}
               {t.next ? (
                 <MetaRow label="Berikutnya">{t.next}</MetaRow>
               ) : null}
@@ -240,9 +250,9 @@ function View() {
               ) : null}
             </Card>
           ) : null}
-        </div>
+        </DetailCol>
 
-        <div className={styles.col}>
+        <DetailCol>
           <Card title="Ringkasan">
             <MetaRow label="Progress checkpoint">
               <ProgressBar
@@ -271,20 +281,20 @@ function View() {
               title="Dependensi"
               headerActions={<Badge variant="neutral">{t.dependencies.length}</Badge>}
             >
-              <div className={styles.chipRow}>
+              <ChipRow>
                 {t.dependencies.map((d) => (
                   <Link
                     key={d}
                     to="/tasks/$taskId"
                     params={{ taskId: d }}
-                    className={styles.depLink}
+                    className={depLinkClassName}
                   >
                     <StatusChip variant="warn" showDot>
                       {byId[d] ? resolveTaskDisplayTitle(byId[d]) : d}
                     </StatusChip>
                   </Link>
                 ))}
-              </div>
+              </ChipRow>
             </Card>
           ) : null}
 
@@ -293,13 +303,13 @@ function View() {
               title="Dampak"
               headerActions={<Badge variant="neutral">{t.impacts.length}</Badge>}
             >
-              <div className={styles.chipRow}>
+              <ChipRow>
                 {t.impacts.map((x) => (
                   <Badge key={x} variant="neutral">
                     {x}
                   </Badge>
                 ))}
-              </div>
+              </ChipRow>
             </Card>
           ) : null}
 
@@ -307,24 +317,24 @@ function View() {
             <Card title="Referensi">
               {api.length ? (
                 <MetaRow label="API">
-                  <div className={styles.chipRow}>
+                  <ChipRow>
                     {api.map((x) => (
                       <Badge key={x} mono variant="neutral">
                         {x}
                       </Badge>
                     ))}
-                  </div>
+                  </ChipRow>
                 </MetaRow>
               ) : null}
               {pages.length ? (
                 <MetaRow label="Halaman">
-                  <div className={styles.chipRow}>
+                  <ChipRow>
                     {pages.map((x) => (
                       <Badge key={x} mono variant="neutral">
                         {x}
                       </Badge>
                     ))}
-                  </div>
+                  </ChipRow>
                 </MetaRow>
               ) : null}
               {refs?.evidence ? (
@@ -334,10 +344,10 @@ function View() {
           ) : null}
 
           <Disclosure summary="Detail teknis" data-testid="task-detail-technical-disclosure">
-            <dl className={styles.techDl}>
+            <TechDl>
               <dt>taskId</dt>
               <dd>
-                <code className={styles.mono}>{t.id}</code>
+                <MonoCode>{t.id}</MonoCode>
               </dd>
               <dt>technicalTitle</dt>
               <dd>{t.title || '—'}</dd>
@@ -345,7 +355,7 @@ function View() {
                 <>
                   <dt>featureContractId</dt>
                   <dd>
-                    <code className={styles.mono}>{t.featureContractId}</code>
+                    <MonoCode>{t.featureContractId}</MonoCode>
                   </dd>
                 </>
               ) : null}
@@ -353,21 +363,23 @@ function View() {
                 <>
                   <dt>sourceHash</dt>
                   <dd>
-                    <code className={styles.mono}>{sourceHash}</code>
+                    <MonoCode>{sourceHash}</MonoCode>
                   </dd>
                 </>
               ) : null}
               {lc?.rev != null ? (
                 <>
                   <dt>revision</dt>
-                  <dd className={styles.mono}>{lc.rev}</dd>
+                  <dd>
+                    <MonoCode>{lc.rev}</MonoCode>
+                  </dd>
                 </>
               ) : null}
               {lc?.implementerRun ? (
                 <>
                   <dt>implementerRun</dt>
                   <dd>
-                    <code className={styles.mono}>{lc.implementerRun}</code>
+                    <MonoCode>{lc.implementerRun}</MonoCode>
                   </dd>
                 </>
               ) : null}
@@ -375,14 +387,14 @@ function View() {
                 <>
                   <dt>lifecycleStage</dt>
                   <dd>
-                    <code className={styles.mono}>{stage}</code>
+                    <MonoCode>{stage}</MonoCode>
                   </dd>
                 </>
               ) : null}
-            </dl>
+            </TechDl>
           </Disclosure>
-        </div>
-      </div>
+        </DetailCol>
+      </DetailGrid>
 
       {full ? (
         <TaskMapping task={t} />
@@ -394,6 +406,6 @@ function View() {
           />
         </Card>
       ) : null}
-    </div>
+    </PageStack>
   )
 }

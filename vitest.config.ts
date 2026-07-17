@@ -13,6 +13,8 @@ export default defineConfig({
     include: [
       'src/**/*.{test,spec}.{ts,tsx}',
       'tests/unit/**/*.{test,spec}.{ts,tsx}',
+      // F2-WF-0 data-foundation specs live at tests/*.spec.ts (not under unit/)
+      'tests/*.spec.ts',
     ],
     exclude: ['tests/e2e/**', 'node_modules/**', 'dist/**'],
   },

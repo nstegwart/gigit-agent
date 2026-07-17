@@ -19,6 +19,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { createFileRoute } from '@tanstack/react-router'
 
 import { registerBoardTools, resolveMcpRuntimeContext, type McpAuthContext } from '#/server/board-mcp'
+import { registerKnowledgeTools } from '#/server/knowledge-tools'
 import { envVar } from '#/server/db'
 import { peekControlPlaneRuntimeContext } from '#/server/control-plane-runtime-context'
 import {
@@ -515,6 +516,8 @@ async function handle(request: Request): Promise<Response> {
   })
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION })
   registerBoardTools(server, authWithIp)
+  // Product knowledge tools (features/pages/endpoints/flows). Read-only; safe skip on name clash.
+  registerKnowledgeTools(server)
   try {
     await server.connect(transport)
     try {

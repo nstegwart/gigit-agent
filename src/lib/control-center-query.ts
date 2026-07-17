@@ -604,11 +604,18 @@ export function createDefaultControlCenterFetchers(): ControlCenterFetchers {
   return {
     overview: async ({ boardId }) => {
       const { getControlCenterOverviewFn } = await import('#/server/control-center-ui-fns')
-      const { attachAdaptiveMappingToEnvelope } = await import('#/lib/mapping-envelope-attach')
       const envelope = asPinned<OverviewData>(
         await getControlCenterOverviewFn({ data: { boardId } }),
       )
+      // mapping-version-loader → db/mysql2. Never pull it into the client graph.
+      // Vite replaces import.meta.env.SSR=false on client and DCE's this branch.
+      if (!import.meta.env.SSR) {
+        return envelope
+      }
       try {
+        const { attachAdaptiveMappingToEnvelope } = await import(
+          '#/lib/mapping-envelope-attach'
+        )
         const { loadBoardAdaptiveMappingSurface } = await import(
           '#/server/mapping-version-loader'
         )

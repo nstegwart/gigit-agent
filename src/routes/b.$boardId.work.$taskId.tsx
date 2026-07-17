@@ -17,7 +17,9 @@ import {
   getDefaultControlCenterFetchers,
   taskLineageQueryOptions,
 } from '#/lib/control-center-query'
-import { getControlCenterTaskFn } from '#/server/control-center-ui-fns'
+// Value import of control-center-ui-fns is dynamic below — that module
+// static-imports control-center-ui-adapter → db/mysql2. Keep type-only
+// rebuild-fns import so server store graph never enters the client chunk.
 import type { TaskLineageData } from '#/server/control-center-rebuild-fns'
 
 const taskSearchSchema = z.object({
@@ -48,6 +50,9 @@ function WorkTaskDetailRoute() {
   const q = useQuery({
     queryKey: ['control-center', 'task', boardId, taskId],
     queryFn: async () => {
+      const { getControlCenterTaskFn } = await import(
+        '#/server/control-center-ui-fns'
+      )
       const wire = await getControlCenterTaskFn({ data: { boardId, taskId } })
       return wire as PinnedEnvelope<unknown>
     },
