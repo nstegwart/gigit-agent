@@ -3,6 +3,7 @@ import {
   pinnedSurfaceDataAttrs,
   type PinnedSurfaceMeta,
 } from '#/components/control-center/PinnedSurface'
+import { Button, Disclosure, EmptyState, Skeleton } from '#/components/ui'
 import type { PriorityUiState } from './constants'
 import styles from './priority.module.css'
 
@@ -130,22 +131,24 @@ export function PriorityStateShell({
             ) : null}
           </p>
           {errorCode ? (
-            <details className={styles.details}>
-              <summary className={styles.detailsSummary}>Detail teknis</summary>
+            <Disclosure summary="Detail teknis" data-testid="priority-error-disclosure">
               <p className={styles.errorCode}>
                 Code: <code data-testid="priority-error-code">{errorCode}</code>
               </p>
-            </details>
+            </Disclosure>
           ) : null}
           {(uiState === 'error' || uiState === 'disconnected') && onRetry ? (
-            <button
-              type="button"
-              className={styles.retryBtn}
-              onClick={onRetry}
-              data-testid="priority-retry"
-            >
-              Coba lagi
-            </button>
+            <div className={styles.bannerActions}>
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                onClick={onRetry}
+                data-testid="priority-retry"
+              >
+                Coba lagi
+              </Button>
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -158,24 +161,26 @@ export function PriorityStateShell({
           aria-busy="true"
           aria-label="Memuat portofolio prioritas"
         >
-          <div className={styles.skeletonBlock} />
-          <div className={styles.skeletonBlock} />
-          <div className={styles.skeletonBlock} />
+          <Skeleton className={styles.skeletonBlock} height={88} width="100%" />
+          <Skeleton className={styles.skeletonBlock} height={88} width="100%" />
+          <Skeleton className={styles.skeletonBlock} height={88} width="100%" />
         </div>
       ) : null}
 
       {uiState === 'empty' || uiState === 'zero-results' || uiState === 'forbidden' ? (
-        <div className={styles.emptyPanel} data-testid={`priority-state-${uiState}`} role="status">
-          <h2 className={styles.emptyTitle}>{meta.title}</h2>
-          <p className={styles.emptyBody}>{errorMessage ?? meta.body}</p>
-        </div>
+        <EmptyState
+          data-testid={`priority-state-${uiState}`}
+          title={meta.title}
+          description={errorMessage ?? meta.body}
+        />
       ) : null}
 
       {uiState === 'disconnected' && !onRetry ? (
-        <div className={styles.emptyPanel} data-testid="priority-state-disconnected" role="alert">
-          <h2 className={styles.emptyTitle}>{meta.title}</h2>
-          <p className={styles.emptyBody}>{errorMessage ?? meta.body}</p>
-        </div>
+        <EmptyState
+          data-testid="priority-state-disconnected"
+          title={meta.title}
+          description={errorMessage ?? meta.body}
+        />
       ) : null}
 
       {/* Content when not blocking (populated / partial / stale / needs-human). */}

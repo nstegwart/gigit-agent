@@ -1,9 +1,10 @@
 /**
- * W-UI-1 Rebuild dashboard — SPEC §3.A + §4 + ADDENDUM V1.1 §B (3 bars later on feature 360).
+ * FAN-REBUILD — Rebuild dashboard · Direction B (presentation only).
+ * SPEC §3.A + §4 + ADDENDUM V1.1 §B. Blindspot via BlindspotTracer.
  * Prop-driven; no client recomputation of denominators beyond display formatting.
- * All copy id-ID. Semantic colors only via CSS tokens.
+ * All copy id-ID. Compose #/components/ui primitives + design tokens only.
  */
-import { useCallback, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState } from 'react'
 
 import type {
   RebuildChipTone,
@@ -12,6 +13,27 @@ import type {
   RebuildFeatureCard,
   RebuildHistoryPoint,
 } from '#/server/control-center-rebuild-fns'
+import {
+  Badge,
+  Breadcrumb,
+  Button,
+  Card,
+  Disclosure,
+  EmptyState,
+  KpiStat,
+  PageHeader,
+  Pagination,
+  Pill,
+  ProgressBar,
+  Skeleton,
+  StatusChip,
+  Table,
+  Tabs,
+  Toolbar,
+  type StatusChipVariant,
+  type TableColumn,
+} from '#/components/ui'
+import { BlindspotTracer } from './BlindspotTracer'
 import styles from './rebuild.module.css'
 
 export type RebuildSurfaceState =
@@ -29,24 +51,21 @@ export type RebuildDashboardScreenProps = {
   liveMessage?: string
   errorMessage?: string | null
   onRetry?: () => void
-  /** Blindspot: fetch via /api/rebuild-parity?view=blindspot (W-API-1). Injectable for tests. */
+  /** Blindspot tracer (W-UI-4): injectable for tests; default hits /api/rebuild-parity?view=blindspot. */
   onTraceBlindspot?: (term: string) => Promise<unknown>
   className?: string
 }
 
-function chipClass(tone: RebuildChipTone): string {
-  if (tone === 'ok') return `${styles.chip} ${styles.chipOk}`
-  if (tone === 'warn') return `${styles.chip} ${styles.chipWarn}`
-  if (tone === 'blocked') return `${styles.chip} ${styles.chipBlocked}`
-  return `${styles.chip} ${styles.chipMuted}`
+const PAGE_SIZE_DEFAULT = 25
+
+function chipToneToVariant(tone: RebuildChipTone): StatusChipVariant {
+  if (tone === 'ok') return 'done'
+  if (tone === 'warn') return 'warn'
+  if (tone === 'blocked') return 'blocked'
+  return 'pending'
 }
 
-function barWidthPct(mappedPct: number | null | undefined): string {
-  if (mappedPct == null || !Number.isFinite(mappedPct)) return '0%'
-  return `${Math.max(0, Math.min(100, mappedPct))}%`
-}
-
-/** Inline SVG sparkline — no chart library (WORKER_CONTRACT). */
+/** Inline SVG sparkline — monochrome Direction B; no chart library. */
 export function RebuildSparkline({
   history,
   width = 480,
@@ -104,16 +123,16 @@ export function RebuildSparkline({
     >
       <defs>
         <linearGradient id="rbSparkFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--ok, #067647)" stopOpacity="0.28" />
-          <stop offset="100%" stopColor="var(--ok, #067647)" stopOpacity="0.02" />
+          <stop offset="0%" stopColor="var(--text)" stopOpacity="0.12" />
+          <stop offset="100%" stopColor="var(--text)" stopOpacity="0.01" />
         </linearGradient>
       </defs>
       {areaD ? <path d={areaD} fill="url(#rbSparkFill)" /> : null}
       <path
         d={lineD}
         fill="none"
-        stroke="var(--ok, #067647)"
-        strokeWidth="2"
+        stroke="var(--text)"
+        strokeWidth="1.5"
         strokeLinejoin="round"
         strokeLinecap="round"
       />
@@ -121,8 +140,8 @@ export function RebuildSparkline({
         <circle
           cx={coords[coords.length - 1]!.x}
           cy={coords[coords.length - 1]!.y}
-          r="3.5"
-          fill="var(--ok, #067647)"
+          r="3"
+          fill="var(--text)"
         />
       ) : null}
     </svg>
@@ -130,6 +149,11 @@ export function RebuildSparkline({
 }
 
 function FeatureCard({ card }: { card: RebuildFeatureCard }) {
+  const progressLabel =
+    card.mappedPct != null
+      ? `${card.mapped100}/${card.measuredN} (${card.mappedPct}%)`
+      : `${card.mapped100}/${card.measuredN}`
+
   return (
     <a
       className={styles.featureCard}
@@ -138,22 +162,18 @@ function FeatureCard({ card }: { card: RebuildFeatureCard }) {
       data-feature-id={card.featureId}
     >
       <div className={styles.featureName}>{card.namaId}</div>
-      <div className={styles.miniBarMeta}>
-        <div className={styles.miniBarTrack} aria-hidden="true">
-          <div
-            className={styles.miniBarFill}
-            style={{ width: barWidthPct(card.mappedPct) }}
-          />
-        </div>
-        <span className={styles.miniBarNums}>
-          {card.mapped100}/{card.measuredN}
-          {card.mappedPct != null ? ` (${card.mappedPct}%)` : ''}
-        </span>
+      <div className={styles.featureId} title={card.featureId}>
+        {card.featureId}
       </div>
+      <ProgressBar
+        value={card.mapped100}
+        max={card.measuredN || 0}
+        label={progressLabel}
+      />
       <div className={styles.featureMeta}>
         {card.taskCount} task · {card.unitCount} unit
       </div>
-      <span className={styles.domainChip}>{card.domainBisnis}</span>
+      <Badge variant="neutral">{card.domainBisnis}</Badge>
     </a>
   )
 }
@@ -205,22 +225,160 @@ function DomainExpand({
   )
 }
 
-function EmptyMigratedState({ label }: { label: string }) {
+function DomainTablePanel({ domains }: { domains: Array<RebuildDomainRow> }) {
+  const [search, setSearch] = useState('')
+  const [onlyWithFeatures, setOnlyWithFeatures] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT)
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return domains.filter((d) => {
+      if (onlyWithFeatures && d.featureCount <= 0) return false
+      if (!q) return true
+      return d.domainBisnis.toLowerCase().includes(q)
+    })
+  }, [domains, search, onlyWithFeatures])
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const safePage = Math.min(page, pageCount)
+  const pageRows = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
+
+  const columns: Array<TableColumn<RebuildDomainRow>> = [
+    {
+      id: 'domain',
+      header: 'Domain',
+      cell: (row) => (
+        <span className={styles.domainName}>{row.domainBisnis}</span>
+      ),
+    },
+    {
+      id: 'features',
+      header: 'Fitur',
+      align: 'right',
+      mono: true,
+      cell: (row) => row.featureCount,
+    },
+    {
+      id: 'tasks',
+      header: 'Task',
+      align: 'right',
+      mono: true,
+      cell: (row) => row.taskCount,
+    },
+    {
+      id: 'proven',
+      header: 'Terbukti pindah',
+      cell: (row) => {
+        const label =
+          row.mappedPct != null
+            ? `${row.mapped100}/${row.measuredN} (${row.mappedPct}%)`
+            : `${row.mapped100}/${row.measuredN}`
+        return (
+          <div className={styles.progressCell}>
+            <ProgressBar
+              value={row.mapped100}
+              max={row.measuredN || 0}
+              label={label}
+            />
+          </div>
+        )
+      },
+    },
+  ]
+
   return (
-    <div
-      className={styles.emptyState}
-      data-testid="rebuild-empty-state"
-      role="status"
+    <Card
+      data-testid="rebuild-domain-table-section"
+      title="Per domain bisnis"
+      subtitle={
+        domains.length
+          ? `${domains.length} domain pada snapshot parity`
+          : 'Domain bisnis terlacak'
+      }
+      flush
     >
-      <div className={styles.emptyIcon} aria-hidden="true">
-        ∅
+      <div className={styles.tableToolbar}>
+        <Toolbar
+          searchProps={{
+            value: search,
+            onChange: (e) => {
+              setSearch(e.target.value)
+              setPage(1)
+            },
+            placeholder: 'Cari domain…',
+            'aria-label': 'Cari domain',
+          }}
+          filters={
+            <>
+              <Pill
+                active={!onlyWithFeatures}
+                onClick={() => {
+                  setOnlyWithFeatures(false)
+                  setPage(1)
+                }}
+              >
+                Semua
+              </Pill>
+              <Pill
+                active={onlyWithFeatures}
+                onClick={() => {
+                  setOnlyWithFeatures(true)
+                  setPage(1)
+                }}
+              >
+                Ada fitur
+              </Pill>
+            </>
+          }
+        />
       </div>
-      <h2 className={styles.emptyTitle}>{label}</h2>
-      <p className={styles.emptyBody}>
-        Layar ini siap menampilkan progres legacy→rebuild setelah tabel lineage dan
-        product features diaktifkan. Tidak ada error — data belum tersedia.
-      </p>
-    </div>
+      <Table
+        data-testid="rebuild-domain-table"
+        columns={columns}
+        rows={pageRows}
+        rowKey={(r) => r.domainBisnis}
+        empty="Tidak ada domain yang cocok."
+        caption="Per domain bisnis"
+        aria-label="Tabel per domain bisnis"
+      />
+      {filtered.length > 0 ? (
+        <div className={styles.tableFooter}>
+          <Pagination
+            page={safePage}
+            pageSize={pageSize}
+            total={filtered.length}
+            onPageChange={setPage}
+            onPageSizeChange={(n) => {
+              setPageSize(n)
+              setPage(1)
+            }}
+          />
+        </div>
+      ) : null}
+    </Card>
+  )
+}
+
+function FeaturesByDomainPanel({ domains }: { domains: Array<RebuildDomainRow> }) {
+  const firstWith = domains.find((d) => d.topFeatures.length > 0)
+
+  return (
+    <Card
+      data-testid="rebuild-domain-features"
+      title="Fitur teratas per domain"
+      subtitle="Nama fitur human-readable; id teknis mono sekunder"
+    >
+      <div className={styles.domainBlocks}>
+        {domains.map((d) => (
+          <DomainExpand
+            key={d.domainBisnis}
+            row={d}
+            defaultOpen={d.domainBisnis === firstWith?.domainBisnis}
+          />
+        ))}
+      </div>
+    </Card>
   )
 }
 
@@ -237,55 +395,21 @@ export function RebuildDashboardScreen({
   onTraceBlindspot,
   className,
 }: RebuildDashboardScreenProps) {
-  const [term, setTerm] = useState('')
-  const [traceLoading, setTraceLoading] = useState(false)
-  const [traceJson, setTraceJson] = useState<string | null>(null)
-  const [traceError, setTraceError] = useState<string | null>(null)
-
-  const defaultTrace = useCallback(
-    async (q: string) => {
-      const params = new URLSearchParams({
-        view: 'blindspot',
-        boardId,
-        term: q,
-      })
-      const res = await fetch(`/api/rebuild-parity?${params.toString()}`, {
-        credentials: 'same-origin',
-        headers: { accept: 'application/json' },
-      })
-      const body = (await res.json().catch(() => null)) as unknown
-      return body
-    },
-    [boardId],
-  )
-
-  const runTrace = useCallback(
-    async (e?: FormEvent) => {
-      e?.preventDefault()
-      const q = term.trim()
-      if (!q) return
-      setTraceLoading(true)
-      setTraceError(null)
-      try {
-        const fn = onTraceBlindspot ?? defaultTrace
-        const body = await fn(q)
-        setTraceJson(JSON.stringify(body, null, 2))
-      } catch {
-        setTraceError('Gagal menelusuri blindspot. Coba lagi nanti.')
-        setTraceJson(null)
-      } finally {
-        setTraceLoading(false)
-      }
-    },
-    [term, onTraceBlindspot, defaultTrace],
-  )
-
   const live = liveMessage ?? ''
 
   const domains: Array<RebuildDomainRow> = useMemo(() => {
     if (data?.available) return data.domains
     return []
   }, [data])
+
+  const crumb = (
+    <Breadcrumb
+      items={[
+        { label: 'Papan', href: `/b/${encodeURIComponent(boardId)}` },
+        { label: 'Rebuild' },
+      ]}
+    />
+  )
 
   if (surfaceState === 'loading' && !data) {
     return (
@@ -297,13 +421,21 @@ export function RebuildDashboardScreen({
         <div className={styles.liveRegion} aria-live="polite">
           Memuat dasbor rebuild…
         </div>
-        <header className={styles.pageHead}>
-          <div>
-            <p className={styles.eyebrow}>Kontrol rebuild</p>
-            <h1 className={styles.pageTitle}>Rebuild</h1>
-            <p className={styles.pageSub}>Memuat data progres legacy→rebuild…</p>
+        <PageHeader
+          breadcrumb={crumb}
+          eyebrow="Kontrol rebuild"
+          title="Rebuild"
+          subtitle="Memuat data progres legacy→rebuild…"
+        />
+        <Card>
+          <Skeleton height={28} width="40%" />
+          <div className={styles.kpiHeroBar}>
+            <Skeleton height={48} width="60%" />
           </div>
-        </header>
+          <div className={styles.kpiHeroBar}>
+            <Skeleton height={12} width="100%" />
+          </div>
+        </Card>
       </div>
     )
   }
@@ -313,29 +445,39 @@ export function RebuildDashboardScreen({
     surfaceState === 'forbidden' ||
     surfaceState === 'disconnected'
   ) {
+    const title =
+      surfaceState === 'forbidden'
+        ? 'Akses ditolak'
+        : surfaceState === 'disconnected'
+          ? 'Koneksi terputus'
+          : 'Gagal memuat'
     return (
       <div
         className={[styles.root, className].filter(Boolean).join(' ')}
         data-testid="rebuild-dashboard"
         data-surface={surfaceState}
       >
-        <div className={`${styles.banner} ${styles.banner_error}`} role="alert">
-          <p className={styles.bannerTitle}>
-            {surfaceState === 'forbidden'
-              ? 'Akses ditolak'
-              : surfaceState === 'disconnected'
-                ? 'Koneksi terputus'
-                : 'Gagal memuat'}
-          </p>
-          <p className={styles.bannerBody}>
-            {errorMessage ?? 'Dasbor rebuild tidak dapat dimuat.'}
-          </p>
-          {onRetry ? (
-            <button type="button" className={styles.retryBtn} onClick={onRetry}>
-              Coba lagi
-            </button>
-          ) : null}
-        </div>
+        <PageHeader
+          breadcrumb={crumb}
+          eyebrow="Kontrol rebuild"
+          title="Rebuild"
+        />
+        <Card>
+          <EmptyState
+            title={title}
+            description={errorMessage ?? 'Dasbor rebuild tidak dapat dimuat.'}
+            action={
+              onRetry ? (
+                <Button type="button" variant="primary" onClick={onRetry}>
+                  Coba lagi
+                </Button>
+              ) : undefined
+            }
+          />
+          <div role="alert" className="sr-only">
+            {title}. {errorMessage ?? 'Dasbor rebuild tidak dapat dimuat.'}
+          </div>
+        </Card>
       </div>
     )
   }
@@ -352,16 +494,17 @@ export function RebuildDashboardScreen({
         <div className={styles.liveRegion} aria-live="polite">
           {data.emptyStateLabelId}
         </div>
-        <header className={styles.pageHead}>
-          <div>
-            <p className={styles.eyebrow}>Kontrol rebuild</p>
-            <h1 className={styles.pageTitle}>Rebuild</h1>
-            <p className={styles.pageSub}>
-              Progres terbukti pindah dari legacy ke rebuild.
-            </p>
-          </div>
-        </header>
-        <EmptyMigratedState label={data.emptyStateLabelId} />
+        <PageHeader
+          breadcrumb={crumb}
+          eyebrow="Kontrol rebuild"
+          title="Rebuild"
+          subtitle="Progres terbukti pindah dari legacy ke rebuild."
+        />
+        <EmptyState
+          data-testid="rebuild-empty-state"
+          title={data.emptyStateLabelId}
+          description="Layar ini siap menampilkan progres legacy→rebuild setelah tabel lineage dan product features diaktifkan. Tidak ada error — data belum tersedia."
+        />
       </div>
     )
   }
@@ -373,13 +516,16 @@ export function RebuildDashboardScreen({
         data-testid="rebuild-dashboard"
         data-surface="empty"
       >
-        <EmptyMigratedState label="Data rebuild belum tersedia." />
+        <EmptyState
+          data-testid="rebuild-empty-state"
+          title="Data rebuild belum tersedia."
+          description="Layar ini siap menampilkan progres legacy→rebuild setelah tabel lineage dan product features diaktifkan. Tidak ada error — data belum tersedia."
+        />
       </div>
     )
   }
 
   const { kpi, freshness, disclaimerId, chips, history } = data
-  const firstDomainWithFeatures = domains.find((d) => d.topFeatures.length > 0)
 
   return (
     <div
@@ -390,44 +536,40 @@ export function RebuildDashboardScreen({
       data-board-id={boardId}
     >
       <div className={styles.liveRegion} aria-live="polite">
-        {live ||
-          `${kpi.display} terbukti pindah · ${freshness.labelId}`}
+        {live || `${kpi.display} terbukti pindah · ${freshness.labelId}`}
       </div>
 
-      <header className={styles.pageHead}>
-        <div>
-          <p className={styles.eyebrow}>Kontrol rebuild</p>
-          <h1 className={styles.pageTitle}>Rebuild</h1>
-          <p className={styles.pageSub}>
-            Progres terbukti pindah dari legacy ke rebuild (bukti kode, bukan siap
-            produksi).
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        breadcrumb={crumb}
+        eyebrow="Kontrol rebuild"
+        title="Rebuild"
+        subtitle="Progres terbukti pindah dari legacy ke rebuild (bukti kode, bukan siap produksi)."
+      />
 
-      {/* 1. KPI hero */}
-      <section
-        className={styles.kpiHero}
-        aria-labelledby="rebuild-kpi-label"
+      {/* 1. KPI hero + chip breakdown */}
+      <Card
         data-testid="rebuild-kpi-hero"
+        aria-labelledby="rebuild-kpi-label"
       >
-        <div className={styles.kpiDisplay} data-testid="rebuild-kpi-display">
-          {kpi.display}
-        </div>
-        <p className={styles.kpiLabel} id="rebuild-kpi-label">
-          {kpi.labelId}
-          {kpi.mappedPct != null ? (
-            <>
-              {' '}
-              <span className={styles.kpiPct}>({kpi.mappedPct}%)</span>
-            </>
-          ) : null}
-        </p>
-        <div className={styles.heroBarTrack} aria-hidden="true">
-          <div
-            className={styles.heroBarFill}
-            style={{ width: barWidthPct(kpi.mappedPct) }}
-            data-testid="rebuild-kpi-bar"
+        <KpiStat
+          label={<span id="rebuild-kpi-label">{kpi.labelId}</span>}
+          value={<span data-testid="rebuild-kpi-display">{kpi.display}</span>}
+          hint={
+            kpi.mappedPct != null
+              ? `${kpi.mappedPct}% · ${freshness.labelId}`
+              : freshness.labelId
+          }
+        />
+        <div className={styles.kpiHeroBar} data-testid="rebuild-kpi-bar">
+          <ProgressBar
+            value={kpi.mapped100}
+            max={kpi.totalN || 0}
+            ok={kpi.mappedPct != null && kpi.mappedPct >= 100}
+            label={
+              kpi.mappedPct != null
+                ? `${kpi.display} (${kpi.mappedPct}%)`
+                : kpi.display
+            }
           />
         </div>
         <div className={styles.kpiMeta}>
@@ -436,139 +578,71 @@ export function RebuildDashboardScreen({
         <p className={styles.disclaimer} data-testid="rebuild-disclaimer">
           {disclaimerId}
         </p>
-      </section>
-
-      {/* 2. Semantic chips */}
-      <div
-        className={styles.chipRow}
-        role="list"
-        aria-label="Rincian status parity"
-        data-testid="rebuild-chip-row"
-      >
-        {chips.map((c) => (
-          <span
-            key={c.key}
-            className={chipClass(c.tone)}
-            role="listitem"
-            data-chip={c.key}
-            data-tone={c.tone}
-          >
-            {c.labelId}
-            <span className={styles.chipCount}>{c.count}</span>
-          </span>
-        ))}
-      </div>
-
-      {/* 3. Trend sparkline */}
-      <section className={styles.trendCard} data-testid="rebuild-trend">
-        <h2 className={styles.sectionTitle}>Tren terbukti pindah</h2>
-        <RebuildSparkline history={history} />
-      </section>
-
-      {/* 4. Domain table */}
-      <section data-testid="rebuild-domain-table-section">
-        <h2 className={styles.sectionTitle}>Per domain bisnis</h2>
-        <div className={styles.tableWrap}>
-          <table className={styles.domainTable} data-testid="rebuild-domain-table">
-            <thead>
-              <tr>
-                <th scope="col">Domain</th>
-                <th scope="col">Fitur</th>
-                <th scope="col">Task</th>
-                <th scope="col">Terbukti pindah</th>
-              </tr>
-            </thead>
-            <tbody>
-              {domains.map((d) => (
-                <tr key={d.domainBisnis} data-domain-row={d.domainBisnis}>
-                  <td className={styles.domainName}>{d.domainBisnis}</td>
-                  <td>{d.featureCount}</td>
-                  <td>{d.taskCount}</td>
-                  <td>
-                    <div className={styles.miniBarMeta}>
-                      <div className={styles.miniBarTrack} aria-hidden="true">
-                        <div
-                          className={styles.miniBarFill}
-                          style={{ width: barWidthPct(d.mappedPct) }}
-                        />
-                      </div>
-                      <span className={styles.miniBarNums}>
-                        {d.mapped100}/{d.measuredN}
-                        {d.mappedPct != null ? ` (${d.mappedPct}%)` : ''}
-                      </span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {/* 5. Top features per domain (expand/collapse) */}
-      <section data-testid="rebuild-domain-features">
-        <h2 className={styles.sectionTitle}>Fitur teratas per domain</h2>
-        <div className={styles.domainBlocks}>
-          {domains.map((d) => (
-            <DomainExpand
-              key={d.domainBisnis}
-              row={d}
-              defaultOpen={d.domainBisnis === firstDomainWithFeatures?.domainBisnis}
-            />
+        <div
+          className={styles.kpiChipRow}
+          role="list"
+          aria-label="Rincian status parity"
+          data-testid="rebuild-chip-row"
+        >
+          {chips.map((c) => (
+            <span key={c.key} role="listitem" data-chip={c.key} data-tone={c.tone}>
+              <StatusChip variant={chipToneToVariant(c.tone)} showDot>
+                {c.labelId} {c.count}
+              </StatusChip>
+            </span>
           ))}
         </div>
-      </section>
+        <Disclosure summary="Detail teknis" data-testid="rebuild-kpi-tech">
+          <dl className={styles.techDl}>
+            <dt>Papan</dt>
+            <dd>{boardId}</dd>
+            <dt>mapped100</dt>
+            <dd>{kpi.mapped100}</dd>
+            <dt>totalN</dt>
+            <dd>{kpi.totalN}</dd>
+            <dt>capturedAt</dt>
+            <dd>{freshness.capturedAt ?? '—'}</dd>
+            <dt>ageSeconds</dt>
+            <dd>{freshness.ageSeconds ?? '—'}</dd>
+          </dl>
+        </Disclosure>
+      </Card>
 
-      {/* 6. Blindspot tracer placeholder */}
-      <section
-        className={styles.tracerCard}
-        data-testid="rebuild-blindspot-tracer"
-        aria-labelledby="rebuild-tracer-title"
-      >
-        <h2 className={styles.sectionTitle} id="rebuild-tracer-title">
-          Pelacak blindspot
-        </h2>
-        <form className={styles.tracerForm} onSubmit={runTrace}>
-          <label className="sr-only" htmlFor="rebuild-blindspot-input">
-            Telusuri akar masalah fitur
-          </label>
-          <input
-            id="rebuild-blindspot-input"
-            className={styles.tracerInput}
-            type="search"
-            value={term}
-            onChange={(e) => setTerm(e.target.value)}
-            placeholder="Telusuri akar masalah fitur…"
-            data-testid="rebuild-blindspot-input"
-            autoComplete="off"
-          />
-          <button
-            type="submit"
-            className={styles.tracerBtn}
-            disabled={traceLoading || !term.trim()}
-            data-testid="rebuild-blindspot-submit"
-          >
-            {traceLoading ? 'Menelusuri…' : 'Telusuri'}
-          </button>
-        </form>
-        <p className={styles.tracerHint}>
-          Placeholder W-UI-1 — hasil JSON dari{' '}
-          <code>/api/rebuild-parity?view=blindspot</code>. UI penuh menyusul W-UI-4.
-        </p>
-        {traceError ? (
-          <p className={styles.bannerBody} role="alert">
-            {traceError}
-          </p>
-        ) : null}
-        {traceJson ? (
-          <pre
-            className={styles.tracerPanel}
-            data-testid="rebuild-blindspot-result"
-          >
-            {traceJson}
-          </pre>
-        ) : null}
-      </section>
+      {/* 2. Trend sparkline */}
+      <Card data-testid="rebuild-trend" title="Tren terbukti pindah">
+        <Tabs
+          defaultValue="chart"
+          items={[
+            {
+              id: 'chart',
+              label: 'Grafik',
+              panel: <RebuildSparkline history={history} />,
+            },
+            {
+              id: 'ringkas',
+              label: 'Ringkas',
+              panel: (
+                <p className={styles.sparkEmpty}>
+                  {history.length === 0
+                    ? 'Belum ada riwayat pengukuran parity.'
+                    : `${history.length} titik riwayat · terbaru ${
+                        history[history.length - 1]?.mapped100 ?? '—'
+                      }/${history[history.length - 1]?.totalN ?? '—'} terbukti pindah.`}
+                </p>
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      {/* 3. Domain table + Toolbar + Pagination */}
+      <DomainTablePanel domains={domains} />
+
+      {/* 4. Top features per domain */}
+      <FeaturesByDomainPanel domains={domains} />
+
+      {/* 5. Blindspot tracer */}
+      <BlindspotTracer boardId={boardId} onTrace={onTraceBlindspot} />
     </div>
   )
 }

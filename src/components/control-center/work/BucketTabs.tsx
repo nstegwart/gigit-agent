@@ -5,17 +5,6 @@ import { BUCKET_SEMANTICS } from './labels'
 import { WORK_PRIMARY_BUCKETS, type WorkBucketCounts } from './types'
 import styles from './work.module.css'
 
-type BucketSemanticTone = (typeof BUCKET_SEMANTICS)[PrimaryBucket]['tone']
-
-const TONE_CLASS: Record<BucketSemanticTone, string> = {
-  done: styles.toneDone,
-  recon: styles.toneRecon,
-  ongoing: styles.toneOngoing,
-  next: styles.toneNext,
-  queued: styles.toneQueued,
-  blocked: styles.toneBlocked,
-}
-
 export interface BucketTabsProps {
   activeBucket: PrimaryBucket
   counts?: WorkBucketCounts | null
@@ -24,6 +13,12 @@ export interface BucketTabsProps {
   idPrefix?: string
 }
 
+/**
+ * Six exclusive primary Work tabs (UI_CONTRACT §6).
+ * STALE is never a tab — overlay filter only.
+ * Custom tablist retained for stable testids / roving tabindex;
+ * visual language matches Direction B Tabs (1px border, no shadow).
+ */
 export function BucketTabs({
   activeBucket,
   counts,
@@ -32,7 +27,6 @@ export function BucketTabs({
   idPrefix,
 }: BucketTabsProps) {
   const autoId = useId()
-  // Sanitize useId() (e.g. ":r1:") so aria-controls IDREFs are always valid.
   const rawPrefix = idPrefix ?? autoId
   const prefix = rawPrefix.replace(/[^A-Za-z0-9_-]/g, '')
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -63,14 +57,17 @@ export function BucketTabs({
       }
       const bucket = WORK_PRIMARY_BUCKETS[next]
       onChange?.(bucket)
-      // focus after selection for roving tabindex
       requestAnimationFrame(() => focusIndex(next))
     },
     [focusIndex, onChange],
   )
 
   return (
-    <div className={styles.tablist} role="tablist" aria-label="Work primary buckets">
+    <div
+      className={styles.tablist}
+      role="tablist"
+      aria-label="Bucket pekerjaan utama"
+    >
       {WORK_PRIMARY_BUCKETS.map((bucket, index) => {
         const sem = BUCKET_SEMANTICS[bucket]
         const selected = bucket === activeBucket
@@ -92,7 +89,7 @@ export function BucketTabs({
             disabled={disabled}
             data-bucket={bucket}
             data-testid={`work-tab-${bucket}`}
-            className={[styles.tab, TONE_CLASS[sem.tone], selected ? styles.tabSelected : '']
+            className={[styles.tab, selected ? styles.tabSelected : '']
               .filter(Boolean)
               .join(' ')}
             onClick={() => onChange?.(bucket)}

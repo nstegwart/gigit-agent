@@ -29,8 +29,23 @@ export interface AgentsPinView {
   staleReason: string | null
 }
 
+/**
+ * Owner humanDisplay projection (fail-closed).
+ * Adapter may leave fields null — screen falls back cleanly; never invents copy.
+ */
+export interface AgentOwnerHumanDisplayView {
+  ownerPrimaryTitle?: string | null
+  statusSentence?: string | null
+  ownerAction?: string | null
+  whyItMatters?: string | null
+  next?: string | null
+  blocker?: string | null
+  contentReviewRequired?: boolean
+  effectiveReviewStatus?: string | null
+}
+
 /** Zero-click ONGOING row — ages already formatted from server seconds. */
-export interface AgentOngoingRowView {
+export interface AgentOngoingRowView extends AgentOwnerHumanDisplayView {
   taskId: string
   title: string
   targetGate: string

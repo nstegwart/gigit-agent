@@ -3,6 +3,7 @@
  * Renders projected status/why/next/blocker/action/citations only.
  * Never invents copy; CONTENT_REVIEW_REQUIRED shell chrome when review required.
  */
+import { Disclosure, StatusChip } from '#/components/ui'
 import styles from './work.module.css'
 import type { OwnerDisplayResolved } from './ownerDisplay'
 
@@ -32,13 +33,13 @@ export function OwnerHumanFields({
       data-effective-review-status={effectiveReviewStatus}
     >
       {contentReviewRequired ? (
-        <span
-          className={styles.contentReviewBadge}
+        <StatusChip
+          variant="warn"
           data-testid={`${testIdPrefix}-review-badge`}
           role="status"
         >
           Perlu tinjauan konten
-        </span>
+        </StatusChip>
       ) : null}
 
       {statusSentence ? (
@@ -97,8 +98,7 @@ export function OwnerHumanFields({
       ) : null}
 
       {citations.length > 0 ? (
-        <details className={styles.citationDisclosure}>
-          <summary>{citations.length} sumber pendukung</summary>
+        <Disclosure summary={`${citations.length} sumber pendukung`}>
           <ul
             className={styles.ownerCitations}
             data-testid={`${testIdPrefix}-citations`}
@@ -121,7 +121,7 @@ export function OwnerHumanFields({
               </li>
             ))}
           </ul>
-        </details>
+        </Disclosure>
       ) : null}
     </div>
   )

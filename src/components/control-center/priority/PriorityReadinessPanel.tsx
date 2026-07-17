@@ -1,4 +1,11 @@
 import {
+  Card,
+  Disclosure,
+  KpiStat,
+  ProgressBar,
+  StatusChip,
+} from '#/components/ui'
+import {
   formatBoolean,
   formatCappedBy,
   formatReadinessPercent,
@@ -26,101 +33,136 @@ export function PriorityReadinessPanel(props: PriorityReadinessProps) {
   const boardDisplay = formatReadinessPercent(boardReadinessPercent)
   const rawDisplay = formatReadinessPercent(rawTaskReadinessPercent)
   const isNaBoard = boardDisplay === 'N-A'
-  const completeClass = complete ? styles.semanticOk : styles.semanticFail
   const cappedRaw = formatCappedBy(cappedBy)
+  const boardValue =
+    boardReadinessPercent == null || Number.isNaN(boardReadinessPercent)
+      ? 0
+      : boardReadinessPercent
 
   return (
-    <section
-      className={styles.panel}
+    <Card
       aria-labelledby="priority-readiness-heading"
       data-testid="priority-readiness"
       data-complete={complete ? 'true' : 'false'}
       data-capped-by={cappedBy ?? 'null'}
+      title={<span id="priority-readiness-heading">Kesiapan (dari server)</span>}
+      headerActions={
+        complete ? (
+          <StatusChip variant="done">Selesai</StatusChip>
+        ) : (
+          <StatusChip variant="ongoing">Belum complete</StatusChip>
+        )
+      }
     >
-      <header className={styles.panelHead}>
-        <h2 id="priority-readiness-heading" className={styles.panelTitle}>
-          Kesiapan (dari server)
-        </h2>
-      </header>
+      <div className={styles.stack}>
+        <div className={styles.progressBlock}>
+          <ProgressBar
+            value={boardValue}
+            max={100}
+            ok={complete === true}
+            label={
+              isNaBoard
+                ? 'N-A — kesiapan board tidak dihitung'
+                : `Kesiapan board ${boardDisplay}%`
+            }
+          />
+        </div>
 
-      <dl className={styles.statGrid}>
-        <div className={styles.stat}>
-          <dt title="boardReadinessPercent">Kesiapan board (%)</dt>
-          <dd
-            data-testid="priority-board-readiness"
-            className={isNaBoard ? styles.semanticNa : undefined}
-          >
-            {boardDisplay}
-          </dd>
-        </div>
-        <div className={styles.stat}>
-          <dt title="rawTaskReadinessPercent">Kesiapan tugas mentah (%)</dt>
-          <dd
-            data-testid="priority-raw-readiness"
-            className={rawDisplay === 'N-A' ? styles.semanticNa : undefined}
-          >
-            {rawDisplay}
-          </dd>
-        </div>
-        <div className={styles.stat}>
-          <dt title="complete">Selesai (complete)</dt>
-          <dd data-testid="priority-complete" className={completeClass}>
-            <span className={styles.semanticIcon} aria-hidden="true">
-              {complete ? '✓' : '✗'}
-            </span>
-            {humanBoolean(complete, 'Ya — board dinyatakan complete.', 'Belum complete.')}{' '}
-            <code className={styles.mono} title="complete raw boolean">
-              {formatBoolean(complete)}
-            </code>
-          </dd>
-        </div>
-        <div className={styles.stat}>
-          <dt title="cappedBy">Dibatasi oleh</dt>
-          <dd>
-            <span>{humanCappedBy(cappedBy)}</span>
-            <div>
-              <code
-                data-testid="priority-capped-by"
-                className={styles.mono}
-                title={cappedRaw}
+        <div className={styles.kpiRow}>
+          <KpiStat
+            size="sm"
+            label="Kesiapan board (%)"
+            value={
+              <span
+                data-testid="priority-board-readiness"
+                title="boardReadinessPercent"
+                className={isNaBoard ? styles.semanticNa : undefined}
               >
-                {cappedRaw}
-              </code>
-            </div>
-          </dd>
+                {boardDisplay}
+              </span>
+            }
+          />
+          <KpiStat
+            size="sm"
+            label="Kesiapan tugas mentah (%)"
+            value={
+              <span
+                data-testid="priority-raw-readiness"
+                title="rawTaskReadinessPercent"
+                className={rawDisplay === 'N-A' ? styles.semanticNa : undefined}
+              >
+                {rawDisplay}
+              </span>
+            }
+          />
+          <KpiStat
+            size="sm"
+            label="Selesai (complete)"
+            value={
+              <span
+                data-testid="priority-complete"
+                className={complete ? styles.semanticOk : styles.semanticFail}
+              >
+                {humanBoolean(complete, 'Ya — board dinyatakan complete.', 'Belum complete.')}{' '}
+                <code className={styles.mono} title="complete raw boolean">
+                  {formatBoolean(complete)}
+                </code>
+              </span>
+            }
+          />
+          <KpiStat
+            size="sm"
+            label="Dibatasi oleh"
+            value={
+              <span>
+                <span>{humanCappedBy(cappedBy)}</span>
+                <div>
+                  <code
+                    data-testid="priority-capped-by"
+                    className={styles.mono}
+                    title={cappedRaw}
+                  >
+                    {cappedRaw}
+                  </code>
+                </div>
+              </span>
+            }
+          />
+          <KpiStat
+            size="sm"
+            label="G5 lolos (rollup)"
+            value={
+              <span
+                data-testid="priority-readiness-g5-pass"
+                className={g5Pass ? styles.semanticOk : styles.semanticFail}
+              >
+                {humanBoolean(g5Pass, 'Sembilan domain G5 lolos.', 'G5 belum lolos.')}{' '}
+                <code className={styles.mono}>{formatBoolean(g5Pass)}</code>
+              </span>
+            }
+          />
         </div>
-        <div className={styles.stat}>
-          <dt title="g5Pass">G5 lolos (rollup)</dt>
-          <dd
-            data-testid="priority-readiness-g5-pass"
-            className={g5Pass ? styles.semanticOk : styles.semanticFail}
-          >
-            <span className={styles.semanticIcon} aria-hidden="true">
-              {g5Pass ? '✓' : '✗'}
-            </span>
-            {humanBoolean(g5Pass, 'Sembilan domain G5 lolos.', 'G5 belum lolos.')}{' '}
-            <code className={styles.mono}>{formatBoolean(g5Pass)}</code>
-          </dd>
-        </div>
-      </dl>
 
-      {(taskReadinessPolicyVersion || boardReadinessPolicyVersion) && (
-        <details className={styles.details} data-testid="priority-readiness-policy">
-          <summary className={styles.detailsSummary}>Detail teknis — versi kebijakan</summary>
-          <p className={styles.policyLine}>
-            {taskReadinessPolicyVersion ? (
-              <span>
-                Kebijakan tugas: <code>{taskReadinessPolicyVersion}</code>
-              </span>
-            ) : null}
-            {boardReadinessPolicyVersion ? (
-              <span>
-                Kebijakan board: <code>{boardReadinessPolicyVersion}</code>
-              </span>
-            ) : null}
-          </p>
-        </details>
-      )}
-    </section>
+        {(taskReadinessPolicyVersion || boardReadinessPolicyVersion) && (
+          <Disclosure
+            summary="Detail teknis — versi kebijakan"
+            data-testid="priority-readiness-policy"
+          >
+            <p className={styles.policyLine}>
+              {taskReadinessPolicyVersion ? (
+                <span>
+                  Kebijakan tugas: <code className={styles.mono}>{taskReadinessPolicyVersion}</code>
+                </span>
+              ) : null}
+              {boardReadinessPolicyVersion ? (
+                <span>
+                  Kebijakan board: <code className={styles.mono}>{boardReadinessPolicyVersion}</code>
+                </span>
+              ) : null}
+            </p>
+          </Disclosure>
+        )}
+      </div>
+    </Card>
   )
 }

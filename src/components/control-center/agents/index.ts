@@ -5,5 +5,6 @@ export type {
   AgentOngoingRowView,
   AgentRunRowView,
   AgentsPinView,
+  AgentOwnerHumanDisplayView,
   ProductiveSubstateView,
 } from './types'

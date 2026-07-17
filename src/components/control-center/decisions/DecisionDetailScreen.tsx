@@ -1,10 +1,20 @@
 /**
  * ART S12 decision detail shell from pinned decisions envelope.
+ * Direction B kit: PageHeader / Breadcrumb / Card / Disclosure / EmptyState / Button.
  * Page title uses owner humanDisplay (blockedShell when unreviewed) — never raw technical title alone.
  */
+import {
+  Breadcrumb,
+  Button,
+  Card,
+  Disclosure,
+  EmptyState,
+  PageHeader,
+} from '#/components/ui'
 import type { DecisionDetailViewModel } from '#/lib/control-center-route-adapters'
 import { DecisionCard } from './DecisionCard'
 import { resolveDecisionOwnerDisplay } from './decisionActions'
+import styles from './decisions.module.css'
 
 export type DecisionDetailScreenProps = DecisionDetailViewModel & {
   onRetry?: () => void
@@ -24,10 +34,17 @@ export function DecisionDetailScreen({
 }: DecisionDetailScreenProps) {
   const owner = item ? resolveDecisionOwnerDisplay(item) : null
   const pageTitle = owner?.primaryTitle ?? 'Keputusan tidak ditemukan'
+  const techSecondary =
+    owner && owner.technicalTitle && owner.technicalTitle !== owner.primaryTitle
+      ? owner.technicalTitle
+      : decisionId !== pageTitle
+        ? decisionId
+        : null
+  const boardHref = `/b/${encodeURIComponent(boardId)}`
 
   return (
     <section
-      className={className}
+      className={[styles.detailRoot, className].filter(Boolean).join(' ')}
       data-testid="control-center-decision-detail"
       data-surface-state={surfaceState}
       data-board-id={boardId}
@@ -36,38 +53,65 @@ export function DecisionDetailScreen({
         owner?.contentReviewRequired ? 'true' : owner ? 'false' : undefined
       }
     >
-      <header style={{ marginBottom: 16 }}>
-        <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: 0 }}>Detail keputusan</p>
-        <h1 style={{ fontSize: 22, margin: '4px 0 8px' }} data-testid="decision-detail-title">
-          {pageTitle}
-        </h1>
-        {owner?.statusSentence ? (
-          <p
-            style={{ margin: '0 0 8px', color: 'var(--text-muted)' }}
-            data-testid="decision-detail-status-sentence"
-          >
-            {owner.statusSentence}
-          </p>
-        ) : null}
-        <a href={listHref} data-testid="decision-detail-back">
-          ← Kotak masuk keputusan
-        </a>
-        {onRetry ? (
-          <button
-            type="button"
-            onClick={onRetry}
-            data-testid="decision-detail-retry"
-            style={{ marginLeft: 12 }}
-          >
-            Muat ulang
-          </button>
-        ) : null}
-      </header>
+      <PageHeader
+        eyebrow="Detail keputusan"
+        title={<span data-testid="decision-detail-title">{pageTitle}</span>}
+        subtitle={
+          owner?.statusSentence ? (
+            <span data-testid="decision-detail-status-sentence">
+              {owner.statusSentence}
+            </span>
+          ) : techSecondary ? (
+            <span className={styles.techSecondary}>{techSecondary}</span>
+          ) : null
+        }
+        breadcrumb={
+          <Breadcrumb
+            items={[
+              { label: 'Board', href: boardHref },
+              { label: 'Keputusan', href: listHref },
+              { label: pageTitle },
+            ]}
+          />
+        }
+        actions={
+          <>
+            <Button
+              variant="secondary"
+              size="sm"
+              data-testid="decision-detail-back"
+              onClick={() => {
+                window.location.assign(listHref)
+              }}
+            >
+              Kotak masuk keputusan
+            </Button>
+            {onRetry ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onRetry}
+                data-testid="decision-detail-retry"
+              >
+                Muat ulang
+              </Button>
+            ) : null}
+          </>
+        }
+      />
 
       {error && !item ? (
-        <div role="alert" data-testid="decision-detail-error">
-          {error.code}: {error.message}
-        </div>
+        <Card role="alert" data-testid="decision-detail-error" title="Kesalahan">
+          <p className={styles.bannerBody}>
+            {error.code}: {error.message}
+          </p>
+          {onRetry ? (
+            <Button type="button" variant="primary" size="sm" onClick={onRetry}>
+              Coba lagi
+            </Button>
+          ) : null}
+        </Card>
       ) : null}
 
       {item ? (
@@ -75,19 +119,41 @@ export function DecisionDetailScreen({
           <DecisionCard item={item} boardId={boardId} canAct={false} />
         </div>
       ) : (
-        <p data-testid="decision-detail-missing" role="status">
-          Keputusan <code>{decisionId}</code> tidak ada di pin inbox saat ini.
-        </p>
+        <EmptyState
+          data-testid="decision-detail-missing"
+          title="Keputusan tidak ada"
+          description={`Keputusan ${decisionId} tidak ada di pin inbox saat ini.`}
+          action={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => window.location.assign(listHref)}
+            >
+              Kembali ke kotak masuk
+            </Button>
+          }
+        />
       )}
 
       {pin ? (
-        <footer
-          data-testid="decision-detail-pin"
-          style={{ marginTop: 24, fontSize: 12, color: 'var(--text-faint)' }}
-        >
-          pin {pin.canonicalSnapshotId} · rev {pin.boardRev}/{pin.lifecycleRev}
-          {pin.stale ? ` · STALE ${pin.staleReason ?? ''}` : ''}
-        </footer>
+        <Disclosure summary="Detail teknis" data-testid="decision-detail-pin">
+          <dl className={styles.techDl}>
+            <dt>pin</dt>
+            <dd className={styles.mono}>{pin.canonicalSnapshotId}</dd>
+            <dt>boardRev</dt>
+            <dd className={styles.mono}>{pin.boardRev}</dd>
+            <dt>lifecycleRev</dt>
+            <dd className={styles.mono}>{pin.lifecycleRev}</dd>
+            {pin.stale ? (
+              <>
+                <dt>stale</dt>
+                <dd>{pin.staleReason ?? 'STALE'}</dd>
+              </>
+            ) : null}
+            <dt>decisionId</dt>
+            <dd className={styles.mono}>{decisionId}</dd>
+          </dl>
+        </Disclosure>
       ) : null}
     </section>
   )

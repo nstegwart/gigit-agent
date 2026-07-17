@@ -49,9 +49,9 @@ export function decisionActionAvailability(
       canSnooze: false,
       snoozeBlockedReason: !open
         ? status === 'EXPIRED'
-          ? 'Expired — actions closed'
-          : 'Terminal — view only'
-        : 'Not authorized to act',
+          ? 'Kedaluwarsa — tindakan ditutup'
+          : 'Terminal — hanya lihat'
+        : 'Tidak berwenang bertindak',
     }
   }
   const blocking = Boolean(item.blocking)
@@ -60,7 +60,9 @@ export function decisionActionAvailability(
     canResolve: true,
     canReject: true,
     canSnooze: !blocking,
-    snoozeBlockedReason: blocking ? 'Blocking decisions cannot be hidden by snooze' : null,
+    snoozeBlockedReason: blocking
+      ? 'Keputusan menghambat tidak bisa disembunyikan dengan tunda'
+      : null,
   }
 }
 
@@ -290,12 +292,12 @@ export function resolveDecisionOwnerDisplay(item: DecisionItemView): {
 export function actionLabel(kind: DecisionActionKind): string {
   switch (kind) {
     case 'acknowledge':
-      return 'Acknowledge'
+      return 'Akui'
     case 'resolve':
-      return 'Resolve'
+      return 'Selesaikan'
     case 'reject':
-      return 'Reject request'
+      return 'Tolak permintaan'
     case 'snooze':
-      return 'Snooze 24h'
+      return 'Tunda 24 jam'
   }
 }

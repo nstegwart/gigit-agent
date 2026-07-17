@@ -1,4 +1,9 @@
-import { Icon } from '#/lib/icons'
+import {
+  Badge,
+  Disclosure,
+  StatusChip,
+  type StatusChipVariant,
+} from '#/components/ui'
 import { formatLifecycleStageLabel } from '#/lib/display-label'
 import type { PrimaryBucket } from '#/lib/control-plane-types'
 import {
@@ -12,16 +17,16 @@ import styles from './work.module.css'
 import { resolveOwnerDisplay } from './ownerDisplay'
 import { OwnerHumanFields } from './OwnerHumanFields'
 
-const BADGE_CLASS: Record<
+const TONE_TO_CHIP: Record<
   (typeof BUCKET_SEMANTICS)[PrimaryBucket]['tone'],
-  string
+  StatusChipVariant
 > = {
-  done: styles.badgeDone,
-  recon: styles.badgeRecon,
-  ongoing: styles.badgeOngoing,
-  next: styles.badgeNext,
-  queued: styles.badgeQueued,
-  blocked: styles.badgeBlocked,
+  done: 'done',
+  recon: 'warn',
+  ongoing: 'ongoing',
+  next: 'next',
+  queued: 'pending',
+  blocked: 'blocked',
 }
 
 export interface WorkRowProps {
@@ -34,14 +39,13 @@ export interface WorkRowProps {
 function BucketBadge({ bucket }: { bucket: PrimaryBucket }) {
   const sem = BUCKET_SEMANTICS[bucket]
   return (
-    <span
-      className={`${styles.badge} ${BADGE_CLASS[sem.tone]}`}
+    <StatusChip
+      variant={TONE_TO_CHIP[sem.tone]}
       data-testid="work-row-bucket"
       data-bucket={bucket}
     >
-      <Icon name={sem.icon} size={12} />
-      <span>{sem.shortLabel}</span>
-    </span>
+      {sem.shortLabel}
+    </StatusChip>
   )
 }
 
@@ -50,14 +54,9 @@ function OverlayBadges({ overlays }: { overlays: WorkItemRow['overlays'] }) {
   return (
     <div className={styles.badgeStack} data-testid="work-row-overlays">
       {overlays.map((o) => (
-        <span
-          key={o}
-          className={`${styles.badge} ${styles.badgeOverlay}`}
-          data-overlay={o}
-        >
-          <Icon name="alert" size={11} />
+        <Badge key={o} variant="neutral" data-overlay={o}>
           {OVERLAY_LABELS[o]}
-        </span>
+        </Badge>
       ))}
     </div>
   )
@@ -146,7 +145,12 @@ function OngoingBlock({ item }: { item: WorkItemRow }) {
   const o = item.ongoing
   if (!o || item.bucket !== 'ONGOING') return null
   const live = String(o.liveness ?? '').toUpperCase()
-  const productive = live === 'PRODUCTIVE'
+  const liveVariant: StatusChipVariant =
+    live === 'PRODUCTIVE'
+      ? 'done'
+      : live === 'STALLED' || live === 'EXPIRED'
+        ? 'blocked'
+        : 'pending'
   const started =
     o.startedAge ??
     (typeof o.startedAgeSeconds === 'number'
@@ -167,19 +171,14 @@ function OngoingBlock({ item }: { item: WorkItemRow }) {
     <div className={styles.ongoingMeta} data-testid="work-row-ongoing">
       {o.targetGate ? <span>Target tahap {o.targetGate}</span> : null}
       {o.role ? <span>Peran {o.role}</span> : null}
+      {o.agentId ? <span className={styles.mono}>{o.agentId}</span> : null}
       {started ? <span>Dimulai {started}</span> : null}
       {heartbeat ? <span>Aktivitas terakhir {heartbeat}</span> : null}
       {material ? <span>Progres material {material}</span> : null}
       {o.liveness ? (
-        <span className={styles.liveness} data-liveness={live}>
-          <span
-            className={
-              productive ? styles.livenessPulse : styles.livenessHollow
-            }
-            aria-hidden="true"
-          />
+        <StatusChip variant={liveVariant} data-liveness={live}>
           {livenessLabel(o.liveness)}
-        </span>
+        </StatusChip>
       ) : null}
       {o.evidenceLink ? (
         <a
@@ -191,14 +190,13 @@ function OngoingBlock({ item }: { item: WorkItemRow }) {
         </a>
       ) : null}
       {o.agentId || o.model || o.effort || o.maskedAccount ? (
-        <details className={styles.executionDisclosure}>
-          <summary>Detail eksekusi</summary>
-          <span>
+        <Disclosure summary="Detail eksekusi">
+          <span className={styles.mono}>
             {[o.agentId, o.model, o.effort, o.maskedAccount]
               .filter(Boolean)
               .join(' · ')}
           </span>
-        </details>
+        </Disclosure>
       ) : null}
     </div>
   )
@@ -217,8 +215,7 @@ function ReasonLine({ item }: { item: WorkItemRow }) {
   const technicalNoise =
     /^(DATA_INTEGRITY|MISSING_DISPLAY|CONTENT_REVIEW_REQUIRED|STALE_|UNCLASSIFIED)/i.test(
       joined,
-    ) ||
-    /DATA_INTEGRITY|MISSING_DISPLAY/.test(joined)
+    ) || /DATA_INTEGRITY|MISSING_DISPLAY/.test(joined)
   if (technicalNoise) return null
   return (
     <div className={styles.reason} data-testid="work-row-reason">
@@ -290,7 +287,6 @@ function TitleBlock({
         display.usedTechnicalFallback ? 'true' : 'false'
       }
     >
-      {/* Primary: scannable title (never bare placeholder). Task id always secondary. */}
       {titleNode}
       <div
         className={styles.taskId}
@@ -301,8 +297,7 @@ function TitleBlock({
         {item.taskId}
       </div>
       <OwnerHumanFields display={display} testIdPrefix="work-row" />
-      <details className={styles.technicalDisclosure}>
-        <summary>Detail teknis</summary>
+      <Disclosure summary="Detail teknis">
         {display.technicalTitle &&
         display.technicalTitle !== display.primaryTitle ? (
           <div
@@ -313,8 +308,10 @@ function TitleBlock({
           >
             {display.technicalTitle}
           </div>
-        ) : null}
-      </details>
+        ) : (
+          <p className={styles.reason}>Tidak ada judul teknis terpisah.</p>
+        )}
+      </Disclosure>
     </div>
   )
 }
@@ -342,21 +339,42 @@ function handleActivate(
   onActivate(item)
 }
 
+function StageProjectReadiness({ item }: { item: WorkItemRow }) {
+  return (
+    <>
+      {item.lifecycleStage ? (
+        <StatusChip
+          variant="pending"
+          showDot={false}
+          data-testid="work-row-stage"
+          data-stage={item.lifecycleStage}
+          title={item.lifecycleStage}
+        >
+          {formatLifecycleStageLabel(item.lifecycleStage)}
+        </StatusChip>
+      ) : (
+        '—'
+      )}
+      {item.projectId ? (
+        <>
+          <br />
+          <span className={styles.mono}>{item.projectId}</span>
+        </>
+      ) : null}
+    </>
+  )
+}
+
 /**
  * Work list row. Displays server bucket/reason only — never classifies.
  * Owner primary title from humanDisplay; never raw technical title as primary.
  * Completed rows remain DONE with reconciliation/stale/beyond-stage overlays.
- * Drilldown: prefers native <a href={detailHref}> for accessible navigation;
- * optional onActivate intercepts for SPA navigate while keeping href for
- * open-in-new-tab / crawlers / no-JS.
  */
 export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
   const href = item.detailHref ?? undefined
   const display = ownerDisplayFor(item)
 
   if (asCard) {
-    // Card shell is a div (not <a>/<button>): may contain title + evidence links.
-    // Native drilldown = title <a href={detailHref}>; shell click → onActivate SPA.
     return (
       <div
         className={styles.card}
@@ -390,16 +408,19 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
         <OngoingBlock item={item} />
         <div className={styles.ongoingMeta}>
           {item.lifecycleStage ? (
-            <span
-              className={styles.stageChip}
+            <StatusChip
+              variant="pending"
+              showDot={false}
               data-testid="work-row-stage"
               data-stage={item.lifecycleStage}
               title={item.lifecycleStage}
             >
               {formatLifecycleStageLabel(item.lifecycleStage)}
-            </span>
+            </StatusChip>
           ) : null}
-          {item.projectId ? <span>{item.projectId}</span> : null}
+          {item.projectId ? (
+            <span className={styles.mono}>{item.projectId}</span>
+          ) : null}
           {item.readinessDisplay != null && item.readinessDisplay !== '' ? (
             <span>{String(item.readinessDisplay)}</span>
           ) : null}
@@ -443,24 +464,7 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
         </div>
       </td>
       <td className={styles.reason}>
-        {item.lifecycleStage ? (
-          <span
-            className={styles.stageChip}
-            data-testid="work-row-stage"
-            data-stage={item.lifecycleStage}
-            title={item.lifecycleStage}
-          >
-            {formatLifecycleStageLabel(item.lifecycleStage)}
-          </span>
-        ) : (
-          '—'
-        )}
-        {item.projectId ? (
-          <>
-            <br />
-            {item.projectId}
-          </>
-        ) : null}
+        <StageProjectReadiness item={item} />
       </td>
       <td className={styles.reason}>
         {item.readinessDisplay != null && item.readinessDisplay !== ''
@@ -468,5 +472,67 @@ export function WorkRow({ item, asCard = false, onActivate }: WorkRowProps) {
           : '—'}
       </td>
     </tr>
+  )
+}
+
+/** Cell builders for kit Table composition (WorkList). */
+export function workRowTitleCell(
+  item: WorkItemRow,
+  onActivate?: WorkRowProps['onActivate'],
+) {
+  const href = item.detailHref ?? undefined
+  const display = ownerDisplayFor(item)
+  return (
+    <div
+      className={styles.rowShell}
+      data-testid={`work-row-${item.taskId}`}
+      data-task-id={item.taskId}
+      data-bucket={item.bucket}
+      data-detail-href={href ?? undefined}
+      data-content-review-required={
+        display.contentReviewRequired ? 'true' : 'false'
+      }
+      tabIndex={0}
+      role="button"
+      onClick={() => handleActivate(item, onActivate)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          handleActivate(item, onActivate)
+        }
+      }}
+    >
+      <TitleBlock item={item} href={href} onActivate={onActivate} />
+      <ReasonLine item={item} />
+      <ReconciliationBlock item={item} />
+      <OngoingBlock item={item} />
+    </div>
+  )
+}
+
+export function workRowStatusCell(item: WorkItemRow) {
+  return (
+    <div className={styles.badgeStack}>
+      <BucketBadge bucket={item.bucket} />
+      <OverlayBadges overlays={item.overlays} />
+    </div>
+  )
+}
+
+export function workRowStageCell(item: WorkItemRow) {
+  return (
+    <div className={styles.reason}>
+      <StageProjectReadiness item={item} />
+    </div>
+  )
+}
+
+export function workRowReadinessCell(item: WorkItemRow) {
+  return (
+    <span className={styles.mono}>
+      {item.readinessDisplay != null && item.readinessDisplay !== ''
+        ? String(item.readinessDisplay)
+        : '—'}
+    </span>
   )
 }

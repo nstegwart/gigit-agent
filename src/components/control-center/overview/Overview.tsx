@@ -13,6 +13,14 @@ import type { RefObject } from 'react'
 import { formatOperationalLabel } from '#/lib/display-label'
 import { formatAgeSeconds } from '#/lib/control-center-query'
 import { pinnedSurfaceDataAttrs } from '#/components/control-center/PinnedSurface'
+import {
+  Button,
+  Card,
+  Disclosure,
+  EmptyState,
+  PageHeader,
+  StatusChip,
+} from '#/components/ui'
 import styles from './overview.module.css'
 import type {
   OverviewAppSummary,
@@ -24,12 +32,13 @@ import type {
 } from './types'
 import { AppSummaryBar } from './AppSummaryBar'
 import { NeedsYourDecision } from './NeedsYourDecision'
-import { PriorityCard } from './PriorityCard'
-import { GlobalCard } from './GlobalCard'
 import { BucketStrip } from './BucketStrip'
 import { OngoingZeroClick } from './OngoingZeroClick'
 import { LowerPanels } from './LowerPanels'
-import { EmptySlot, OverviewSkeleton, SurfaceBanner } from './SurfaceBanner'
+import { KpiHeroRow } from './KpiHeroRow'
+import { DomainTable } from './DomainTable'
+import { FeaturedFeatures } from './FeaturedFeatures'
+import { OverviewSkeleton, SurfaceBanner } from './SurfaceBanner'
 
 type PinnedSurfaceLike<T> = {
   boardId: string
@@ -320,33 +329,43 @@ function programPositionStatement(
 function NextCue({ buckets }: { buckets: OverviewBucketStrip | null }) {
   if (!buckets) {
     return (
-      <section data-testid="overview-next" aria-labelledby="ov-next-title">
-        <h2 id="ov-next-title" className={styles.sectionLabel}>
-          Berikutnya
-        </h2>
-        <EmptySlot>Ringkasan pekerjaan berikutnya belum tersedia.</EmptySlot>
-      </section>
+      <Card
+        data-testid="overview-next"
+        aria-labelledby="ov-next-title"
+        title={<span id="ov-next-title">Berikutnya</span>}
+      >
+        <EmptyState
+          title="Belum tersedia"
+          description="Ringkasan pekerjaan berikutnya belum tersedia."
+        />
+      </Card>
     )
   }
   const nextCount = buckets.counts.NEXT
   const queuedCount = buckets.counts.QUEUED
   return (
-    <section data-testid="overview-next" aria-labelledby="ov-next-title">
-      <h2 id="ov-next-title" className={styles.sectionLabel}>
-        Berikutnya
-      </h2>
-      <div className={styles.nextCueCard}>
-        <p className={styles.nextCueLead} data-testid="overview-next-lead">
-          {nextCount === 0
-            ? 'Tidak ada item Berikutnya yang siap dijadwalkan saat ini.'
-            : `${nextCount} pekerjaan Berikutnya siap dilanjutkan setelah prasyarat terpenuhi.`}
-        </p>
-        <p className={styles.nextCueMeta} data-testid="overview-next-meta">
-          Antrian valid: {queuedCount} menunggu giliran (belum dijadwalkan). Pilih bucket
-          Berikutnya untuk membuka daftar lengkap.
-        </p>
-      </div>
-    </section>
+    <Card
+      data-testid="overview-next"
+      aria-labelledby="ov-next-title"
+      title={<span id="ov-next-title">Berikutnya</span>}
+      headerActions={
+        nextCount > 0 ? (
+          <StatusChip variant="next" showDot>
+            {nextCount}
+          </StatusChip>
+        ) : null
+      }
+    >
+      <p className={styles.nextCueLead} data-testid="overview-next-lead">
+        {nextCount === 0
+          ? 'Tidak ada item Berikutnya yang siap dijadwalkan saat ini.'
+          : `${nextCount} pekerjaan Berikutnya siap dilanjutkan setelah prasyarat terpenuhi.`}
+      </p>
+      <p className={styles.nextCueMeta} data-testid="overview-next-meta">
+        Antrian valid: {queuedCount} menunggu giliran (belum dijadwalkan). Pilih
+        bucket Berikutnya untuk membuka daftar lengkap.
+      </p>
+    </Card>
   )
 }
 
@@ -389,13 +408,13 @@ function ProgramPosition({
       data-testid="overview-program-position"
       aria-labelledby="ov-position-title"
     >
-      <p className={styles.programEyebrow}>Ringkasan Program</p>
-      <h2 id="ov-position-title" className={styles.programHeadline}>
-        Di mana posisi program sekarang?
-      </h2>
-      <p className={styles.programStatement} data-testid="overview-position-statement">
-        {statement}
-      </p>
+      <PageHeader
+        eyebrow="Ringkasan Program"
+        title={<span id="ov-position-title">Di mana posisi program sekarang?</span>}
+        subtitle={
+          <span data-testid="overview-position-statement">{statement}</span>
+        }
+      />
       {stage || readinessBits.length ? (
         <ul className={styles.programMeta} data-testid="overview-position-meta">
           {stage ? <li>Tahap: {stage}</li> : null}
@@ -404,8 +423,59 @@ function ProgramPosition({
           ))}
         </ul>
       ) : null}
+      {pinMetaBits(appSummary)}
     </section>
   )
+}
+
+function pinMetaBits(appSummary: OverviewAppSummary | null) {
+  if (!appSummary) return null
+  const hasPin =
+    appSummary.canonicalSnapshotId ||
+    appSummary.canonicalHash ||
+    typeof appSummary.boardRev === 'number'
+  if (!hasPin) return null
+  return (
+    <Disclosure summary="Detail teknis" data-testid="overview-position-tech">
+      <dl className={styles.techDl}>
+        {typeof appSummary.boardRev === 'number' ? (
+          <>
+            <dt>boardRev</dt>
+            <dd className={styles.mono}>{appSummary.boardRev}</dd>
+          </>
+        ) : null}
+        {typeof appSummary.lifecycleRev === 'number' ? (
+          <>
+            <dt>lifecycleRev</dt>
+            <dd className={styles.mono}>{appSummary.lifecycleRev}</dd>
+          </>
+        ) : null}
+        {appSummary.canonicalSnapshotId ? (
+          <>
+            <dt>snapshot</dt>
+            <dd className={styles.mono}>{appSummary.canonicalSnapshotId}</dd>
+          </>
+        ) : null}
+        {appSummary.canonicalHash ? (
+          <>
+            <dt>hash</dt>
+            <dd className={styles.mono}>{appSummary.canonicalHash}</dd>
+          </>
+        ) : null}
+      </dl>
+    </Disclosure>
+  )
+}
+
+function overviewSubtitle(appSummary: OverviewAppSummary | null): string {
+  if (!appSummary) return 'Program rebuild'
+  const board = appSummary.boardLabel?.trim() || appSummary.boardId || 'Program'
+  const rev =
+    typeof appSummary.boardRev === 'number' ? ` · rev ${appSummary.boardRev}` : ''
+  const stage = appSummary.liveStage?.trim()
+    ? ` · ${formatOperationalLabel(appSummary.liveStage)}`
+    : ''
+  return `${board}${stage}${rev}`
 }
 
 function MissionBody({
@@ -423,6 +493,7 @@ function MissionBody({
   enableStickyPill,
   needsHuman,
   stickyShelfHostRef,
+  onRetry,
 }: {
   surfaceState: OverviewProps['surfaceState']
   appSummary: OverviewProps['appSummary']
@@ -438,22 +509,54 @@ function MissionBody({
   enableStickyPill?: boolean
   needsHuman: boolean
   stickyShelfHostRef?: RefObject<HTMLElement | null>
+  onRetry?: () => void
 }) {
   return (
     <>
-      {/* ART order: (1) position (2) priority+progress (3) ongoing (4) next (5) decision (6) buckets */}
+      {/* Direction B: PageHeader "Ringkasan" + right actions */}
+      <PageHeader
+        data-testid="overview-page-header"
+        title="Ringkasan"
+        subtitle={overviewSubtitle(appSummary)}
+        actions={
+          <>
+            {appSummary?.freshnessLabel ? (
+              <Button type="button" variant="ghost" size="sm" disabled>
+                {appSummary.freshnessLabel}
+              </Button>
+            ) : null}
+            {onRetry ? (
+              <Button type="button" variant="primary" size="sm" onClick={onRetry}>
+                Perbarui data
+              </Button>
+            ) : null}
+          </>
+        }
+      />
+
+      {/* ART order preserved among testids: (1) position (2) priority+global
+          (3) ongoing (4) next (5) decision (6) buckets — Direction B inserts
+          KPI/domain/features between position and ongoing without inventing data. */}
       <ProgramPosition appSummary={appSummary} priority={priority} global={global} />
 
       {surfaceState === 'empty' && !decision?.count && !ongoing.length && !priority ? (
-        <EmptySlot>
-          Ringkasan kosong — belum ada data misi terlacak untuk board ini.
-        </EmptySlot>
+        <EmptyState
+          title="Ringkasan kosong"
+          description="Belum ada data misi terlacak untuk board ini."
+        />
       ) : null}
 
-      <div className={styles.priorityGlobal}>
-        <PriorityCard data={priority} />
-        <GlobalCard data={global} />
-      </div>
+      <KpiHeroRow
+        global={global}
+        priority={priority}
+        lifecycle={lower?.lifecycle}
+        g5={lower?.g5}
+        buckets={buckets}
+      />
+
+      <DomainTable projects={lower?.projects} />
+
+      <FeaturedFeatures projects={lower?.projects} />
 
       <OngoingZeroClick
         items={ongoing}
@@ -580,6 +683,7 @@ export function Overview({
     onPillCollapse,
     enableStickyPill,
     needsHuman,
+    onRetry,
   }
 
   return (

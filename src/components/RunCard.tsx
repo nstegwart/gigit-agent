@@ -1,15 +1,23 @@
-// Card for a single agent run. §6 of the readiness contract: shows role, account,
-// task/FC/project, current task stage, target gate, heartbeat, evidence path, and
-// terminal verdict. The card links to its task; a run with no task/gate/receipt is
-// visibly UNPRODUCTIVE (contributes 0 progress).
-// W-FIX-PROJECTS: primary line prefers human task title over internal agent/run-id.
+// Card for a single agent run — Direction B (FAN-PROJECTS).
+// Logic preserved; presentation via UI kit Card / StatusChip / Badge / Disclosure.
+import type { CSSProperties } from 'react'
 import { BoardLink } from '#/components/BoardLink'
 import { Icon } from '#/lib/icons'
 import { AGENT_ICON, fmtDate } from '#/lib/format'
-import { Chip, EffortChip, ModelChip, RunStatusPill, TypeTag } from '#/components/primitives'
+import {
+  Badge,
+  Card,
+  Disclosure,
+  StatusChip,
+  type StatusChipVariant,
+} from '#/components/ui'
 import type { Model, Run, RunStatus } from '#/lib/types'
 
-export interface RunTaskInfo { stage?: string | null; nextGate?: string | null; readinessPercent?: number }
+export interface RunTaskInfo {
+  stage?: string | null
+  nextGate?: string | null
+  readinessPercent?: number
+}
 
 /** Visible runs before "lihat semua" on project detail (V1.2 G-B / W-FIX-PROJECTS A). */
 export const PROJECT_RUNS_PAGE_SIZE = 8
@@ -20,6 +28,22 @@ const RUN_STATUS_PRIORITY: Readonly<Record<RunStatus, number>> = {
   blocked: 2,
   queued: 3,
   done: 4,
+}
+
+const STATUS_LABEL_ID: Readonly<Record<RunStatus, string>> = {
+  running: 'Berjalan',
+  blocked: 'Terhambat',
+  queued: 'Antri',
+  done: 'Selesai',
+  failed: 'Gagal',
+}
+
+function runStatusVariant(status: RunStatus): StatusChipVariant {
+  if (status === 'done') return 'done'
+  if (status === 'running') return 'ongoing'
+  if (status === 'failed' || status === 'blocked') return 'blocked'
+  if (status === 'queued') return 'pending'
+  return 'pending'
 }
 
 /**
@@ -74,6 +98,83 @@ export function runCardPrimaryLabel(opts: {
   return agent || task || title || 'Run'
 }
 
+const topStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 'var(--sp-2)',
+  minWidth: 0,
+}
+
+const avatarStyle: CSSProperties = {
+  width: 28,
+  height: 28,
+  borderRadius: 'var(--r-sm, 6px)',
+  border: '1px solid var(--border)',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  flexShrink: 0,
+  background: 'var(--surface-2, var(--bg))',
+  color: 'var(--text-dim)',
+}
+
+const nameStyle: CSSProperties = {
+  fontWeight: 500,
+  color: 'var(--text)',
+  fontSize: 'var(--type-small-size, 13px)',
+  lineHeight: 1.35,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+
+const roleStyle: CSSProperties = {
+  fontSize: 'var(--type-caption-size, 12px)',
+  color: 'var(--text-dim)',
+}
+
+const monoStyle: CSSProperties = {
+  fontFamily: 'var(--mono, ui-monospace, monospace)',
+  fontSize: 10.5,
+  color: 'var(--text-faint)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  maxWidth: 220,
+  display: 'block',
+}
+
+const metaStyle: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 6,
+  marginTop: 'var(--sp-2)',
+}
+
+const footStyle: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: 8,
+  marginTop: 'var(--sp-2)',
+  fontSize: 11.5,
+  color: 'var(--text-faint)',
+}
+
+const techDlStyle: CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'auto 1fr',
+  gap: '4px 12px',
+  margin: 0,
+  fontSize: 12,
+}
+
+const linkReset: CSSProperties = {
+  textDecoration: 'none',
+  color: 'inherit',
+  display: 'block',
+}
+
 export function RunCard({
   run: r,
   model: m,
@@ -91,70 +192,153 @@ export function RunCard({
   const unproductive = !r.taskId || (r.status === 'running' && !targetGate && !r.verdict)
   const primary = runCardPrimaryLabel({ agent: r.agent, task: r.task, taskTitle })
   const showAgentSecondary = r.agent && primary !== r.agent && looksLikeRunId(r.agent)
+  const statusLabel = STATUS_LABEL_ID[r.status] ?? r.status
 
   const body = (
-    <>
-      <div className="run-top">
-        <div className={`run-avatar ag-${r.agentType}`}>
-          <Icon name={(AGENT_ICON[r.agentType] ?? 'dot') as never} />
-        </div>
-        <div className="run-id">
-          <div className="run-name" title={r.agent}>{primary}</div>
-          <div className="run-role">
-            {r.role || r.agentType}
-            {showAgentSecondary ? (
-              <span className="run-agent-id" title={r.agent} style={{ display: 'block', fontSize: 10.5, opacity: 0.65, fontFamily: 'var(--font-mono, ui-monospace, monospace)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>
-                {r.agent.length > 36 ? `${r.agent.slice(0, 18)}…${r.agent.slice(-10)}` : r.agent}
-              </span>
-            ) : null}
-          </div>
-        </div>
-        {unproductive ? <span className="run-unprod">UNPRODUCTIVE</span> : null}
-        <RunStatusPill status={r.status} />
-      </div>
-      {/* Avoid duplicating primary when r.task was promoted to the title line */}
-      {r.task && r.task.trim() !== primary ? <p className="run-task">{r.task}</p> : null}
-      <div className="run-meta">
-        <TypeTag type={r.agentType} />
-        <ModelChip model={r.model} />
-        <EffortChip effort={r.effort} />
-        {projectName ? <Chip><Icon name="folder" /> {projectName}</Chip> : null}
-        {r.account ? <Chip className="chip-mono">{r.account}</Chip> : null}
+    <Card
+      as="article"
+      data-run-id={r.id}
+      data-run-status={r.status}
+      data-unproductive={unproductive ? 'true' : undefined}
+      style={{
+        borderColor: unproductive ? 'var(--blocked)' : undefined,
+      }}
+      headerActions={
+        <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          {unproductive ? (
+            <Badge variant="neutral">Tidak produktif</Badge>
+          ) : null}
+          <StatusChip variant={runStatusVariant(r.status)}>{statusLabel}</StatusChip>
+        </span>
+      }
+      title={
+        <span style={topStyle}>
+          <span style={avatarStyle} className={`ag-${r.agentType}`} aria-hidden>
+            <Icon name={(AGENT_ICON[r.agentType] ?? 'dot') as never} size={14} />
+          </span>
+          <span style={{ minWidth: 0, flex: 1 }}>
+            <span style={nameStyle} title={r.agent}>
+              {primary}
+            </span>
+            <span style={roleStyle}>
+              {r.role || r.agentType}
+              {showAgentSecondary ? (
+                <span style={monoStyle} title={r.agent}>
+                  {r.agent.length > 36 ? `${r.agent.slice(0, 18)}…${r.agent.slice(-10)}` : r.agent}
+                </span>
+              ) : null}
+            </span>
+          </span>
+        </span>
+      }
+    >
+      {r.task && r.task.trim() !== primary ? (
+        <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--text-dim)' }}>{r.task}</p>
+      ) : null}
+
+      <div style={metaStyle}>
+        <Badge>{r.agentType}</Badge>
+        {r.model ? <Badge mono>{r.model}</Badge> : null}
+        {r.effort ? <Badge>effort {r.effort}</Badge> : null}
+        {projectName ? (
+          <Badge>
+            <Icon name="folder" size={11} /> {projectName}
+          </Badge>
+        ) : null}
+        {r.account ? <Badge mono>{r.account}</Badge> : null}
       </div>
 
       {r.taskId ? (
-        <div className="run-gate">
-          <span className="run-stage">{taskInfo?.stage ?? '—'}</span>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            marginTop: 'var(--sp-2)',
+            fontSize: 12,
+            color: 'var(--text-dim)',
+          }}
+        >
+          <span>{taskInfo?.stage ?? '—'}</span>
           <Icon name="arrow" size={12} />
-          <span className="run-target">{targetGate ?? 'no gate'}</span>
-          {typeof taskInfo?.readinessPercent === 'number' ? <span className="run-ready">{taskInfo.readinessPercent}%</span> : null}
+          <span style={{ color: targetGate ? 'var(--accent)' : 'var(--text-faint)' }}>
+            {targetGate ?? 'tanpa gate'}
+          </span>
+          {typeof taskInfo?.readinessPercent === 'number' ? (
+            <Badge mono>{taskInfo.readinessPercent}%</Badge>
+          ) : null}
         </div>
       ) : null}
 
-      {r.evidencePath || r.verdict ? (
-        <div className="run-receipt">
-          {r.verdict ? <span className={`run-verdict ${/fail|reject/i.test(r.verdict) ? 'is-fail' : 'is-pass'}`}>{r.verdict}</span> : null}
-          {r.evidencePath ? <span className="run-ev"><Icon name="link" size={11} /> {r.evidencePath}</span> : null}
+      {(r.verdict || r.evidencePath || r.id || r.account) && (
+        <div style={{ marginTop: 'var(--sp-2)' }}>
+          <Disclosure summary="Detail teknis">
+            <dl style={techDlStyle}>
+              {r.verdict ? (
+                <>
+                  <dt>Verdict</dt>
+                  <dd
+                    style={{
+                      margin: 0,
+                      color: /fail|reject/i.test(r.verdict) ? 'var(--blocked)' : 'var(--done)',
+                      fontWeight: 500,
+                    }}
+                  >
+                    {r.verdict}
+                  </dd>
+                </>
+              ) : null}
+              {r.evidencePath ? (
+                <>
+                  <dt>Evidence</dt>
+                  <dd style={{ ...monoStyle, maxWidth: '100%', whiteSpace: 'normal', wordBreak: 'break-all' }}>
+                    {r.evidencePath}
+                  </dd>
+                </>
+              ) : null}
+              <dt>Run id</dt>
+              <dd style={{ ...monoStyle, maxWidth: '100%' }}>{r.id}</dd>
+              {r.agent ? (
+                <>
+                  <dt>Agent</dt>
+                  <dd style={{ ...monoStyle, maxWidth: '100%' }}>{r.agent}</dd>
+                </>
+              ) : null}
+              {r.account ? (
+                <>
+                  <dt>Akun</dt>
+                  <dd style={{ ...monoStyle, maxWidth: '100%' }}>{r.account}</dd>
+                </>
+              ) : null}
+            </dl>
+          </Disclosure>
         </div>
-      ) : null}
+      )}
 
-      <div className="run-foot">
+      <div style={footStyle}>
         {taskTitle && taskTitle !== primary ? (
-          <span className="run-tasktitle"><Icon name="check" size={11} /> {taskTitle}</span>
+          <span>
+            <Icon name="check" size={11} /> {taskTitle}
+          </span>
         ) : featureName ? (
-          <span className="run-tasktitle">{featureName}</span>
+          <span>{featureName}</span>
         ) : (
           <span />
         )}
-        {r.updated ? <span className="run-hb" title="last heartbeat"><Icon name="clock" size={11} /> {fmtDate(r.updated)}</span> : null}
+        {r.updated ? (
+          <span title="detak terakhir">
+            <Icon name="clock" size={11} /> {fmtDate(r.updated)}
+          </span>
+        ) : null}
       </div>
-    </>
+    </Card>
   )
 
-  const cls = `run s-${r.status}${unproductive ? ' is-unproductive' : ''}`
   return r.taskId ? (
-    <BoardLink to="/tasks/$taskId" params={{ taskId: r.taskId }} className={`${cls} run-link`}>{body}</BoardLink>
+    <BoardLink to="/tasks/$taskId" params={{ taskId: r.taskId }} style={linkReset} className="run-link">
+      {body}
+    </BoardLink>
   ) : (
-    <div className={cls}>{body}</div>
+    body
   )
 }

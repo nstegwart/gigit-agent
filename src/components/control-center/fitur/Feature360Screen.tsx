@@ -1,9 +1,8 @@
 /**
- * W-UI-2 — Fitur 360 (produk, id-ID).
- * Header: nama_id + ringkasan_id + 3 bar (Pemetaan / Terbukti pindah / Siap produksi).
- * Tabs: Isi · Progres · Dokumen · Lineage.
- * Teknis (T-*, FC-*, hash) only inside disclosure/detail.
- * SPEC §3.B + §4 + ADDENDUM V1.1 §B.
+ * FAN-FITUR — Fitur 360 (produk, id-ID) · Direction B.
+ * Header + 3 ProgressBar (Pemetaan / Terbukti / Siap produksi) +
+ * Tabs Isi/Progres/Dokumen/Lineage + Table isi.
+ * Technical noise → Disclosure "Detail teknis".
  */
 import { useMemo, useState } from 'react'
 
@@ -11,7 +10,27 @@ import type {
   Feature360Available,
   Feature360BarUi,
   Feature360UiData,
+  Feature360UnitRow,
+  Feature360TaskRow,
+  Feature360DocRef,
+  Feature360LineageRow,
 } from '#/server/control-center-rebuild-fns'
+import {
+  Badge,
+  Breadcrumb,
+  Button,
+  Card,
+  Disclosure,
+  EmptyState,
+  MonoCell,
+  PageHeader,
+  ProgressBar,
+  StatusChip,
+  Table,
+  Tabs,
+  type StatusChipVariant,
+  type TableColumn,
+} from '#/components/ui'
 import type { FiturSurfaceState } from './FeatureDirectoryScreen'
 import styles from './fitur.module.css'
 
@@ -27,13 +46,6 @@ export type Feature360ScreenProps = {
 
 type TabId = 'isi' | 'progres' | 'dokumen' | 'lineage'
 
-const TABS: Array<{ id: TabId; label: string }> = [
-  { id: 'isi', label: 'Isi' },
-  { id: 'progres', label: 'Progres' },
-  { id: 'dokumen', label: 'Dokumen' },
-  { id: 'lineage', label: 'Lineage' },
-]
-
 const PLATFORM_LABEL: Record<string, string> = {
   rn: 'React Native',
   backend: 'Backend',
@@ -45,69 +57,37 @@ const PLATFORM_LABEL: Record<string, string> = {
   other: 'Lainnya',
 }
 
-function barWidthPct(mappedPct: number | null | undefined): string {
-  if (mappedPct == null || !Number.isFinite(mappedPct)) return '0%'
-  return `${Math.max(0, Math.min(100, mappedPct))}%`
+function verdictVariant(
+  tone: 'ok' | 'warn' | 'blocked' | 'muted',
+): StatusChipVariant {
+  if (tone === 'ok') return 'done'
+  if (tone === 'warn') return 'warn'
+  if (tone === 'blocked') return 'blocked'
+  return 'pending'
 }
 
-function chipClass(tone: 'ok' | 'warn' | 'blocked' | 'muted'): string {
-  if (tone === 'ok') return `${styles.chip} ${styles.chipOk}`
-  if (tone === 'warn') return `${styles.chip} ${styles.chipWarn}`
-  if (tone === 'blocked') return `${styles.chip} ${styles.chipBlocked}`
-  return `${styles.chip} ${styles.chipMuted}`
-}
-
-function barFillClass(key: Feature360BarUi['key']): string {
-  if (key === 'terbukti_pindah') return styles.barFill
-  if (key === 'pemetaan') return styles.barFill
-  return `${styles.barFill} ${styles.barFillMuted}`
-}
-
-function ProgressBar({ bar }: { bar: Feature360BarUi }) {
+function FeatureBar({ bar }: { bar: Feature360BarUi }) {
+  const max = bar.denominator > 0 ? bar.denominator : 1
+  const label =
+    bar.pct != null
+      ? `${bar.numerator}/${bar.denominator} (${bar.pct}%)`
+      : `${bar.numerator}/${bar.denominator}`
   return (
-    <div
-      className={styles.barCard}
+    <Card
       data-testid={`fitur360-bar-${bar.key}`}
       data-bar={bar.key}
+      title={bar.labelId}
+      subtitle={label}
     >
-      <div className={styles.barNums}>
-        {bar.numerator}/{bar.denominator}
-        {bar.pct != null ? (
-          <span className={styles.muted}> ({bar.pct}%)</span>
+      <div className={styles.barBlock}>
+        <ProgressBar value={bar.numerator} max={max} label={label} />
+        {bar.placeholder && bar.noteId ? (
+          <p className={styles.barNote} data-testid="fitur360-bar-placeholder-note">
+            {bar.noteId}
+          </p>
         ) : null}
       </div>
-      <p className={styles.barLabel}>{bar.labelId}</p>
-      <div className={styles.barTrack} aria-hidden="true">
-        <div
-          className={barFillClass(bar.key)}
-          style={{ width: barWidthPct(bar.pct) }}
-        />
-      </div>
-      {bar.placeholder && bar.noteId ? (
-        <p className={styles.barNote} data-testid="fitur360-bar-placeholder-note">
-          {bar.noteId}
-        </p>
-      ) : null}
-    </div>
-  )
-}
-
-function EmptyMigratedState({ label }: { label: string }) {
-  return (
-    <div
-      className={styles.emptyState}
-      data-testid="fitur360-empty-state"
-      role="status"
-    >
-      <div className={styles.emptyIcon} aria-hidden="true">
-        ∅
-      </div>
-      <h2 className={styles.emptyTitle}>{label}</h2>
-      <p className={styles.emptyBody}>
-        Halaman Fitur 360 siap menampilkan isi unit, progres task, dokumen, dan
-        lineage setelah data rebuild diaktifkan.
-      </p>
-    </div>
+    </Card>
   )
 }
 
@@ -117,13 +97,45 @@ function TabIsi({ data }: { data: Feature360Available }) {
   )
   if (platforms.length === 0) {
     return (
-      <p className={styles.panelEmpty} data-testid="fitur360-isi-empty">
-        Belum ada unit inventory untuk fitur ini.
-      </p>
+      <EmptyState
+        data-testid="fitur360-isi-empty"
+        title="Belum ada unit inventory"
+        description="Belum ada unit inventory untuk fitur ini."
+      />
     )
   }
+
+  const unitColumns: Array<TableColumn<Feature360UnitRow>> = [
+    {
+      id: 'tipe',
+      header: 'Tipe',
+      cell: (u) => u.unitType ?? '—',
+    },
+    {
+      id: 'identifier',
+      header: 'Identifier',
+      cell: (u) => u.identifier ?? '—',
+    },
+    {
+      id: 'anchor',
+      header: 'Anchor',
+      mono: true,
+      cell: (u) => u.anchor ?? '—',
+    },
+    {
+      id: 'status',
+      header: 'Status',
+      cell: (u) =>
+        u.coverageStatus ? (
+          <Badge variant="neutral">{u.coverageStatus}</Badge>
+        ) : (
+          '—'
+        ),
+    },
+  ]
+
   return (
-    <div data-testid="fitur360-tab-isi">
+    <div data-testid="fitur360-tab-isi" className={styles.stack}>
       {platforms.map((platform) => {
         const units = data.unitsByPlatform[platform] ?? []
         return (
@@ -135,39 +147,24 @@ function TabIsi({ data }: { data: Feature360Available }) {
             <h3 className={styles.platformTitle}>
               {PLATFORM_LABEL[platform] ?? platform}
             </h3>
-            <div className={styles.tableWrap}>
-              <table className={styles.dataTable}>
-                <thead>
-                  <tr>
-                    <th scope="col">Tipe</th>
-                    <th scope="col">Identifier</th>
-                    <th scope="col">Anchor</th>
-                    <th scope="col">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {units.map((u) => (
-                    <tr key={u.unitId} data-unit-id={u.unitId}>
-                      <td>{u.unitType ?? '—'}</td>
-                      <td>{u.identifier ?? '—'}</td>
-                      <td className={styles.mono}>{u.anchor ?? '—'}</td>
-                      <td>{u.coverageStatus ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <details className={styles.techDisclosure}>
-              <summary>Detail teknis unit</summary>
+            <Table
+              columns={unitColumns}
+              rows={units}
+              rowKey={(u) => u.unitId}
+              caption={`Unit ${PLATFORM_LABEL[platform] ?? platform}`}
+              aria-label={`Tabel unit ${PLATFORM_LABEL[platform] ?? platform}`}
+              empty="Tidak ada unit."
+            />
+            <Disclosure summary="Detail teknis">
               <ul className={styles.evidenceList}>
                 {units.map((u) => (
-                  <li key={`tech-${u.unitId}`}>
+                  <li key={`tech-${u.unitId}`} className={styles.techMono}>
                     {u.unitId}
                     {u.repo ? ` · ${u.repo}` : ''}
                   </li>
                 ))}
               </ul>
-            </details>
+            </Disclosure>
           </div>
         )
       })}
@@ -178,47 +175,54 @@ function TabIsi({ data }: { data: Feature360Available }) {
 function TabProgres({ data }: { data: Feature360Available }) {
   if (data.tasks.length === 0) {
     return (
-      <p className={styles.panelEmpty} data-testid="fitur360-progres-empty">
-        Belum ada task terhubung ke fitur ini.
-      </p>
+      <EmptyState
+        data-testid="fitur360-progres-empty"
+        title="Belum ada task"
+        description="Belum ada task terhubung ke fitur ini."
+      />
     )
   }
+
+  const columns: Array<TableColumn<Feature360TaskRow>> = [
+    {
+      id: 'task',
+      header: 'Task',
+      cell: (t) => (
+        <div>
+          <MonoCell>{t.taskId}</MonoCell>
+          <span className={styles.joinMeta}>
+            {t.joinSource}
+            {Number.isFinite(t.confidence)
+              ? ` · conf ${Math.round(t.confidence * 100) / 100}`
+              : ''}
+          </span>
+        </div>
+      ),
+    },
+    {
+      id: 'verdict',
+      header: 'Verdict',
+      cell: (t) => (
+        <StatusChip
+          variant={verdictVariant(t.verdictTone)}
+          data-testid="fitur360-verdict-chip"
+          data-tone={t.verdictTone}
+        >
+          {t.verdictLabelId}
+        </StatusChip>
+      ),
+    },
+  ]
+
   return (
     <div data-testid="fitur360-tab-progres">
-      <div className={styles.tableWrap}>
-        <table className={styles.dataTable}>
-          <thead>
-            <tr>
-              <th scope="col">Task</th>
-              <th scope="col">Verdict</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.tasks.map((t) => (
-              <tr key={t.taskId} data-task-id={t.taskId}>
-                <td>
-                  <span className={styles.mono}>{t.taskId}</span>
-                  <span className={styles.joinMeta}>
-                    {t.joinSource}
-                    {Number.isFinite(t.confidence)
-                      ? ` · conf ${Math.round(t.confidence * 100) / 100}`
-                      : ''}
-                  </span>
-                </td>
-                <td>
-                  <span
-                    className={chipClass(t.verdictTone)}
-                    data-testid="fitur360-verdict-chip"
-                    data-tone={t.verdictTone}
-                  >
-                    {t.verdictLabelId}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <Table
+        columns={columns}
+        rows={data.tasks}
+        rowKey={(t) => t.taskId}
+        caption="Progres task fitur"
+        aria-label="Tabel progres task"
+      />
     </div>
   )
 }
@@ -226,35 +230,33 @@ function TabProgres({ data }: { data: Feature360Available }) {
 function TabDokumen({ data }: { data: Feature360Available }) {
   if (data.docs.length === 0) {
     return (
-      <p className={styles.panelEmpty} data-testid="fitur360-dokumen-empty">
-        Belum ada referensi dokumen FC untuk fitur ini.
-      </p>
+      <EmptyState
+        data-testid="fitur360-dokumen-empty"
+        title="Belum ada dokumen"
+        description="Belum ada referensi dokumen FC untuk fitur ini."
+      />
     )
   }
   return (
-    <div data-testid="fitur360-tab-dokumen">
-      {data.docs.map((d) => (
-        <article
+    <div data-testid="fitur360-tab-dokumen" className={styles.stack}>
+      {data.docs.map((d: Feature360DocRef) => (
+        <Card
           key={d.featureContractId}
-          className={styles.docCard}
           data-testid="fitur360-doc-card"
+          title={d.judulId ?? 'Dokumen fitur'}
+          subtitle={`Status: ${d.deliveryStatus ?? '—'} · docs ${d.hasDocMd ? '✓' : '–'}`}
         >
-          <h3 className={styles.docTitle}>{d.judulId ?? 'Dokumen fitur'}</h3>
-          <p className={styles.muted}>
-            Status: {d.deliveryStatus ?? '—'} · docs {d.hasDocMd ? '✓' : '–'}
-          </p>
           {d.docMd ? (
             <pre className={styles.docBody} data-testid="fitur360-doc-md">
               {d.docMd}
             </pre>
           ) : (
-            <p className={styles.panelEmpty}>Isi markdown belum tersedia.</p>
+            <p className={styles.metaMuted}>Isi markdown belum tersedia.</p>
           )}
-          <details className={styles.techDisclosure}>
-            <summary>Detail teknis</summary>
-            <p className={styles.mono}>{d.featureContractId}</p>
-          </details>
-        </article>
+          <Disclosure summary="Detail teknis">
+            <p className={styles.techMono}>{d.featureContractId}</p>
+          </Disclosure>
+        </Card>
       ))}
     </div>
   )
@@ -263,34 +265,37 @@ function TabDokumen({ data }: { data: Feature360Available }) {
 function TabLineage({ data }: { data: Feature360Available }) {
   if (data.lineage.length === 0) {
     return (
-      <p className={styles.panelEmpty} data-testid="fitur360-lineage-empty">
-        Belum ada lineage untuk task fitur ini.
-      </p>
+      <EmptyState
+        data-testid="fitur360-lineage-empty"
+        title="Belum ada lineage"
+        description="Belum ada lineage untuk task fitur ini."
+      />
     )
   }
   return (
-    <div data-testid="fitur360-tab-lineage">
-      {data.lineage.map((row) => (
-        <details
+    <div data-testid="fitur360-tab-lineage" className={styles.stack}>
+      {data.lineage.map((row: Feature360LineageRow) => (
+        <Disclosure
           key={row.taskId}
-          className={styles.lineageItem}
           data-testid="fitur360-lineage-item"
+          summary={
+            <span className={styles.lineageMeta}>
+              <MonoCell>{row.taskId}</MonoCell>
+              {row.origin ? (
+                <span className={styles.metaMuted}>asal: {row.origin}</span>
+              ) : null}
+              {row.gapClass ? (
+                <span className={styles.metaMuted}>gap: {row.gapClass}</span>
+              ) : null}
+            </span>
+          }
         >
-          <summary className={styles.lineageSummary}>
-            <span className={styles.mono}>{row.taskId}</span>
-            {row.origin ? (
-              <span className={styles.muted}>asal: {row.origin}</span>
-            ) : null}
-            {row.gapClass ? (
-              <span className={styles.muted}>gap: {row.gapClass}</span>
-            ) : null}
-          </summary>
           <div className={styles.lineageBody}>
             <div>
               <strong>Verifier:</strong> {row.verifier ?? '—'}
             </div>
             <div>
-              <strong>Verified at:</strong> {row.verifiedAt ?? '—'}
+              <strong>Diverifikasi:</strong> {row.verifiedAt ?? '—'}
             </div>
             <div>
               <strong>Verdict:</strong> {row.parityVerdict ?? '—'}
@@ -309,16 +314,15 @@ function TabLineage({ data }: { data: Feature360Available }) {
                 </ul>
               </div>
             ) : (
-              <p className={styles.muted}>Tidak ada sample evidence.</p>
+              <p className={styles.metaMuted}>Tidak ada sample evidence.</p>
             )}
             {row.featureContractId ? (
-              <details className={styles.techDisclosure}>
-                <summary>Detail teknis</summary>
-                <p className={styles.mono}>{row.featureContractId}</p>
-              </details>
+              <Disclosure summary="Detail teknis">
+                <p className={styles.techMono}>{row.featureContractId}</p>
+              </Disclosure>
             ) : null}
           </div>
-        </details>
+        </Disclosure>
       ))}
     </div>
   )
@@ -348,22 +352,15 @@ export function Feature360Screen({
     return `/b/${encodeURIComponent(boardId)}/features`
   }, [data, boardId])
 
+  const rootClass = [styles.root, className].filter(Boolean).join(' ')
+
   if (surfaceState === 'loading' && !data) {
     return (
-      <div
-        className={[styles.root, className].filter(Boolean).join(' ')}
-        data-testid="fitur-360"
-        data-surface="loading"
-      >
+      <div className={rootClass} data-testid="fitur-360" data-surface="loading">
         <div className={styles.liveRegion} aria-live="polite">
           Memuat Fitur 360…
         </div>
-        <header className={styles.pageHead}>
-          <div>
-            <p className={styles.eyebrow}>Fitur 360</p>
-            <h1 className={styles.pageTitle}>Memuat…</h1>
-          </div>
-        </header>
+        <PageHeader eyebrow="Fitur 360" title="Memuat…" />
       </div>
     )
   }
@@ -373,29 +370,26 @@ export function Feature360Screen({
     surfaceState === 'forbidden' ||
     surfaceState === 'disconnected'
   ) {
+    const title =
+      surfaceState === 'forbidden'
+        ? 'Akses ditolak'
+        : surfaceState === 'disconnected'
+          ? 'Koneksi terputus'
+          : 'Gagal memuat'
     return (
-      <div
-        className={[styles.root, className].filter(Boolean).join(' ')}
-        data-testid="fitur-360"
-        data-surface={surfaceState}
-      >
-        <div className={`${styles.banner} ${styles.banner_error}`} role="alert">
-          <p className={styles.bannerTitle}>
-            {surfaceState === 'forbidden'
-              ? 'Akses ditolak'
-              : surfaceState === 'disconnected'
-                ? 'Koneksi terputus'
-                : 'Gagal memuat'}
-          </p>
-          <p className={styles.bannerBody}>
-            {errorMessage ?? 'Fitur 360 tidak dapat dimuat.'}
-          </p>
-          {onRetry ? (
-            <button type="button" className={styles.retryBtn} onClick={onRetry}>
-              Coba lagi
-            </button>
-          ) : null}
-        </div>
+      <div className={rootClass} data-testid="fitur-360" data-surface={surfaceState}>
+        <PageHeader eyebrow="Fitur 360" title="Fitur" />
+        <EmptyState
+          title={title}
+          description={errorMessage ?? 'Fitur 360 tidak dapat dimuat.'}
+          action={
+            onRetry ? (
+              <Button type="button" variant="secondary" onClick={onRetry}>
+                Coba lagi
+              </Button>
+            ) : undefined
+          }
+        />
       </div>
     )
   }
@@ -403,7 +397,7 @@ export function Feature360Screen({
   if (data && !data.available) {
     return (
       <div
-        className={[styles.root, className].filter(Boolean).join(' ')}
+        className={rootClass}
         data-testid="fitur-360"
         data-surface="empty-migrated"
         data-available="false"
@@ -412,44 +406,74 @@ export function Feature360Screen({
         <div className={styles.liveRegion} aria-live="polite">
           {data.emptyStateLabelId}
         </div>
-        <header className={styles.pageHead}>
-          <div>
-            <a className={styles.backLink} href={directoryHref}>
-              ← Direktori fitur
-            </a>
-            <p className={styles.eyebrow}>Fitur 360</p>
-            <h1 className={styles.pageTitle}>Fitur</h1>
-          </div>
-          <div className={styles.headMeta}>
+        <PageHeader
+          eyebrow="Fitur 360"
+          title="Fitur"
+          breadcrumb={
+            <Breadcrumb
+              items={[
+                { label: 'Direktori fitur', href: directoryHref },
+                { label: 'Fitur' },
+              ]}
+            />
+          }
+          actions={
             <a
-              className={styles.secondaryLink}
+              className={styles.metaMuted}
               href={technicalHref}
               data-testid="fitur360-technical-fc-link"
             >
               Kontrak teknis (FC)
             </a>
-          </div>
-        </header>
-        <EmptyMigratedState label={data.emptyStateLabelId} />
+          }
+        />
+        <EmptyState
+          data-testid="fitur360-empty-state"
+          title={data.emptyStateLabelId}
+          description="Halaman Fitur 360 siap menampilkan isi unit, progres task, dokumen, dan lineage setelah data rebuild diaktifkan."
+        />
       </div>
     )
   }
 
   if (!data || !data.available) {
     return (
-      <div
-        className={[styles.root, className].filter(Boolean).join(' ')}
-        data-testid="fitur-360"
-        data-surface="empty"
-      >
-        <EmptyMigratedState label="Data fitur belum tersedia." />
+      <div className={rootClass} data-testid="fitur-360" data-surface="empty">
+        <EmptyState
+          data-testid="fitur360-empty-state"
+          title="Data fitur belum tersedia."
+          description="Halaman Fitur 360 siap menampilkan isi unit, progres task, dokumen, dan lineage setelah data rebuild diaktifkan."
+        />
       </div>
     )
   }
 
+  const tabItems = [
+    {
+      id: 'isi',
+      label: <span data-testid="fitur360-tab-btn-isi">Isi</span>,
+      panel: <TabIsi data={data} />,
+    },
+    {
+      id: 'progres',
+      label: <span data-testid="fitur360-tab-btn-progres">Progres</span>,
+      panel: <TabProgres data={data} />,
+    },
+    {
+      id: 'dokumen',
+      label: <span data-testid="fitur360-tab-btn-dokumen">Dokumen</span>,
+      panel: <TabDokumen data={data} />,
+    },
+    {
+      id: 'lineage',
+      label: <span data-testid="fitur360-tab-btn-lineage">Lineage</span>,
+      panel: <TabLineage data={data} />,
+    },
+  ]
+
   return (
     <div
-      className={[styles.root, className].filter(Boolean).join(' ')}
+      className={rootClass}
       data-testid="fitur-360"
       data-surface="populated"
       data-available="true"
@@ -460,80 +484,74 @@ export function Feature360Screen({
         {data.namaId} · {data.domainBisnis}
       </div>
 
-      <header className={styles.pageHead}>
-        <div>
-          <a
-            className={styles.backLink}
-            href={data.directoryHref}
-            data-testid="fitur360-back-directory"
-          >
-            ← Direktori fitur
-          </a>
-          <p className={styles.eyebrow}>{data.domainBisnis}</p>
-          <h1 className={styles.pageTitleLg} data-testid="fitur360-nama">
+      <PageHeader
+        breadcrumb={
+          <Breadcrumb
+            items={[
+              {
+                label: 'Direktori fitur',
+                href: data.directoryHref,
+              },
+              { label: data.namaId },
+            ]}
+          />
+        }
+        eyebrow={data.domainBisnis}
+        title={
+          <span data-testid="fitur360-nama" className={styles.entityName}>
             {data.namaId}
-          </h1>
-          {data.ringkasanId ? (
-            <p className={styles.pageSub} data-testid="fitur360-ringkasan">
-              {data.ringkasanId}
-            </p>
-          ) : null}
-        </div>
-        <div className={styles.headMeta}>
+          </span>
+        }
+        subtitle={
+          data.ringkasanId ? (
+            <span data-testid="fitur360-ringkasan">{data.ringkasanId}</span>
+          ) : undefined
+        }
+        actions={
           <a
-            className={styles.secondaryLink}
+            className={styles.metaMuted}
             href={data.technicalFcHref}
             data-testid="fitur360-technical-fc-link"
           >
             Kontrak teknis (FC)
           </a>
-        </div>
-      </header>
+        }
+      />
+
+      {/* Hidden back link for legacy deep-link tests */}
+      <a
+        href={data.directoryHref}
+        data-testid="fitur360-back-directory"
+        className="sr-only"
+      >
+        ← Direktori fitur
+      </a>
 
       <section
         className={styles.barsRow}
         aria-label="Tiga bar progres fitur"
         data-testid="fitur360-bars"
       >
-        <ProgressBar bar={data.bars.pemetaan} />
-        <ProgressBar bar={data.bars.terbukti_pindah} />
-        <ProgressBar bar={data.bars.siap_produksi} />
+        <FeatureBar bar={data.bars.pemetaan} />
+        <FeatureBar bar={data.bars.terbukti_pindah} />
+        <FeatureBar bar={data.bars.siap_produksi} />
       </section>
 
-      <div
-        className={styles.tabList}
-        role="tablist"
-        aria-label="Bag Fitur 360"
-        data-testid="fitur360-tabs"
-      >
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            id={`fitur360-tab-${t.id}`}
-            aria-selected={tab === t.id}
-            aria-controls={`fitur360-panel-${t.id}`}
-            className={styles.tabBtn}
-            data-testid={`fitur360-tab-btn-${t.id}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Disclosure summary="Detail teknis">
+        <p className={styles.techMono}>
+          featureId: {data.featureId}
+          {data.rollup
+            ? ` · task ${data.rollup.taskCount} · lineage ${data.rollup.lineageCount}`
+            : ''}
+        </p>
+      </Disclosure>
 
-      <div
-        className={styles.tabPanel}
-        role="tabpanel"
-        id={`fitur360-panel-${tab}`}
-        aria-labelledby={`fitur360-tab-${tab}`}
-        data-testid={`fitur360-panel-${tab}`}
-      >
-        {tab === 'isi' ? <TabIsi data={data} /> : null}
-        {tab === 'progres' ? <TabProgres data={data} /> : null}
-        {tab === 'dokumen' ? <TabDokumen data={data} /> : null}
-        {tab === 'lineage' ? <TabLineage data={data} /> : null}
+      <div data-testid="fitur360-tabs">
+        <Tabs
+          items={tabItems}
+          value={tab}
+          onValueChange={(id) => setTab(id as TabId)}
+        />
       </div>
     </div>
   )

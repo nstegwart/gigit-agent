@@ -62,3 +62,40 @@ export type EvidenceDrawerProps = {
   /** Override copy handler (tests / environments without clipboard). */
   onCopyCitation?: (text: string) => void | Promise<void>
 }
+
+/** Material event row as presented by the Evidence list (route adapter shape). */
+export type EvidenceEventRow = {
+  id: string
+  createdAt: string
+  kind: string
+  summary: string
+  actorId: string | null
+  materialHash: string | null
+}
+
+export type EvidencePinView = {
+  canonicalSnapshotId: string
+  canonicalHash: string | null
+  boardRev: number
+  lifecycleRev: number
+  stale: boolean
+  staleReason: string | null
+} | null
+
+/**
+ * Prop-driven Evidence page screen (Direction B).
+ * Route owns fetch/navigate; this component is presentation only.
+ */
+export type EvidenceScreenProps = {
+  boardId: string
+  surfaceState: string
+  loading: boolean
+  events: ReadonlyArray<EvidenceEventRow>
+  nextCursor: string | null
+  pin: EvidencePinView
+  error: { code: string; message: string } | null
+  onRetry: () => void
+  onNextPage: () => void
+  onOpenEvidence: (evidenceId: string) => void
+  className?: string
+}

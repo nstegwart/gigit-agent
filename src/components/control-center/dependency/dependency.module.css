@@ -1,20 +1,20 @@
 .root {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 
 .toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .toolbarGroup {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-1);
 }
 
 .toolBtn {
@@ -22,10 +22,10 @@
   min-width: 36px;
   padding: 6px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   background: var(--surface);
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--type-body-size);
   cursor: pointer;
   transition: var(--motion-fast);
 }
@@ -44,7 +44,7 @@
 }
 
 .zoomLabel {
-  font-size: 12px;
+  font-size: var(--type-caption-size);
   color: var(--text-faint);
   min-width: 3.5rem;
   text-align: center;
@@ -53,13 +53,13 @@
 .warnings {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .warning {
   padding: 10px 12px;
-  border-radius: 8px;
-  font-size: 14px;
+  border-radius: var(--r-md);
+  font-size: var(--type-body-size);
   line-height: 1.4;
   border: 1px solid var(--border);
   background: var(--surface-2);
@@ -103,7 +103,7 @@
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--surface);
-  padding: 12px 16px;
+  padding: var(--sp-3) var(--sp-4);
   max-height: min(70vh, 640px);
   overflow: auto;
 }
@@ -116,25 +116,25 @@
 
 .treeNested {
   padding-left: 20px;
-  margin-top: 4px;
+  margin-top: var(--sp-1);
   border-left: 2px solid var(--border);
 }
 
 .treeItem {
-  margin: 4px 0;
+  margin: var(--sp-1) 0;
 }
 
 .treeLink {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
-  font-size: 14px;
+  gap: var(--sp-2);
+  font-size: var(--type-body-size);
   line-height: 1.4;
   color: var(--text);
   text-decoration: none;
   padding: 4px 6px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
 }
 
 .treeLink:hover,
@@ -150,12 +150,12 @@
 }
 
 .treeBlocked {
-  font-size: 12px;
+  font-size: var(--type-caption-size);
   color: var(--blocked);
 }
 
 .collapseSummary {
-  font-size: 14px;
+  font-size: var(--type-body-size);
   color: var(--text-muted);
   margin: 0;
 }
@@ -163,14 +163,14 @@
 .collapseChips {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
 }
 
 .collapseChip {
-  font-size: 12px;
+  font-size: var(--type-caption-size);
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text-muted);

@@ -1,3 +1,4 @@
+import { Badge } from '#/components/ui'
 import type { PinnedRevisionTuple } from '#/lib/control-plane-types'
 import styles from './work.module.css'
 
@@ -10,13 +11,12 @@ export function PinnedRevisionBadge({ pinned }: PinnedRevisionBadgeProps) {
   if (!pinned) {
     return (
       <div
-        className={styles.pin}
+        className={styles.pinMeta}
         data-testid="work-pinned-revision"
         data-empty="true"
-        title="No pinned revision on this response"
+        title="Tidak ada revisi pin pada respons ini"
       >
-        <span>pin</span>
-        <strong>—</strong>
+        <Badge mono>pin —</Badge>
       </div>
     )
   }
@@ -28,16 +28,16 @@ export function PinnedRevisionBadge({ pinned }: PinnedRevisionBadgeProps) {
 
   return (
     <div
-      className={styles.pin}
+      className={styles.pinMeta}
       data-testid="work-pinned-revision"
       title={`snapshot ${pinned.canonicalSnapshotId} · hash ${pinned.canonicalHash} · taskHash ${pinned.taskHash}`}
     >
-      <span>rev</span>
-      <strong>
-        b{pinned.boardRev}/L{pinned.lifecycleRev}
-      </strong>
-      <span aria-hidden="true">·</span>
-      <span>{shortHash}</span>
+      <Badge mono>
+        rev b{pinned.boardRev}/L{pinned.lifecycleRev}
+      </Badge>
+      <Badge mono variant="neutral">
+        {shortHash}
+      </Badge>
     </div>
   )
 }

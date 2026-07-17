@@ -1,4 +1,12 @@
 import {
+  Badge,
+  Button,
+  Card,
+  Disclosure,
+  StatusChip,
+  type StatusChipVariant,
+} from '#/components/ui'
+import {
   actionLabel,
   CONTENT_REVIEW_CHIP_LABEL,
   decisionActionAvailability,
@@ -31,27 +39,31 @@ function agentsHref(boardId: string): string {
   return `/b/${encodeURIComponent(boardId)}/agents`
 }
 
-function severityClass(sev: DecisionSeverity): string {
-  if (sev === 'CRITICAL' || sev === 'HIGH') return styles.sevCritical
-  if (sev === 'MEDIUM') return styles.sevMedium
-  return styles.sevLow
-}
-
-function statusClass(status: string): string {
+function statusVariant(status: string): StatusChipVariant {
   const s = status.toUpperCase()
-  if (s === 'OPEN') return styles.statusOpen
-  if (s === 'ACKNOWLEDGED') return styles.statusAck
-  if (s === 'RESOLVED') return styles.statusResolved
-  if (s === 'REJECTED' || s === 'EXPIRED' || s === 'CANCELLED') {
-    return styles.statusRejected
-  }
-  return styles.statusAck
+  if (s === 'RESOLVED') return 'done'
+  if (s === 'OPEN') return 'ongoing'
+  if (s === 'ACKNOWLEDGED') return 'next'
+  if (s === 'REJECTED' || s === 'EXPIRED' || s === 'CANCELLED') return 'blocked'
+  return 'pending'
 }
 
-function severityIcon(sev: DecisionSeverity): string {
-  if (sev === 'CRITICAL' || sev === 'HIGH') return '!'
-  if (sev === 'MEDIUM') return '•'
-  return '·'
+function statusLabelId(status: string): string {
+  const s = status.toUpperCase()
+  if (s === 'OPEN') return 'Terbuka'
+  if (s === 'ACKNOWLEDGED') return 'Diakui'
+  if (s === 'RESOLVED') return 'Selesai'
+  if (s === 'REJECTED') return 'Ditolak'
+  if (s === 'EXPIRED') return 'Kedaluwarsa'
+  if (s === 'CANCELLED') return 'Dibatalkan'
+  return status
+}
+
+function severityLabelId(sev: DecisionSeverity): string {
+  if (sev === 'CRITICAL') return 'Kritis'
+  if (sev === 'HIGH') return 'Tinggi'
+  if (sev === 'MEDIUM') return 'Sedang'
+  return 'Rendah'
 }
 
 function displayOrDash(v: string | number | null | undefined): string {
@@ -113,7 +125,9 @@ export function DecisionCard({
     item.options.some((o) => o.optionId === item.selectedOptionId && o.declining)
 
   const busy = pending
-  const missingRevs = revs == null && (avail.canResolve || avail.canAcknowledge || avail.canReject || avail.canSnooze)
+  const missingRevs =
+    revs == null &&
+    (avail.canResolve || avail.canAcknowledge || avail.canReject || avail.canSnooze)
 
   function basePayload() {
     if (!revs) {
@@ -132,11 +146,22 @@ export function DecisionCard({
     await fn()
   }
 
+  const techSecondary =
+    owner.technicalTitle && owner.technicalTitle !== owner.primaryTitle
+      ? owner.technicalTitle
+      : item.decisionId !== owner.primaryTitle
+        ? item.decisionId
+        : null
+
   return (
-    <article
-      className={`${styles.card}${item.blocking ? ` ${styles.cardBlocking}` : ''}${
-        expired ? ` ${styles.cardExpired}` : ''
-      }`}
+    <Card
+      as="article"
+      className={[
+        item.blocking ? styles.cardBlocking : '',
+        expired ? styles.cardExpired : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
       data-testid="decision-card"
       data-decision-id={item.decisionId}
       data-blocking={item.blocking ? 'true' : 'false'}
@@ -152,507 +177,561 @@ export function DecisionCard({
       aria-labelledby={`dec-title-${item.decisionId}`}
       aria-busy={busy || undefined}
     >
-      <div className={styles.cardHead}>
-        <span className={`${styles.chip} ${severityClass(item.severity)}`}>
-          <span aria-hidden="true">{severityIcon(item.severity)}</span>
-          {item.severity}
-        </span>
-        <span className={`${styles.chip} ${statusClass(item.status)}`}>
-          <span aria-hidden="true">●</span>
-          {item.status}
-        </span>
-        {item.blocking ? (
-          <span className={`${styles.chip} ${styles.blockingBadge}`}>
-            <span aria-hidden="true">⛔</span>
-            Blocking
-          </span>
-        ) : null}
-        {owner.contentReviewRequired ? (
-          <span
-            className={`${styles.chip} ${styles.contentReviewBadge}`}
-            data-testid="decision-content-review"
-            role="status"
-            title={owner.effectiveReviewStatus}
+      <div className={styles.cardBody}>
+        <div className={styles.cardHead}>
+          <Badge variant="neutral" data-testid="decision-severity-badge">
+            {severityLabelId(item.severity)}
+          </Badge>
+          <StatusChip
+            variant={statusVariant(item.status)}
+            data-testid="decision-status-chip"
           >
-            {CONTENT_REVIEW_CHIP_LABEL}
-          </span>
-        ) : null}
-        {item.status === 'REJECTED' ? (
-          <span className={`${styles.chip} ${styles.statusRejected}`} data-testid="decision-rejected-badge">
-            Rejected (not declined option)
-          </span>
-        ) : null}
-        {item.status === 'RESOLVED' && selectedDeclining ? (
-          <span className={`${styles.chip} ${styles.statusResolved}`} data-testid="decision-declined-badge">
-            Declined option (RESOLVED)
-          </span>
-        ) : null}
-        {expired ? (
-          <span className={`${styles.chip} ${styles.statusRejected}`} data-testid="decision-expired-badge">
-            Expired
-          </span>
-        ) : null}
-        <span className={styles.decisionId} title={item.decisionId}>
-          {item.decisionId}
-        </span>
-      </div>
-
-      <h3 id={`dec-title-${item.decisionId}`} className={styles.title} data-testid="decision-owner-title">
-        {owner.primaryTitle}
-      </h3>
-
-      {owner.statusSentence ? (
-        <p className={styles.statusSentence} data-testid="decision-status-sentence">
-          {owner.statusSentence}
-        </p>
-      ) : null}
-
-      {owner.ownerAction ? (
-        <p className={styles.ownerActionLine} data-testid="decision-owner-action-copy">
-          <span className={styles.fieldLabel}>Owner action</span>
-          <span className={styles.fieldValue}>{owner.ownerAction}</span>
-        </p>
-      ) : null}
-
-      {(owner.whyItMatters || owner.next || owner.blocker) && (
-        <dl className={styles.hdGrid} data-testid="decision-human-display">
-          {owner.whyItMatters ? (
-            <div className={styles.metaCell}>
-              <dt>Why it matters</dt>
-              <dd data-testid="decision-why">{owner.whyItMatters}</dd>
-            </div>
+            {statusLabelId(item.status)}
+          </StatusChip>
+          {item.blocking ? (
+            <StatusChip variant="blocked" data-testid="decision-blocking-chip">
+              Menghambat
+            </StatusChip>
           ) : null}
-          {owner.next ? (
-            <div className={styles.metaCell}>
-              <dt>Next</dt>
-              <dd data-testid="decision-next">{owner.next}</dd>
-            </div>
+          {owner.contentReviewRequired ? (
+            <StatusChip
+              variant="warn"
+              data-testid="decision-content-review"
+              role="status"
+              title={owner.effectiveReviewStatus}
+            >
+              {CONTENT_REVIEW_CHIP_LABEL}
+            </StatusChip>
           ) : null}
-          {owner.blocker ? (
-            <div className={styles.metaCell}>
-              <dt>Blocker</dt>
-              <dd data-testid="decision-blocker">{owner.blocker}</dd>
-            </div>
+          {item.status === 'REJECTED' ? (
+            <Badge variant="neutral" data-testid="decision-rejected-badge">
+              Ditolak (bukan opsi penolakan)
+            </Badge>
           ) : null}
+          {item.status === 'RESOLVED' && selectedDeclining ? (
+            <Badge variant="neutral" data-testid="decision-declined-badge">
+              Opsi ditolak (RESOLVED)
+            </Badge>
+          ) : null}
+          {expired ? (
+            <Badge variant="neutral" data-testid="decision-expired-badge">
+              Kedaluwarsa
+            </Badge>
+          ) : null}
+          <span className={styles.techSecondary} title={item.decisionId}>
+            {item.decisionId}
+          </span>
+        </div>
+
+        <div className={styles.titleBlock}>
+          <h3
+            id={`dec-title-${item.decisionId}`}
+            className={styles.title}
+            data-testid="decision-owner-title"
+          >
+            {owner.primaryTitle}
+          </h3>
+          {techSecondary ? (
+            <span className={styles.techSecondary} title={techSecondary}>
+              {techSecondary}
+            </span>
+          ) : null}
+        </div>
+
+        {owner.statusSentence ? (
+          <p className={styles.statusSentence} data-testid="decision-status-sentence">
+            {owner.statusSentence}
+          </p>
+        ) : null}
+
+        {owner.ownerAction ? (
+          <p className={styles.ownerActionLine} data-testid="decision-owner-action-copy">
+            <span className={styles.fieldLabel}>Tindakan pemilik</span>
+            <span className={styles.fieldValue}>{owner.ownerAction}</span>
+          </p>
+        ) : null}
+
+        {(owner.whyItMatters || owner.next || owner.blocker) && (
+          <dl className={styles.hdGrid} data-testid="decision-human-display">
+            {owner.whyItMatters ? (
+              <div className={styles.metaCell}>
+                <dt>Mengapa penting</dt>
+                <dd data-testid="decision-why">{owner.whyItMatters}</dd>
+              </div>
+            ) : null}
+            {owner.next ? (
+              <div className={styles.metaCell}>
+                <dt>Berikutnya</dt>
+                <dd data-testid="decision-next">{owner.next}</dd>
+              </div>
+            ) : null}
+            {owner.blocker ? (
+              <div className={styles.metaCell}>
+                <dt>Penghambat</dt>
+                <dd data-testid="decision-blocker">{owner.blocker}</dd>
+              </div>
+            ) : null}
+          </dl>
+        )}
+
+        {owner.contentReviewRequired &&
+        owner.technicalTitle &&
+        owner.technicalTitle !== owner.primaryTitle ? (
+          <Disclosure
+            summary="Detail teknis"
+            data-testid="decision-technical-title"
+          >
+            <dl className={styles.techDl}>
+              <dt>Judul teknis</dt>
+              <dd className={styles.mono}>{owner.technicalTitle}</dd>
+              <dt>Status peninjauan</dt>
+              <dd className={styles.mono}>{owner.effectiveReviewStatus}</dd>
+            </dl>
+          </Disclosure>
+        ) : null}
+
+        <div className={styles.field}>
+          <span className={styles.fieldLabel} id={qId}>
+            Pertanyaan
+          </span>
+          {questionIsDup ? (
+            <p
+              className={`${styles.fieldValue} ${styles.fieldPartial}`}
+              aria-labelledby={qId}
+              data-testid="decision-question-partial"
+            >
+              Pertanyaan tidak diproyeksikan oleh envelope server.
+            </p>
+          ) : (
+            <p
+              className={styles.fieldValue}
+              aria-labelledby={qId}
+              data-testid="decision-question"
+            >
+              {questionRaw}
+            </p>
+          )}
+        </div>
+
+        <dl className={styles.metaGrid}>
+          <div className={styles.metaCell}>
+            <dt>Jatuh tempo</dt>
+            <dd data-testid="decision-due">{displayOrDash(item.dueAt)}</dd>
+          </div>
+          <div className={styles.metaCell}>
+            <dt>Dibuat</dt>
+            <dd data-testid="decision-created">{displayOrDash(item.createdAt)}</dd>
+          </div>
+          <div className={styles.metaCell}>
+            <dt>Jenis</dt>
+            <dd>{displayOrDash(item.type)}</dd>
+          </div>
+          <div className={styles.metaCell}>
+            <dt>Tunda</dt>
+            <dd data-testid="decision-snooze">
+              {item.blocking
+                ? 'Tidak bisa disembunyikan (menghambat)'
+                : item.snoozedUntil
+                  ? item.snoozedUntil
+                  : '—'}
+            </dd>
+          </div>
+          <div className={styles.metaCell}>
+            <dt>Pemilik</dt>
+            <dd data-testid="decision-owner">{displayOrDash(item.ownerId)}</dd>
+          </div>
+          <div className={styles.metaCell}>
+            <dt>Penyelesai</dt>
+            <dd data-testid="decision-resolver">{displayOrDash(item.resolverId)}</dd>
+          </div>
+          <div className={styles.metaCell}>
+            <dt>Proyek</dt>
+            <dd data-testid="decision-project">
+              {item.projectId ? (
+                <a
+                  className={styles.entityLink}
+                  href={projectHref(boardId, item.projectId)}
+                  data-testid="decision-project-link"
+                >
+                  {item.projectId}
+                </a>
+              ) : (
+                '—'
+              )}
+            </dd>
+          </div>
+          <div className={styles.metaCell}>
+            <dt>Fitur</dt>
+            <dd data-testid="decision-feature">
+              {item.featureId ? (
+                <a
+                  className={styles.entityLink}
+                  href={featureHref(boardId, item.featureId)}
+                  data-testid="decision-feature-link"
+                >
+                  {item.featureId}
+                </a>
+              ) : (
+                '—'
+              )}
+            </dd>
+          </div>
+          <div className={styles.metaCell}>
+            <dt>Tugas</dt>
+            <dd data-testid="decision-task">
+              {item.taskId ? (
+                <a
+                  className={styles.entityLink}
+                  href={taskHref(boardId, item.taskId)}
+                  data-testid="decision-task-link"
+                >
+                  {item.taskId}
+                </a>
+              ) : (
+                '—'
+              )}
+            </dd>
+          </div>
+          <div className={styles.metaCell}>
+            <dt>Run</dt>
+            <dd data-testid="decision-run">
+              {item.runId ? (
+                <a
+                  className={styles.entityLink}
+                  href={agentsHref(boardId)}
+                  data-testid="decision-run-link"
+                  title={`Buka konteks agen/run untuk ${item.runId}`}
+                  aria-label={`Buka konteks agen/run untuk ${item.runId}`}
+                >
+                  {item.runId}
+                </a>
+              ) : (
+                '—'
+              )}
+            </dd>
+          </div>
         </dl>
-      )}
 
-      {owner.contentReviewRequired &&
-      owner.technicalTitle &&
-      owner.technicalTitle !== owner.primaryTitle ? (
-        <details className={styles.diagDetails} data-testid="decision-technical-title">
-          <summary>Detail teknis</summary>
-          <p className={styles.technicalTitleNote}>
-            Judul teknis: {owner.technicalTitle}
-          </p>
-          <p className={styles.technicalTitleNote}>
-            Status peninjauan: {owner.effectiveReviewStatus}
-          </p>
-        </details>
-      ) : null}
-
-      <div className={styles.field}>
-        <span className={styles.fieldLabel} id={qId}>
-          Question
-        </span>
-        {questionIsDup ? (
-          <p
-            className={`${styles.fieldValue} ${styles.fieldPartial}`}
-            aria-labelledby={qId}
-            data-testid="decision-question-partial"
-          >
-            Question not projected by server envelope.
-          </p>
-        ) : (
-          <p className={styles.fieldValue} aria-labelledby={qId} data-testid="decision-question">
-            {questionRaw}
-          </p>
-        )}
-      </div>
-
-      <dl className={styles.metaGrid}>
-        <div className={styles.metaCell}>
-          <dt>Due</dt>
-          <dd data-testid="decision-due">{displayOrDash(item.dueAt)}</dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Created</dt>
-          <dd data-testid="decision-created">{displayOrDash(item.createdAt)}</dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Type</dt>
-          <dd>{displayOrDash(item.type)}</dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Snooze</dt>
-          <dd data-testid="decision-snooze">
-            {item.blocking
-              ? 'Cannot hide (blocking)'
-              : item.snoozedUntil
-                ? item.snoozedUntil
+        <Disclosure summary="Detail teknis" data-testid="decision-tech-disclosure">
+          <dl className={styles.techDl}>
+            <dt>entityRev</dt>
+            <dd className={styles.mono} data-testid="decision-entity-rev">
+              {displayOrDash(item.entityRev)}
+            </dd>
+            <dt>boardRev</dt>
+            <dd className={styles.mono} data-testid="decision-board-rev">
+              {displayOrDash(item.boardRev)}
+            </dd>
+            <dt>expectedRev</dt>
+            <dd className={styles.mono} data-testid="decision-expected-rev">
+              {displayOrDash(item.expectedRev)}
+            </dd>
+            <dt>Persetujuan</dt>
+            <dd className={styles.mono} data-testid="decision-approval">
+              {displayOrDash(item.scopedApprovalId)}
+            </dd>
+            <dt>Audit</dt>
+            <dd className={styles.mono} data-testid="decision-audit">
+              {item.auditIds && item.auditIds.length > 0
+                ? item.auditIds.join(', ')
                 : '—'}
-          </dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Owner</dt>
-          <dd data-testid="decision-owner">{displayOrDash(item.ownerId)}</dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Resolver</dt>
-          <dd data-testid="decision-resolver">{displayOrDash(item.resolverId)}</dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>entityRev</dt>
-          <dd data-testid="decision-entity-rev">{displayOrDash(item.entityRev)}</dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>boardRev</dt>
-          <dd data-testid="decision-board-rev">{displayOrDash(item.boardRev)}</dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>expectedRev</dt>
-          <dd data-testid="decision-expected-rev">{displayOrDash(item.expectedRev)}</dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Approval</dt>
-          <dd data-testid="decision-approval">{displayOrDash(item.scopedApprovalId)}</dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Audit</dt>
-          <dd data-testid="decision-audit">
-            {item.auditIds && item.auditIds.length > 0 ? item.auditIds.join(', ') : '—'}
-          </dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Selected option</dt>
-          <dd data-testid="decision-selected-option">
-            {displayOrDash(item.selectedOptionId)}
-          </dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Project</dt>
-          <dd data-testid="decision-project">
-            {item.projectId ? (
-              <a
-                href={projectHref(boardId, item.projectId)}
-                data-testid="decision-project-link"
-              >
-                {item.projectId}
-              </a>
-            ) : (
-              '—'
-            )}
-          </dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Feature</dt>
-          <dd data-testid="decision-feature">
-            {item.featureId ? (
-              <a
-                href={featureHref(boardId, item.featureId)}
-                data-testid="decision-feature-link"
-              >
-                {item.featureId}
-              </a>
-            ) : (
-              '—'
-            )}
-          </dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Task</dt>
-          <dd data-testid="decision-task">
-            {item.taskId ? (
-              <a href={taskHref(boardId, item.taskId)} data-testid="decision-task-link">
-                {item.taskId}
-              </a>
-            ) : (
-              '—'
-            )}
-          </dd>
-        </div>
-        <div className={styles.metaCell}>
-          <dt>Run</dt>
-          <dd data-testid="decision-run">
-            {item.runId ? (
-              <a
-                href={agentsHref(boardId)}
-                data-testid="decision-run-link"
-                title={`Open agents/run context for ${item.runId}`}
-                aria-label={`Open agents/run context for ${item.runId}`}
-              >
-                {item.runId}
-              </a>
-            ) : (
-              '—'
-            )}
-          </dd>
-        </div>
-      </dl>
+            </dd>
+            <dt>Opsi terpilih</dt>
+            <dd className={styles.mono} data-testid="decision-selected-option">
+              {displayOrDash(item.selectedOptionId)}
+            </dd>
+            <dt>decisionId</dt>
+            <dd className={styles.mono}>{item.decisionId}</dd>
+          </dl>
+        </Disclosure>
 
-      <div className={styles.field}>
-        <span className={styles.fieldLabel} id={evId}>
-          Evidence
-        </span>
-        {item.evidence.length > 0 ? (
-          <ul className={styles.evidenceList} aria-labelledby={evId} data-testid="decision-evidence">
-            {item.evidence.map((e) => (
-              <li key={e} className={styles.evidenceItem}>
-                {e}
-              </li>
-            ))}
-          </ul>
-        ) : (
+        <div className={styles.field}>
+          <span className={styles.fieldLabel} id={evId}>
+            Bukti
+          </span>
+          {item.evidence.length > 0 ? (
+            <ul
+              className={styles.evidenceList}
+              aria-labelledby={evId}
+              data-testid="decision-evidence"
+            >
+              {item.evidence.map((e) => (
+                <li key={e} className={styles.evidenceItem}>
+                  {e}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p
+              className={`${styles.fieldValue} ${styles.fieldPartial}`}
+              aria-labelledby={evId}
+              data-testid="decision-evidence-empty"
+            >
+              Tidak ada resi bukti pada catatan ini.
+            </p>
+          )}
+        </div>
+
+        <div className={styles.field}>
+          <span className={styles.fieldLabel} id={optId}>
+            Opsi &amp; trade-off
+          </span>
+          {item.options.length > 0 ? (
+            <ul
+              className={styles.options}
+              aria-labelledby={optId}
+              data-testid="decision-options"
+            >
+              {item.options.map((o) => (
+                <li
+                  key={o.optionId}
+                  className={styles.optionRow}
+                  data-option-id={o.optionId}
+                  data-declining={o.declining ? 'true' : 'false'}
+                  data-selected={
+                    item.selectedOptionId === o.optionId ? 'true' : 'false'
+                  }
+                >
+                  <span>
+                    {o.label}
+                    {o.declining ? ' (penolakan)' : ''}
+                    {item.selectedOptionId === o.optionId ? ' · terpilih' : ''}
+                  </span>
+                  {o.tradeoffs ? (
+                    <span className={styles.optionTradeoff}>
+                      Trade-off: {o.tradeoffs}
+                    </span>
+                  ) : (
+                    <span className={styles.optionTradeoff}>
+                      Trade-off: tidak disediakan
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p
+              className={`${styles.fieldValue} ${styles.fieldPartial}`}
+              aria-labelledby={optId}
+              data-testid="decision-options-partial"
+            >
+              Opsi tidak tersedia pada catatan ini.
+            </p>
+          )}
+        </div>
+
+        <div className={styles.field}>
+          <span className={styles.fieldLabel} id={recId}>
+            Rekomendasi
+          </span>
+          {item.recommendation ? (
+            <p
+              className={styles.fieldValue}
+              aria-labelledby={recId}
+              data-testid="decision-recommendation"
+            >
+              {item.recommendation}
+            </p>
+          ) : (
+            <p
+              className={`${styles.fieldValue} ${styles.fieldPartial}`}
+              aria-labelledby={recId}
+              data-testid="decision-recommendation-partial"
+            >
+              Rekomendasi agen tidak tersedia pada catatan ini.
+            </p>
+          )}
+        </div>
+
+        {item.partialFields ? (
           <p
-            className={`${styles.fieldValue} ${styles.fieldPartial}`}
-            aria-labelledby={evId}
-            data-testid="decision-evidence-empty"
+            id={errId}
+            className={styles.fieldError}
+            role="status"
+            data-testid="decision-partial-notice"
           >
-            No evidence receipts on this record.
+            Muatan keputusan sebagian — hilang:{' '}
+            {(item.absentFields && item.absentFields.length > 0
+              ? item.absentFields
+              : ['beberapa kolom publik']
+            ).join(', ')}
+            .
           </p>
-        )}
-      </div>
+        ) : null}
 
-      <div className={styles.field}>
-        <span className={styles.fieldLabel} id={optId}>
-          Options &amp; tradeoffs
-        </span>
-        {item.options.length > 0 ? (
-          <ul className={styles.options} aria-labelledby={optId} data-testid="decision-options">
-            {item.options.map((o) => (
-              <li
-                key={o.optionId}
-                className={styles.optionRow}
-                data-option-id={o.optionId}
-                data-declining={o.declining ? 'true' : 'false'}
-                data-selected={
-                  item.selectedOptionId === o.optionId ? 'true' : 'false'
-                }
-              >
-                <span>
-                  {o.label}
-                  {o.declining ? ' (declining)' : ''}
-                  {item.selectedOptionId === o.optionId ? ' · selected' : ''}
-                </span>
-                {o.tradeoffs ? (
-                  <span className={styles.optionTradeoff}>Tradeoff: {o.tradeoffs}</span>
-                ) : (
-                  <span className={styles.optionTradeoff}>Tradeoff: not provided</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : (
+        {expired ? (
+          <Card
+            variant="panel"
+            data-testid="decision-expired-state"
+            role="status"
+            title="Keputusan kedaluwarsa"
+          >
+            <p className={styles.bannerBody}>
+              Permintaan ini ditutup karena kedaluwarsa. Tidak ada tindakan akui,
+              selesaikan, tolak, atau tunda.
+            </p>
+          </Card>
+        ) : null}
+
+        {actionError ? (
           <p
-            className={`${styles.fieldValue} ${styles.fieldPartial}`}
-            aria-labelledby={optId}
-            data-testid="decision-options-partial"
+            id={actErrId}
+            className={styles.fieldError}
+            role="alert"
+            data-testid="decision-action-error"
+            data-error-code={actionError.code}
           >
-            Options not available on this record.
+            <strong>{actionError.code}</strong>
+            {actionError.message ? `: ${actionError.message}` : null}
+            {actionError.action ? ` (${actionError.action})` : null}
           </p>
-        )}
-      </div>
+        ) : null}
 
-      <div className={styles.field}>
-        <span className={styles.fieldLabel} id={recId}>
-          Recommendation
-        </span>
-        {item.recommendation ? (
-          <p
-            className={styles.fieldValue}
-            aria-labelledby={recId}
-            data-testid="decision-recommendation"
-          >
-            {item.recommendation}
+        {missingRevs ? (
+          <p className={styles.fieldError} role="status" data-testid="decision-rev-missing">
+            Revisi CAS hilang — tidak aman untuk mengubah.
           </p>
-        ) : (
-          <p
-            className={`${styles.fieldValue} ${styles.fieldPartial}`}
-            aria-labelledby={recId}
-            data-testid="decision-recommendation-partial"
-          >
-            Agent recommendation not available on this record.
-          </p>
-        )}
-      </div>
+        ) : null}
 
-      {item.partialFields ? (
-        <p
-          id={errId}
-          className={styles.fieldError}
-          role="status"
-          data-testid="decision-partial-notice"
-        >
-          Partial decision payload — missing:{' '}
-          {(item.absentFields && item.absentFields.length > 0
-            ? item.absentFields
-            : ['some public fields']
-          ).join(', ')}
-          .
-        </p>
-      ) : null}
-
-      {expired ? (
         <div
-          className={`${styles.banner} ${styles.bannerCompact} ${styles.banner_error}`}
-          role="status"
-          data-testid="decision-expired-state"
+          className={styles.actions}
+          aria-label="Tindakan pemilik"
+          data-testid="decision-actions"
         >
-          <p className={styles.bannerTitle}>Decision expired</p>
-          <p className={styles.bannerBody}>
-            This request closed by expiry. No acknowledge, resolve, reject, or snooze actions.
-          </p>
+          {avail.canAcknowledge ? (
+            <Button
+              type="button"
+              variant="primary"
+              size="md"
+              className={styles.actionBtn}
+              data-testid="decision-action-acknowledge"
+              data-action="acknowledge"
+              disabled={busy || !revs || !actions?.onAcknowledge}
+              aria-disabled={busy || !revs || !actions?.onAcknowledge ? true : undefined}
+              onClick={() =>
+                void run(() => actions?.onAcknowledge?.({ ...basePayload() }))
+              }
+            >
+              {busy && pendingAction === 'acknowledge'
+                ? 'Mengakui…'
+                : actionLabel('acknowledge')}
+            </Button>
+          ) : null}
+
+          {avail.canResolve && item.options.length > 0
+            ? item.options.map((o) => (
+                <Button
+                  key={o.optionId}
+                  type="button"
+                  variant={o.declining ? 'secondary' : 'primary'}
+                  size="md"
+                  className={styles.actionBtn}
+                  data-testid="decision-action-resolve"
+                  data-action="resolve"
+                  data-option-id={o.optionId}
+                  data-declining={o.declining ? 'true' : 'false'}
+                  disabled={busy || !revs || !actions?.onResolve}
+                  aria-disabled={busy || !revs || !actions?.onResolve ? true : undefined}
+                  title={
+                    o.declining
+                      ? 'Opsi penolakan diselesaikan sebagai RESOLVED (bukan REJECTED)'
+                      : `Selesaikan dengan ${o.label}`
+                  }
+                  onClick={() =>
+                    void run(() =>
+                      actions?.onResolve?.({
+                        ...basePayload(),
+                        selectedOptionId: o.optionId,
+                      }),
+                    )
+                  }
+                >
+                  {busy && pendingAction === 'resolve'
+                    ? 'Menyelesaikan…'
+                    : o.declining
+                      ? `Tolak opsi: ${o.label}`
+                      : `Selesaikan: ${o.label}`}
+                </Button>
+              ))
+            : null}
+
+          {avail.canResolve && item.options.length === 0 ? (
+            <span
+              className={styles.actionHint}
+              data-testid="decision-action-resolve-unavailable"
+            >
+              Selesaikan membutuhkan opsi terproyeksi
+            </span>
+          ) : null}
+
+          {avail.canReject ? (
+            <Button
+              type="button"
+              variant="danger"
+              size="md"
+              className={styles.actionBtn}
+              data-testid="decision-action-reject"
+              data-action="reject"
+              disabled={busy || !revs || !actions?.onReject}
+              aria-disabled={busy || !revs || !actions?.onReject ? true : undefined}
+              title="Tolak permintaan itu sendiri (bukan opsi penolakan)"
+              onClick={() => void run(() => actions?.onReject?.({ ...basePayload() }))}
+            >
+              {busy && pendingAction === 'reject' ? 'Menolak…' : actionLabel('reject')}
+            </Button>
+          ) : null}
+
+          {avail.canSnooze ? (
+            <Button
+              type="button"
+              variant="secondary"
+              size="md"
+              className={styles.actionBtn}
+              data-testid="decision-action-snooze"
+              data-action="snooze"
+              disabled={busy || !revs || !actions?.onSnooze}
+              aria-disabled={busy || !revs || !actions?.onSnooze ? true : undefined}
+              onClick={() =>
+                void run(() =>
+                  actions?.onSnooze?.({
+                    ...basePayload(),
+                    snoozedUntil: defaultSnoozedUntil(),
+                  }),
+                )
+              }
+            >
+              {busy && pendingAction === 'snooze' ? 'Menunda…' : actionLabel('snooze')}
+            </Button>
+          ) : item.blocking && isOpenDecisionStatusLocal(item.status) ? (
+            <span
+              className={`${styles.actionHint} ${styles.actionHintBlocked}`}
+              data-testid="decision-action-snooze-blocked"
+              title={avail.snoozeBlockedReason ?? undefined}
+            >
+              Tunda tidak tersedia (menghambat)
+            </span>
+          ) : null}
+
+          {!avail.canAcknowledge &&
+          !avail.canResolve &&
+          !avail.canReject &&
+          !avail.canSnooze &&
+          !expired
+            ? item.ownerActions.map((label, i) => (
+                <span
+                  key={`${item.decisionId}-hint-${i}`}
+                  className={`${styles.actionHint}${
+                    i === 0 ? ` ${styles.actionHintPrimary}` : ''
+                  }`}
+                  data-testid="decision-owner-action"
+                >
+                  {label}
+                </span>
+              ))
+            : null}
         </div>
-      ) : null}
-
-      {actionError ? (
-        <p
-          id={actErrId}
-          className={styles.fieldError}
-          role="alert"
-          data-testid="decision-action-error"
-          data-error-code={actionError.code}
-        >
-          <strong>{actionError.code}</strong>
-          {actionError.message ? `: ${actionError.message}` : null}
-          {actionError.action ? ` (${actionError.action})` : null}
-        </p>
-      ) : null}
-
-      {missingRevs ? (
-        <p className={styles.fieldError} role="status" data-testid="decision-rev-missing">
-          CAS revisions missing — cannot mutate safely.
-        </p>
-      ) : null}
-
-      <div className={styles.actions} aria-label="Owner actions" data-testid="decision-actions">
-        {avail.canAcknowledge ? (
-          <button
-            type="button"
-            className={`${styles.actionBtn} ${styles.actionBtnPrimary}`}
-            data-testid="decision-action-acknowledge"
-            data-action="acknowledge"
-            disabled={busy || !revs || !actions?.onAcknowledge}
-            aria-disabled={busy || !revs || !actions?.onAcknowledge ? true : undefined}
-            onClick={() =>
-              void run(() => actions?.onAcknowledge?.({ ...basePayload() }))
-            }
-          >
-            {busy && pendingAction === 'acknowledge'
-              ? 'Acknowledging…'
-              : actionLabel('acknowledge')}
-          </button>
-        ) : null}
-
-        {avail.canResolve && item.options.length > 0
-          ? item.options.map((o) => (
-              <button
-                key={o.optionId}
-                type="button"
-                className={`${styles.actionBtn}${
-                  o.declining ? ` ${styles.actionBtnSecondary}` : ` ${styles.actionBtnPrimary}`
-                }`}
-                data-testid="decision-action-resolve"
-                data-action="resolve"
-                data-option-id={o.optionId}
-                data-declining={o.declining ? 'true' : 'false'}
-                disabled={busy || !revs || !actions?.onResolve}
-                aria-disabled={busy || !revs || !actions?.onResolve ? true : undefined}
-                title={
-                  o.declining
-                    ? 'Declining option resolves as RESOLVED (not REJECTED)'
-                    : `Resolve with ${o.label}`
-                }
-                onClick={() =>
-                  void run(() =>
-                    actions?.onResolve?.({
-                      ...basePayload(),
-                      selectedOptionId: o.optionId,
-                    }),
-                  )
-                }
-              >
-                {busy && pendingAction === 'resolve'
-                  ? 'Resolving…'
-                  : o.declining
-                    ? `Decline: ${o.label}`
-                    : `Resolve: ${o.label}`}
-              </button>
-            ))
-          : null}
-
-        {avail.canResolve && item.options.length === 0 ? (
-          <span
-            className={styles.actionHint}
-            data-testid="decision-action-resolve-unavailable"
-          >
-            Resolve needs projected options
-          </span>
-        ) : null}
-
-        {avail.canReject ? (
-          <button
-            type="button"
-            className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
-            data-testid="decision-action-reject"
-            data-action="reject"
-            disabled={busy || !revs || !actions?.onReject}
-            aria-disabled={busy || !revs || !actions?.onReject ? true : undefined}
-            title="Reject the request itself (not a declining option)"
-            onClick={() => void run(() => actions?.onReject?.({ ...basePayload() }))}
-          >
-            {busy && pendingAction === 'reject' ? 'Rejecting…' : actionLabel('reject')}
-          </button>
-        ) : null}
-
-        {avail.canSnooze ? (
-          <button
-            type="button"
-            className={`${styles.actionBtn} ${styles.actionBtnSecondary}`}
-            data-testid="decision-action-snooze"
-            data-action="snooze"
-            disabled={busy || !revs || !actions?.onSnooze}
-            aria-disabled={busy || !revs || !actions?.onSnooze ? true : undefined}
-            onClick={() =>
-              void run(() =>
-                actions?.onSnooze?.({
-                  ...basePayload(),
-                  snoozedUntil: defaultSnoozedUntil(),
-                }),
-              )
-            }
-          >
-            {busy && pendingAction === 'snooze' ? 'Snoozing…' : actionLabel('snooze')}
-          </button>
-        ) : item.blocking && isOpenDecisionStatusLocal(item.status) ? (
-          <span
-            className={`${styles.actionHint} ${styles.actionHintBlocked}`}
-            data-testid="decision-action-snooze-blocked"
-            title={avail.snoozeBlockedReason ?? undefined}
-          >
-            Snooze unavailable (blocking)
-          </span>
-        ) : null}
-
-        {!avail.canAcknowledge &&
-        !avail.canResolve &&
-        !avail.canReject &&
-        !avail.canSnooze &&
-        !expired
-          ? item.ownerActions.map((label, i) => (
-              <span
-                key={`${item.decisionId}-hint-${i}`}
-                className={`${styles.actionHint}${
-                  i === 0 ? ` ${styles.actionHintPrimary}` : ''
-                }`}
-                data-testid="decision-owner-action"
-              >
-                {label}
-              </span>
-            ))
-          : null}
       </div>
-    </article>
+    </Card>
   )
 }
 

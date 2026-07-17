@@ -1,16 +1,29 @@
 /**
- * W-UI-2 — Direktori Fitur (produk, id-ID).
- * SPEC-TM-KOMPAT-VISUAL-V1 §1 IA, §3.B, §4.3 + ADDENDUM V1.1 §B.
- * Kartu: nama id-ID bold → mini bar terbukti pindah → meta task·unit·docs → chip domain.
- * TANPA ID teknis di permukaan kartu.
+ * FAN-FITUR — Direktori Fitur (produk, id-ID) · Direction B.
+ * Primitives: PageHeader, Card, Table, Toolbar, Pagination, EmptyState,
+ * Button, Pill, Badge, ProgressBar, Disclosure, StatusChip.
+ * Data/logic preserved — presentation only.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ChangeEvent, type InputHTMLAttributes } from 'react'
 
 import type {
   FeatureDirCard,
   FeatureDirectoryData,
   FeatureDirDomainGroup,
 } from '#/server/control-center-rebuild-fns'
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  PageHeader,
+  Pagination,
+  Pill,
+  ProgressBar,
+  Table,
+  Toolbar,
+  type TableColumn,
+} from '#/components/ui'
 import styles from './fitur.module.css'
 
 export type FiturSurfaceState =
@@ -30,77 +43,28 @@ export type FeatureDirectoryScreenProps = {
   className?: string
 }
 
-function barWidthPct(mappedPct: number | null | undefined): string {
-  if (mappedPct == null || !Number.isFinite(mappedPct)) return '0%'
-  return `${Math.max(0, Math.min(100, mappedPct))}%`
-}
+const PAGE_SIZE_DEFAULT = 25
 
-function FeatureCard({ card }: { card: FeatureDirCard }) {
-  return (
-    <a
-      className={styles.featureCard}
-      href={card.detailHref}
-      data-testid="fitur-card"
-      data-feature-id={card.featureId}
-    >
-      <div className={styles.featureName}>{card.namaId}</div>
-      <div className={styles.miniBarMeta}>
-        <div className={styles.miniBarTrack} aria-hidden="true">
-          <div
-            className={styles.miniBarFill}
-            style={{ width: barWidthPct(card.mappedPct) }}
-          />
-        </div>
-        <span className={styles.miniBarNums}>
-          {card.mapped100}/{card.measuredN}
-          {card.mappedPct != null ? ` (${card.mappedPct}%)` : ''}
-        </span>
-      </div>
-      <div className={styles.featureMeta}>
-        {card.taskCount} task · {card.unitCount} unit · docs {card.docsOk ? '✓' : '–'}
-      </div>
-      <span className={styles.domainChip}>{card.domainBisnis}</span>
-    </a>
-  )
-}
-
-function EmptyMigratedState({ label }: { label: string }) {
-  return (
-    <div
-      className={styles.emptyState}
-      data-testid="fitur-directory-empty-state"
-      role="status"
-    >
-      <div className={styles.emptyIcon} aria-hidden="true">
-        ∅
-      </div>
-      <h2 className={styles.emptyTitle}>{label}</h2>
-      <p className={styles.emptyBody}>
-        Direktori fitur produk siap menampilkan 8 domain bisnis setelah tabel lineage
-        dan product features diaktifkan. Tidak ada error — data belum tersedia.
-      </p>
-    </div>
-  )
-}
-
-function filterDomains(
+function flattenFeatures(
   domains: ReadonlyArray<FeatureDirDomainGroup>,
+): Array<FeatureDirCard> {
+  return domains.flatMap((d) => d.features)
+}
+
+function filterFeatures(
+  features: ReadonlyArray<FeatureDirCard>,
   q: string,
-): Array<FeatureDirDomainGroup> {
+  domain: string | null,
+): Array<FeatureDirCard> {
   const needle = q.trim().toLowerCase()
-  if (!needle) return [...domains]
-  return domains
-    .map((d) => ({
-      ...d,
-      features: d.features.filter(
-        (f) =>
-          f.namaId.toLowerCase().includes(needle) ||
-          f.domainBisnis.toLowerCase().includes(needle),
-      ),
-      featureCount: 0,
-    }))
-    .map((d) => ({ ...d, featureCount: d.features.length }))
-    .filter((d) => d.features.length > 0)
+  return features.filter((f) => {
+    if (domain && f.domainBisnis !== domain) return false
+    if (!needle) return true
+    return (
+      f.namaId.toLowerCase().includes(needle) ||
+      f.domainBisnis.toLowerCase().includes(needle)
+    )
+  })
 }
 
 /**
@@ -115,34 +79,116 @@ export function FeatureDirectoryScreen({
   className,
 }: FeatureDirectoryScreenProps) {
   const [query, setQuery] = useState('')
+  const [domainFilter, setDomainFilter] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT)
 
-  const filtered = useMemo(() => {
-    if (!data?.available) return [] as Array<FeatureDirDomainGroup>
-    return filterDomains(data.domains, query)
-  }, [data, query])
+  const allFeatures = useMemo(() => {
+    if (!data?.available) return [] as Array<FeatureDirCard>
+    return flattenFeatures(data.domains)
+  }, [data])
 
-  const visibleCount = useMemo(
-    () => filtered.reduce((n, d) => n + d.features.length, 0),
-    [filtered],
+  const domainOptions = useMemo(() => {
+    if (!data?.available) return [] as string[]
+    return data.domains.map((d) => d.domainBisnis)
+  }, [data])
+
+  const filtered = useMemo(
+    () => filterFeatures(allFeatures, query, domainFilter),
+    [allFeatures, query, domainFilter],
   )
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / Math.max(1, pageSize)))
+  const safePage = Math.min(page, pageCount)
+
+  useEffect(() => {
+    setPage(1)
+  }, [query, domainFilter, pageSize])
+
+  const pageRows = useMemo(() => {
+    const start = (safePage - 1) * pageSize
+    return filtered.slice(start, start + pageSize)
+  }, [filtered, safePage, pageSize])
+
+  const columns: Array<TableColumn<FeatureDirCard>> = useMemo(
+    () => [
+      {
+        id: 'nama',
+        header: 'Fitur',
+        cell: (row) => (
+          <div
+            className={styles.entityTitle}
+            data-testid="fitur-card"
+            data-feature-id={row.featureId}
+          >
+            <a className={styles.featureLink} href={row.detailHref}>
+              <span className={styles.entityName}>{row.namaId}</span>
+            </a>
+            <span className={styles.metaMuted}>
+              {row.taskCount} task · {row.unitCount} unit ·{' '}
+              {row.docsOk ? 'docs ✓' : 'docs –'}
+            </span>
+          </div>
+        ),
+      },
+      {
+        id: 'domain',
+        header: 'Domain',
+        cell: (row) => <Badge variant="neutral">{row.domainBisnis}</Badge>,
+      },
+      {
+        id: 'tasks',
+        header: 'Task',
+        align: 'right',
+        mono: true,
+        cell: (row) => row.taskCount,
+      },
+      {
+        id: 'units',
+        header: 'Unit',
+        align: 'right',
+        mono: true,
+        cell: (row) => row.unitCount,
+      },
+      {
+        id: 'docs',
+        header: 'Docs',
+        cell: (row) => (row.docsOk ? '✓' : '–'),
+      },
+      {
+        id: 'terbukti',
+        header: 'Terbukti pindah',
+        cell: (row) => (
+          <div className={styles.tableProgress}>
+            <ProgressBar
+              value={row.mapped100}
+              max={row.measuredN > 0 ? row.measuredN : 1}
+              label={
+                row.mappedPct != null
+                  ? `${row.mapped100}/${row.measuredN} (${row.mappedPct}%)`
+                  : `${row.mapped100}/${row.measuredN}`
+              }
+            />
+          </div>
+        ),
+      },
+    ],
+    [],
+  )
+
+  const rootClass = [styles.root, className].filter(Boolean).join(' ')
 
   if (surfaceState === 'loading' && !data) {
     return (
-      <div
-        className={[styles.root, className].filter(Boolean).join(' ')}
-        data-testid="fitur-directory"
-        data-surface="loading"
-      >
+      <div className={rootClass} data-testid="fitur-directory" data-surface="loading">
         <div className={styles.liveRegion} aria-live="polite">
           Memuat direktori fitur…
         </div>
-        <header className={styles.pageHead}>
-          <div>
-            <p className={styles.eyebrow}>Produk</p>
-            <h1 className={styles.pageTitle}>Fitur</h1>
-            <p className={styles.pageSub}>Memuat direktori fitur per domain bisnis…</p>
-          </div>
-        </header>
+        <PageHeader
+          eyebrow="Produk"
+          title="Fitur"
+          subtitle="Memuat direktori fitur per domain bisnis…"
+        />
       </div>
     )
   }
@@ -152,29 +198,26 @@ export function FeatureDirectoryScreen({
     surfaceState === 'forbidden' ||
     surfaceState === 'disconnected'
   ) {
+    const title =
+      surfaceState === 'forbidden'
+        ? 'Akses ditolak'
+        : surfaceState === 'disconnected'
+          ? 'Koneksi terputus'
+          : 'Gagal memuat'
     return (
-      <div
-        className={[styles.root, className].filter(Boolean).join(' ')}
-        data-testid="fitur-directory"
-        data-surface={surfaceState}
-      >
-        <div className={`${styles.banner} ${styles.banner_error}`} role="alert">
-          <p className={styles.bannerTitle}>
-            {surfaceState === 'forbidden'
-              ? 'Akses ditolak'
-              : surfaceState === 'disconnected'
-                ? 'Koneksi terputus'
-                : 'Gagal memuat'}
-          </p>
-          <p className={styles.bannerBody}>
-            {errorMessage ?? 'Direktori fitur tidak dapat dimuat.'}
-          </p>
-          {onRetry ? (
-            <button type="button" className={styles.retryBtn} onClick={onRetry}>
-              Coba lagi
-            </button>
-          ) : null}
-        </div>
+      <div className={rootClass} data-testid="fitur-directory" data-surface={surfaceState}>
+        <PageHeader eyebrow="Produk" title="Fitur" />
+        <EmptyState
+          title={title}
+          description={errorMessage ?? 'Direktori fitur tidak dapat dimuat.'}
+          action={
+            onRetry ? (
+              <Button type="button" variant="secondary" onClick={onRetry}>
+                Coba lagi
+              </Button>
+            ) : undefined
+          }
+        />
       </div>
     )
   }
@@ -182,7 +225,7 @@ export function FeatureDirectoryScreen({
   if (data && !data.available) {
     return (
       <div
-        className={[styles.root, className].filter(Boolean).join(' ')}
+        className={rootClass}
         data-testid="fitur-directory"
         data-surface="empty-migrated"
         data-available="false"
@@ -190,123 +233,145 @@ export function FeatureDirectoryScreen({
         <div className={styles.liveRegion} aria-live="polite">
           {data.emptyStateLabelId}
         </div>
-        <header className={styles.pageHead}>
-          <div>
-            <p className={styles.eyebrow}>Produk</p>
-            <h1 className={styles.pageTitle}>Fitur</h1>
-            <p className={styles.pageSub}>
-              Direktori fitur produk dikelompokkan per domain bisnis.
-            </p>
-          </div>
-          <div className={styles.headMeta}>
+        <PageHeader
+          eyebrow="Produk"
+          title="Fitur"
+          subtitle="Direktori fitur produk dikelompokkan per domain bisnis."
+          actions={
             <a
-              className={styles.secondaryLink}
               href={data.technicalFcHref}
               data-testid="fitur-technical-fc-link"
+              className={styles.metaMuted}
             >
               Kontrak teknis (FC)
             </a>
-          </div>
-        </header>
-        <EmptyMigratedState label={data.emptyStateLabelId} />
+          }
+        />
+        <EmptyState
+          data-testid="fitur-directory-empty-state"
+          title={data.emptyStateLabelId}
+          description="Direktori fitur produk siap menampilkan domain bisnis setelah tabel lineage dan product features diaktifkan. Tidak ada error — data belum tersedia."
+        />
       </div>
     )
   }
 
   if (!data || !data.available) {
     return (
-      <div
-        className={[styles.root, className].filter(Boolean).join(' ')}
-        data-testid="fitur-directory"
-        data-surface="empty"
-      >
-        <EmptyMigratedState label="Data fitur produk belum tersedia." />
+      <div className={rootClass} data-testid="fitur-directory" data-surface="empty">
+        <EmptyState
+          data-testid="fitur-directory-empty-state"
+          title="Data fitur produk belum tersedia."
+          description="Direktori fitur produk siap menampilkan domain bisnis setelah data rebuild diaktifkan."
+        />
       </div>
     )
   }
 
   return (
     <div
-      className={[styles.root, className].filter(Boolean).join(' ')}
+      className={rootClass}
       data-testid="fitur-directory"
       data-surface="populated"
       data-available="true"
       data-board-id={boardId}
     >
       <div className={styles.liveRegion} aria-live="polite">
-        {data.featureCount} fitur · {visibleCount} ditampilkan
+        {data.featureCount} fitur · {filtered.length} ditampilkan
       </div>
 
-      <header className={styles.pageHead}>
-        <div>
-          <p className={styles.eyebrow}>Produk</p>
-          <h1 className={styles.pageTitle}>Fitur</h1>
-          <p className={styles.pageSub}>
-            Direktori fitur produk (nama manusia) dikelompokkan per domain bisnis.
-            Progres mini-bar = terbukti pindah (bukti kode).
-          </p>
-        </div>
-        <div className={styles.headMeta}>
+      <PageHeader
+        eyebrow="Produk"
+        title="Fitur"
+        subtitle="Direktori fitur produk (nama manusia) dikelompokkan per domain bisnis. Progres = terbukti pindah (bukti kode)."
+        actions={
           <a
-            className={styles.secondaryLink}
             href={data.technicalFcHref}
             data-testid="fitur-technical-fc-link"
+            className={styles.metaMuted}
           >
             Kontrak teknis (FC)
           </a>
-        </div>
-      </header>
+        }
+      />
 
-      <div className={styles.searchRow}>
-        <label className="sr-only" htmlFor="fitur-directory-search">
-          Cari fitur
-        </label>
-        <input
-          id="fitur-directory-search"
-          className={styles.searchInput}
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Cari fitur…"
-          data-testid="fitur-directory-search"
-          autoComplete="off"
-        />
-        <span className={styles.searchMeta} data-testid="fitur-directory-count">
-          {visibleCount}
-          {query.trim() ? ` / ${data.featureCount}` : ''} fitur
-        </span>
-      </div>
-
-      {filtered.length === 0 ? (
-        <p className={styles.panelEmpty} data-testid="fitur-directory-no-match">
-          Tidak ada fitur yang cocok dengan pencarian.
-        </p>
-      ) : (
-        filtered.map((group) => (
-          <section
-            key={group.domainBisnis}
-            className={styles.domainSection}
-            data-testid="fitur-domain-group"
-            data-domain={group.domainBisnis}
-          >
-            <div className={styles.domainHead}>
-              <h2 className={styles.domainTitle}>{group.domainBisnis}</h2>
-              <span className={styles.domainMeta}>
-                {group.featureCount} fitur
-              </span>
-            </div>
-            {group.features.length === 0 ? (
-              <p className={styles.domainEmpty}>Belum ada fitur di domain ini.</p>
-            ) : (
-              <div className={styles.featureGrid} data-testid="fitur-card-grid">
-                {group.features.map((card) => (
-                  <FeatureCard key={card.featureId} card={card} />
+      <Card flush title="Daftar fitur" subtitle={`${filtered.length} dari ${data.featureCount} fitur`}>
+        <div className={styles.stack}>
+          <Toolbar
+            searchProps={
+              {
+                id: 'fitur-directory-search',
+                value: query,
+                onChange: (e: ChangeEvent<HTMLInputElement>) =>
+                  setQuery(e.target.value),
+                placeholder: 'Cari fitur…',
+                'aria-label': 'Cari fitur',
+                autoComplete: 'off',
+                'data-testid': 'fitur-directory-search',
+              } as InputHTMLAttributes<HTMLInputElement>
+            }
+            filters={
+              <>
+                <Pill
+                  active={domainFilter == null}
+                  onClick={() => setDomainFilter(null)}
+                  data-testid="fitur-domain-filter-all"
+                >
+                  Semua domain
+                </Pill>
+                {domainOptions.map((d) => (
+                  <Pill
+                    key={d}
+                    active={domainFilter === d}
+                    onClick={() =>
+                      setDomainFilter((cur) => (cur === d ? null : d))
+                    }
+                    data-testid={`fitur-domain-filter-${d}`}
+                  >
+                    {d}
+                  </Pill>
                 ))}
-              </div>
-            )}
-          </section>
-        ))
-      )}
+              </>
+            }
+            actions={
+              <span className={styles.countHint} data-testid="fitur-directory-count">
+                {filtered.length}
+                {query.trim() || domainFilter ? ` / ${data.featureCount}` : ''} fitur
+              </span>
+            }
+          />
+
+          {filtered.length === 0 ? (
+            <EmptyState
+              data-testid="fitur-directory-no-match"
+              title="Tidak ada fitur yang cocok"
+              description="Ubah kata kunci atau filter domain."
+            />
+          ) : (
+            <>
+              <Table
+                columns={columns}
+                rows={pageRows}
+                rowKey={(r) => r.featureId}
+                caption="Direktori fitur"
+                aria-label="Tabel direktori fitur"
+                empty="Tidak ada fitur."
+              />
+              <Pagination
+                page={safePage}
+                pageSize={pageSize}
+                total={filtered.length}
+                onPageChange={setPage}
+                onPageSizeChange={(n) => {
+                  setPageSize(n)
+                  setPage(1)
+                }}
+                data-testid="fitur-directory-pagination"
+              />
+            </>
+          )}
+        </div>
+      </Card>
     </div>
   )
 }

@@ -1,5 +1,5 @@
 /**
- * ART-017 Evidence & Citation drawer.
+ * ART-017 Evidence & Citation drawer — Direction B kit presentation.
  * Opens from any evidence/citation link without losing page context.
  * Prop-driven only — parents supply EvidenceDrawerViewModel; no server fetches.
  */
@@ -14,7 +14,16 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react'
 
+import {
+  Button,
+  Card,
+  Disclosure,
+  EmptyState,
+  StatusChip,
+} from '#/components/ui'
+
 import styles from './evidence.module.css'
+import { warningKindLabel, warningStatusVariant } from './labels'
 import type { EvidenceDrawerProps } from './types'
 
 const FOCUSABLE_SELECTOR = [
@@ -65,16 +74,19 @@ export function EvidenceDrawer({
   const titleId = useId()
   const descId = useId()
   const panelRef = useRef<HTMLElement>(null)
-  const closeBtnRef = useRef<HTMLButtonElement>(null)
   const previouslyFocused = useRef<HTMLElement | null>(null)
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle')
 
   // Capture focus target when opening; restore on close.
+  // Button primitive has no ref forwarding — focus via testid query inside panel.
   useLayoutEffect(() => {
     if (open) {
       previouslyFocused.current =
         (document.activeElement as HTMLElement | null) ?? null
-      closeBtnRef.current?.focus()
+      const closeBtn = panelRef.current?.querySelector<HTMLButtonElement>(
+        '[data-testid="evidence-drawer-close"]',
+      )
+      closeBtn?.focus()
       return
     }
 
@@ -186,49 +198,54 @@ export function EvidenceDrawer({
         onKeyDown={handleKeyDown}
       >
         <header className={styles.head}>
-          <div>
+          <div className={styles.headMain}>
             <p className={styles.eyebrow}>Bukti &amp; Kutipan</p>
             <h2 id={titleId} className={styles.title} data-testid="evidence-drawer-title">
               {hasModel ? 'Detail bukti' : 'Bukti tidak tersedia'}
             </h2>
+            {hasModel ? (
+              <p className={styles.headId} title={model.id}>
+                <code>{model.id}</code>
+              </p>
+            ) : null}
           </div>
           <div className={styles.headActions}>
             {hasModel ? (
-              <button
+              <Button
                 type="button"
-                className={styles.btn}
+                variant="secondary"
+                size="sm"
                 onClick={() => void handleCopy()}
                 data-testid="evidence-drawer-copy"
               >
                 Salin kutipan
-              </button>
+              </Button>
             ) : null}
-            <button
-              ref={closeBtnRef}
+            <Button
               type="button"
-              className={`${styles.btn} ${styles.closeBtn}`}
+              variant="ghost"
+              size="sm"
               onClick={onClose}
               data-testid="evidence-drawer-close"
               aria-label="Tutup laci bukti"
             >
               Tutup
-              <kbd aria-hidden="true">Esc</kbd>
-            </button>
+              <kbd className={styles.kbd} aria-hidden="true">
+                Esc
+              </kbd>
+            </Button>
           </div>
         </header>
 
         <div className={styles.body} data-testid="evidence-drawer-body">
           {!hasModel ? (
-            <p className={styles.empty} role="status">
-              Tidak ada model bukti untuk ditampilkan. Buka dari tautan kutipan
-              yang valid.
-            </p>
+            <EmptyState
+              title="Tidak ada model bukti"
+              description="Buka dari tautan kutipan yang valid."
+            />
           ) : (
             <>
-              <section className={styles.section} aria-labelledby={`${titleId}-proof`}>
-                <p id={`${titleId}-proof`} className={styles.sectionLabel}>
-                  Ringkasan bukti
-                </p>
+              <Card title="Ringkasan bukti" className={styles.sectionCard}>
                 <p
                   id={descId}
                   className={styles.sectionValue}
@@ -236,17 +253,16 @@ export function EvidenceDrawer({
                 >
                   {model.proofSummary}
                 </p>
-              </section>
+              </Card>
 
-              <section className={styles.section}>
-                <p className={styles.sectionLabel}>Klaim yang didukung</p>
+              <Card title="Klaim yang didukung" className={styles.sectionCard}>
                 <p
                   className={styles.sectionValue}
                   data-testid="evidence-drawer-claim"
                 >
                   {model.claimSupported}
                 </p>
-              </section>
+              </Card>
 
               <div className={styles.metaGrid}>
                 <div className={styles.metaCell}>
@@ -319,22 +335,17 @@ export function EvidenceDrawer({
                   data-testid="evidence-drawer-warnings"
                 >
                   {warnings.map((w, i) => (
-                    <p
+                    <div
                       key={`${w.kind}-${i}`}
-                      className={styles.warning}
+                      className={styles.warningRow}
                       data-kind={w.kind}
                       data-testid={`evidence-drawer-warning-${w.kind}`}
                     >
-                      <strong>
-                        {w.kind === 'conflict'
-                          ? 'Konflik'
-                          : w.kind === 'stale'
-                            ? 'Basi'
-                            : 'Redaksi'}
-                        :
-                      </strong>{' '}
-                      {w.message}
-                    </p>
+                      <StatusChip variant={warningStatusVariant(w.kind)} showDot>
+                        {warningKindLabel(w.kind)}
+                      </StatusChip>
+                      <p className={styles.warningMessage}>{w.message}</p>
+                    </div>
                   ))}
                 </div>
               ) : null}
@@ -356,28 +367,26 @@ export function EvidenceDrawer({
               ) : null}
               {copyStatus === 'error' ? (
                 <p
-                  className={styles.copyStatus}
+                  className={`${styles.copyStatus} ${styles.copyError}`}
                   role="status"
                   data-testid="evidence-drawer-copy-status"
-                  style={{ color: 'var(--blocked, #b42318)' }}
                 >
                   Gagal menyalin kutipan.
                 </p>
               ) : null}
 
               {model.rawReceipt ? (
-                <details
-                  className={styles.disclosure}
+                <Disclosure
+                  summary="Detail teknis (resi mentah)"
                   data-testid="evidence-drawer-raw-disclosure"
                 >
-                  <summary>Detail teknis (resi mentah)</summary>
                   <pre
                     className={styles.rawReceipt}
                     data-testid="evidence-drawer-raw-receipt"
                   >
                     {model.rawReceipt}
                   </pre>
-                </details>
+                </Disclosure>
               ) : null}
             </>
           )}

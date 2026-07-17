@@ -1,5 +1,13 @@
+import { useMemo } from 'react'
+import { Table, type TableColumn } from '#/components/ui'
 import type { WorkItemRow } from './types'
-import { WorkRow } from './WorkRow'
+import {
+  WorkRow,
+  workRowReadinessCell,
+  workRowStageCell,
+  workRowStatusCell,
+  workRowTitleCell,
+} from './WorkRow'
 import styles from './work.module.css'
 
 export interface WorkListProps {
@@ -15,7 +23,7 @@ export interface WorkListProps {
 }
 
 /**
- * Dual presentation: table (desktop) + card list (≤768 via CSS module).
+ * Dual presentation: kit Table (desktop) + card list (≤768 via CSS module).
  * Both trees render so unit tests can assert reflow structure without layout engines.
  */
 export function WorkList({
@@ -25,6 +33,35 @@ export function WorkList({
   onRowActivate,
   asNested = false,
 }: WorkListProps) {
+  const columns = useMemo<Array<TableColumn<WorkItemRow>>>(
+    () => [
+      {
+        id: 'title',
+        header: 'Hasil dan langkah berikutnya',
+        cell: (row) => workRowTitleCell(row, onRowActivate),
+      },
+      {
+        id: 'status',
+        header: 'Status pekerjaan',
+        cell: (row) => workRowStatusCell(row),
+      },
+      {
+        id: 'stage',
+        header: 'Tahap dan proyek',
+        cell: (row) => workRowStageCell(row),
+      },
+      {
+        id: 'readiness',
+        header: 'Kesiapan',
+        mono: true,
+        cell: (row) => workRowReadinessCell(row),
+      },
+    ],
+    [onRowActivate],
+  )
+
+  const rows = useMemo(() => [...items], [items])
+
   return (
     <div
       className={styles.listRegion}
@@ -34,32 +71,16 @@ export function WorkList({
       data-testid="work-list"
       data-reflow-breakpoint="768"
     >
-      <div
-        className={styles.tableWrap}
-        data-testid="work-table-wrap"
-        role="region"
-        aria-label="Work items table"
-        tabIndex={0}
-      >
-        <table className={styles.table} data-testid="work-table">
-          <thead>
-            <tr>
-              <th scope="col">Hasil dan langkah berikutnya</th>
-              <th scope="col">Status pekerjaan</th>
-              <th scope="col">Tahap dan proyek</th>
-              <th scope="col">Kesiapan</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <WorkRow
-                key={item.taskId}
-                item={item}
-                onActivate={onRowActivate}
-              />
-            ))}
-          </tbody>
-        </table>
+      <div className={styles.tableWrap} data-testid="work-table-wrap">
+        <Table
+          data-testid="work-table"
+          columns={columns}
+          rows={rows}
+          rowKey={(r) => r.taskId}
+          caption="Daftar pekerjaan"
+          aria-label="Daftar item pekerjaan"
+          empty="Tidak ada baris pada halaman ini."
+        />
       </div>
 
       <div className={styles.cardList} data-testid="work-card-list">

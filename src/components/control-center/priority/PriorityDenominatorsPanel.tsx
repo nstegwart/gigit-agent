@@ -1,3 +1,10 @@
+import {
+  Card,
+  Disclosure,
+  KpiStat,
+  ProgressBar,
+  StatusChip,
+} from '#/components/ui'
 import type { PriorityRollupDenominatorsProps } from './types'
 import styles from './priority.module.css'
 
@@ -22,95 +29,133 @@ export function PriorityDenominatorsPanel(
   const emptyProduct = productDenominator === 0
 
   return (
-    <section
-      className={styles.panel}
+    <Card
       aria-labelledby="priority-denominators-heading"
       data-testid="priority-denominators"
       data-empty-product={emptyProduct ? 'true' : 'false'}
+      title={
+        <span id="priority-denominators-heading">Penyebut terpisah (DISTINCT)</span>
+      }
+      headerActions={
+        emptyProduct ? (
+          <StatusChip variant="warn">Cakupan produk kosong</StatusChip>
+        ) : (
+          <StatusChip variant="ongoing">Aktif</StatusChip>
+        )
+      }
     >
-      <header className={styles.panelHead}>
-        <h2 id="priority-denominators-heading" className={styles.panelTitle}>
-          Penyebut terpisah (DISTINCT)
-        </h2>
-      </header>
+      <div className={styles.stack}>
+        {emptyProduct ? (
+          <div
+            className={styles.warnLine}
+            role="status"
+            data-testid="priority-empty-product-scope"
+          >
+            Belum ada tugas produk pada cakupan ini, jadi kesiapan belum dapat dihitung
+            dan ditampilkan sebagai <strong>N/A</strong> — tidak pernah dibulatkan menjadi
+            100% atau lolos dari cakupan kosong.
+            {/* Native details: contract requires summary textContent exactly "Detail teknis". */}
+            <details className={styles.details}>
+              <summary className={styles.detailsSummary}>Detail teknis</summary>
+              <code className={styles.mono}>
+                productDenominator=0 — readiness must stay null / N-A; complete must stay
+                false (never 100% / PASS from empty scope).
+              </code>
+            </details>
+          </div>
+        ) : null}
 
-      {emptyProduct ? (
-        <div
-          className={styles.warnLine}
-          role="status"
-          data-testid="priority-empty-product-scope"
-        >
-          Belum ada tugas produk pada cakupan ini, jadi kesiapan belum dapat
-          dihitung dan ditampilkan sebagai <strong>N/A</strong> — tidak pernah
-          dibulatkan menjadi 100% atau lolos dari cakupan kosong.
-          <details className={styles.details}>
-            <summary className={styles.detailsSummary}>Detail teknis</summary>
-            <code>
-              productDenominator=0 — readiness must stay null / N-A; complete
-              must stay false (never 100% / PASS from empty scope).
-            </code>
-          </details>
+        <div className={styles.progressBlock}>
+          <ProgressBar
+            value={prodReadyWithEvidence}
+            max={productDenominator || 0}
+            ok={
+              productDenominator > 0 &&
+              prodReadyWithEvidence >= productDenominator &&
+              productDenominator > 0
+            }
+            label={`${prodReadyWithEvidence}/${productDenominator} PROD_READY ber-evidence`}
+          />
         </div>
-      ) : null}
 
-      <dl className={styles.statGrid}>
-        <div className={styles.stat}>
-          <dt title="productDenominator">Penyebut produk</dt>
-          <dd data-testid="priority-product-denominator">
-            {productDenominator}
-          </dd>
+        <div className={styles.kpiRow}>
+          <KpiStat
+            size="sm"
+            label="Penyebut produk"
+            value={
+              <span data-testid="priority-product-denominator" title="productDenominator">
+                {productDenominator}
+              </span>
+            }
+          />
+          <KpiStat
+            size="sm"
+            label="Penyebut pekerjaan terlacak"
+            value={
+              <span
+                data-testid="priority-tracked-denominator"
+                title="trackedWorkDenominator"
+              >
+                {trackedWorkDenominator}
+              </span>
+            }
+          />
+          <KpiStat
+            size="sm"
+            label="Tahap PROD_READY"
+            value={
+              <span data-testid="priority-stage-prod-ready" title="stageProdReady">
+                {stageProdReady}
+              </span>
+            }
+          />
+          <KpiStat
+            size="sm"
+            label="PROD_READY dengan bukti"
+            value={
+              <span
+                data-testid="priority-prod-ready-evidence"
+                title="prodReadyWithEvidence"
+              >
+                {prodReadyWithEvidence}
+              </span>
+            }
+          />
+          <KpiStat
+            size="sm"
+            label="Jumlah belum terklasifikasi"
+            value={
+              <span data-testid="priority-unclassified-count" title="unclassifiedCount">
+                {unclassifiedCount}
+              </span>
+            }
+          />
         </div>
-        <div className={styles.stat}>
-          <dt title="trackedWorkDenominator">Penyebut pekerjaan terlacak</dt>
-          <dd data-testid="priority-tracked-denominator">
-            {trackedWorkDenominator}
-          </dd>
-        </div>
-        <div className={styles.stat}>
-          <dt title="stageProdReady">Tahap PROD_READY</dt>
-          <dd data-testid="priority-stage-prod-ready">{stageProdReady}</dd>
-        </div>
-        <div className={styles.stat}>
-          <dt title="prodReadyWithEvidence">PROD_READY dengan bukti</dt>
-          <dd data-testid="priority-prod-ready-evidence">
-            {prodReadyWithEvidence}
-          </dd>
-        </div>
-        <div className={styles.stat}>
-          <dt title="unclassifiedCount">Jumlah belum terklasifikasi</dt>
-          <dd data-testid="priority-unclassified-count">{unclassifiedCount}</dd>
-        </div>
-      </dl>
 
-      {productTaskIds && productTaskIds.length > 0 ? (
-        <details className={styles.details}>
-          <summary className={styles.detailsSummary}>
-            Detail teknis — ID tugas produk (DISTINCT)
-          </summary>
-          <ul className={styles.idList} data-testid="priority-product-task-ids">
-            {productTaskIds.map((id) => (
-              <li key={id} className={styles.idItem}>
-                <code>{id}</code>
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
+        {productTaskIds && productTaskIds.length > 0 ? (
+          <Disclosure summary="Detail teknis — ID tugas produk (DISTINCT)">
+            <ul className={styles.idList} data-testid="priority-product-task-ids">
+              {productTaskIds.map((id) => (
+                <li key={id} className={styles.idItem}>
+                  <code>{id}</code>
+                </li>
+              ))}
+            </ul>
+          </Disclosure>
+        ) : null}
 
-      {trackedTaskIds && trackedTaskIds.length > 0 ? (
-        <details className={styles.details}>
-          <summary className={styles.detailsSummary}>
-            Detail teknis — ID tugas terlacak (DISTINCT)
-          </summary>
-          <ul className={styles.idList} data-testid="priority-tracked-task-ids">
-            {trackedTaskIds.map((id) => (
-              <li key={id} className={styles.idItem}>
-                <code>{id}</code>
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
-    </section>
+        {trackedTaskIds && trackedTaskIds.length > 0 ? (
+          <Disclosure summary="Detail teknis — ID tugas terlacak (DISTINCT)">
+            <ul className={styles.idList} data-testid="priority-tracked-task-ids">
+              {trackedTaskIds.map((id) => (
+                <li key={id} className={styles.idItem}>
+                  <code>{id}</code>
+                </li>
+              ))}
+            </ul>
+          </Disclosure>
+        ) : null}
+      </div>
+    </Card>
   )
 }

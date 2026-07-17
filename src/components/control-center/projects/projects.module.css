@@ -1,28 +1,28 @@
 /* Projects secondary screen — scoped CSS module (C3-R2C). WCAG AA contrast. */
 
 .root {
-  --sec-surface: var(--surface, #ffffff);
-  --sec-surface-2: var(--surface-2, #f4f6f9);
-  --sec-border: var(--border, #e4e8ee);
-  --sec-text: var(--text, #171a21);
-  --sec-text-dim: var(--text-dim, #4a5568);
-  --sec-text-faint: #4a5568;
-  --sec-accent: var(--accent, #6d5efc);
-  --sec-ok: var(--ok, #0f7a52);
-  --sec-ok-bg: var(--ok-bg, rgba(15, 122, 82, 0.12));
-  --sec-blocked: var(--blocked, #c62828);
-  --sec-blocked-bg: var(--blocked-bg, rgba(198, 40, 40, 0.12));
-  --sec-warn: var(--warn, #9a5b00);
-  --sec-warn-bg: var(--warn-bg, rgba(154, 91, 0, 0.14));
-  --sec-radius: var(--r-md, 12px);
-  --sec-shadow: var(--shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+  --sec-surface: var(--surface);
+  --sec-surface-2: var(--surface-2);
+  --sec-border: var(--border);
+  --sec-text: var(--text);
+  --sec-text-dim: var(--text-dim);
+  --sec-text-faint: var(--text-faint);
+  --sec-accent: var(--accent);
+  --sec-ok: var(--ok);
+  --sec-ok-bg: var(--ok-bg);
+  --sec-blocked: var(--blocked);
+  --sec-blocked-bg: var(--blocked-bg);
+  --sec-warn: var(--warn);
+  --sec-warn-bg: var(--warn-bg);
+  --sec-radius: var(--r-md);
+  --sec-shadow: var(--shadow-sm);
   --sec-touch: 44px;
   --sec-mono: var(--mono, ui-monospace, monospace);
 
   color: var(--sec-text);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--sp-4);
   min-width: 0;
 }
 
@@ -47,7 +47,7 @@
 }
 
 .eyebrow {
-  margin: 0 0 4px;
+  margin: 0 0 var(--sp-1);
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -73,7 +73,7 @@
 .summaryStrip {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: center;
 }
 
@@ -82,11 +82,11 @@
   align-items: center;
   gap: 6px;
   min-height: 36px;
-  padding: 0 12px;
-  border-radius: 999px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-pill);
   border: 1px solid var(--sec-border);
   background: var(--sec-surface-2);
-  font-size: 0.8125rem;
+  font-size: var(--type-small-size);
   font-weight: 600;
   color: var(--sec-text);
   white-space: nowrap;
@@ -131,7 +131,7 @@
 }
 
 .bannerTitle {
-  margin: 0 0 4px;
+  margin: 0 0 var(--sp-1);
   font-weight: 650;
   font-size: 0.95rem;
 }
@@ -181,7 +181,7 @@
 }
 
 .gapDisclosureBody {
-  margin-top: 8px;
+  margin-top: var(--sp-2);
 }
 
 .banner_error {
@@ -196,21 +196,21 @@
 }
 
 .gapList {
-  margin: 8px 0 0;
+  margin: var(--sp-2) 0 0;
   padding-left: 1.1rem;
   color: var(--sec-text-dim);
   font-size: 0.85rem;
 }
 
 .retryBtn {
-  margin-top: 12px;
+  margin-top: var(--sp-3);
   min-height: var(--sec-touch);
   min-width: var(--sec-touch);
-  padding: 0 16px;
+  padding: 0 var(--sp-4);
   border-radius: 10px;
   border: 1px solid var(--sec-accent);
   background: var(--sec-accent);
-  color: #fff;
+  color: var(--text-inverse);
   font-weight: 600;
   cursor: pointer;
 }
@@ -282,7 +282,7 @@
   gap: 6px;
   min-height: 1.75rem;
   padding: 0.15rem 0.55rem;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   font-size: 0.72rem;
   font-weight: 700;
   background: var(--sec-surface-2);
@@ -328,7 +328,7 @@
   background: var(--sec-surface);
   color: var(--sec-accent);
   font-weight: 600;
-  font-size: 0.875rem;
+  font-size: var(--type-body-size);
   text-decoration: none;
 }
 
@@ -365,7 +365,7 @@
   background: linear-gradient(
     90deg,
     var(--sec-surface-2) 0%,
-    #e8ecf2 50%,
+    var(--border) 50%,
     var(--sec-surface-2) 100%
   );
   background-size: 200% 100%;
@@ -396,7 +396,7 @@
   margin: 0;
   padding: 0;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 
 .card {
@@ -414,7 +414,7 @@
 .cardMeta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .cardMeta dt {
@@ -428,7 +428,7 @@
 
 .cardMeta dd {
   margin: 2px 0 0;
-  font-size: 0.875rem;
+  font-size: var(--type-body-size);
   font-weight: 600;
   word-break: break-word;
 }

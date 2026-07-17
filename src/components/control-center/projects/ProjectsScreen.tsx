@@ -19,8 +19,8 @@ function ProjectionGapDisclosure({ projectionGaps }: { projectionGaps: string[] 
       </summary>
       <div className={styles.gapDisclosureBody}>
         <p className={styles.bannerBody}>
-          Some project detail fields are not on the public list envelope. Empty slots are not
-          fabricated readiness.
+          Beberapa kolom detail proyek tidak ada di envelope daftar publik. Slot kosong
+          bukan kesiapan yang dibuat-buat.
         </p>
         <ul className={styles.gapList}>
           {projectionGaps.map((g) => (
@@ -37,8 +37,8 @@ function formatReadinessPercent(value: number | null): string {
 }
 
 function formatEvidenceOk(value: boolean | null): string {
-  if (value === true) return 'ok'
-  if (value === false) return 'gap'
+  if (value === true) return 'lolos'
+  if (value === false) return 'celah'
   return '—'
 }
 

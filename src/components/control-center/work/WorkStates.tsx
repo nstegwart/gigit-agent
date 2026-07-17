@@ -1,3 +1,4 @@
+import { Button, EmptyState, Skeleton } from '#/components/ui'
 import { Icon } from '#/lib/icons'
 import type { PrimaryBucket } from '#/lib/control-plane-types'
 import { BUCKET_SEMANTICS } from './labels'
@@ -16,30 +17,6 @@ export interface WorkStatesProps {
   onReconnect?: () => void
 }
 
-function ActionButton({
-  label,
-  onClick,
-  primary,
-  testId,
-}: {
-  label: string
-  onClick?: () => void
-  primary?: boolean
-  testId: string
-}) {
-  if (!onClick) return null
-  return (
-    <button
-      type="button"
-      className={[styles.btn, primary ? styles.btnPrimary : ''].filter(Boolean).join(' ')}
-      onClick={onClick}
-      data-testid={testId}
-    >
-      {label}
-    </button>
-  )
-}
-
 /** Loading skeleton — no fake numbers (UI_CONTRACT §5). */
 export function WorkLoadingState() {
   return (
@@ -51,10 +28,10 @@ export function WorkLoadingState() {
       data-testid="work-state-loading"
     >
       <span className={styles.srOnly}>Memuat item pekerjaan…</span>
-      <div className={styles.skeletonRow} />
-      <div className={styles.skeletonRow} />
-      <div className={styles.skeletonRow} />
-      <div className={styles.skeletonRow} />
+      <Skeleton height={56} width="100%" />
+      <Skeleton height={56} width="100%" />
+      <Skeleton height={56} width="92%" />
+      <Skeleton height={56} width="96%" />
     </div>
   )
 }
@@ -73,10 +50,12 @@ export function WorkEmptyState({
   onSwitchToOngoing?: () => void
 }) {
   const bucketLabel = activeBucket
-    ? BUCKET_SEMANTICS[activeBucket]?.label ?? activeBucket
+    ? (BUCKET_SEMANTICS[activeBucket]?.label ?? activeBucket)
     : 'bucket ini'
   const title =
-    kind === 'zero-results' ? 'Tidak ada pekerjaan yang cocok' : 'Tidak ada pekerjaan di board ini'
+    kind === 'zero-results'
+      ? 'Tidak ada pekerjaan yang cocok'
+      : 'Tidak ada pekerjaan di board ini'
   const body =
     kind === 'zero-results'
       ? staleOverlayActive
@@ -85,48 +64,54 @@ export function WorkEmptyState({
       : activeBucket
         ? `Tidak ada pekerjaan terlacak di ${bucketLabel} untuk tahap aktif.`
         : 'Board ini tidak punya pekerjaan terlacak untuk tahap aktif.'
-  const showClearStale = kind === 'zero-results' && !!staleOverlayActive && !!onClearStale
+  const showClearStale =
+    kind === 'zero-results' && !!staleOverlayActive && !!onClearStale
   const showSwitchOngoing =
     kind === 'zero-results' &&
     !!onSwitchToOngoing &&
     !!activeBucket &&
     activeBucket !== 'ONGOING'
+
+  const action =
+    showClearStale || showSwitchOngoing ? (
+      <div className={styles.bannerActions}>
+        {showClearStale ? (
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={onClearStale}
+            data-testid="work-empty-clear-stale"
+          >
+            Hapus filter BASI
+          </Button>
+        ) : null}
+        {showSwitchOngoing ? (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={onSwitchToOngoing}
+            data-testid="work-empty-switch-ongoing"
+          >
+            Pindah ke Sedang dikerjakan
+          </Button>
+        ) : null}
+      </div>
+    ) : undefined
+
   return (
-    <div
-      className={styles.emptyState}
-      role="status"
-      data-testid={kind === 'zero-results' ? 'work-state-zero-results' : 'work-state-empty'}
+    <EmptyState
+      icon={<Icon name="inbox" size={20} />}
+      title={title}
+      description={body}
+      action={action}
+      data-testid={
+        kind === 'zero-results' ? 'work-state-zero-results' : 'work-state-empty'
+      }
       data-active-bucket={activeBucket ?? undefined}
       data-stale-overlay={staleOverlayActive ? '1' : '0'}
-    >
-      <Icon name="inbox" size={20} />
-      <h3>{title}</h3>
-      <p>{body}</p>
-      {showClearStale || showSwitchOngoing ? (
-        <div className={styles.bannerActions}>
-          {showClearStale ? (
-            <button
-              type="button"
-              className={[styles.btn, styles.btnPrimary].join(' ')}
-              onClick={onClearStale}
-              data-testid="work-empty-clear-stale"
-            >
-              Hapus filter BASI
-            </button>
-          ) : null}
-          {showSwitchOngoing ? (
-            <button
-              type="button"
-              className={styles.btn}
-              onClick={onSwitchToOngoing}
-              data-testid="work-empty-switch-ongoing"
-            >
-              Pindah ke Sedang dikerjakan
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+    />
   )
 }
 
@@ -182,16 +167,22 @@ export function WorkStates({
         <div className={styles.bannerBody}>
           <p className={styles.bannerTitle}>Terputus</p>
           <p className={styles.bannerText}>
-            Transport mati. Data pekerjaan mungkin tidak lengkap sampai tersambung kembali.
+            Transport mati. Data pekerjaan mungkin tidak lengkap sampai
+            tersambung kembali.
           </p>
         </div>
         <div className={styles.bannerActions}>
-          <ActionButton
-            label="Sambungkan kembali"
-            onClick={onReconnect}
-            primary
-            testId="work-reconnect"
-          />
+          {onReconnect ? (
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              onClick={onReconnect}
+              data-testid="work-reconnect"
+            >
+              Sambungkan kembali
+            </Button>
+          ) : null}
         </div>
       </div>
     )
@@ -208,7 +199,8 @@ export function WorkStates({
         <div className={styles.bannerBody}>
           <p className={styles.bannerTitle}>Akses ditolak</p>
           <p className={styles.bannerText}>
-            {error?.message ?? 'Anda tidak berwenang melihat daftar pekerjaan ini (401/403).'}
+            {error?.message ??
+              'Anda tidak berwenang melihat daftar pekerjaan ini (401/403).'}
           </p>
           {error?.code ? (
             <p className={styles.fieldError} data-testid="work-error-code">
@@ -232,28 +224,41 @@ export function WorkStates({
         <Icon name="alert" size={18} />
         <div className={styles.bannerBody}>
           <p className={styles.bannerTitle}>Tidak dapat memuat pekerjaan</p>
-          <p className={styles.bannerText}>{error?.message ?? 'Kesalahan tidak diketahui'}</p>
+          <p className={styles.bannerText}>
+            {error?.message ?? 'Kesalahan tidak diketahui'}
+          </p>
           {error?.code ? (
             <p className={styles.fieldError} data-testid="work-error-code">
               {error.code}
             </p>
           ) : null}
           {error?.field ? (
-            <p className={styles.fieldError} id={fieldId} data-testid="work-field-error">
+            <p
+              className={styles.fieldError}
+              id={fieldId}
+              data-testid="work-field-error"
+            >
               Field: {error.field}
             </p>
           ) : null}
         </div>
         <div className={styles.bannerActions}>
-          {error?.retryable !== false ? (
-            <ActionButton label="Coba lagi" onClick={onRetry} primary testId="work-retry" />
+          {error?.retryable !== false && onRetry ? (
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              onClick={onRetry}
+              data-testid="work-retry"
+            >
+              Coba lagi
+            </Button>
           ) : null}
         </div>
       </div>
     )
   }
 
-  // Non-terminal banners that may coexist with a list (partial / stale / needs-human)
   return (
     <>
       {state === 'partial' || partialMessage ? (
@@ -266,11 +271,22 @@ export function WorkStates({
           <div className={styles.bannerBody}>
             <p className={styles.bannerTitle}>Data sebagian</p>
             <p className={styles.bannerText}>
-              {partialMessage ?? 'Beberapa bagian gagal; hanya menampilkan baris yang tersedia.'}
+              {partialMessage ??
+                'Beberapa bagian gagal; hanya menampilkan baris yang tersedia.'}
             </p>
           </div>
           <div className={styles.bannerActions}>
-            <ActionButton label="Coba lagi" onClick={onRetry} testId="work-retry" />
+            {onRetry ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={onRetry}
+                data-testid="work-retry"
+              >
+                Coba lagi
+              </Button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -290,7 +306,17 @@ export function WorkStates({
             </p>
           </div>
           <div className={styles.bannerActions}>
-            <ActionButton label="Muat ulang" onClick={onRefresh} primary testId="work-refresh" />
+            {onRefresh ? (
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                onClick={onRefresh}
+                data-testid="work-refresh"
+              >
+                Muat ulang
+              </Button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -305,7 +331,8 @@ export function WorkStates({
           <div className={styles.bannerBody}>
             <p className={styles.bannerTitle}>Memerlukan keputusan manusia</p>
             <p className={styles.bannerText}>
-              {needsHumanMessage ?? 'Keputusan pemblokir terbuka dinaikkan untuk board ini.'}
+              {needsHumanMessage ??
+                'Keputusan pemblokir terbuka dinaikkan untuk board ini.'}
             </p>
           </div>
         </div>

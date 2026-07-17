@@ -1,6 +1,5 @@
-import { Icon } from '#/lib/icons'
+import { Pill } from '#/components/ui'
 import type { WorkStaleOverlaySummary } from './types'
-import styles from './work.module.css'
 
 export interface StaleOverlayFilterProps {
   active: boolean
@@ -11,7 +10,7 @@ export interface StaleOverlayFilterProps {
 
 /**
  * STALE is an overlay filter/chip — never a seventh primary bucket tab
- * (UI_CONTRACT §6, ARCHITECTURE §9.1).
+ * (UI_CONTRACT §6, ARCHITECTURE §9.1). Direction B: Pill primitive.
  */
 export function StaleOverlayFilter({
   active,
@@ -26,25 +25,17 @@ export function StaleOverlayFilter({
       : 'Tampilkan data basi'
 
   return (
-    <button
-      type="button"
+    <Pill
+      active={active}
       role="switch"
       aria-checked={active}
       aria-label={label}
       data-testid="work-stale-overlay"
       disabled={disabled}
-      className={[styles.staleChip, active ? styles.staleChipActive : '']
-        .filter(Boolean)
-        .join(' ')}
       onClick={() => onChange?.(!active)}
     >
-      <Icon name="alert" size={14} />
-      <span>Data basi</span>
-      {typeof total === 'number' ? (
-        <span className={styles.tabCount} aria-hidden="true">
-          {total}
-        </span>
-      ) : null}
-    </button>
+      Data basi
+      {typeof total === 'number' ? ` · ${total}` : ''}
+    </Pill>
   )
 }
