@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react'
 import { formatLifecycleStageLabel, formatOperationalLabel } from '#/lib/display-label'
 import type {
   FeatureProgressNodeView,
@@ -9,6 +10,28 @@ import styles from './features.module.css'
 
 /** Server placeholder — never render as primary owner title (SPEC §4.5 / ADDENDUM C). */
 const OWNER_CONTENT_PLACEHOLDER = 'Konten pemilik memerlukan peninjauan'
+
+/** Client-side page size for progress nodes (W-FIX-FIRM A) — never mount 100 cards. */
+const PROGRESS_PAGE_SIZE = 20
+
+/** Done / terminal lifecycle stages (owner bucket: Selesai). */
+const DONE_STAGES = new Set([
+  'PROD_READY',
+  'LIVE_VERIFIED',
+  'DONE',
+  'COMPLETED',
+])
+
+/** Mapped / in-progress lifecycle stages (owner bucket: Terpetakan). */
+const MAPPED_STAGES = new Set([
+  'MAPPING',
+  'MAPPED',
+  'MAP_VERIFIED',
+  'BUILT',
+  'FUNCTIONAL',
+  'INTEGRATED',
+  'STAGING_PROVEN',
+])
 
 const CONTEXT_FIELDS: Array<{
   key: keyof Pick<
@@ -104,6 +127,83 @@ function ownerFacingNodeTitle(n: FeatureProgressNodeView): {
   return { title: cleanTechnicalTitle(n.taskId) || n.taskId, needsReview: true }
 }
 
+function isUnknownStage(stage: string | null | undefined): boolean {
+  if (stage == null) return true
+  const s = stage.trim()
+  if (!s) return true
+  const u = s.toUpperCase()
+  return u === 'UNKNOWN' || u === 'N/A' || u === 'NULL' || u === 'NONE'
+}
+
+/**
+ * Owner summary from progressNodes (W-FIX-FIRM B).
+ * Counts are independent (a node may contribute to more than one bucket).
+ * Stage histogram is recomputed from nodes so UNKNOWN is not presented as a real stage.
+ */
+function ownerProgressSummary(nodes: readonly FeatureProgressNodeView[]): {
+  selesai: number
+  terpetakan: number
+  terhambat: number
+  perluTinjauan: number
+  unknownStageCount: number
+  total: number
+  allStagesUnprojected: boolean
+  stageEntries: Array<[string, number]>
+} {
+  let selesai = 0
+  let terpetakan = 0
+  let terhambat = 0
+  let perluTinjauan = 0
+  let unknownStageCount = 0
+  const stageCounts: Record<string, number> = {}
+
+  for (const n of nodes) {
+    const stage = n.lifecycleStage
+    const status = (n.status ?? '').toLowerCase().replace(/_/g, ' ').trim()
+    const stageKey = stage && stage.trim() ? stage.trim() : null
+    const stageUpper = stageKey ? stageKey.toUpperCase() : ''
+
+    if (isUnknownStage(stageKey)) {
+      unknownStageCount += 1
+    } else if (stageKey) {
+      stageCounts[stageKey] = (stageCounts[stageKey] ?? 0) + 1
+    }
+
+    if (
+      DONE_STAGES.has(stageUpper) ||
+      status === 'done' ||
+      status === 'completed'
+    ) {
+      selesai += 1
+    }
+    if (MAPPED_STAGES.has(stageUpper)) {
+      terpetakan += 1
+    }
+    if (status === 'blocked' || (n.blockedReason && n.blockedReason.trim())) {
+      terhambat += 1
+    }
+    const facing = ownerFacingNodeTitle(n)
+    if (facing.needsReview || n.contentReviewRequired === true) {
+      perluTinjauan += 1
+    }
+  }
+
+  const total = nodes.length
+  const allStagesUnprojected = total > 0 && unknownStageCount === total
+  const stageEntries = Object.entries(stageCounts).sort((a, b) => b[1] - a[1])
+
+  return {
+    selesai,
+    terpetakan,
+    terhambat,
+    perluTinjauan,
+    unknownStageCount,
+    total,
+    allStagesUnprojected,
+    stageEntries,
+  }
+}
+
 export interface FeatureDetailScreenProps {
   surfaceState: FeaturesSurfaceState | 'loading' | 'empty' | 'error' | 'forbidden'
   boardId: string
@@ -118,6 +218,7 @@ export interface FeatureDetailScreenProps {
 /**
  * Control-center feature detail — resolves from pinned FeaturesData, not legacy plan.
  * Owner-facing summary + real progress nodes + progressive technical context.
+ * W-FIX-FIRM: paginated progress nodes + honest stage summary (never UNKNOWN·100 as fake stage).
  */
 export function FeatureDetailScreen({
   surfaceState,
@@ -129,6 +230,38 @@ export function FeatureDetailScreen({
   onRetry,
   className,
 }: FeatureDetailScreenProps) {
+  const [nodeQuery, setNodeQuery] = useState('')
+  const [pageIndex, setPageIndex] = useState(0)
+
+  // Reset page when feature or search changes so we never show an empty page.
+  useEffect(() => {
+    setPageIndex(0)
+  }, [feature?.featureId, nodeQuery])
+
+  const allNodes = feature?.progressNodes ?? []
+  const summary = useMemo(() => ownerProgressSummary(allNodes), [allNodes])
+
+  const filteredNodes = useMemo(() => {
+    const q = nodeQuery.trim().toLowerCase()
+    if (!q) return allNodes
+    return allNodes.filter((n) => {
+      const facing = ownerFacingNodeTitle(n)
+      const title = facing.title.toLowerCase()
+      const tech = (n.technicalTitle ?? '').toLowerCase()
+      const taskId = n.taskId.toLowerCase()
+      return title.includes(q) || tech.includes(q) || taskId.includes(q)
+    })
+  }, [allNodes, nodeQuery])
+
+  const totalFiltered = filteredNodes.length
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / PROGRESS_PAGE_SIZE))
+  const safePage = Math.min(pageIndex, totalPages - 1)
+  const pageStart = totalFiltered === 0 ? 0 : safePage * PROGRESS_PAGE_SIZE
+  const pageEnd = Math.min(pageStart + PROGRESS_PAGE_SIZE, totalFiltered)
+  const pageNodes = filteredNodes.slice(pageStart, pageEnd)
+  const canPrev = safePage > 0
+  const canNext = safePage < totalPages - 1 && totalFiltered > 0
+
   if (surfaceState === 'loading' && !feature) {
     return (
       <section
@@ -183,9 +316,6 @@ export function FeatureDetailScreen({
     label,
     values: feature[key],
   })).filter((g) => g.values.length > 0)
-
-  const stageEntries = Object.entries(feature.stageCounts).sort((a, b) => b[1] - a[1])
-  const nodes = feature.progressNodes
 
   return (
     <section
@@ -272,98 +402,240 @@ export function FeatureDetailScreen({
           Node di bawah berasal dari tugas yang terhubung ke fitur ini pada pin saat ini — bukan
           tebakan klien.
         </p>
-        {stageEntries.length > 0 ? (
+
+        {/* Owner summary strip — real buckets from progressNodes (W-FIX-FIRM B) */}
+        {summary.total > 0 ? (
           <div
-            className={styles.stageChipStrip}
-            data-testid="feature-detail-stage-chips"
-            aria-label="Ringkasan tahap lifecycle"
+            className={styles.ownerSummaryStrip}
+            data-testid="feature-detail-owner-summary"
+            aria-label="Ringkasan progres pemilik"
           >
-            {stageEntries.map(([stage, count]) => (
-              <span
-                key={stage}
-                className={styles.stageChip}
-                data-stage={stage}
-                title={stage}
-              >
-                {formatLifecycleStageLabel(stage)} · {count}
-              </span>
-            ))}
+            <span className={styles.chip} data-testid="feature-summary-selesai">
+              Selesai · {summary.selesai}
+            </span>
+            <span className={styles.chip} data-testid="feature-summary-terpetakan">
+              Terpetakan · {summary.terpetakan}
+            </span>
+            <span
+              className={`${styles.chip} ${summary.terhambat > 0 ? styles.chipBlocked : ''}`}
+              data-testid="feature-summary-terhambat"
+            >
+              Terhambat · {summary.terhambat}
+            </span>
+            <span
+              className={`${styles.chip} ${summary.perluTinjauan > 0 ? styles.chipReview : ''}`}
+              data-testid="feature-summary-perlu-tinjauan"
+            >
+              Perlu tinjauan · {summary.perluTinjauan}
+            </span>
           </div>
         ) : null}
-        {nodes.length === 0 ? (
+
+        {/* Stage histogram — honest unprojected when all UNKNOWN (W-FIX-FIRM B) */}
+        {summary.total > 0 ? (
+          summary.allStagesUnprojected ? (
+            <div
+              className={styles.stageChipStrip}
+              data-testid="feature-detail-stage-chips"
+              aria-label="Ringkasan tahap lifecycle"
+            >
+              <span
+                className={`${styles.stageChip} ${styles.stageChipUnprojected}`}
+                data-stage="UNPROJECTED"
+                data-testid="feature-stage-unprojected"
+                title="Data lifecycle stage belum terproyeksi dari server"
+              >
+                Tahap belum terproyeksi ({summary.total})
+              </span>
+            </div>
+          ) : summary.stageEntries.length > 0 || summary.unknownStageCount > 0 ? (
+            <div
+              className={styles.stageChipStrip}
+              data-testid="feature-detail-stage-chips"
+              aria-label="Ringkasan tahap lifecycle"
+            >
+              {summary.stageEntries.map(([stage, count]) => (
+                <span
+                  key={stage}
+                  className={styles.stageChip}
+                  data-stage={stage}
+                  title={stage}
+                >
+                  {formatLifecycleStageLabel(stage)} · {count}
+                </span>
+              ))}
+              {summary.unknownStageCount > 0 ? (
+                <span
+                  className={`${styles.stageChip} ${styles.stageChipUnprojected}`}
+                  data-stage="UNPROJECTED"
+                  data-testid="feature-stage-unprojected-partial"
+                  title="Sebagian node tanpa lifecycle stage terproyeksi"
+                >
+                  Tahap belum terproyeksi ({summary.unknownStageCount})
+                </span>
+              ) : null}
+            </div>
+          ) : null
+        ) : null}
+
+        {summary.allStagesUnprojected && summary.total > 0 ? (
+          <p className={styles.dataLimitationNote} data-testid="feature-stage-data-limitation">
+            Keterbatasan data: seluruh {summary.total} node belum punya tahap lifecycle terproyeksi
+            dari pin — ditampilkan jujur, bukan sebagai tahap &quot;UNKNOWN&quot;.
+          </p>
+        ) : null}
+
+        {allNodes.length === 0 ? (
           <p className={styles.empty} data-testid="feature-detail-progress-empty">
             Tidak ada tugas terhubung pada pin ini (jujur kosong — tidak diisi tebakan).
           </p>
         ) : (
-          <ol className={styles.progressList} data-testid="feature-detail-progress-list">
-            {nodes.map((n) => {
-              const facing = ownerFacingNodeTitle(n)
-              return (
-                <li
-                  key={n.taskId}
-                  className={styles.progressNode}
-                  data-testid="feature-progress-node"
-                  data-task-id={n.taskId}
-                  data-stage={n.lifecycleStage ?? undefined}
-                >
-                  <div className={styles.progressNodeHead}>
-                    <a href={n.detailHref} className={styles.progressNodeTitle}>
-                      {facing.title}
-                    </a>
-                    {facing.needsReview ? (
-                      <span
-                        className={styles.progressContentReview}
-                        data-testid="feature-progress-content-review"
-                        title={n.technicalTitle ?? OWNER_CONTENT_PLACEHOLDER}
-                      >
-                        perlu tinjauan
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className={styles.progressNodeMeta}>
-                    <span
-                      className={styles.stageChip}
-                      data-testid="feature-progress-stage"
-                      title={n.lifecycleStage ?? ''}
+          <>
+            {/* Search + pagination controls (W-FIX-FIRM A) */}
+            <div className={styles.progressToolbar} data-testid="feature-progress-toolbar">
+              <label className={styles.progressSearchLabel} htmlFor="feature-progress-search">
+                <span className={styles.liveRegion}>Cari node progres</span>
+                <input
+                  id="feature-progress-search"
+                  type="search"
+                  className={styles.searchInput}
+                  placeholder="Cari judul node…"
+                  value={nodeQuery}
+                  onChange={(e) => setNodeQuery(e.target.value)}
+                  data-testid="feature-progress-search"
+                  autoComplete="off"
+                />
+              </label>
+              <p className={styles.progressPageMeta} data-testid="feature-progress-page-meta">
+                {totalFiltered === 0
+                  ? '0 node cocok'
+                  : `Menampilkan ${pageStart + 1}–${pageEnd} dari ${totalFiltered} node`}
+                {nodeQuery.trim() && totalFiltered !== allNodes.length
+                  ? ` (filter dari ${allNodes.length})`
+                  : ''}
+                {' · '}
+                {PROGRESS_PAGE_SIZE} per halaman
+              </p>
+            </div>
+
+            {totalFiltered === 0 ? (
+              <p className={styles.empty} data-testid="feature-progress-search-empty">
+                Tidak ada node yang cocok dengan pencarian.
+              </p>
+            ) : (
+              <ol
+                className={styles.progressList}
+                data-testid="feature-detail-progress-list"
+                data-page-size={PROGRESS_PAGE_SIZE}
+                data-page-index={safePage}
+                data-mounted-count={pageNodes.length}
+              >
+                {pageNodes.map((n) => {
+                  const facing = ownerFacingNodeTitle(n)
+                  return (
+                    <li
+                      key={n.taskId}
+                      className={styles.progressNode}
+                      data-testid="feature-progress-node"
+                      data-task-id={n.taskId}
+                      data-stage={n.lifecycleStage ?? undefined}
                     >
-                      {n.lifecycleStage
-                        ? formatLifecycleStageLabel(n.lifecycleStage)
-                        : 'Tahap tidak diketahui'}
-                    </span>
-                    <span className={styles.chip} data-testid="feature-progress-status">
-                      {statusLabel(n.status)}
-                    </span>
-                    {n.blockedReason ? (
-                      <span className={styles.progressBlocker} data-testid="feature-progress-blocker">
-                        Hambatan: {n.blockedReason}
-                      </span>
-                    ) : null}
-                  </div>
-                  <details className={styles.gapDisclosure} data-testid="feature-progress-technical">
-                    <summary className={styles.gapDisclosureSummary}>Detail teknis</summary>
-                    <div className={styles.gapDisclosureBody}>
-                      <p className={styles.technicalIdLine}>
-                        <span className={styles.technicalIdLabel}>taskId</span>
-                        <code className={styles.progressNodeId}>{n.taskId}</code>
-                      </p>
-                      {n.technicalTitle ? (
-                        <p className={styles.technicalIdLine}>
-                          <span className={styles.technicalIdLabel}>Judul sumber</span>
-                          <code>{n.technicalTitle}</code>
-                        </p>
-                      ) : null}
-                      {facing.needsReview ? (
-                        <p className={styles.technicalIdLine}>
-                          <span className={styles.technicalIdLabel}>Status konten</span>
-                          <span>{OWNER_CONTENT_PLACEHOLDER}</span>
-                        </p>
-                      ) : null}
-                    </div>
-                  </details>
-                </li>
-              )
-            })}
-          </ol>
+                      <div className={styles.progressNodeHead}>
+                        <a href={n.detailHref} className={styles.progressNodeTitle}>
+                          {facing.title}
+                        </a>
+                        {facing.needsReview ? (
+                          <span
+                            className={styles.progressContentReview}
+                            data-testid="feature-progress-content-review"
+                            title={n.technicalTitle ?? OWNER_CONTENT_PLACEHOLDER}
+                          >
+                            perlu tinjauan
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className={styles.progressNodeMeta}>
+                        <span
+                          className={styles.stageChip}
+                          data-testid="feature-progress-stage"
+                          title={n.lifecycleStage ?? ''}
+                        >
+                          {n.lifecycleStage && !isUnknownStage(n.lifecycleStage)
+                            ? formatLifecycleStageLabel(n.lifecycleStage)
+                            : 'Tahap belum terproyeksi'}
+                        </span>
+                        <span className={styles.chip} data-testid="feature-progress-status">
+                          {statusLabel(n.status)}
+                        </span>
+                        {n.blockedReason ? (
+                          <span
+                            className={styles.progressBlocker}
+                            data-testid="feature-progress-blocker"
+                          >
+                            Hambatan: {n.blockedReason}
+                          </span>
+                        ) : null}
+                      </div>
+                      <details
+                        className={styles.gapDisclosure}
+                        data-testid="feature-progress-technical"
+                      >
+                        <summary className={styles.gapDisclosureSummary}>Detail teknis</summary>
+                        <div className={styles.gapDisclosureBody}>
+                          <p className={styles.technicalIdLine}>
+                            <span className={styles.technicalIdLabel}>taskId</span>
+                            <code className={styles.progressNodeId}>{n.taskId}</code>
+                          </p>
+                          {n.technicalTitle ? (
+                            <p className={styles.technicalIdLine}>
+                              <span className={styles.technicalIdLabel}>Judul sumber</span>
+                              <code>{n.technicalTitle}</code>
+                            </p>
+                          ) : null}
+                          {facing.needsReview ? (
+                            <p className={styles.technicalIdLine}>
+                              <span className={styles.technicalIdLabel}>Status konten</span>
+                              <span>{OWNER_CONTENT_PLACEHOLDER}</span>
+                            </p>
+                          ) : null}
+                        </div>
+                      </details>
+                    </li>
+                  )
+                })}
+              </ol>
+            )}
+
+            {totalFiltered > PROGRESS_PAGE_SIZE ? (
+              <nav
+                className={styles.progressPagination}
+                aria-label="Paginasi node progres"
+                data-testid="feature-progress-pagination"
+              >
+                <button
+                  type="button"
+                  className={styles.pageBtn}
+                  disabled={!canPrev}
+                  onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
+                  data-testid="feature-progress-prev"
+                >
+                  Sebelumnya
+                </button>
+                <span className={styles.progressPageMeta} data-testid="feature-progress-page-label">
+                  Halaman {safePage + 1} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  className={styles.pageBtn}
+                  disabled={!canNext}
+                  onClick={() => setPageIndex((p) => Math.min(totalPages - 1, p + 1))}
+                  data-testid="feature-progress-next"
+                >
+                  Berikutnya
+                </button>
+              </nav>
+            ) : null}
+          </>
         )}
       </div>
 

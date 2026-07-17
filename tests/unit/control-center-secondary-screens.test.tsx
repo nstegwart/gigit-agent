@@ -3,7 +3,7 @@
  * Support evidence only (LOCAL ONLY); no real-browser visual pair.
  */
 import { describe, it, expect } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { ProjectsScreen } from '#/components/control-center/projects'
 import { FeaturesScreen } from '#/components/control-center/features'
 import { AgentsScreen } from '#/components/control-center/agents'
@@ -435,8 +435,137 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
     expect(screen.getByTestId('feature-progress-content-review').textContent).toMatch(
       /perlu tinjauan/i,
     )
+    // Primary title uses cleaned technicalTitle, never the placeholder string.
+    const node = screen.getByTestId('feature-progress-node')
+    expect(node.textContent).toMatch(/Integration closure/i)
+    expect(node.querySelector('a')?.textContent).not.toMatch(
+      /Konten pemilik memerlukan peninjauan/i,
+    )
     expect(screen.getByTestId('feature-progress-technical').textContent).toMatch(
       /Integration closure/,
+    )
+    expect(screen.getByTestId('feature-summary-perlu-tinjauan').textContent).toMatch(
+      /Perlu tinjauan · 1/,
+    )
+  })
+
+  it('FeatureDetailScreen paginates progress nodes (20/page) and filters by search', () => {
+    const nodes = Array.from({ length: 45 }, (_, i) => ({
+      taskId: `T-PAGINATE-${String(i + 1).padStart(3, '0')}`,
+      title: i === 21 ? 'Node spesial pencarian alpha' : `Node progres nomor ${i + 1}`,
+      lifecycleStage: i % 3 === 0 ? 'MAPPED' : i % 3 === 1 ? 'MAP_VERIFIED' : 'PROD_READY',
+      status: i === 5 ? 'blocked' : 'queued',
+      blockedReason: i === 5 ? 'Dependency hold' : null,
+      contentReviewRequired: i === 7,
+      technicalTitle: null as string | null,
+    }))
+    const withMany: FeaturesData = {
+      ...data,
+      features: [
+        {
+          ...data.items[0]!,
+          taskCount: 45,
+          progressNodes: nodes,
+          stageCounts: { MAPPED: 15, MAP_VERIFIED: 15, PROD_READY: 15 },
+        },
+      ],
+      items: data.items,
+    } as FeaturesData
+    const found = featureDetailFromEnvelope(basePin(withMany), 'f-1')
+    render(
+      <FeatureDetailScreen
+        surfaceState="populated"
+        boardId="mfs-rebuild"
+        feature={found.feature}
+        pin={found.pin}
+        error={null}
+        listHref={found.listHref}
+      />,
+    )
+
+    const list = screen.getByTestId('feature-detail-progress-list')
+    expect(list.getAttribute('data-page-size')).toBe('20')
+    expect(list.getAttribute('data-mounted-count')).toBe('20')
+    expect(screen.getAllByTestId('feature-progress-node')).toHaveLength(20)
+    expect(screen.getByTestId('feature-progress-pagination')).toBeTruthy()
+    expect(screen.getByTestId('feature-progress-page-meta').textContent).toMatch(
+      /Menampilkan 1–20 dari 45/,
+    )
+
+    // Owner summary strip from real node counts
+    expect(screen.getByTestId('feature-summary-selesai').textContent).toMatch(/Selesai · 15/)
+    expect(screen.getByTestId('feature-summary-terpetakan').textContent).toMatch(
+      /Terpetakan · 30/,
+    )
+    expect(screen.getByTestId('feature-summary-terhambat').textContent).toMatch(/Terhambat · 1/)
+    expect(screen.getByTestId('feature-summary-perlu-tinjauan').textContent).toMatch(
+      /Perlu tinjauan · 1/,
+    )
+
+    // Next page mounts next 20 (not all 45)
+    fireEvent.click(screen.getByTestId('feature-progress-next'))
+    expect(screen.getByTestId('feature-detail-progress-list').getAttribute('data-mounted-count')).toBe(
+      '20',
+    )
+    expect(screen.getByTestId('feature-progress-page-meta').textContent).toMatch(
+      /Menampilkan 21–40 dari 45/,
+    )
+
+    // Search filters by node title and resets page
+    fireEvent.change(screen.getByTestId('feature-progress-search'), {
+      target: { value: 'spesial pencarian' },
+    })
+
+    expect(screen.getAllByTestId('feature-progress-node')).toHaveLength(1)
+    expect(screen.getByTestId('feature-progress-node').textContent).toMatch(
+      /Node spesial pencarian alpha/,
+    )
+    expect(screen.queryByTestId('feature-progress-pagination')).toBeNull()
+  })
+
+  it('FeatureDetailScreen honest unprojected stage when all nodes lack lifecycle stage', () => {
+    const unknownNodes = Array.from({ length: 5 }, (_, i) => ({
+      taskId: `T-UNK-${i + 1}`,
+      title: `Node tanpa tahap ${i + 1}`,
+      lifecycleStage: null as string | null,
+      status: 'queued',
+      blockedReason: null,
+      contentReviewRequired: false,
+      technicalTitle: null as string | null,
+    }))
+    const withUnknown: FeaturesData = {
+      ...data,
+      features: [
+        {
+          ...data.items[0]!,
+          taskCount: 5,
+          progressNodes: unknownNodes,
+          stageCounts: { UNKNOWN: 5 },
+        },
+      ],
+      items: data.items,
+    } as FeaturesData
+    const found = featureDetailFromEnvelope(basePin(withUnknown), 'f-1')
+    render(
+      <FeatureDetailScreen
+        surfaceState="populated"
+        boardId="mfs-rebuild"
+        feature={found.feature}
+        pin={found.pin}
+        error={null}
+        listHref={found.listHref}
+      />,
+    )
+
+    // Must NOT present fake "UNKNOWN · 5" as a real stage histogram
+    const chips = screen.getByTestId('feature-detail-stage-chips')
+    expect(chips.textContent).toMatch(/Tahap belum terproyeksi \(5\)/)
+    expect(chips.textContent).not.toMatch(/UNKNOWN/)
+    expect(screen.getByTestId('feature-stage-data-limitation').textContent).toMatch(
+      /Keterbatasan data/,
+    )
+    expect(screen.getAllByTestId('feature-progress-stage')[0]!.textContent).toMatch(
+      /Tahap belum terproyeksi/,
     )
   })
 
@@ -444,6 +573,9 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
     render(<FeaturesScreen {...featuresEnvelopeToProps(basePin(data))} />)
     const root = screen.getByTestId('control-center-features')
     expect(root.getAttribute('data-reflow-breakpoint')).toBe('768')
+    expect(root.getAttribute('data-list-filter')).toBe('attention')
+    expect(root.getAttribute('data-show-flow-col')).toBe('1')
+    expect(root.getAttribute('data-show-context-col')).toBe('1')
     const rows = screen.getAllByTestId('feature-row')
     expect(rows[0].getAttribute('data-flow-branch')).toBe('open')
     expect(rows[1].getAttribute('data-flow-branch')).toBe('fail')
@@ -452,7 +584,10 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
     expect(ctx[0].textContent).toMatch(/routes/)
     expect(ctx[0].textContent).toMatch(/api/)
     expect(ctx[0].textContent).toMatch(/geo/)
-    expect(within(rows[1]).getByTestId('feature-context-empty')).toBeTruthy()
+    // Empty context cell is quiet dash — not "no flow context" spam
+    const emptyCtx = within(rows[1]).getByTestId('feature-context-empty')
+    expect(emptyCtx.textContent?.trim()).toBe('—')
+    expect(emptyCtx.textContent).not.toMatch(/no flow context/i)
     expect(
       screen.getAllByTestId('feature-detail-link').some(
         (a) => a.getAttribute('href') === '/b/mfs-rebuild/features/f-2',
@@ -467,6 +602,56 @@ describe('featuresEnvelopeToProps + FeaturesScreen', () => {
     const idIdx = firstRow.textContent?.indexOf('f-1') ?? -1
     expect(nameIdx).toBeGreaterThanOrEqual(0)
     expect(idIdx).toBeGreaterThan(nameIdx)
+    // Technical ID: mono ellipsis cell with full value in title
+    const idCell = within(firstRow).getByTitle('f-1')
+    expect(idCell.getAttribute('data-full-value')).toBe('f-1')
+    // Pin / pageSize demoted under Detail teknis (not page chrome)
+    expect(screen.getByTestId('features-technical')).toBeTruthy()
+    expect(screen.queryByText(/pageSize 50/)).toBeNull()
+    expect(screen.getByTestId('features-page-size').textContent).toBe('50')
+    expect(screen.getByTestId('features-pin')).toBeTruthy()
+    // Default filter chips present
+    expect(screen.getByTestId('features-filter-attention')).toBeTruthy()
+    expect(screen.getByTestId('features-filter-hold')).toBeTruthy()
+    expect(screen.getByTestId('features-filter-active')).toBeTruthy()
+  })
+
+  it('hides Alur and Konteks columns when every row lacks real values', () => {
+    const dead: FeaturesData = {
+      ...data,
+      items: [
+        {
+          id: 'FC-AFF-MEMBER-REFERRAL',
+          projectId: 'backend',
+          name: 'Member referral',
+          phase: 'spec',
+          flowBranch: null,
+          taskCount: 4,
+        },
+        {
+          id: 'FC-SALES-PANEL',
+          projectId: 'sales',
+          name: 'Sales panel',
+          phase: 'build',
+          flowBranch: null,
+          taskCount: 2,
+        },
+      ],
+    }
+    render(<FeaturesScreen {...featuresEnvelopeToProps(basePin(dead))} />)
+    const root = screen.getByTestId('control-center-features')
+    expect(root.getAttribute('data-show-flow-col')).toBe('0')
+    expect(root.getAttribute('data-show-context-col')).toBe('0')
+    const table = screen.getByTestId('features-table')
+    expect(table.textContent).not.toMatch(/\bAlur\b/)
+    expect(table.textContent).not.toMatch(/\bKonteks\b/)
+    expect(screen.queryByTestId('feature-context-empty')).toBeNull()
+    expect(screen.queryByText(/no flow context/i)).toBeNull()
+    // Long technical id still has full value in title (no mid-token wrap chrome)
+    const id = within(screen.getAllByTestId('feature-row')[0]!).getByTitle(
+      'FC-AFF-MEMBER-REFERRAL',
+    )
+    expect(id.getAttribute('data-full-value')).toBe('FC-AFF-MEMBER-REFERRAL')
   })
 
   it('surfaces projection gaps via details disclosure and count', () => {
@@ -659,6 +844,104 @@ describe('agentsEnvelopeToProps + AgentsScreen', () => {
     expect(summary).toBeTruthy()
     expect(summary.tagName).toBe('SUMMARY')
     expect(disclosure.textContent).toContain('agent-auth stale')
+  })
+
+  it('default filter shows only active statuses; history behind Riwayat toggle', () => {
+    const mixed: AgentsData = {
+      ...data,
+      ongoing: [],
+      items: [
+        {
+          ...data.items[0],
+          runId: 'run-live',
+          id: 'run-live',
+          status: 'RUNNING',
+        },
+        {
+          ...data.items[1],
+          runId: 'run-dead',
+          id: 'run-dead',
+          status: 'CANCELLED',
+          claimState: null,
+          lockIds: null,
+          controllerRunId: null,
+          parentRunId: null,
+        },
+      ],
+      runs: [],
+    }
+    render(<AgentsScreen {...agentsEnvelopeToProps(basePin(mixed))} />)
+    const root = screen.getByTestId('control-center-agents')
+    expect(root.getAttribute('data-active-run-count')).toBe('1')
+    expect(root.getAttribute('data-history-run-count')).toBe('1')
+    expect(screen.getByTestId('agents-ongoing-count').textContent).toMatch(/1\s*berlangsung/)
+    expect(screen.getByTestId('agents-run-count').textContent).toMatch(/1\s*riwayat/)
+    expect(screen.getByTestId('agents-live-inventory').textContent).toMatch(
+      /1\s*berlangsung\s*·\s*1\s*riwayat/,
+    )
+    const liveRows = screen.getAllByTestId('agent-run-row')
+    expect(liveRows.map((r) => r.getAttribute('data-run-id'))).toEqual(['run-live'])
+    // Desktop primary columns only (header row)
+    const table = screen.getByTestId('agents-runs-table')
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map((h) => h.textContent?.trim())
+    expect(headers).toEqual(['Tugas', 'Peran', 'Status', 'Umur', 'Akun'])
+
+    fireEvent.click(screen.getByTestId('agents-history-toggle'))
+    expect(root.getAttribute('data-show-history')).toBe('true')
+    const allRows = screen.getAllByTestId('agent-run-row')
+    expect(allRows.map((r) => r.getAttribute('data-run-id'))).toEqual([
+      'run-live',
+      'run-dead',
+    ])
+  })
+
+  it('all-cancelled inventory shows meaningful empty-state + CTA, not a corpse table', () => {
+    const deadOnly: AgentsData = {
+      ...data,
+      ongoing: [],
+      items: [
+        {
+          ...data.items[0],
+          runId: 'c1',
+          id: 'c1',
+          status: 'CANCELLED',
+        },
+        {
+          ...data.items[1],
+          runId: 'c2',
+          id: 'c2',
+          status: 'DONE',
+          claimState: null,
+          lockIds: null,
+          controllerRunId: null,
+          parentRunId: null,
+        },
+      ],
+      runs: [],
+    }
+    render(<AgentsScreen {...agentsEnvelopeToProps(basePin(deadOnly))} />)
+    const root = screen.getByTestId('control-center-agents')
+    expect(root.getAttribute('data-active-run-count')).toBe('0')
+    expect(root.getAttribute('data-history-run-count')).toBe('2')
+    expect(screen.getByTestId('agents-ongoing-count').textContent).toMatch(/0\s*berlangsung/)
+    expect(screen.getByTestId('agents-run-count').textContent).toMatch(/2\s*riwayat/)
+    expect(screen.getByTestId('agents-live-inventory').textContent).toMatch(
+      /0\s*berlangsung\s*·\s*2\s*riwayat/,
+    )
+    expect(screen.getByTestId('agents-empty-active')).toBeTruthy()
+    expect(screen.getByTestId('agents-cta-work').getAttribute('href')).toBe(
+      '/b/mfs-rebuild/work',
+    )
+    expect(screen.getByTestId('agents-cta-ops').getAttribute('href')).toBe(
+      '/b/mfs-rebuild/ops',
+    )
+    expect(screen.queryByTestId('agent-run-row')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('agents-show-history-cta'))
+    expect(root.getAttribute('data-show-history')).toBe('true')
+    expect(screen.getAllByTestId('agent-run-row')).toHaveLength(2)
   })
 })
 

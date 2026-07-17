@@ -26,6 +26,9 @@ export const Route = createFileRoute('/b/$boardId/features/$featureId')({
   loader: async ({ context, params }) => {
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
     if (isControlCenterBoard(params.boardId)) {
+      // W-FIX-FIRM D: no safe by-id features fetcher in public client API without
+      // touching control-center-query / server contracts (out of scope). Keep list
+      // envelope load; detail resolves one feature via featureDetailFromEnvelope.
       await context.queryClient.ensureQueryData(
         featuresQueryOptions(
           params.boardId,
