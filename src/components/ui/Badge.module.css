@@ -1,0 +1,30 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  max-width: 100%;
+  height: 22px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  font-size: var(--type-caption-size);
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.neutral {
+  background: var(--surface-active);
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+/* Brand remains sparse blue accent (tech pin) */
+.brand {
+  background: var(--accent-soft);
+  color: var(--accent-fg, var(--accent));
+  border-color: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--type-caption-size);
+}

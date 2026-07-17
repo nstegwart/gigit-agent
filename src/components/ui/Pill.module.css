@@ -1,0 +1,46 @@
+/* Filter pill — Direction B chip--filter language */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: var(--type-caption-size);
+  line-height: 1;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
+.pill:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.pill:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--focus-ring);
+}
+.pill:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* Active: monochrome brand fill */
+.active {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--text-inverse);
+  font-weight: 600;
+}
+.active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 88%, white);
+  border-color: color-mix(in srgb, var(--text) 88%, white);
+  color: var(--text-inverse);
+}

@@ -1,0 +1,73 @@
+/* Direction B: soft/transparent chip — semantic color lives on the dot only */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-pill);
+  font-size: var(--type-caption-size);
+  line-height: 1;
+  font-weight: 500;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary); /* dark-gray label */
+  white-space: nowrap;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-tertiary);
+}
+
+/* Soft tint backgrounds stay very light; text stays secondary gray */
+.done {
+  background: color-mix(in srgb, var(--ok-bg) 70%, transparent);
+  color: var(--text-secondary);
+}
+.done .dot {
+  background: var(--ok);
+}
+
+.ongoing {
+  background: color-mix(in srgb, var(--info-bg) 70%, transparent);
+  color: var(--text-secondary);
+}
+.ongoing .dot {
+  background: var(--info);
+}
+
+.warn {
+  background: color-mix(in srgb, var(--warn-bg) 70%, transparent);
+  color: var(--text-secondary);
+}
+.warn .dot {
+  background: var(--warn);
+}
+
+.blocked {
+  background: color-mix(in srgb, var(--blocked-bg) 70%, transparent);
+  color: var(--text-secondary);
+}
+.blocked .dot {
+  background: var(--blocked);
+}
+
+.pending {
+  background: color-mix(in srgb, var(--surface-active) 80%, transparent);
+  color: var(--text-secondary);
+}
+.pending .dot {
+  background: var(--text-tertiary);
+}
+
+.next {
+  background: color-mix(in srgb, var(--next-bg) 70%, transparent);
+  color: var(--text-secondary);
+}
+.next .dot {
+  background: var(--next);
+}

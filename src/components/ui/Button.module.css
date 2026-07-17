@@ -1,0 +1,86 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  border-radius: var(--r-sm); /* 6px — Direction B control */
+  font-family: var(--font);
+  font-weight: 500;
+  font-size: var(--type-small-size);
+  line-height: var(--type-small-line);
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--motion-fast) ease,
+    border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+  outline: none;
+}
+.btn:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--focus-ring);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Height 32–36px per Direction B */
+.sm {
+  min-height: 32px;
+  height: 32px;
+  padding: 0 var(--sp-3);
+  font-size: var(--type-small-size);
+  line-height: var(--type-small-line);
+}
+.md {
+  min-height: 36px;
+  height: 36px;
+  padding: 0 var(--sp-4);
+  font-size: var(--type-small-size);
+  line-height: var(--type-small-line);
+}
+
+/* Primary: monochrome black (#0a0a0a), white text — not blue accent */
+.primary {
+  background: var(--text);
+  color: var(--text-inverse);
+  border-color: var(--text);
+}
+.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 88%, white);
+  border-color: color-mix(in srgb, var(--text) 88%, white);
+}
+
+/* Secondary: 1px border, white surface */
+.secondary {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+.secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+/* Ghost: transparent chrome */
+.ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: transparent;
+}
+.ghost:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.danger {
+  background: var(--blocked);
+  color: var(--text-inverse);
+  border-color: var(--blocked);
+}
+.danger:hover:not(:disabled) {
+  filter: brightness(0.95);
+}

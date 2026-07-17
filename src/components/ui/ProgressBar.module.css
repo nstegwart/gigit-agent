@@ -1,0 +1,55 @@
+.root {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  width: 100%;
+}
+
+/* Track: thin gray (#f0f0f0), full radius, 6px tall */
+.track {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--surface-active); /* #f0f0f0 */
+  border: none;
+  overflow: hidden;
+}
+
+/* Default fill: monochrome black (#0a0a0a) */
+.fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--text);
+  transition: width var(--motion-expand) ease;
+}
+
+/* Status variants via --ok / --warn / --blocked */
+.fillOk {
+  background: var(--ok);
+}
+
+/* Optional data-tone on root (no prop API change — HTML data attr) */
+.root[data-tone='warn'] .fill,
+.root[data-tone='warn'] .fillOk {
+  background: var(--warn);
+}
+.root[data-tone='blocked'] .fill,
+.root[data-tone='blocked'] .fillOk {
+  background: var(--blocked);
+}
+.root[data-tone='ok'] .fill {
+  background: var(--ok);
+}
+
+.label {
+  flex: none;
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  white-space: nowrap;
+}

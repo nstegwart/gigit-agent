@@ -1,0 +1,99 @@
+.wrap {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md); /* 8px */
+  background: var(--surface);
+  box-shadow: none;
+  -webkit-overflow-scrolling: touch;
+  outline: none;
+}
+.wrap:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--focus-ring);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--type-small-size);
+  line-height: var(--type-small-line);
+}
+
+/* Header: caption uppercase 12px, letter-spacing, --text-tertiary */
+.thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding: var(--sp-3) var(--sp-5); /* 12 × 20 */
+  white-space: nowrap;
+}
+.thBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  outline: none;
+}
+.thBtn:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--focus-ring);
+  border-radius: 2px;
+}
+.sortIcon {
+  font-size: 10px;
+  opacity: 0.7;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Rows ~52px, border-bottom 1px --border, hover --surface-hover */
+.tbody td {
+  padding: 0 var(--sp-5);
+  height: 52px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+.tbody tr:last-child td {
+  border-bottom: 0;
+}
+.tbody tr:hover td {
+  background: var(--surface-hover);
+}
+
+/* ID / mono cells: small mono secondary */
+.mono {
+  font-family: var(--mono);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-line);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.empty,
+.loading {
+  padding: var(--sp-6) var(--sp-4);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--type-body-size);
+  height: auto;
+}

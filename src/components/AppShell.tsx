@@ -521,7 +521,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const baseTitleEn =
     SECTION_TITLE[section] ?? (controlCenter ? 'Overview' : 'Board')
   const baseTitleId = SECTION_TITLE_ID[section]
-  const baseTitle = baseTitleId
+  // Primary title chrome: id-ID when available; EN kept for e2e + bilingual contract.
+  const pageTitlePrimary = baseTitleId ?? baseTitleEn
+  const pageTitleFull = baseTitleId
     ? `${baseTitleEn} · ${baseTitleId}`
     : baseTitleEn
 
@@ -529,6 +531,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div
       className={controlCenter ? 'app app--control-center' : 'app'}
       data-control-center={controlCenter ? 'true' : 'false'}
+      data-shell-version="cairn-v2"
     >
       <aside
         className="sidebar"
@@ -544,7 +547,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <BrandMark />
             <div className="brand-text">
               <div className="brand-name">{BRAND}</div>
-              <div className="brand-sub">Agent work board</div>
+              <div className="brand-sub">
+                {controlCenter ? 'Pusat kendali' : 'Papan kerja agen'}
+              </div>
             </div>
           </Link>
 
@@ -599,7 +604,9 @@ export function AppShell({ children }: { children: ReactNode }) {
                     </span>
                   ) : null}
                   {/* EN secondary: sr-only on control-center (primary chrome = id-ID). */}
-                  <span className={controlCenter ? 'lbl sr-only' : 'lbl'}>{n.label}</span>
+                  <span className={controlCenter ? 'lbl sr-only' : 'lbl'}>
+                    {n.label}
+                  </span>
                 </span>
                 {n.count ? (
                   <span
@@ -615,23 +622,42 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="sidebar-foot">
-          SSOT · data/boards/{boardId || '…'}
-          <br />
-          updated {fmtDate(m.updated)}
+          {controlCenter ? (
+            <>
+              Board <span className="sidebar-foot-mono">{boardId || '…'}</span>
+              <br />
+              diperbarui {fmtDate(m.updated)}
+            </>
+          ) : (
+            <>
+              SSOT · data/boards/{boardId || '…'}
+              <br />
+              updated {fmtDate(m.updated)}
+            </>
+          )}
         </div>
       </aside>
 
       <div className="main">
         <header className="topbar">
-          <h1 id="page-title">
-            {crumb ? (
-              <>
-                <span className="crumb">{baseTitle} /</span> {crumb}
-              </>
-            ) : (
-              baseTitle
-            )}
-          </h1>
+          <div className="topbar-title-block">
+            <h1 id="page-title" title={pageTitleFull}>
+              {crumb ? (
+                <>
+                  <span className="crumb">{pageTitleFull} /</span> {crumb}
+                </>
+              ) : (
+                pageTitleFull
+              )}
+            </h1>
+            {controlCenter && !crumb ? (
+              <p className="topbar-subtitle" data-testid="shell-page-subtitle">
+                {pageTitlePrimary === 'Ringkasan'
+                  ? 'Posisi program, prioritas, dan keputusan yang butuh perhatian.'
+                  : `Layar ${pageTitlePrimary}.`}
+              </p>
+            ) : null}
+          </div>
           <div className="topbar-spacer" />
           {controlCenter && me ? (
             <ControlCenterShellSearch
@@ -652,7 +678,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           tabIndex={0}
           data-testid="app-main-content"
         >
-          {children}
+          <div className="content-inner">{children}</div>
         </main>
       </div>
     </div>

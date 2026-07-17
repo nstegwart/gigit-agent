@@ -1,45 +1,60 @@
 @import 'tailwindcss';
 
 /*
- * Task Manager — ART-UX light-first design system (fallback tokens).
- * Source of truth: design/tokens/task-manager.tokens.json (ART-UX-DIRECTION fallback).
+ * Task Manager — Cairn redesign v2 design system (SPEC-CAIRN-REDESIGN-V2).
+ * Source of truth: design/tokens/task-manager.tokens.json.
  * Class API preserved. Dark mode CSS parity intentionally NOT shipped.
  * data-theme / prefers-color-scheme therefore reassert the same light tokens.
  * AppShell initializes persisted/URL theme state but renders no theme control.
  */
 
-/* ---------- tokens (ART fallback) ---------- */
+/* ---------- tokens (Direction B — Vercel/Geist-grade) ---------- */
 :root {
+  /* font-sans: Inter/Geist/system · font-mono: Geist Mono/SF Mono/ui-monospace */
   --font:
-    Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    'Inter', 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'Helvetica Neue', Arial, sans-serif;
   --mono:
-    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono',
-    monospace;
+    'Geist Mono', 'SF Mono', ui-monospace, 'Cascadia Code', 'Roboto Mono', Menlo,
+    Consolas, monospace;
+  --font-sans: var(--font);
+  --font-mono: var(--mono);
 
-  /* typography: exact ART 12/16, 14/20, 16/24, 18/28, 24/32, 32/40, 40/48 scale */
-  --type-meta-size: 12px;
-  --type-meta-line: 16px;
-  --type-secondary-size: 14px;
-  --type-secondary-line: 20px;
-  --type-body-size: 16px;
-  --type-body-line: 24px;
-  --type-lead-size: 18px;
-  --type-lead-line: 28px;
-  --type-title-size: 24px;
-  --type-title-line: 32px;
-  --type-headline-size: 32px;
-  --type-headline-line: 40px;
-  --type-statement-size: 40px;
-  --type-statement-line: 48px;
+  /* type scale — display 28/32 · h1 20/28 · h2 16/24 · body 14/20 · small 13/18 · caption 12/16 */
+  --type-caption-size: 12px;
+  --type-caption-line: 16px;
+  --type-small-size: 13px;
+  --type-small-line: 18px;
+  --type-body-size: 14px;
+  --type-body-line: 20px;
+  --type-h2-size: 16px;
+  --type-h2-line: 24px;
+  --type-h1-size: 20px;
+  --type-h1-line: 28px;
+  --type-display-size: 28px;
+  --type-display-line: 32px;
+  /* legacy aliases (class API) */
+  --type-meta-size: var(--type-caption-size);
+  --type-meta-line: var(--type-caption-line);
+  --type-secondary-size: var(--type-body-size);
+  --type-secondary-line: var(--type-body-line);
+  --type-lead-size: var(--type-h2-size);
+  --type-lead-line: var(--type-h2-line);
+  --type-title-size: var(--type-h1-size);
+  --type-title-line: var(--type-h1-line);
+  --type-headline-size: var(--type-display-size);
+  --type-headline-line: var(--type-display-line);
+  --type-statement-size: 32px;
+  --type-statement-line: 40px;
 
-  /* radius: controls 8 / cards 12 / panels 16 (ART shape system) */
-  --r-xs: 8px;
-  --r-sm: 8px;
-  --r-md: 12px;
-  --r-lg: 16px;
-  --r-xl: 16px;
+  /* radius: card/input 8 · chip 6 · pill 999 */
+  --r-xs: 6px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 8px;
+  --r-xl: 12px;
   --r-pill: 999px;
-  /* 4px base spacing scale: 4,8,12,16,24,32,48 (+64 as --sp-8) */
+  /* spacing scale 4/8/12/16/24/32/48 (+64) */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
@@ -48,70 +63,93 @@
   --sp-6: 32px;
   --sp-7: 48px;
   --sp-8: 64px;
-  /* motion: causal only; reduced mode below removes transforms/continuous animation */
   --motion-fast: 120ms;
   --motion-hover: 140ms;
   --motion-expand: 180ms;
   --motion-context: 220ms;
   --motion-loader: 300ms;
   --motion-reduced: 80ms;
-  /* elevation: none default; one restrained shadow for floating chrome */
-  --shadow-sm:
-    0 1px 2px rgba(23, 32, 42, 0.06), 0 1px 3px rgba(23, 32, 42, 0.04);
-  --shadow-md:
-    0 4px 12px rgba(23, 32, 42, 0.08), 0 1px 3px rgba(23, 32, 42, 0.05);
-  --shadow-pop: 0 12px 32px rgba(23, 32, 42, 0.12);
+  /* elevation: near-zero — 1px border is the primary separator */
+  --shadow-sm: 0 0 0 1px var(--border);
+  --shadow-md: 0 0 0 1px var(--border-strong);
+  --shadow-pop: 0 1px 2px rgba(10, 10, 10, 0.04);
 
-  /* canvas / surfaces — calm neutral light-first */
-  --bg: #f7f8fa; /* canvas */
-  --bg-hero: none; /* no decorative gradients (ART reject) */
-  --surface: #ffffff; /* surface */
-  --surface-2: #f1f4f7; /* surfaceSubtle */
-  --surface-3: #e8edf2; /* quieter chrome on subtle */
-  --border: #cdd5df; /* borderDefault */
-  --border-soft: #e4e7ec;
-  --border-strong: #98a2b3; /* borderStrong */
+  /* canvas / surfaces — Direction B exact */
+  --bg: #fafafa;
+  --bg-hero: none;
+  --surface: #ffffff;
+  --surface-2: #f7f7f7;
+  --surface-3: #f0f0f0;
+  --surface-hover: #f7f7f7;
+  --surface-active: #f0f0f0;
+  --border: #ececec;
+  --border-soft: #ececec;
+  --border-strong: #e0e0e0;
+  --border-focus: #0a0a0a;
 
-  /* text roles */
-  --text: #17202a; /* textStrong */
-  --text-dim: #344054; /* textDefault */
-  --text-faint: #52606d; /* textMuted — chrome labels ≥4.5:1 on surface */
+  /* text roles — Direction B (+ AA tertiary for faint body text on white) */
+  --text: #0a0a0a;
+  --text-dim: #666666;
+  --text-faint: #71717a;
+  --text-secondary: #666666;
+  --text-tertiary: #999999;
+  --text-inverse: #ffffff;
 
-  /* action / focus — blue family (not purple) */
-  --accent: #175cd3; /* action */
-  --accent-bright: #2e90fa; /* focusRing / icons only */
-  --accent-2: #1849a9; /* actionHover */
-  --accent-soft: #eff8ff; /* ongoingBg / soft action fill */
-  --accent-line: color-mix(in srgb, var(--accent) 32%, transparent);
-  --focus-ring: #2e90fa;
+  /* brand accent — Vercel blue (single accent, sparingly); fill stays vibrant */
+  --accent: #0070f3;
+  --accent-bright: #0070f3;
+  --accent-2: #0060df;
+  --accent-soft: rgba(0, 112, 243, 0.08);
+  --accent-line: color-mix(in srgb, var(--accent) 28%, transparent);
+  /* AA text/foreground on white + soft-12% tint (measured ≥4.5:1) */
+  --accent-fg: #4f3fd4;
+  --focus-ring: #0a0a0a;
   --on-action: #ffffff;
 
-  /* semantic status (work buckets) — FG / BG pairs */
-  --ok: #067647;
-  --ok-bg: #ecfdf3; /* done (alias) */
-  --done: #067647;
-  --done-bg: #ecfdf3; /* Selesai */
-  --info: #175cd3;
-  --info-bg: #eff8ff; /* ongoing */
-  --ongoing: #175cd3;
-  --ongoing-bg: #eff8ff; /* Sedang dikerjakan */
-  --next: #6941c6;
-  --next-bg: #f4f3ff; /* Berikutnya */
-  --parked: #344054;
-  --parked-bg: #f2f4f7; /* queued */
-  --queued: #344054;
-  --queued-bg: #f2f4f7; /* Menunggu giliran */
-  --blocked: #b42318;
-  --blocked-bg: #fef3f2; /* Terhambat */
-  --warn: #b54708;
-  --warn-bg: #fffaeb; /* reconcile / amber */
-  --reconcile: #b54708;
-  --reconcile-bg: #fffaeb; /* Sedang dicocokkan */
+  /*
+   * semantic status — Direction B dual tokens:
+   *   --ok/--warn/… = vibrant fill/dot (Direction B exact)
+   *   --ok-fg/--warn-fg/… = dark AA text FG (measured ≥4.5:1 on #fff + soft-12%)
+   * Measured (same relative-luminance as visual-contract test):
+   *   ok-fg #0a6e48  white 6.29 soft 5.29
+   *   warn-fg #8a5200 white 6.39 soft 5.35
+   *   blocked-fg #c62828 white 5.62 soft 4.64
+   *   done-fg #08665e white 6.84 soft 5.70
+   *   info-fg #1a5fb4 white 6.29 soft 5.28
+   *   accent-fg #4f3fd4 white 7.01 soft 5.82
+   */
+  --ok: #16a34a;
+  --ok-fg: #0a6e48;
+  --ok-bg: #ecfdf3;
+  --done: #16a34a;
+  --done-fg: #08665e;
+  --done-bg: #ecfdf3;
+  --info: #0070f3;
+  --info-fg: #1a5fb4;
+  --info-bg: #eff8ff;
+  --ongoing: #0070f3;
+  --ongoing-bg: #eff8ff;
+  --running: #0070f3;
+  --next: #6d28d9;
+  --next-bg: #f5f3ff;
+  --parked: #999999;
+  --parked-bg: #f7f7f7;
+  --queued: #999999;
+  --queued-bg: #f7f7f7;
+  --pending: #999999;
+  --blocked: #dc2626;
+  --blocked-fg: #c62828;
+  --blocked-bg: #fef2f2;
+  --warn: #d97706;
+  --warn-fg: #8a5200;
+  --warn-bg: #fffbeb;
+  --reconcile: #d97706;
+  --reconcile-bg: #fffbeb;
 
-  /* agent tint chips (secondary identity only — not work-bucket status) */
-  --t-claude: #6941c6;
-  --t-grok: #175cd3;
-  --t-codex: #b54708;
+  /* agent tint chips (secondary identity only) */
+  --t-claude: #6d28d9;
+  --t-grok: #0070f3;
+  --t-codex: #d97706;
 }
 
 /*
@@ -126,59 +164,66 @@
 :root[data-theme="dark"],
 :root:not([data-theme="light"]) {
   color-scheme: light;
-  /* canvas / surfaces — same light ART values as :root */
-  --bg: #f7f8fa;
+  /* Direction B light lock (same values as :root) */
+  --bg: #fafafa;
   --bg-hero: none;
   --surface: #ffffff;
-  --surface-2: #f1f4f7;
-  --surface-3: #e8edf2;
-  --border: #cdd5df;
-  --border-soft: #e4e7ec;
-  --border-strong: #98a2b3;
-  /* text roles */
-  --text: #17202a;
-  --text-dim: #344054;
-  --text-faint: #52606d;
-  /* action / focus */
-  --accent: #175cd3;
-  --accent-bright: #2e90fa;
-  --accent-2: #1849a9;
-  --accent-soft: #eff8ff;
-  --accent-line: color-mix(in srgb, var(--accent) 32%, transparent);
-  --focus-ring: #2e90fa;
+  --surface-2: #f7f7f7;
+  --surface-3: #f0f0f0;
+  --surface-hover: #f7f7f7;
+  --surface-active: #f0f0f0;
+  --border: #ececec;
+  --border-soft: #ececec;
+  --border-strong: #e0e0e0;
+  --border-focus: #0a0a0a;
+  --text: #0a0a0a;
+  --text-dim: #666666;
+  --text-faint: #71717a;
+  --text-secondary: #666666;
+  --text-tertiary: #999999;
+  --text-inverse: #ffffff;
+  --accent: #0070f3;
+  --accent-bright: #0070f3;
+  --accent-2: #0060df;
+  --accent-soft: rgba(0, 112, 243, 0.08);
+  --accent-line: color-mix(in srgb, var(--accent) 28%, transparent);
+  --accent-fg: #4f3fd4;
+  --focus-ring: #0a0a0a;
   --on-action: #ffffff;
-  /* semantic status */
-  --ok: #067647;
+  --ok: #16a34a;
+  --ok-fg: #0a6e48;
   --ok-bg: #ecfdf3;
-  --done: #067647;
+  --done: #16a34a;
+  --done-fg: #08665e;
   --done-bg: #ecfdf3;
-  --info: #175cd3;
+  --info: #0070f3;
+  --info-fg: #1a5fb4;
   --info-bg: #eff8ff;
-  --ongoing: #175cd3;
+  --ongoing: #0070f3;
   --ongoing-bg: #eff8ff;
-  --next: #6941c6;
-  --next-bg: #f4f3ff;
-  --parked: #344054;
-  --parked-bg: #f2f4f7;
-  --queued: #344054;
-  --queued-bg: #f2f4f7;
-  --blocked: #b42318;
-  --blocked-bg: #fef3f2;
-  --warn: #b54708;
-  --warn-bg: #fffaeb;
-  --reconcile: #b54708;
-  --reconcile-bg: #fffaeb;
-  /* agent tint chips */
-  --t-claude: #6941c6;
-  --t-grok: #175cd3;
-  --t-codex: #b54708;
-  /* elevation stays light-appropriate */
-  --shadow-sm:
-    0 1px 2px rgba(23, 32, 42, 0.06), 0 1px 3px rgba(23, 32, 42, 0.04);
-  --shadow-md:
-    0 4px 12px rgba(23, 32, 42, 0.08), 0 1px 3px rgba(23, 32, 42, 0.05);
-  --shadow-pop: 0 12px 32px rgba(23, 32, 42, 0.12);
-  --shadow-lg: 0 16px 40px rgba(23, 32, 42, 0.14);
+  --running: #0070f3;
+  --next: #6d28d9;
+  --next-bg: #f5f3ff;
+  --parked: #999999;
+  --parked-bg: #f7f7f7;
+  --queued: #999999;
+  --queued-bg: #f7f7f7;
+  --pending: #999999;
+  --blocked: #dc2626;
+  --blocked-fg: #c62828;
+  --blocked-bg: #fef2f2;
+  --warn: #d97706;
+  --warn-fg: #8a5200;
+  --warn-bg: #fffbeb;
+  --reconcile: #d97706;
+  --reconcile-bg: #fffbeb;
+  --t-claude: #6d28d9;
+  --t-grok: #0070f3;
+  --t-codex: #d97706;
+  --shadow-sm: 0 0 0 1px var(--border);
+  --shadow-md: 0 0 0 1px var(--border-strong);
+  --shadow-pop: 0 1px 2px rgba(10, 10, 10, 0.04);
+  --shadow-lg: 0 1px 3px rgba(10, 10, 10, 0.06);
 }
 
 /* ---------- base ---------- */
@@ -559,10 +604,17 @@ svg:not([class]) {
 .content:focus-visible {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
-/* ART: app content max 1440; overview working canvas may use ~1200 via components */
+/* ART: app content max 1200–1280 (SPEC-CAIRN-REDESIGN-V2 §1.3) */
 .wrap {
-  max-width: 1440px;
+  max-width: 1280px;
   margin: 0 auto;
+}
+/* AppShell content column — single max-width lane for all screens */
+.content-inner {
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+  min-width: 0;
 }
 /* Horizontal table scrollports — named + focusable from TSX (tabIndex/role). */
 .table-scroll {
@@ -641,19 +693,19 @@ svg:not([class]) {
 }
 .kpi.ok .kpi-ico {
   background: var(--ok-bg);
-  color: var(--ok);
+  color: var(--ok-fg);
 }
 .kpi.blocked .kpi-ico {
   background: var(--blocked-bg);
-  color: var(--blocked);
+  color: var(--blocked-fg);
 }
 .kpi.warn .kpi-ico {
   background: var(--warn-bg);
-  color: var(--warn);
+  color: var(--warn-fg);
 }
 .kpi.info .kpi-ico {
   background: var(--info-bg);
-  color: var(--info);
+  color: var(--info-fg);
 }
 
 /* ---------- sections ---------- */
@@ -685,7 +737,7 @@ svg:not([class]) {
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: var(--ok);
+  color: var(--ok-fg);
   font-weight: 600;
 }
 .sec-head .desc {
@@ -813,23 +865,23 @@ svg:not([class]) {
   white-space: nowrap;
 }
 .run-status.s-running {
-  color: var(--ok);
+  color: var(--ok-fg);
   background: var(--ok-bg);
 }
 .run-status.s-blocked {
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
 }
 .run-status.s-queued {
-  color: var(--info);
+  color: var(--info-fg);
   background: var(--info-bg);
 }
 .run-status.s-done {
-  color: var(--done);
+  color: var(--done-fg);
   background: var(--done-bg);
 }
 .run-status.s-failed {
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
 }
 .dot {
@@ -917,19 +969,19 @@ svg:not([class]) {
   background: var(--parked-bg);
 }
 .eff-medium {
-  color: var(--info);
+  color: var(--info-fg);
   background: var(--info-bg);
 }
 .eff-high {
-  color: var(--warn);
+  color: var(--warn-fg);
   background: var(--warn-bg);
 }
 .eff-xhigh {
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
 }
 .eff-max {
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
 }
 
@@ -975,7 +1027,7 @@ svg:not([class]) {
   background: var(--parked-bg);
 }
 .ph-spec {
-  color: var(--info);
+  color: var(--info-fg);
   background: var(--info-bg);
 }
 .ph-design {
@@ -983,7 +1035,7 @@ svg:not([class]) {
   background: color-mix(in srgb, var(--t-claude) 13%, transparent);
 }
 .ph-review {
-  color: var(--warn);
+  color: var(--warn-fg);
   background: var(--warn-bg);
 }
 .ph-build {
@@ -991,15 +1043,15 @@ svg:not([class]) {
   background: var(--accent-soft);
 }
 .ph-qa {
-  color: var(--warn);
+  color: var(--warn-fg);
   background: var(--warn-bg);
 }
 .ph-uat {
-  color: var(--done);
+  color: var(--done-fg);
   background: var(--done-bg);
 }
 .ph-done {
-  color: var(--ok);
+  color: var(--ok-fg);
   background: var(--ok-bg);
 }
 .ph-parked {
@@ -1104,7 +1156,7 @@ svg:not([class]) {
   color: var(--text-faint);
 }
 .qcard-gate b {
-  color: var(--warn);
+  color: var(--warn-fg);
   font-weight: 600;
 }
 .qcard-agents {
@@ -1142,15 +1194,15 @@ svg:not([class]) {
   text-transform: uppercase;
 }
 .ql-now {
-  color: var(--ok);
+  color: var(--ok-fg);
   background: var(--ok-bg);
 }
 .ql-next {
-  color: var(--info);
+  color: var(--info-fg);
   background: var(--info-bg);
 }
 .ql-blocked {
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
 }
 .queue-rail .line {
@@ -1217,10 +1269,10 @@ svg:not([class]) {
   color: var(--text-dim);
 }
 .st-live {
-  color: var(--ok);
+  color: var(--ok-fg);
 }
 .st-planned {
-  color: var(--info);
+  color: var(--info-fg);
 }
 .st-internal {
   color: var(--parked);
@@ -1291,11 +1343,11 @@ svg:not([class]) {
 }
 .banner.blocked {
   background: var(--blocked-bg);
-  color: var(--blocked);
+  color: var(--blocked-fg);
   border: 1px solid color-mix(in srgb, var(--blocked) 26%, transparent);
 }
 .banner.blocked b {
-  color: var(--blocked);
+  color: var(--blocked-fg);
 }
 
 .grid-2 {
@@ -1355,7 +1407,7 @@ svg:not([class]) {
 }
 .check.done .box {
   background: var(--ok);
-  border-color: var(--ok);
+  border-color: var(--ok-fg);
   color: var(--on-action);
 }
 .check.done .box svg {
@@ -1627,7 +1679,7 @@ svg:not([class]) {
 .tgroup-mile {
   font-size: 10.5px;
   font-weight: 600;
-  color: var(--ok);
+  color: var(--ok-fg);
   background: var(--ok-bg);
   padding: 2px 8px;
   border-radius: var(--r-pill);
@@ -1666,7 +1718,7 @@ svg:not([class]) {
   font-weight: 600;
 }
 .proj-stage-c.is-uninit {
-  color: var(--warn);
+  color: var(--warn-fg);
 }
 .grp-toggle {
   margin-left: auto;
@@ -1716,7 +1768,7 @@ svg:not([class]) {
   font-size: 9.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
   padding: 1px 6px;
   border-radius: var(--r-pill);
@@ -1757,7 +1809,7 @@ svg:not([class]) {
   margin-top: 4px;
 }
 .decision-ans b {
-  color: var(--ok);
+  color: var(--ok-fg);
 }
 .badge-status {
   font-size: 10.5px;
@@ -1768,15 +1820,15 @@ svg:not([class]) {
   letter-spacing: 0.03em;
 }
 .bs-decided {
-  color: var(--ok);
+  color: var(--ok-fg);
   background: var(--ok-bg);
 }
 .bs-open {
-  color: var(--warn);
+  color: var(--warn-fg);
   background: var(--warn-bg);
 }
 .bs-blocked {
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
 }
 
@@ -2134,7 +2186,7 @@ svg:not([class]) {
   letter-spacing: 0.03em;
 }
 .who-human {
-  color: var(--info);
+  color: var(--info-fg);
   background: var(--info-bg);
 }
 .who-agent {
@@ -2654,7 +2706,7 @@ svg:not([class]) {
   color: var(--text-faint);
 }
 .arch-status.st-live {
-  color: var(--ok);
+  color: var(--ok-fg);
   background: var(--ok-bg);
 }
 .doc-desc {
@@ -2745,7 +2797,7 @@ svg:not([class]) {
 }
 .checkpoint.done .box {
   background: var(--ok);
-  border-color: var(--ok);
+  border-color: var(--ok-fg);
   color: var(--on-action);
 }
 .checkpoint.done .cp-label {
@@ -2835,11 +2887,11 @@ svg:not([class]) {
   border-radius: var(--r-pill);
 }
 .account-badge.usable {
-  color: var(--ok);
+  color: var(--ok-fg);
   background: var(--ok-bg);
 }
 .account-badge.limit {
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
 }
 .account-slots {
@@ -2858,7 +2910,7 @@ svg:not([class]) {
   padding: 11px 14px;
   border-radius: var(--r-md);
   background: var(--warn-bg);
-  color: var(--warn);
+  color: var(--warn-fg);
   border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent);
   font-size: 12.5px;
   margin-bottom: 16px;
@@ -2914,7 +2966,7 @@ svg:not([class]) {
   align-items: center;
   gap: 8px;
   font-size: 11.5px;
-  color: var(--warn);
+  color: var(--warn-fg);
   background: var(--warn-bg);
   padding: 5px 11px;
   border-radius: var(--r-pill);
@@ -3027,7 +3079,7 @@ svg:not([class]) {
 }
 .ts-check-item.done .ts-box {
   background: var(--ok);
-  border-color: var(--ok);
+  border-color: var(--ok-fg);
 }
 .ts-table-wrap {
   overflow-x: auto;
@@ -3087,13 +3139,13 @@ svg:not([class]) {
   box-shadow: var(--shadow-sm);
 }
 .agsum-tile.t-ok {
-  border-left-color: var(--ok);
+  border-left-color: var(--ok-fg);
 }
 .agsum-tile.t-warn {
-  border-left-color: var(--warn);
+  border-left-color: var(--warn-fg);
 }
 .agsum-tile.t-blocked {
-  border-left-color: var(--blocked);
+  border-left-color: var(--blocked-fg);
 }
 .agsum-n {
   font-size: 21px;
@@ -3127,7 +3179,7 @@ svg:not([class]) {
   font-size: 9.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
   padding: 2px 7px;
   border-radius: var(--r-pill);
@@ -3174,11 +3226,11 @@ svg:not([class]) {
   border-radius: var(--r-pill);
 }
 .run-verdict.is-pass {
-  color: var(--ok);
+  color: var(--ok-fg);
   background: var(--ok-bg);
 }
 .run-verdict.is-fail {
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
 }
 .run-ev {
@@ -3287,7 +3339,7 @@ svg:not([class]) {
   font-variant-numeric: tabular-nums;
 }
 .rail-pct.is-live {
-  color: var(--ok);
+  color: var(--ok-fg);
   font-family: var(--mono);
   font-size: 11px;
 }
@@ -3336,7 +3388,7 @@ svg:not([class]) {
   align-items: center;
   gap: 6px;
   font-size: 11.5px;
-  color: var(--warn);
+  color: var(--warn-fg);
 }
 .rail-hist {
   display: flex;
@@ -3435,7 +3487,7 @@ svg:not([class]) {
   gap: 9px;
   margin: 13px 0 0;
   font-size: 12.5px;
-  color: var(--warn);
+  color: var(--warn-fg);
   background: var(--warn-bg);
   border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent);
   border-radius: var(--r-sm);
@@ -3466,7 +3518,7 @@ svg:not([class]) {
   font-size: 11px;
 }
 .lc-verdict {
-  color: var(--ok);
+  color: var(--ok-fg);
   font-weight: 600;
 }
 .lc-run {
@@ -3518,7 +3570,7 @@ button.rail-step {
   gap: 8px;
   margin: 12px 0 0;
   font-size: 12.5px;
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
   border: 1px solid color-mix(in srgb, var(--blocked) 26%, transparent);
   border-radius: var(--r-sm);
@@ -3692,7 +3744,7 @@ button.rail-step {
   border-radius: 5px;
 }
 .lc-del:hover {
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
 }
 .lc-editor-foot {
@@ -3791,7 +3843,7 @@ button.rail-step {
   font-variant-numeric: tabular-nums;
 }
 .rup-meta .rup-warn {
-  color: var(--warn);
+  color: var(--warn-fg);
 }
 .rup-meta .rup-muted {
   color: var(--text-faint);
@@ -4128,7 +4180,7 @@ button.rail-step {
   align-items: baseline;
   gap: 5px;
   font-size: 12px;
-  color: var(--ok);
+  color: var(--ok-fg);
   line-height: 1.5;
 }
 
@@ -4145,8 +4197,8 @@ button.rail-step {
 }
 .btn-danger {
   background: var(--blocked-bg);
-  border-color: var(--blocked);
-  color: var(--blocked);
+  border-color: var(--blocked-fg);
+  color: var(--blocked-fg);
 }
 .btn-danger:hover {
   background: var(--blocked);
@@ -4218,7 +4270,7 @@ button.rail-step {
 }
 .auth-err {
   font-size: 12.5px;
-  color: var(--blocked);
+  color: var(--blocked-fg);
   background: var(--blocked-bg);
   border-radius: var(--r-sm);
   padding: 9px 11px;
@@ -4313,7 +4365,7 @@ button.rail-step {
 }
 .chip-admin {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-fg);
   border: 1px solid var(--accent-line);
 }
 .chip-member {

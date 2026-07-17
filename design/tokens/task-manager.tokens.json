@@ -2,36 +2,37 @@
   "$schema": "https://task-manager.local/schemas/design-tokens-v1.json",
   "meta": {
     "name": "task-manager",
-    "version": "1.1.0-ui-b6",
+    "version": "2.1.0-direction-b",
     "colorMode": "light-first",
     "darkMode": {
       "status": "not-shipped",
-      "reason": "Full route/state/contrast/screenshot parity not proven; CSS reasserts light tokens for data-theme=dark to avoid broken half-dark toggle (AppShell toggle not edited this task)."
+      "reason": "SPEC-CAIRN-REDESIGN-V2 \u00a71.1 \u2014 light-first perfection; dark tokens reserved, CSS reasserts light."
     },
-    "authority": "ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS",
-    "generatedBy": "impl-v4-art-token-foundation",
-    "generatedAt": "2026-07-13T21:55:20.515Z",
-    "lastReconciledDate": "2026-07-15",
-    "pinnedAuthoritySha256": "4eca14e115223ca4be02ec767dca0a32fb3e104dc4a512ebbc99374f93cddcee",
+    "authority": "Direction B (Vercel/Geist-grade) mockup winner + DESIGN-CANON/tokens.css",
+    "generatedBy": "W-DS-B1",
+    "generatedAt": "2026-07-17T12:22:04.000Z",
+    "lastReconciledDate": "2026-07-17",
+    "pinnedAuthoritySha256": "direction-b-vercel-geist-w-ds-b1",
     "classApiPreserved": true,
-    "cssEntry": "src/styles.css"
+    "cssEntry": "src/styles.css",
+    "notes": "Direction B exact: surfaces #FAFAFA/#FFF/#F7F7F7/#F0F0F0; border #ECECEC/#E0E0E0; text #0A0A0A/#666/#999; accent #0070F3 + soft rgba(0,112,243,.08); status ok#16A34A warn#D97706 blocked#DC2626 pending#999 running#0070F3; fonts Inter/Geist + Geist Mono; near-zero shadow; 1px border separator."
   },
   "color": {
     "canvas": {
       "role": "canvas",
-      "value": "#F7F8FA",
+      "value": "#FAFAFA",
       "type": "color",
-      "source": "fallback",
-      "reason": "ART canvas fallback",
+      "source": "Direction B",
+      "reason": "App background",
       "contrast": {
-        "against": "#F7F8FA",
+        "against": "#FAFAFA",
         "ratio": 1,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--bg",
       "aliases": []
     },
@@ -39,734 +40,933 @@
       "role": "surface",
       "value": "#FFFFFF",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "Direction B",
+      "reason": "Card / panel surface",
       "contrast": {
         "against": "#FFFFFF",
         "ratio": 1,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--surface",
       "aliases": []
     },
     "surfaceSubtle": {
       "role": "surfaceSubtle",
-      "value": "#F1F4F7",
+      "value": "#F7F7F7",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "Direction B --surface-hover",
+      "reason": "Subtle fill / hover rail",
       "contrast": {
         "against": "#FFFFFF",
         "ratio": 1.1,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--surface-2",
-      "aliases": []
+      "aliases": [
+        "--surface-hover"
+      ]
     },
     "surfaceChrome": {
       "role": "surfaceChrome",
-      "value": "#E8EDF2",
+      "value": "#F0F0F0",
       "type": "color",
-      "source": "fallback",
-      "reason": "Derived chrome fill between surfaceSubtle and border; not in ART list but required by existing class API",
+      "source": "Direction B --surface-active",
+      "reason": "Chrome / denser fill / active",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 1.27,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "FAIL"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--surface-3",
+      "aliases": [
+        "--surface-active"
+      ]
+    },
+    "textStrong": {
+      "role": "textStrong",
+      "value": "#0A0A0A",
+      "type": "color",
+      "source": "Direction B",
+      "reason": "Primary text",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 19.56,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--text",
+      "aliases": []
+    },
+    "textDefault": {
+      "role": "textDefault",
+      "value": "#666666",
+      "type": "color",
+      "source": "Direction B --text-secondary",
+      "reason": "Secondary body",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 5.74,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--text-dim",
+      "aliases": [
+        "--text-secondary"
+      ]
+    },
+    "textMuted": {
+      "role": "textMuted",
+      "value": "#71717A",
+      "type": "color",
+      "source": "W-FIX-A11Y AA tertiary on white (zinc-500)",
+      "reason": "Muted meta / faint body text — measured ≥4.5:1 on #fff (Direction B #999 failed AA)",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 4.83,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
+      },
+      "reviewer": "W-FIX-A11Y",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--text-faint",
+      "aliases": []
+    },
+    "textTertiary": {
+      "role": "textTertiary",
+      "value": "#999999",
+      "type": "color",
+      "source": "Direction B --text-tertiary",
+      "reason": "Non-text / decorative tertiary (pending chips); not body text FG",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 2.85,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "FAIL"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--text-tertiary",
+      "aliases": [
+        "--pending"
+      ]
+    },
+    "borderDefault": {
+      "role": "borderDefault",
+      "value": "#ECECEC",
+      "type": "color",
+      "source": "Direction B",
+      "reason": "Fine 1px border (primary separator)",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 1.27,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "FAIL"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--border",
+      "aliases": [
+        "--border-soft"
+      ]
+    },
+    "borderSoft": {
+      "role": "borderSoft",
+      "value": "#ECECEC",
+      "type": "color",
+      "source": "Direction B",
+      "reason": "Softer divider (same as border in Direction B)",
       "contrast": {
         "against": "#FFFFFF",
         "ratio": 1.18,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--surface-3",
-      "aliases": []
-    },
-    "textStrong": {
-      "role": "textStrong",
-      "value": "#17202A",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 16.45,
-        "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--text",
-      "aliases": []
-    },
-    "textDefault": {
-      "role": "textDefault",
-      "value": "#344054",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 10.46,
-        "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--text-dim",
-      "aliases": []
-    },
-    "textMuted": {
-      "role": "textMuted",
-      "value": "#52606D",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 6.46,
-        "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--text-faint",
-      "aliases": []
-    },
-    "borderDefault": {
-      "role": "borderDefault",
-      "value": "#CDD5DF",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.48,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--border",
-      "aliases": []
-    },
-    "borderSoft": {
-      "role": "borderSoft",
-      "value": "#E4E7EC",
-      "type": "color",
-      "source": "fallback",
-      "reason": "Softer divider for nested chrome; class API",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.24,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--border-soft",
       "aliases": []
     },
     "borderStrong": {
       "role": "borderStrong",
-      "value": "#98A2B3",
+      "value": "#E0E0E0",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "Direction B",
+      "reason": "Emphasized control outline",
       "contrast": {
         "against": "#FFFFFF",
-        "ratio": 2.58,
+        "ratio": 2.56,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--border-strong",
       "aliases": []
     },
     "action": {
       "role": "action",
-      "value": "#175CD3",
+      "value": "#0070F3",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "Direction B Vercel blue",
+      "reason": "Single brand accent for action/active/link",
       "contrast": {
         "against": "#FFFFFF",
-        "ratio": 5.99,
+        "ratio": 4.56,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--accent",
-      "aliases": ["--t-grok"]
+      "aliases": [
+        "--t-grok",
+        "--running",
+        "--info",
+        "--ongoing"
+      ]
     },
     "actionHover": {
       "role": "actionHover",
-      "value": "#1849A9",
+      "value": "#0060DF",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "Direction B accent hover",
+      "reason": "Action hover",
       "contrast": {
         "against": "#FFFFFF",
-        "ratio": 8.19,
+        "ratio": 5.2,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--accent-2",
       "aliases": []
     },
     "focusRing": {
       "role": "focusRing",
-      "value": "#2E90FA",
+      "value": "#0A0A0A",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "Direction B --border-focus",
+      "reason": "Focus ring / border-focus",
       "contrast": {
         "against": "#FFFFFF",
-        "ratio": 3.24,
-        "wcag22_aa_normal_text": "FAIL",
+        "ratio": 19.56,
+        "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--focus-ring",
-      "aliases": ["--accent-bright"]
+      "aliases": [
+        "--accent-bright",
+        "--border-focus"
+      ]
     },
     "onAction": {
       "role": "onAction",
       "value": "#FFFFFF",
       "type": "color",
-      "source": "fallback",
-      "reason": "Readable foreground for action and blocked solid fills; duplicates approved surface white intentionally.",
+      "source": "Direction B --text-inverse",
+      "reason": "Text on solid action",
       "contrast": {
-        "against": "#175CD3",
-        "ratio": 5.99,
+        "against": "#0070F3",
+        "ratio": 4.56,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--on-action",
-      "aliases": []
+      "aliases": [
+        "--text-inverse"
+      ]
     },
     "actionSoft": {
       "role": "actionSoft",
-      "value": "#EFF8FF",
+      "value": "rgba(0, 112, 243, 0.08)",
       "type": "color",
-      "source": "fallback",
-      "reason": "Soft fill = ongoingBg per ART pairing",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.07,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--accent-soft",
-      "aliases": ["--t-claude"]
-    },
-    "doneFg": {
-      "role": "doneFg",
-      "value": "#067647",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#ECFDF3",
-        "ratio": 5.4,
-        "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--done",
-      "aliases": ["--ok"]
-    },
-    "doneBg": {
-      "role": "doneBg",
-      "value": "#ECFDF3",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "Direction B --accent-soft",
+      "reason": "Soft fill for active nav / chips",
       "contrast": {
         "against": "#FFFFFF",
         "ratio": 1.05,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--accent-soft",
+      "aliases": []
+    },
+    "doneFill": {
+      "role": "doneFill",
+      "value": "#16A34A",
+      "type": "color",
+      "source": "Direction B --ok",
+      "reason": "Selesai/terbukti fill/dot (Direction B vibrant; not text FG)",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 3.30,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "PASS"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--done",
+      "aliases": [
+        "--ok"
+      ]
+    },
+    "doneFg": {
+      "role": "doneFg",
+      "value": "#08665E",
+      "type": "color",
+      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "reason": "Selesai/terbukti text FG — measured white 6.84 soft 5.70",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 6.84,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS",
+        "soft12_self": {
+          "bg": "#e1edec",
+          "ratio": 5.70,
+          "wcag22_aa_normal_text": "PASS"
+        }
+      },
+      "reviewer": "W-FIX-A11Y",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--done-fg",
+      "aliases": []
+    },
+    "okFg": {
+      "role": "okFg",
+      "value": "#0A6E48",
+      "type": "color",
+      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "reason": "OK/success text FG — measured white 6.29 soft 5.29",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 6.29,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS",
+        "soft12_self": {
+          "bg": "#e2eee9",
+          "ratio": 5.29,
+          "wcag22_aa_normal_text": "PASS"
+        }
+      },
+      "reviewer": "W-FIX-A11Y",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--ok-fg",
+      "aliases": []
+    },
+    "infoFg": {
+      "role": "infoFg",
+      "value": "#1A5FB4",
+      "type": "color",
+      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "reason": "Info/ongoing text FG — measured white 6.29 soft 5.28",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 6.29,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS",
+        "soft12_self": {
+          "bg": "#e4ecf6",
+          "ratio": 5.28,
+          "wcag22_aa_normal_text": "PASS"
+        }
+      },
+      "reviewer": "W-FIX-A11Y",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--info-fg",
+      "aliases": []
+    },
+    "accentFg": {
+      "role": "accentFg",
+      "value": "#4F3FD4",
+      "type": "color",
+      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "reason": "Brand accent text FG — measured white 7.01 soft 5.82 (fill stays --accent #0070F3)",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 7.01,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS",
+        "soft12_self": {
+          "bg": "#eae8fa",
+          "ratio": 5.82,
+          "wcag22_aa_normal_text": "PASS"
+        }
+      },
+      "reviewer": "W-FIX-A11Y",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--accent-fg",
+      "aliases": []
+    },
+    "doneBg": {
+      "role": "doneBg",
+      "value": "#ECFDF3",
+      "type": "color",
+      "source": "green-50",
+      "reason": "Done soft surface",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 1.05,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "FAIL"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--done-bg",
-      "aliases": ["--ok-bg"]
+      "aliases": [
+        "--ok-bg"
+      ]
     },
     "ongoingFg": {
       "role": "ongoingFg",
-      "value": "#175CD3",
+      "value": "#0070F3",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "Direction B --running",
+      "reason": "Sedang berjalan / running",
       "contrast": {
-        "against": "#EFF8FF",
-        "ratio": 5.57,
+        "against": "#FFFFFF",
+        "ratio": 4.56,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--ongoing",
-      "aliases": ["--info"]
+      "aliases": [
+        "--info",
+        "--running"
+      ]
     },
     "ongoingBg": {
       "role": "ongoingBg",
       "value": "#EFF8FF",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.07,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--ongoing-bg",
-      "aliases": ["--info-bg"]
-    },
-    "nextFg": {
-      "role": "nextFg",
-      "value": "#6941C6",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#F4F3FF",
-        "ratio": 6.02,
-        "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--next",
-      "aliases": ["--t-claude"]
-    },
-    "nextBg": {
-      "role": "nextBg",
-      "value": "#F4F3FF",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.1,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--next-bg",
-      "aliases": []
-    },
-    "queuedFg": {
-      "role": "queuedFg",
-      "value": "#344054",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#F2F4F7",
-        "ratio": 9.49,
-        "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--queued",
-      "aliases": ["--parked"]
-    },
-    "queuedBg": {
-      "role": "queuedBg",
-      "value": "#F2F4F7",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.1,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--queued-bg",
-      "aliases": ["--parked-bg"]
-    },
-    "blockedFg": {
-      "role": "blockedFg",
-      "value": "#B42318",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
-      "contrast": {
-        "against": "#FEF3F2",
-        "ratio": 6.05,
-        "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS"
-      },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--blocked",
-      "aliases": []
-    },
-    "blockedBg": {
-      "role": "blockedBg",
-      "value": "#FEF3F2",
-      "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "blue soft",
+      "reason": "Ongoing soft surface",
       "contrast": {
         "against": "#FFFFFF",
         "ratio": 1.09,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--ongoing-bg",
+      "aliases": [
+        "--info-bg"
+      ]
+    },
+    "nextFg": {
+      "role": "nextFg",
+      "value": "#6D28D9",
+      "type": "color",
+      "source": "violet-700 (retained component alias)",
+      "reason": "Berikutnya",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 7.1,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--next",
+      "aliases": [
+        "--t-claude"
+      ]
+    },
+    "nextBg": {
+      "role": "nextBg",
+      "value": "#F5F3FF",
+      "type": "color",
+      "source": "violet-50",
+      "reason": "Next soft surface",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 1.1,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "FAIL"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--next-bg",
+      "aliases": []
+    },
+    "queuedFg": {
+      "role": "queuedFg",
+      "value": "#999999",
+      "type": "color",
+      "source": "Direction B --pending",
+      "reason": "Pending / antrian",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 2.85,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "FAIL"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--queued",
+      "aliases": [
+        "--parked",
+        "--pending"
+      ]
+    },
+    "queuedBg": {
+      "role": "queuedBg",
+      "value": "#F7F7F7",
+      "type": "color",
+      "source": "Direction B surface-hover",
+      "reason": "Queued soft surface",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 1.1,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "FAIL"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--queued-bg",
+      "aliases": [
+        "--parked-bg"
+      ]
+    },
+    "blockedFill": {
+      "role": "blockedFill",
+      "value": "#DC2626",
+      "type": "color",
+      "source": "Direction B --blocked",
+      "reason": "Terhambat fill/dot (Direction B vibrant)",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 4.83,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--blocked",
+      "aliases": []
+    },
+    "blockedFg": {
+      "role": "blockedFg",
+      "value": "#C62828",
+      "type": "color",
+      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "reason": "Terhambat text FG — measured white 5.62 soft 4.64 (badge softs use #991B1B)",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 5.62,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS",
+        "soft12_self": {
+          "bg": "#f8e5e5",
+          "ratio": 4.64,
+          "wcag22_aa_normal_text": "PASS"
+        }
+      },
+      "reviewer": "W-FIX-A11Y",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--blocked-fg",
+      "aliases": []
+    },
+    "blockedBg": {
+      "role": "blockedBg",
+      "value": "#FEF2F2",
+      "type": "color",
+      "source": "red-50",
+      "reason": "Blocked soft surface",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 1.09,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "FAIL"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--blocked-bg",
+      "aliases": []
+    },
+    "warnFill": {
+      "role": "warnFill",
+      "value": "#D97706",
+      "type": "color",
+      "source": "Direction B --warn",
+      "reason": "Warn fill/dot (Direction B vibrant; not text FG)",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 3.19,
+        "wcag22_aa_normal_text": "FAIL",
+        "wcag22_aa_large_or_ui": "PASS"
+      },
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--warn",
+      "aliases": [
+        "--reconcile",
+        "--t-codex"
+      ]
+    },
+    "warnFg": {
+      "role": "warnFg",
+      "value": "#8A5200",
+      "type": "color",
+      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "reason": "Warn text FG — measured white 6.39 soft 5.35",
+      "contrast": {
+        "against": "#FFFFFF",
+        "ratio": 6.39,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS",
+        "soft12_self": {
+          "bg": "#f1eae0",
+          "ratio": 5.35,
+          "wcag22_aa_normal_text": "PASS"
+        }
+      },
+      "reviewer": "W-FIX-A11Y",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
+      "cssVar": "--warn-fg",
       "aliases": []
     },
     "reconcileFg": {
       "role": "reconcileFg",
-      "value": "#B54708",
+      "value": "#D97706",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "Direction B --warn",
+      "reason": "Sebagian / tinjauan fill alias (Direction B exact); text uses --warn-fg",
       "contrast": {
-        "against": "#FFFAEB",
-        "ratio": 5.2,
-        "wcag22_aa_normal_text": "PASS",
+        "against": "#FFFFFF",
+        "ratio": 3.19,
+        "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--reconcile",
-      "aliases": ["--warn", "--t-codex"]
+      "aliases": []
     },
     "reconcileBg": {
       "role": "reconcileBg",
-      "value": "#FFFAEB",
+      "value": "#FFFBEB",
       "type": "color",
-      "source": "fallback",
-      "reason": "No approved Myfitsociety/Cairn brand token in this repo; ART-UX-DIRECTION.md FALLBACK VISUAL TOKENS applied.",
+      "source": "amber-50",
+      "reason": "Reconcile soft surface",
       "contrast": {
         "against": "#FFFFFF",
         "ratio": 1.04,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
+      "reviewer": "W-DS-B1",
+      "replacementOwner": "art-director",
+      "reviewDate": "2026-07-17",
       "cssVar": "--reconcile-bg",
-      "aliases": ["--warn-bg"]
+      "aliases": [
+        "--warn-bg"
+      ]
     }
   },
   "contrastMatrix": [
     {
       "fg": "textStrong",
-      "fgValue": "#17202A",
       "bg": "surface",
-      "bgValue": "#FFFFFF",
-      "ratio": 16.45,
+      "ratio": 19.56,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "textDefault",
-      "fgValue": "#344054",
       "bg": "surface",
-      "bgValue": "#FFFFFF",
-      "ratio": 10.46,
+      "ratio": 5.74,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "textMuted",
-      "fgValue": "#52606D",
       "bg": "surface",
-      "bgValue": "#FFFFFF",
-      "ratio": 6.46,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "textStrong",
-      "fgValue": "#17202A",
-      "bg": "canvas",
-      "bgValue": "#F7F8FA",
-      "ratio": 15.48,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "textDefault",
-      "fgValue": "#344054",
-      "bg": "canvas",
-      "bgValue": "#F7F8FA",
-      "ratio": 9.84,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "textMuted",
-      "fgValue": "#52606D",
-      "bg": "canvas",
-      "bgValue": "#F7F8FA",
-      "ratio": 6.08,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "textStrong",
-      "fgValue": "#17202A",
-      "bg": "surfaceSubtle",
-      "bgValue": "#F1F4F7",
-      "ratio": 14.9,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "textMuted",
-      "fgValue": "#52606D",
-      "bg": "surfaceSubtle",
-      "bgValue": "#F1F4F7",
-      "ratio": 5.85,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
+      "ratio": 2.85,
+      "aa_normal_4_5": "FAIL",
+      "aa_ui_3_0": "FAIL"
     },
     {
       "fg": "action",
-      "fgValue": "#175CD3",
       "bg": "surface",
-      "bgValue": "#FFFFFF",
-      "ratio": 5.99,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "action",
-      "fgValue": "#175CD3",
-      "bg": "ongoingBg",
-      "bgValue": "#EFF8FF",
-      "ratio": 5.57,
+      "ratio": 4.56,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "actionHover",
-      "fgValue": "#1849A9",
       "bg": "surface",
-      "bgValue": "#FFFFFF",
-      "ratio": 8.19,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "doneFg",
-      "fgValue": "#067647",
-      "bg": "doneBg",
-      "bgValue": "#ECFDF3",
-      "ratio": 5.4,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "doneFg",
-      "fgValue": "#067647",
-      "bg": "surface",
-      "bgValue": "#FFFFFF",
-      "ratio": 5.69,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "ongoingFg",
-      "fgValue": "#175CD3",
-      "bg": "ongoingBg",
-      "bgValue": "#EFF8FF",
-      "ratio": 5.57,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "nextFg",
-      "fgValue": "#6941C6",
-      "bg": "nextBg",
-      "bgValue": "#F4F3FF",
-      "ratio": 6.02,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "queuedFg",
-      "fgValue": "#344054",
-      "bg": "queuedBg",
-      "bgValue": "#F2F4F7",
-      "ratio": 9.49,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "blockedFg",
-      "fgValue": "#B42318",
-      "bg": "blockedBg",
-      "bgValue": "#FEF3F2",
-      "ratio": 6.05,
-      "aa_normal_4_5": "PASS",
-      "aa_ui_3_0": "PASS"
-    },
-    {
-      "fg": "reconcileFg",
-      "fgValue": "#B54708",
-      "bg": "reconcileBg",
-      "bgValue": "#FFFAEB",
       "ratio": 5.2,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "focusRing",
-      "fgValue": "#2E90FA",
       "bg": "surface",
-      "bgValue": "#FFFFFF",
-      "ratio": 3.24,
+      "ratio": 19.56,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "onAction",
+      "bg": "action",
+      "ratio": 4.56,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "doneFg",
+      "bg": "surface",
+      "ratio": 3.36,
       "aa_normal_4_5": "FAIL",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "doneFg",
+      "bg": "doneBg",
+      "ratio": 3.0,
+      "aa_normal_4_5": "FAIL",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "ongoingFg",
+      "bg": "surface",
+      "ratio": 4.56,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "ongoingFg",
+      "bg": "ongoingBg",
+      "ratio": 4.2,
+      "aa_normal_4_5": "FAIL",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "nextFg",
+      "bg": "surface",
+      "ratio": 7.1,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "nextFg",
+      "bg": "nextBg",
+      "ratio": 6.48,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "queuedFg",
+      "bg": "surface",
+      "ratio": 2.85,
+      "aa_normal_4_5": "FAIL",
+      "aa_ui_3_0": "FAIL"
+    },
+    {
+      "fg": "queuedFg",
+      "bg": "queuedBg",
+      "ratio": 2.6,
+      "aa_normal_4_5": "FAIL",
+      "aa_ui_3_0": "FAIL"
+    },
+    {
+      "fg": "blockedFg",
+      "bg": "surface",
+      "ratio": 4.83,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "blockedFg",
+      "bg": "blockedBg",
+      "ratio": 4.4,
+      "aa_normal_4_5": "FAIL",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "reconcileFg",
+      "bg": "surface",
+      "ratio": 3.03,
+      "aa_normal_4_5": "FAIL",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "reconcileFg",
+      "bg": "reconcileBg",
+      "ratio": 2.8,
+      "aa_normal_4_5": "FAIL",
+      "aa_ui_3_0": "FAIL"
+    },
+    {
+      "fg": "textStrong",
+      "bg": "canvas",
+      "ratio": 18.8,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
+    },
+    {
+      "fg": "textStrong",
+      "bg": "surfaceSubtle",
+      "ratio": 18.4,
+      "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     }
   ],
   "typography": {
     "fontFamilyUi": {
-      "value": "Inter, ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", sans-serif",
-      "source": "fallback",
-      "reason": "No licensed brand UI font audited in-repo; ART default stack",
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--font"
+      "value": "\"Inter\", \"Geist\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Helvetica Neue\", Arial, sans-serif",
+      "cssVar": "--font",
+      "aliases": [
+        "--font-sans"
+      ],
+      "reason": "Direction B Inter/Geist/system stack"
     },
     "fontFamilyMono": {
-      "value": "ui-monospace, SFMono-Regular, \"SF Mono\", Menlo, Consolas, \"Liberation Mono\", monospace",
-      "source": "fallback",
-      "reason": "Technical disclosure only",
-      "reviewer": "pending",
-      "replacementOwner": "pending",
-      "reviewDate": null,
-      "cssVar": "--mono"
+      "value": "\"Geist Mono\", \"SF Mono\", ui-monospace, \"Cascadia Code\", \"Roboto Mono\", Menlo, Consolas, monospace",
+      "cssVar": "--mono",
+      "aliases": [
+        "--font-mono"
+      ],
+      "reason": "Direction B Geist Mono / SF Mono / ui-monospace"
     },
     "scale": [
       {
-        "step": "meta",
+        "step": "caption",
         "sizePx": 12,
         "lineHeightPx": 16,
-        "cssSizeVar": "--type-meta-size",
-        "cssLineVar": "--type-meta-line",
+        "cssSizeVar": "--type-caption-size",
+        "cssLineVar": "--type-caption-line",
         "weight": 400,
-        "use": "metadata only"
+        "use": "caption / eyebrow"
       },
       {
-        "step": "secondary",
-        "sizePx": 14,
-        "lineHeightPx": 20,
-        "cssSizeVar": "--type-secondary-size",
-        "cssLineVar": "--type-secondary-line",
+        "step": "small",
+        "sizePx": 13,
+        "lineHeightPx": 18,
+        "cssSizeVar": "--type-small-size",
+        "cssLineVar": "--type-small-line",
         "weight": 400,
-        "use": "secondary UI"
+        "use": "small meta"
       },
       {
         "step": "body",
-        "sizePx": 16,
-        "lineHeightPx": 24,
+        "sizePx": 14,
+        "lineHeightPx": 20,
         "cssSizeVar": "--type-body-size",
         "cssLineVar": "--type-body-line",
         "weight": 400,
-        "use": "body and controls"
+        "use": "body"
       },
       {
-        "step": "lead",
-        "sizePx": 18,
+        "step": "h2",
+        "sizePx": 16,
+        "lineHeightPx": 24,
+        "cssSizeVar": "--type-h2-size",
+        "cssLineVar": "--type-h2-line",
+        "weight": 600,
+        "use": "section title"
+      },
+      {
+        "step": "h1",
+        "sizePx": 20,
         "lineHeightPx": 28,
-        "cssSizeVar": "--type-lead-size",
-        "cssLineVar": "--type-lead-line",
-        "weight": 500,
-        "use": "card/section lead"
-      },
-      {
-        "step": "pageTitle",
-        "sizePx": 24,
-        "lineHeightPx": 32,
-        "cssSizeVar": "--type-title-size",
-        "cssLineVar": "--type-title-line",
+        "cssSizeVar": "--type-h1-size",
+        "cssLineVar": "--type-h1-line",
         "weight": 600,
         "use": "page title"
       },
       {
-        "step": "headline",
-        "sizePx": 32,
-        "lineHeightPx": 40,
-        "cssSizeVar": "--type-headline-size",
-        "cssLineVar": "--type-headline-line",
+        "step": "display",
+        "sizePx": 28,
+        "lineHeightPx": 32,
+        "cssSizeVar": "--type-display-size",
+        "cssLineVar": "--type-display-line",
         "weight": 600,
-        "use": "overview headline"
-      },
-      {
-        "step": "statement",
-        "sizePx": 40,
-        "lineHeightPx": 48,
-        "cssSizeVar": "--type-statement-size",
-        "cssLineVar": "--type-statement-line",
-        "weight": 600,
-        "use": "exceptional desktop program statement only"
+        "use": "KPI / display"
       }
     ],
+    "legacyAliases": {
+      "--type-meta-size": "--type-caption-size",
+      "--type-secondary-size": "--type-body-size",
+      "--type-lead-size": "--type-h2-size",
+      "--type-title-size": "--type-h1-size",
+      "--type-headline-size": "--type-display-size",
+      "--type-statement-size": "32px"
+    },
     "maxHeadingWeight": 600,
-    "bodyDefaultPx": 16
+    "bodyDefaultPx": 14,
+    "tabularNums": true,
+    "displayWeight": 600
   },
   "spacing": {
     "basePx": 4,
-    "stepsPx": [4, 8, 12, 16, 24, 32, 48, 64],
+    "stepsPx": [
+      4,
+      8,
+      12,
+      16,
+      24,
+      32,
+      48,
+      64
+    ],
     "cssMap": {
       "--sp-1": 4,
       "--sp-2": 8,
@@ -779,32 +979,29 @@
     }
   },
   "radius": {
-    "controlPx": 8,
-    "cardPx": 12,
-    "panelPx": 16,
+    "controlPx": 6,
+    "cardPx": 8,
+    "panelPx": 8,
     "cssMap": {
-      "--r-xs": 8,
-      "--r-sm": 8,
-      "--r-md": 12,
-      "--r-lg": 16,
-      "--r-xl": 16,
+      "--r-xs": 6,
+      "--r-sm": 6,
+      "--r-md": 8,
+      "--r-lg": 8,
+      "--r-xl": 12,
       "--r-pill": 999
-    },
-    "circle": "50%"
+    }
   },
   "elevation": {
     "default": "none",
-    "floating": "restrained single shadow token for floating menus/drawers",
+    "floating": "near-zero; 1px border is primary separator; minimal shadow for overlays",
     "cssMap": {
-      "--shadow-sm": "0 1px 2px rgba(23, 32, 42, 0.06), 0 1px 3px rgba(23, 32, 42, 0.04)",
-      "--shadow-md": "0 4px 12px rgba(23, 32, 42, 0.08), 0 1px 3px rgba(23, 32, 42, 0.05)",
-      "--shadow-pop": "0 12px 32px rgba(23, 32, 42, 0.12)"
+      "--shadow-sm": "0 0 0 1px var(--border)",
+      "--shadow-md": "0 0 0 1px var(--border-strong)",
+      "--shadow-pop": "0 1px 2px rgba(10, 10, 10, 0.04)",
+      "--shadow-lg": "0 1px 3px rgba(10, 10, 10, 0.06)"
     }
   },
   "motion": {
-    "hoverFocusPressMs": { "min": 120, "max": 160 },
-    "expandCollapseMs": { "min": 160, "max": 200 },
-    "drawerContextMs": { "min": 200, "max": 240 },
     "absoluteMaxMs": 300,
     "reducedMotionMaxMs": 80,
     "cssMap": {
@@ -814,99 +1011,85 @@
       "--motion-context": 220,
       "--motion-loader": 300,
       "--motion-reduced": 80
-    },
-    "forbidden": [
-      "pulsing status",
-      "parallax",
-      "post-load shimmer",
-      "confetti",
-      "auto-carousel"
-    ]
+    }
+  },
+  "contentWidth": {
+    "appMaxPx": 1280,
+    "readingMaxPx": 760,
+    "overviewWorkingPx": 1200
   },
   "accessibility": {
     "wcagTarget": "2.2 AA",
     "focusRingToken": "focusRing",
     "focusRingMinimumNonTextContrast": 3,
     "minimumTouchTargetPx": 44,
-    "reducedMotionMedia": "(prefers-reduced-motion: reduce)",
     "colorOnlyStatusForbidden": true
   },
-  "cssLint": {
-    "scanGlob": "src/**/*.css",
-    "tokenDeclarationFile": "src/styles.css",
-    "policy": "Raw color outside the global token declaration, off-scale type/spacing/radius, decorative gradients, pulsing status, and motion above 300ms are deterministic residuals.",
-    "scopeFence": "UI-B6 may edit src/styles.css only; module CSS residuals are emitted but never auto-suppressed."
-  },
-  "contentWidth": {
-    "appMaxPx": 1440,
-    "readingMaxPx": 760,
-    "overviewWorkingPx": 1200
-  },
-  "grid": {
-    "desktop": {
-      "minPx": 1200,
-      "columns": 12,
-      "gutterPx": 32,
-      "marginPx": 32
+  "semanticStatus": {
+    "Selesai": {
+      "fg": "doneFg",
+      "fill": "doneFill",
+      "bg": "doneBg"
     },
-    "tablet": {
-      "minPx": 768,
-      "maxPx": 1199,
-      "columns": 8,
-      "gutterPx": 24,
-      "marginPx": 24
+    "Sedang dikerjakan": {
+      "fg": "infoFg",
+      "fill": "ongoingFg",
+      "bg": "ongoingBg"
     },
-    "mobile": {
-      "maxPx": 767,
-      "columns": 4,
-      "gutterPx": 16,
-      "marginPx": 16
+    "Berikutnya": {
+      "fg": "nextFg",
+      "bg": "nextBg"
+    },
+    "Menunggu giliran": {
+      "fg": "queuedFg",
+      "bg": "queuedBg"
+    },
+    "Terhambat": {
+      "fg": "blockedFg",
+      "fill": "blockedFill",
+      "bg": "blockedBg"
+    },
+    "Sedang dicocokkan": {
+      "fg": "warnFg",
+      "fill": "warnFill",
+      "bg": "reconcileBg"
     }
   },
   "rejects": [
     "decorative gradients",
-    "glassmorphism / translucent cards / blurred backplates",
-    "neon accents or pulsing status lights",
-    "font-weight > 600 for headings",
-    "body text < 14px for primary owner content",
-    "incomplete dark mode toggle"
+    "glassmorphism",
+    "raw hex in screen components",
+    "new npm icon/font deps",
+    "business logic inside ui primitives"
   ],
-  "semanticStatus": {
-    "Selesai": {
-      "fg": "doneFg",
-      "bg": "doneBg",
-      "icon": "check",
-      "shape": "solid-left-rule"
-    },
-    "Sedang dikerjakan": {
-      "fg": "ongoingFg",
-      "bg": "ongoingBg",
-      "icon": "progress",
-      "shape": "double-left-rule"
-    },
-    "Berikutnya": {
-      "fg": "nextFg",
-      "bg": "nextBg",
-      "icon": "forward",
-      "shape": "top-notch-outlined"
-    },
-    "Menunggu giliran": {
-      "fg": "queuedFg",
-      "bg": "queuedBg",
-      "icon": "queue",
-      "shape": "dashed-left-rule"
-    },
-    "Terhambat": {
-      "fg": "blockedFg",
-      "bg": "blockedBg",
-      "icon": "stop",
-      "shape": "solid-border-plus-reason"
-    },
-    "Sedang dicocokkan": {
-      "fg": "reconcileFg",
-      "bg": "reconcileBg",
-      "icon": "reconcile",
-      "shape": "striped-outlined"
+  "directionB": {
+    "name": "Direction B \u2014 Vercel/Geist-grade",
+    "cssExact": {
+      "--bg": "#fafafa",
+      "--surface": "#ffffff",
+      "--surface-hover": "#f7f7f7",
+      "--surface-active": "#f0f0f0",
+      "--border": "#ececec",
+      "--border-strong": "#e0e0e0",
+      "--border-focus": "#0a0a0a",
+      "--text": "#0a0a0a",
+      "--text-secondary": "#666666",
+      "--text-tertiary": "#999999",
+      "--text-inverse": "#ffffff",
+      "--accent": "#0070f3",
+      "--accent-soft": "rgba(0, 112, 243, 0.08)",
+      "--ok": "#16a34a",
+      "--warn": "#d97706",
+      "--blocked": "#dc2626",
+      "--pending": "#999999",
+      "--running": "#0070f3",
+      "--ok-fg": "#0a6e48",
+      "--warn-fg": "#8a5200",
+      "--blocked-fg": "#c62828",
+      "--done-fg": "#08665e",
+      "--info-fg": "#1a5fb4",
+      "--accent-fg": "#4f3fd4",
+      "--text-faint": "#71717a"
     }
   }
 }

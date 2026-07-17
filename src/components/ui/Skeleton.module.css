@@ -1,0 +1,24 @@
+.root {
+  display: block;
+  border-radius: var(--r-sm);
+  background: var(--surface-active);
+  border: none;
+  animation: ui-skel-pulse 1.2s ease-in-out infinite;
+}
+.circle {
+  border-radius: var(--r-pill);
+}
+.text {
+  height: 0.85em;
+  margin: 0.2em 0;
+}
+
+@keyframes ui-skel-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
