@@ -832,6 +832,139 @@ export function defaultSyncPaths(workspaceRoot = '/opt/mfs/workspace'): SyncPath
   }
 }
 
+/**
+ * Resolve sync input paths with optional env overrides (path-B remote bundle).
+ * Env keys (all optional): SYNC_WORKSPACE_ROOT, SYNC_LINEAGE_JSONL, SYNC_VERDICTS_DIR,
+ * SYNC_LATEST_REPORT, SYNC_FEATURE_CONTRACTS_DIR, SYNC_RN_INVENTORY.
+ */
+export function resolveSyncPathsFromEnv(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  fallbackWorkspaceRoot = '/opt/mfs/workspace',
+): SyncPaths {
+  const workspaceRoot = String(env.SYNC_WORKSPACE_ROOT || fallbackWorkspaceRoot).trim() || fallbackWorkspaceRoot
+  const base = defaultSyncPaths(workspaceRoot)
+  const pick = (key: string, fallback: string): string => {
+    const v = env[key]
+    return v !== undefined && String(v).trim() !== '' ? String(v).trim() : fallback
+  }
+  return {
+    workspaceRoot,
+    lineageJsonl: pick('SYNC_LINEAGE_JSONL', base.lineageJsonl),
+    verdictsDir: pick('SYNC_VERDICTS_DIR', base.verdictsDir),
+    latestReport: pick('SYNC_LATEST_REPORT', base.latestReport),
+    featureContractsDir: pick('SYNC_FEATURE_CONTRACTS_DIR', base.featureContractsDir),
+    rnInventory: pick('SYNC_RN_INVENTORY', base.rnInventory),
+    boardId: base.boardId,
+  }
+}
+
+/** Result of the production sync fail-closed authority gate. */
+export type ProductionSyncGateResult =
+  | {
+      ok: true
+      approvalId: string
+      backupReceipt: string
+      targetHost: string
+      targetDatabase: string
+    }
+  | {
+      ok: false
+      code: string
+      message: string
+      missing?: Array<string>
+    }
+
+/**
+ * Fail-closed production apply authority for rebuild data sync.
+ * Requires PRODUCTION_MUTATION_APPROVED=1, PRODUCTION_APPROVAL_ID, BACKUP_RECEIPT
+ * (existing non-empty file), and SYNC_TARGET_HOST/SYNC_TARGET_DATABASE exact match
+ * against the live connection binding. Never prints secrets.
+ */
+export function assertProductionSyncAuthority(
+  input: {
+    env?: NodeJS.ProcessEnv | Record<string, string | undefined>
+    actualHost: string
+    actualDatabase: string
+    backupStat?: (receiptPath: string) => { isFile: boolean; size: number } | null
+  },
+): ProductionSyncGateResult {
+  const env = input.env ?? process.env
+  const missing: Array<string> = []
+
+  if (String(env.PRODUCTION_MUTATION_APPROVED ?? '').trim() !== '1') {
+    missing.push('PRODUCTION_MUTATION_APPROVED=1')
+  }
+  const approvalId = String(env.PRODUCTION_APPROVAL_ID ?? '').trim()
+  if (approvalId.length < 4) {
+    missing.push('PRODUCTION_APPROVAL_ID')
+  }
+  const backupReceipt = String(env.BACKUP_RECEIPT ?? '').trim()
+  if (!backupReceipt) {
+    missing.push('BACKUP_RECEIPT')
+  }
+  const targetHost = String(env.SYNC_TARGET_HOST ?? '').trim()
+  if (!targetHost) {
+    missing.push('SYNC_TARGET_HOST')
+  }
+  const targetDatabase = String(env.SYNC_TARGET_DATABASE ?? '').trim()
+  if (!targetDatabase) {
+    missing.push('SYNC_TARGET_DATABASE')
+  }
+
+  if (missing.length) {
+    return {
+      ok: false,
+      code: 'MISSING_PRODUCTION_SYNC_BUNDLE',
+      message: `APPLY_PRODUCTION_REFUSED: missing required env: ${missing.join(', ')}`,
+      missing,
+    }
+  }
+
+  const actualHost = String(input.actualHost ?? '').trim()
+  const actualDatabase = String(input.actualDatabase ?? '').trim()
+  if (targetHost !== actualHost) {
+    return {
+      ok: false,
+      code: 'SYNC_TARGET_HOST_MISMATCH',
+      message: `APPLY_PRODUCTION_REFUSED: SYNC_TARGET_HOST does not match actual CAIRN_DB_HOST binding (expected exact match; values withheld)`,
+    }
+  }
+  if (targetDatabase !== actualDatabase) {
+    return {
+      ok: false,
+      code: 'SYNC_TARGET_DATABASE_MISMATCH',
+      message: `APPLY_PRODUCTION_REFUSED: SYNC_TARGET_DATABASE does not match actual CAIRN_DB_NAME binding (expected exact match; values withheld)`,
+    }
+  }
+
+  const statFn =
+    input.backupStat ??
+    ((p: string) => {
+      try {
+        const st = fs.statSync(p)
+        return { isFile: st.isFile(), size: st.size }
+      } catch {
+        return null
+      }
+    })
+  const st = statFn(backupReceipt)
+  if (!st || !st.isFile || st.size <= 0) {
+    return {
+      ok: false,
+      code: 'BACKUP_RECEIPT_NOT_FOUND',
+      message: `APPLY_PRODUCTION_REFUSED: BACKUP_RECEIPT path missing, not a file, or empty`,
+    }
+  }
+
+  return {
+    ok: true,
+    approvalId,
+    backupReceipt,
+    targetHost,
+    targetDatabase,
+  }
+}
+
 /** Live recount from verdicts/*.json — never PARITY_LEDGER.json. */
 export function recountVerdictsFromDir(verdictsDir: string): {
   files: number

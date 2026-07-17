@@ -114,6 +114,14 @@ export function db(): mysql.Pool {
   return pool
 }
 
+/** Close the shared pool (CLI / tests). Safe to call when no pool was opened. */
+export async function closeDbPool(): Promise<void> {
+  if (!pool) return
+  const p = pool
+  pool = null
+  await p.end()
+}
+
 /** Read a board's JSON doc of a given kind (plan/runs/design/collab/tasks/accounts). */
 export async function readDoc<T>(boardId: string, kind: string, fallback: T): Promise<T> {
   const [rows] = await db().query('SELECT data FROM board_docs WHERE board_id=? AND kind=?', [boardId, kind])
