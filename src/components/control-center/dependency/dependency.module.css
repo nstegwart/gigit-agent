@@ -160,6 +160,14 @@
   margin: 0;
 }
 
+/* Deterministic SSR/first-paint placeholder (clientReady=false) — same on server + hydrate. */
+.pendingLabel {
+  font-size: var(--type-body-size);
+  color: var(--text-muted);
+  margin: 0;
+  padding: var(--sp-4);
+}
+
 .collapseChips {
   display: flex;
   flex-wrap: wrap;

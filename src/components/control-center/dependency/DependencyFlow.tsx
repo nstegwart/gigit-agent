@@ -124,6 +124,13 @@ export interface DependencyFlowProps {
 /**
  * ART-022 dependency flow — zoom/pan/reset graph, tree outline, cycle/conflict warnings,
  * keyboard selection, path highlight, and honest blocked explanations.
+ *
+ * Hydration (#418 root cause on /map):
+ * - SVG graph used useId() marker ids + absolute node coords from layoutDag
+ * - matchMedia flipped default viewMode after mount (safe alone) but first paint already
+ *   diverged when browser repaired SSR SVG/HTML or localeCompare order differed Node vs browser
+ * - Correct fix: SSR + first client paint share one deterministic shell; mount interactive
+ *   graph/tree/warnings only after useEffect clientReady. Never suppressHydrationWarning.
  */
 export function DependencyFlow({
   features,
@@ -132,6 +139,8 @@ export function DependencyFlow({
 }: DependencyFlowProps) {
   const rootId = useId()
   const viewportRef = useRef<HTMLDivElement>(null)
+  /** False on SSR and first client paint; flipped in useEffect only. */
+  const [clientReady, setClientReady] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('graph')
   const [zoom, setZoom] = useState(1)
   const [pan, setPan] = useState({ x: 0, y: 0 })
@@ -139,12 +148,28 @@ export function DependencyFlow({
   const panStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 })
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
-  const layout = useMemo(() => (features.length ? layoutDag([...features]) : null), [features])
-  const cycles = useMemo(() => detectDependencyCycles(features), [features])
-  const blocked = useMemo(() => blockedNodeSummaries(features), [features])
-  const tree = useMemo(() => buildTreeOutline(features), [features])
-  const groups = useMemo(() => groupFeatureCounts(features), [features])
-  const showCollapseSummary = features.length > collapseThreshold
+  // Heavy graph work only after client gate (avoids SSR cost + any non-determinism in HTML).
+  const layout = useMemo(
+    () => (clientReady && features.length ? layoutDag([...features]) : null),
+    [clientReady, features],
+  )
+  const cycles = useMemo(
+    () => (clientReady ? detectDependencyCycles(features) : []),
+    [clientReady, features],
+  )
+  const blocked = useMemo(
+    () => (clientReady ? blockedNodeSummaries(features) : []),
+    [clientReady, features],
+  )
+  const tree = useMemo(
+    () => (clientReady ? buildTreeOutline(features) : []),
+    [clientReady, features],
+  )
+  const groups = useMemo(
+    () => (clientReady ? groupFeatureCounts(features) : []),
+    [clientReady, features],
+  )
+  const showCollapseSummary = clientReady && features.length > collapseThreshold
 
   const nodeById = useMemo(() => {
     const m: Record<string, GraphNode> = {}
@@ -237,7 +262,9 @@ export function DependencyFlow({
     [moveSelection, nodeOrder, resetView],
   )
 
+  // Unlock interactive body only after hydrate. matchMedia must not affect first paint.
   useEffect(() => {
+    setClientReady(true)
     const mq = window.matchMedia('(max-width: 767px)')
     const apply = () => setViewMode(mq.matches ? 'tree' : 'graph')
     apply()
@@ -253,11 +280,16 @@ export function DependencyFlow({
     ? features.find((f) => f.id === selectedId) ?? null
     : null
 
+  // Shell attrs stay fixed until clientReady so SSR HTML === first client paint.
+  const shellViewMode: ViewMode = clientReady ? viewMode : 'graph'
+  const showGraphChrome = shellViewMode === 'graph' && clientReady
+
   return (
     <div
       className={[styles.root, className].filter(Boolean).join(' ')}
       data-testid="dependency-flow"
-      data-view-mode={viewMode}
+      data-view-mode={shellViewMode}
+      data-client-ready={clientReady ? 'true' : 'false'}
       data-feature-count={features.length}
     >
       <div className={styles.toolbar} role="toolbar" aria-label="Kontrol peta ketergantungan">
@@ -265,7 +297,7 @@ export function DependencyFlow({
           <button
             type="button"
             className={styles.toolBtn}
-            aria-pressed={viewMode === 'graph'}
+            aria-pressed={shellViewMode === 'graph'}
             onClick={() => setViewMode('graph')}
             data-testid="dependency-view-graph"
           >
@@ -274,14 +306,14 @@ export function DependencyFlow({
           <button
             type="button"
             className={styles.toolBtn}
-            aria-pressed={viewMode === 'tree'}
+            aria-pressed={shellViewMode === 'tree'}
             onClick={() => setViewMode('tree')}
             data-testid="dependency-view-tree"
           >
             Ringkasan teks
           </button>
         </div>
-        {viewMode === 'graph' ? (
+        {showGraphChrome ? (
           <div className={styles.toolbarGroup}>
             <button
               type="button"
@@ -316,7 +348,8 @@ export function DependencyFlow({
         ) : null}
       </div>
 
-      {(cycles.length > 0 || blocked.length > 0) && (
+      {/* Feature-derived panels only after clientReady — keeps SSR shell byte-stable. */}
+      {clientReady && (cycles.length > 0 || blocked.length > 0) ? (
         <div className={styles.warnings} data-testid="dependency-warnings">
           {cycles.map((c, i) => (
             <p
@@ -344,7 +377,7 @@ export function DependencyFlow({
             </p>
           ) : null}
         </div>
-      )}
+      ) : null}
 
       {showCollapseSummary ? (
         <div data-testid="dependency-collapse-summary">
@@ -361,7 +394,7 @@ export function DependencyFlow({
         </div>
       ) : null}
 
-      {selectedFeature?.isBlocked ? (
+      {clientReady && selectedFeature?.isBlocked ? (
         <p
           className={styles.warningBlocked}
           data-testid="dependency-selected-blocked"
@@ -374,7 +407,17 @@ export function DependencyFlow({
         </p>
       ) : null}
 
-      {viewMode === 'tree' ? (
+      {!clientReady ? (
+        <div
+          className={styles.viewport}
+          data-testid="dependency-graph-pending"
+          aria-busy="true"
+          aria-live="polite"
+          aria-label="Memuat peta ketergantungan"
+        >
+          <p className={styles.pendingLabel}>Memuat peta ketergantungan…</p>
+        </div>
+      ) : viewMode === 'tree' ? (
         <nav
           className={styles.treePanel}
           aria-labelledby={`${rootId}-tree-heading`}

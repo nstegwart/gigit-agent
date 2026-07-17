@@ -95,7 +95,7 @@ export function buildTreeOutline(features: ReadonlyArray<Feature>): TreeOutlineN
     const childIds = features
       .filter((x) => (x.deps ?? []).includes(id))
       .map((x) => x.id)
-      .sort((a, b) => (byId[a]?.nama ?? a).localeCompare(byId[b]?.nama ?? b))
+      .sort((a, b) => (byId[a]?.nama ?? a).localeCompare(byId[b]?.nama ?? b, 'en'))
 
     return {
       id,
@@ -111,7 +111,7 @@ export function buildTreeOutline(features: ReadonlyArray<Feature>): TreeOutlineN
 
   const roots = features
     .filter((f) => !(f.deps ?? []).some((d) => ids.has(d)))
-    .sort((a, b) => a.nama.localeCompare(b.nama))
+    .sort((a, b) => a.nama.localeCompare(b.nama, 'en'))
 
   return roots
     .map((f) => build(f.id, new Set()))

@@ -1,5 +1,7 @@
 // Peta ketergantungan — ART-022 interactive flow dengan filter proyek dan legenda id-ID.
-import { useState } from 'react'
+// Route shell is fully deterministic (no window/Date). Graph hydration is handled inside
+// DependencyFlow via clientReady gate (see React #418 fix).
+import { useMemo, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 
 import { boardQueryOptions, useBoard } from '#/lib/board-query'
@@ -16,7 +18,15 @@ function MapView() {
   const m = useBoard()
   const [projectFilter, setProjectFilter] = useState<string>('')
 
-  const features = projectFilter ? m.projById[projectFilter].features : m.features
+  // Stable project list order (id) so filter chips never diverge SSR vs client.
+  const projects = useMemo(
+    () => [...m.projects].sort((a, b) => a.id.localeCompare(b.id, 'en')),
+    [m.projects],
+  )
+
+  const features = projectFilter
+    ? (m.projById[projectFilter]?.features ?? [])
+    : m.features
 
   return (
     <div className="wrap">
@@ -58,7 +68,7 @@ function MapView() {
           >
             Semua proyek
           </button>
-          {m.projects.map((p) => (
+          {projects.map((p) => (
             <button
               key={p.id}
               className={`fbtn ${projectFilter === p.id ? 'on' : ''}`}
