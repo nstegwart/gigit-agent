@@ -127,6 +127,33 @@ describe('projectLightTaskClassification / lightFromRow', () => {
     expect(cls.receipt?.receiptId).toBe('rcp-task-classified-ok')
   })
 
+  it('W-CONTENT-3: lightFromRow projects optional human_title from HD join extract', () => {
+    const withHd = lightFromRow({
+      id: 'T-ANN-REG-FILTER',
+      title: 'Restore purchases + member history readback contract',
+      summary: { checkpoints: [], dependencies: [], impacts: [] },
+      human_title: 'Penerima pengumuman filter tanggal registrasi',
+    })
+    expect(withHd.humanTitle).toBe('Penerima pengumuman filter tanggal registrasi')
+    expect(withHd.title).toBe('Restore purchases + member history readback contract')
+
+    const without = lightFromRow({
+      id: 'T-NO-HD',
+      title: 'Technical only',
+      summary: { checkpoints: [], dependencies: [], impacts: [] },
+      human_title: null,
+    })
+    expect(without.humanTitle).toBeUndefined()
+
+    const empty = lightFromRow({
+      id: 'T-EMPTY-HD',
+      title: 'Technical only',
+      summary: { checkpoints: [], dependencies: [], impacts: [] },
+      human_title: 'null',
+    })
+    expect(empty.humanTitle).toBeUndefined()
+  })
+
   it('missing classification → adapter UNCLASSIFIED (no PRODUCT from phase/pct)', () => {
     const row = lightFromRow({
       id: 'task-missing-proof',

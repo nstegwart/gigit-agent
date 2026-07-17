@@ -105,13 +105,19 @@ function softOnWhite(fg: string, alpha = 0.12): string {
 
 describe('C3-R2A light semantic tokens — computed AA (≥4.5:1)', () => {
   const light = lightRootBlock(stylesSrc)
+  /*
+   * Direction B dual tokens (W-FIX-A11Y / L0):
+   *   --ok/--warn/… stay vibrant for dots/fills
+   *   --ok-fg/--warn-fg/… are measured AA text FOREGROUND on white + soft-12%
+   * text-faint is body tertiary (AA on white only).
+   */
   const tokens = {
-    accent: tokenHex(light, 'accent'),
-    ok: tokenHex(light, 'ok'),
-    blocked: tokenHex(light, 'blocked'),
-    warn: tokenHex(light, 'warn'),
-    info: tokenHex(light, 'info'),
-    done: tokenHex(light, 'done'),
+    accent: tokenHex(light, 'accent-fg'),
+    ok: tokenHex(light, 'ok-fg'),
+    blocked: tokenHex(light, 'blocked-fg'),
+    warn: tokenHex(light, 'warn-fg'),
+    info: tokenHex(light, 'info-fg'),
+    done: tokenHex(light, 'done-fg'),
     textFaint: tokenHex(light, 'text-faint'),
   } as const
 
@@ -139,66 +145,99 @@ describe('C3-R2A light semantic tokens — computed AA (≥4.5:1)', () => {
     expect(light).not.toMatch(/--done:\s*#0d9488/)
     expect(light).not.toMatch(/--accent:\s*#6d5efc/)
     expect(light).not.toMatch(/--text-faint:\s*#98a1af/)
+    // Faint tertiary must not regress to Direction-B #999 (fails AA on white).
+    expect(light).not.toMatch(/--text-faint:\s*#999999/)
+  })
+
+  it('keeps Direction B vibrant fill tokens alongside AA -fg text tokens', () => {
+    expect(tokenHex(light, 'ok').toLowerCase()).toBe('#16a34a')
+    expect(tokenHex(light, 'warn').toLowerCase()).toBe('#d97706')
+    expect(tokenHex(light, 'blocked').toLowerCase()).toBe('#dc2626')
+    expect(tokenHex(light, 'accent').toLowerCase()).toBe('#0070f3')
+    expect(tokenHex(light, 'ok-fg').toLowerCase()).toBe('#0a6e48')
+    expect(tokenHex(light, 'warn-fg').toLowerCase()).toBe('#8a5200')
+    expect(tokenHex(light, 'blocked-fg').toLowerCase()).toBe('#c62828')
   })
 
   it('chip-admin uses accent color on soft (token path)', () => {
-    expect(stylesSrc).toMatch(/\.chip-admin\s*\{[^}]*color:\s*var\(--accent\)/s)
+    // Text on soft tint must use AA accent-fg (not vibrant fill --accent).
+    expect(stylesSrc).toMatch(
+      /\.chip-admin\s*\{[^}]*color:\s*var\(--accent-fg\)/s,
+    )
   })
 })
 
+/**
+ * W-TOKEN-2: screen AA hard-locals are token aliases (var(--*-fg)), never raw hex
+ * and never vibrant fill tokens (var(--blocked) vs var(--blocked-fg)). Soft-chip
+ * darker FG uses color-mix(blocked-fg, text) so AA ≥4.5:1 holds without residual hex.
+ */
+function mixHex(a: string, b: string, pctA: number): string {
+  const parse = (hex: string) => {
+    const c = hex.replace('#', '')
+    return [0, 2, 4].map((i) => parseInt(c.slice(i, i + 2), 16))
+  }
+  const ca = parse(a)
+  const cb = parse(b)
+  const mix = ca.map((ch, i) => Math.round(ch * pctA + cb[i] * (1 - pctA)))
+  return (
+    '#' +
+    mix.map((n) => n.toString(16).padStart(2, '0')).join('')
+  )
+}
+
 describe('C3-R2A module AA hard-locals (no var pass-through trap)', () => {
-  it('decisions module hard-assigns blocked/ok/warn/info/accent AA hex', () => {
-    expect(decisionsCss).toMatch(/--dec-blocked:\s*#c62828/)
-    expect(decisionsCss).toMatch(/--dec-ok:\s*#0a6e48/)
-    expect(decisionsCss).toMatch(/--dec-warn:\s*#8a5200/)
-    expect(decisionsCss).toMatch(/--dec-info:\s*#1a5fb4/)
-    expect(decisionsCss).toMatch(/--dec-accent:\s*#4f3fd4/)
-    // Forbidden pattern that silently kept bright globals.
-    expect(decisionsCss).not.toMatch(/--dec-blocked:\s*var\(--blocked/)
+  it('decisions module aliases blocked/ok/warn/info/accent AA tokens (not vibrant fills)', () => {
+    expect(decisionsCss).toMatch(/--dec-blocked:\s*var\(--blocked-fg\)/)
+    expect(decisionsCss).toMatch(/--dec-ok:\s*var\(--ok-fg\)/)
+    expect(decisionsCss).toMatch(/--dec-warn:\s*var\(--warn-fg\)/)
+    expect(decisionsCss).toMatch(/--dec-info:\s*var\(--info-fg\)/)
+    expect(decisionsCss).toMatch(/--dec-accent:\s*var\(--accent-fg\)/)
+    // Forbidden: vibrant fill pass-through (must use -fg, not bare --blocked).
+    expect(decisionsCss).not.toMatch(/--dec-blocked:\s*var\(--blocked\)\s*;/)
   })
 
-  it('priority module hard-assigns semantic AA hex', () => {
-    expect(priorityCss).toMatch(/--pr-blocked:\s*#c62828/)
-    expect(priorityCss).toMatch(/--pr-ok:\s*#0a6e48/)
-    expect(priorityCss).toMatch(/--pr-warn:\s*#8a5200/)
-    expect(priorityCss).toMatch(/--pr-accent:\s*#4f3fd4/)
-    expect(priorityCss).not.toMatch(/--pr-blocked:\s*var\(--blocked/)
+  it('priority module aliases semantic AA tokens (not vibrant fills)', () => {
+    expect(priorityCss).toMatch(/--pr-blocked:\s*var\(--blocked-fg\)/)
+    expect(priorityCss).toMatch(/--pr-ok:\s*var\(--ok-fg\)/)
+    expect(priorityCss).toMatch(/--pr-warn:\s*var\(--warn-fg\)/)
+    expect(priorityCss).toMatch(/--pr-accent:\s*var\(--accent-fg\)/)
+    expect(priorityCss).not.toMatch(/--pr-blocked:\s*var\(--blocked\)\s*;/)
   })
 
-  it('overview/work modules declare local AA semantic vars', () => {
-    expect(overviewCss).toMatch(/--cc-blocked:\s*#c62828/)
-    expect(overviewCss).toMatch(/--cc-ok:\s*#0a6e48/)
-    expect(workCss).toMatch(/--wk-blocked:\s*#c62828/)
-    expect(workCss).toMatch(/--wk-done:\s*#08665e/)
+  it('overview/work modules declare local AA semantic token aliases', () => {
+    expect(overviewCss).toMatch(/--cc-blocked:\s*var\(--blocked-fg\)/)
+    expect(overviewCss).toMatch(/--cc-ok:\s*var\(--ok-fg\)/)
+    expect(workCss).toMatch(/--wk-blocked:\s*var\(--blocked-fg\)/)
+    expect(workCss).toMatch(/--wk-done:\s*var\(--done-fg\)/)
   })
 
-  it('badgeBlocked uses local darker FG that AA-passes measured soft #eedde0', () => {
+  it('badgeBlocked uses darker token mix that AA-passes measured soft #eedde0', () => {
     // Root defect: Work-BLOCKED_1440x900 axe — #c62828 on #eedde0 = 4.29.
-    // --wk-blocked stays #c62828; only .badgeBlocked text is darker.
-    expect(workCss).toMatch(/--wk-blocked:\s*#c62828/)
+    // Local alias uses --blocked-fg; badge text darkens via color-mix with --text.
+    expect(workCss).toMatch(/--wk-blocked:\s*var\(--blocked-fg\)/)
     const badge = workCss.match(/\.badgeBlocked\s*\{([^}]+)\}/)
     expect(badge?.[1]).toBeTruthy()
-    const color = badge![1].match(/color:\s*(#[0-9a-fA-F]{6})/)
-    expect(color?.[1]).toBeTruthy()
-    const fg = color![1]
-    // Measured soft = color-mix(blocked 12%, surface-2 #f4f6f9)
+    expect(badge![1]).toMatch(
+      /color:\s*color-mix\(\s*in\s+srgb\s*,\s*var\(--blocked-fg\)\s+75%\s*,\s*var\(--text\)\s*\)/,
+    )
+    // Resolve mix against live global token values (blocked-fg #c62828, text #0a0a0a).
+    const fg = mixHex('#c62828', '#0a0a0a', 0.75)
     const measuredSoft = '#eedde0'
     const ratio = contrastRatio(fg, measuredSoft)
     expect(ratio).toBeGreaterThanOrEqual(4.5)
-    // Must not still use the failing pair
     expect(fg.toLowerCase()).not.toBe('#c62828')
   })
 
-  it('summaryChipBlocking uses local darker FG that AA-passes measured soft #f1dfe1', () => {
+  it('summaryChipBlocking uses darker token mix that AA-passes measured soft #f1dfe1', () => {
     // Root defect: Decisions_* axe — #c62828 on #f1dfe1 = 4.38 (decisions-blocking-count).
-    // --dec-blocked stays #c62828; only .summaryChipBlocking text is darker.
-    expect(decisionsCss).toMatch(/--dec-blocked:\s*#c62828/)
+    expect(decisionsCss).toMatch(/--dec-blocked:\s*var\(--blocked-fg\)/)
     const chip = decisionsCss.match(/\.summaryChipBlocking\s*\{([^}]+)\}/)
     expect(chip?.[1]).toBeTruthy()
-    const color = chip![1].match(/color:\s*(#[0-9a-fA-F]{6})/)
-    expect(color?.[1]).toBeTruthy()
-    const fg = color![1]
-    // Harness-measured soft (rgba(198,40,40,0.12) composite on light Decisions surface)
+    expect(chip![1]).toMatch(
+      /color:\s*color-mix\(\s*in\s+srgb\s*,\s*var\(--blocked-fg\)\s+75%\s*,\s*var\(--text\)\s*\)/,
+    )
+    const fg = mixHex('#c62828', '#0a0a0a', 0.75)
     const measuredSoft = '#f1dfe1'
     const ratio = contrastRatio(fg, measuredSoft)
     expect(ratio).toBeGreaterThanOrEqual(4.5)
@@ -217,13 +256,20 @@ describe('C3-R2A shell scroll + legacy table a11y markup', () => {
   })
 
   it('TasksTable selects have accessible names', () => {
-    expect(tasksTableSrc).toMatch(/aria-label="Filter by feature capability"/)
-    expect(tasksTableSrc).toMatch(/aria-label="Filter by next gate"/)
+    // id-ID primary chrome (i18n); keep EN alternates if a future string flip lands.
+    expect(tasksTableSrc).toMatch(
+      /aria-label="(?:Filter fitur kontrak|Filter by feature capability)"/,
+    )
+    expect(tasksTableSrc).toMatch(
+      /aria-label="(?:Filter gate berikutnya|Filter by next gate)"/,
+    )
   })
 
   it('TasksTable / FeaturesTable horizontal scrollports are focusable regions', () => {
-    expect(tasksTableSrc).toMatch(/className="table-scroll"/)
-    expect(tasksTableSrc).toMatch(/aria-label="Tasks table"/)
+    // TasksTable uses ui Table with named region; FeaturesTable retains table-scroll.
+    expect(tasksTableSrc).toMatch(
+      /aria-label="(?:Tabel tugas|Tasks table)"/,
+    )
     expect(tasksTableSrc).toMatch(/tabIndex=\{0\}/)
     expect(featuresTableSrc).toMatch(/className="table-scroll"/)
     expect(featuresTableSrc).toMatch(/aria-label="Features table"/)
@@ -244,7 +290,10 @@ describe('C3-R2A shell scroll + legacy table a11y markup', () => {
 describe('C3-R2A visual density / empty-filter contracts', () => {
   it('decisions diagnostics use compact disclosed details', () => {
     expect(decisionsScreenSrc).toMatch(/decisions-diagnostics/)
-    expect(decisionsScreenSrc).toMatch(/diagDetails|Projection gaps/)
+    // id-ID primary copy; EN / legacy class names still accepted.
+    expect(decisionsScreenSrc).toMatch(
+      /diagDetails|Projection gaps|Celah proyeksi/,
+    )
     expect(decisionsCss).toMatch(/\.bannerCompact/)
   })
 

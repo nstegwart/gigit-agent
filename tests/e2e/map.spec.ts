@@ -44,7 +44,7 @@ test.describe('Dependency map (/map)', () => {
     // chip, so the first real per-project chip is index 1.
     const projectChips = page.locator('.filters button.fbtn')
     const allProjectsChip = projectChips.first()
-    await expect(allProjectsChip).toHaveText('All projects')
+    await expect(allProjectsChip).toHaveText('Semua proyek')
 
     const projectChip = projectChips.nth(1)
     const projectName = (await projectChip.textContent())?.trim()

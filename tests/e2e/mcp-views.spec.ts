@@ -479,8 +479,8 @@ test.describe('Ops view (UI) — /b/mfs-rebuild/ops', () => {
     await expect(page.getByTestId('control-center-ops-route')).toBeVisible()
     const surface = page.getByTestId('control-center-ops')
     await expect(surface).toBeVisible()
-    // Page title is bilingual ("Ops / Accounts · Operasi / Akun"); screen h1 is monoline.
-    await expect(surface.getByRole('heading', { level: 1, name: 'Ops / Accounts' })).toBeVisible()
+    // Page title may be bilingual in shell; screen h1 is id-ID monoline.
+    await expect(surface.getByRole('heading', { level: 1, name: 'Operasi / Akun' })).toBeVisible()
 
     const state = await surface.getAttribute('data-surface-state')
     expect(

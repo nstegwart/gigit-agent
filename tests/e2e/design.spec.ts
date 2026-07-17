@@ -4,7 +4,7 @@ test.describe('design view', () => {
   test('shows design docs links', async ({ page }) => {
     await page.goto('/b/ibils/design')
 
-    await expect(page.locator('.sec-head h2', { hasText: 'Design docs' })).toBeVisible()
+    await expect(page.locator('.sec-head h2', { hasText: 'Dokumen desain' })).toBeVisible()
 
     const docLinks = page.locator('.link-list a')
     await expect(docLinks.first()).toBeVisible()

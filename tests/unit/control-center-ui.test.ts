@@ -36,18 +36,28 @@ import {
   envelopeError,
   envelopeForbidden,
   envelopePinIdentity,
+  humanDisplayEntityKey,
+  livePinFromControlCenter,
   maskAccountForUi,
+  measureWireBytes,
+  OVERVIEW_MATERIAL_EVENTS_PAGE_SIZE,
+  projectAgents,
   projectAllSurfaces,
   projectDecisions,
   projectDecisionUiRow,
+  projectFeatures,
   projectOps,
   projectOverview,
+  projectOwnerHumanDisplayUi,
   projectPriority,
   projectWork,
   stripSensitiveFields,
+  toListWireOwnerHumanDisplay,
   type ControlCenterPin,
   type ControlCenterTaskInput,
+  type OwnerHumanDisplayUiProjection,
 } from '#/server/control-center-ui'
+import { toBoardShell } from '#/server/board'
 
 const PIN_TUPLE: PinnedRevisionTuple = {
   canonicalSnapshotId: 'snap-cc-ui-1',
@@ -1218,5 +1228,361 @@ describe('partial / stale surface states', () => {
     expect(projectOverview(staleAgg).surfaceState).toBe('stale')
     expect(projectOverview(staleAgg).stale).toBe(true)
     expect(projectOverview(staleAgg).staleReason).toBe('ACCOUNT_SYNC_STALE')
+  })
+})
+
+describe('W-PERF-1 list-wire payload reduction (program-emitted bytes)', () => {
+  function fatHumanDisplay(entityId: string) {
+    return {
+      schemaVersion: 'TM_HUMAN_DISPLAY_V1' as const,
+      locale: 'id-ID',
+      title: `Owner title for ${entityId} — ${'hasil terukur '.repeat(8)}`,
+      outcome: 'Outcome '.repeat(20),
+      why: 'Why matters '.repeat(20),
+      current: 'Current state '.repeat(20),
+      remaining: 'Remaining '.repeat(15),
+      next: 'Next action '.repeat(15),
+      doneWhen: 'Done when '.repeat(15),
+      blocker: 'Blocker '.repeat(15),
+      ownerAction: 'Owner action '.repeat(15),
+      reviewStatus: 'REVIEWED' as const,
+      sourceHash: 'a'.repeat(64),
+      reviewedAt: '2026-07-13T10:00:00.000Z',
+      contentVersion: 2,
+      entityKind: 'task' as const,
+      entityId,
+      parentFeatureTitle: 'Parent feature '.repeat(4),
+      businessArea: 'Sales / Web',
+      actor: 'Owner',
+      snapshotId: PIN.canonicalSnapshotId,
+      boardRev: PIN.boardRev,
+      lifecycleRev: PIN.lifecycleRev,
+      canonicalHash: PIN.canonicalHash,
+      citations: Array.from({ length: 6 }, (_, i) => ({
+        field: 'title',
+        path: `CONTRACT/data/tasks.json#${entityId}-${i}`,
+        note: 'citation note '.repeat(6),
+      })),
+      acceptanceLinks: Array.from({ length: 4 }, (_, i) => ({
+        id: `ac-${i}`,
+        path: `/acceptance/${entityId}/${i}`,
+        summary: 'acceptance '.repeat(8),
+      })),
+      missionQuestionLinks: Array.from({ length: 4 }, (_, i) => ({
+        questionId: `Q${i + 1}`,
+        field: 'title',
+        note: 'mission '.repeat(6),
+      })),
+    }
+  }
+
+  it('toListWireOwnerHumanDisplay drops nested primary+full shell bloat and keeps flat fields', () => {
+    const full = projectOwnerHumanDisplayUi(
+      fatHumanDisplay('T-PERF-1'),
+      livePinFromControlCenter(PIN),
+      { entityKind: 'task', entityId: 'T-PERF-1' },
+    )
+    const list = toListWireOwnerHumanDisplay(full, 'T-PERF-1')
+    const fullB = measureWireBytes(full)
+    const listB = measureWireBytes(list)
+    // Flat fields preserved for mapOwnerHumanDisplayView consumers.
+    expect(list.ownerPrimaryTitle).toBe(full.ownerPrimaryTitle)
+    expect(list.statusSentence).toBe(full.statusSentence)
+    expect(list.contentReviewRequired).toBe(full.contentReviewRequired)
+    expect(list.primary).toBeNull()
+    expect(list.citations.length).toBe(full.citations.length)
+    expect(list.acceptanceLinks).toEqual([])
+    expect(list.missionQuestionLinks).toEqual([])
+    expect(listB).toBeLessThan(fullB)
+    // Fat nested primary + links dropped; citations retained for overview list chrome.
+    expect(listB / fullB).toBeLessThan(0.75)
+    // Program-emitted measurement (also logged for receipt).
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify({
+        metric: 'W-PERF-1_ownerHumanDisplay_wire',
+        fullBytes: fullB,
+        listBytes: listB,
+        savedBytes: fullB - listB,
+        ratio: Number((listB / fullB).toFixed(4)),
+      }),
+    )
+  })
+
+  it('overview/work/agents envelopes shrink vs fat nested HD; overview bounds events + empty membership ids', () => {
+    const n = 80
+    const tasks = Array.from({ length: n }, (_, i) =>
+      productTask(`T-P${i}`, i % 5 === 0 ? 'ONGOING' : 'MAPPED', {
+        createdAt: `2026-07-13T10:${String(i % 60).padStart(2, '0')}:00.000Z`,
+        title: `Technical title ${i} `.repeat(4),
+      }),
+    )
+    const hdMap = new Map<string, OwnerHumanDisplayUiProjection>()
+    for (const t of tasks) {
+      const full = projectOwnerHumanDisplayUi(
+        fatHumanDisplay(t.taskId),
+        livePinFromControlCenter(PIN),
+        { entityKind: 'task', entityId: t.taskId },
+      )
+      hdMap.set(humanDisplayEntityKey('task', t.taskId), full)
+    }
+    const auditEvents = Array.from({ length: 120 }, (_, i) => ({
+      id: `ev-${i}`,
+      createdAt: `2026-07-13T09:${String(i % 60).padStart(2, '0')}:00.000Z`,
+      kind: 'lifecycle.advance',
+      actorId: 'agent-1',
+      subjectId: `T-P${i % n}`,
+      summary: `advanced event ${i} `.repeat(6),
+      materialHash: `mh-${i}`,
+      boardRev: 42,
+    }))
+    const features = Array.from({ length: 40 }, (_, i) => ({
+      id: `f-${i}`,
+      projectId: 'p1',
+      name: `Feature ${i}`,
+      phase: 'build',
+      flowBranch: 'open' as const,
+      taskCount: 3,
+      progressNodes: Array.from({ length: 8 }, (_, j) => ({
+        taskId: `T-P${(i * 8 + j) % n}`,
+        title: `Node title ${i}-${j} `.repeat(4),
+        lifecycleStage: 'MAPPED',
+        status: 'open',
+        blockedReason: null,
+        technicalTitle: `tech ${i}-${j}`,
+        contentReviewRequired: false,
+      })),
+      stageCounts: { MAPPED: 8 },
+      pageRoutes: ['/a', '/b', '/c'],
+      apiEndpoints: ['GET /x', 'POST /y'],
+      logicRules: ['rule1', 'rule2'],
+      styleContext: ['style'],
+      dataContext: ['data'],
+      geoVariants: ['ID'],
+      providerVariants: ['cleeng'],
+      sideEffectsReadback: ['side'],
+    }))
+    const runs = Array.from({ length: 60 }, (_, i) => ({
+      runId: `run-${i}`,
+      taskId: `T-P${i % n}`,
+      agentId: `a-${i}`,
+      role: 'impl',
+      model: 'm',
+      effort: 'h',
+      maskedAccount: 'acc_***9999',
+      status: 'RUNNING',
+      startedAt: `2026-07-13T11:${String(i % 60).padStart(2, '0')}:00.000Z`,
+      heartbeatAt: `2026-07-13T11:${String(i % 60).padStart(2, '0')}:30.000Z`,
+      materialProgressAt: `2026-07-13T11:${String(i % 60).padStart(2, '0')}:20.000Z`,
+      productiveSubstate: 'PRODUCTIVE' as const,
+      createdAt: `2026-07-13T11:${String(i % 60).padStart(2, '0')}:00.000Z`,
+      id: `run-${i}`,
+    }))
+
+    const base = aggregateControlCenter({
+      pin: PIN,
+      now: NOW,
+      tasks,
+      g5Domains: [],
+      features,
+      runs,
+      auditEvents,
+      projects: [{ id: 'p1', name: 'P', status: 'active', taskCount: n, doneCount: 0, blockedCount: 0 }],
+    })
+    // Inject fat HD map (simulates durable humanDisplay attachment).
+    const agg = { ...base, humanDisplayByEntityKey: hdMap }
+
+    // BEFORE baseline: fat nested HD on rows (legacy projector shape).
+    const beforeOngoing = agg.ongoing.map((o) => ({
+      ...o,
+      overlays: [...o.overlays],
+      ownerHumanDisplay: hdMap.get(humanDisplayEntityKey('task', o.taskId)) ?? null,
+    }))
+    const beforeWorkItems = agg.workRows.slice(0, 50).map((i) => ({
+      ...i,
+      overlays: [...i.overlays],
+      ownerHumanDisplay: hdMap.get(humanDisplayEntityKey('task', i.taskId)) ?? null,
+    }))
+    const afterOverviewTmp = projectOverview(agg)
+    const beforeOverviewLike = {
+      ...afterOverviewTmp.data,
+      ongoing: beforeOngoing,
+      materialEvents: auditEvents,
+      auditEvents,
+      priority: {
+        ...agg.priority,
+        membershipTaskIds: tasks.map((t) => t.taskId),
+      },
+    }
+    const beforeWorkLike = {
+      ...projectWork(agg, { pageSize: 50 }).data,
+      items: beforeWorkItems,
+    }
+    const beforeAgentsLike = {
+      ...projectAgents(agg, { pageSize: 50 }).data,
+      ongoing: beforeOngoing,
+    }
+    const beforeFeaturesLike = {
+      ...projectFeatures(agg, { pageSize: 50 }).data,
+      features: features.map((f) => ({ ...f })),
+    }
+
+    const afterOverview = projectOverview(agg)
+    const afterWork = projectWork(agg, { pageSize: 50 })
+    const afterAgents = projectAgents(agg, { pageSize: 50 })
+    const afterFeatures = projectFeatures(agg, { pageSize: 50 })
+
+    const beforeBytes = {
+      overview: measureWireBytes(beforeOverviewLike),
+      work: measureWireBytes(beforeWorkLike),
+      agents: measureWireBytes(beforeAgentsLike),
+      features: measureWireBytes(beforeFeaturesLike),
+    }
+    const afterBytes = {
+      overview: measureWireBytes(afterOverview.data),
+      work: measureWireBytes(afterWork.data),
+      agents: measureWireBytes(afterAgents.data),
+      features: measureWireBytes(afterFeatures.data),
+    }
+
+    // Shape-preserving list fields.
+    expect(afterWork.data.items.length).toBeGreaterThan(0)
+    expect(afterWork.data.items[0]!.ownerHumanDisplay?.ownerPrimaryTitle).toBeTruthy()
+    expect(afterWork.data.items[0]!.ownerHumanDisplay?.primary).toBeNull()
+    expect(afterOverview.data.priority.membershipTaskIds).toEqual([])
+    expect(afterOverview.data.materialEvents?.length ?? 0).toBeLessThanOrEqual(
+      OVERVIEW_MATERIAL_EVENTS_PAGE_SIZE,
+    )
+    expect(afterOverview.data.auditEvents?.length ?? 0).toBeLessThanOrEqual(
+      OVERVIEW_MATERIAL_EVENTS_PAGE_SIZE,
+    )
+    // Features catalog omits progressNodes; page items keep them.
+    expect(afterFeatures.data.features.every((f) => !f.progressNodes)).toBe(true)
+    expect(
+      afterFeatures.data.items.some(
+        (f) => Array.isArray(f.progressNodes) && f.progressNodes.length > 0,
+      ),
+    ).toBe(true)
+
+    expect(afterBytes.overview).toBeLessThan(beforeBytes.overview)
+    expect(afterBytes.work).toBeLessThan(beforeBytes.work)
+    // Agents shrinks when ongoing carries fat HD; runs-only pages stay equal (assert <=).
+    expect(afterBytes.agents).toBeLessThanOrEqual(beforeBytes.agents)
+    if (afterAgents.data.ongoing.length > 0) {
+      expect(afterBytes.agents).toBeLessThan(beforeBytes.agents)
+    }
+    expect(afterBytes.features).toBeLessThan(beforeBytes.features)
+
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify({
+        metric: 'W-PERF-1_surface_payload_bytes',
+        beforeBytes,
+        afterBytes,
+        savedBytes: {
+          overview: beforeBytes.overview - afterBytes.overview,
+          work: beforeBytes.work - afterBytes.work,
+          agents: beforeBytes.agents - afterBytes.agents,
+          features: beforeBytes.features - afterBytes.features,
+        },
+        totals: {
+          before:
+            beforeBytes.overview +
+            beforeBytes.work +
+            beforeBytes.agents +
+            beforeBytes.features,
+          after:
+            afterBytes.overview + afterBytes.work + afterBytes.agents + afterBytes.features,
+        },
+      }),
+    )
+  })
+
+  it('toBoardShell strips checklists/overlays and measures smaller than full board', () => {
+    const full = {
+      projects: Array.from({ length: 10 }, (_, i) => ({
+        id: `p${i}`,
+        nama: `Project ${i}`,
+        tracks: [`t${i}`],
+      })),
+      features: Array.from({ length: 100 }, (_, i) => ({
+        id: `f${i}`,
+        nama: `Feature ${i}`,
+        track: `t${i % 10}`,
+        fase: 'build',
+        checklist: Array.from({ length: 20 }, (_, j) => ({
+          text: `checklist item ${i}-${j} with long mapping prose `.repeat(6),
+          done: j % 2 === 0,
+        })),
+      })),
+      decisions: [],
+      log: [{ tanggal: '2026-07-13', teks: 'log' }],
+      queue: { now: [], next: [] },
+      runs: Array.from({ length: 200 }, (_, i) => ({
+        id: `r${i}`,
+        agent: `a${i}`,
+        status: i < 5 ? ('running' as const) : ('done' as const),
+        started: '2026-07-13T10:00:00.000Z',
+        updated: '2026-07-13T11:00:00.000Z',
+        model: 'm',
+        effort: 'medium',
+        task: `task ${i}`,
+        agentType: 'claude',
+        role: 'Worker',
+      })),
+      conventions: { brand: 'x', usage: Array.from({ length: 50 }, (_, i) => `u${i}`.repeat(20)) },
+      design: {
+        projects: {},
+        features: Object.fromEntries(
+          Array.from({ length: 50 }, (_, i) => [
+            `f${i}`,
+            [{ label: 'd', url: 'https://example.com/'.repeat(5) }],
+          ]),
+        ),
+      },
+      collab: {
+        comments: Object.fromEntries(
+          Array.from({ length: 30 }, (_, i) => [
+            `f${i}`,
+            [
+              {
+                id: `c${i}`,
+                featureId: `f${i}`,
+                author: 'a',
+                authorType: 'human' as const,
+                text: 'comment body '.repeat(40),
+                ts: '2026-07-13T10:00:00.000Z',
+              },
+            ],
+          ]),
+        ),
+        activity: Array.from({ length: 100 }, () => ({
+          ts: '2026-07-13T10:00:00.000Z',
+          actor: 'a',
+          kind: 'log',
+          text: 'activity '.repeat(20),
+        })),
+      },
+      updated: '2026-07-13',
+    }
+    const shell = toBoardShell(full as never)
+    const fullB = measureWireBytes(full)
+    const shellB = measureWireBytes(shell)
+    expect(shell.features.every((f) => (f.checklist ?? []).length === 0)).toBe(true)
+    expect(shell.conventions).toBeUndefined()
+    expect(shell.design).toBeUndefined()
+    expect(shell.collab).toBeUndefined()
+    expect(shellB).toBeLessThan(fullB)
+    expect(shellB / fullB).toBeLessThan(0.35)
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify({
+        metric: 'W-PERF-1_board_shell_bytes',
+        fullBoardBytes: fullB,
+        shellBoardBytes: shellB,
+        savedBytes: fullB - shellB,
+        ratio: Number((shellB / fullB).toFixed(4)),
+      }),
+    )
   })
 })

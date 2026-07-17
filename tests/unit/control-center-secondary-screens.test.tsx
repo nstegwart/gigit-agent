@@ -172,7 +172,7 @@ describe('projectsEnvelopeToProps + ProjectsScreen', () => {
     expect(rows[0].getAttribute('data-readiness-evidence-ok')).toBe('true')
     expect(within(rows[0]).getByText('62.5%')).toBeTruthy()
     expect(within(rows[0]).getByText('G4')).toBeTruthy()
-    expect(within(rows[0]).getByText('ok')).toBeTruthy()
+    expect(within(rows[0]).getByText('lolos')).toBeTruthy()
     const links = screen.getAllByTestId('project-detail-link')
     expect(links.some((a) => a.getAttribute('href') === '/b/mfs-rebuild/projects/p-sales')).toBe(
       true,

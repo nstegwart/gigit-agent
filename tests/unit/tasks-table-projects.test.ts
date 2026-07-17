@@ -29,6 +29,25 @@ describe('W-FIX-PROJECTS TasksTable titles', () => {
     ).toBe('Meditasi RN')
   })
 
+  it('W-CONTENT-3: id-ID humanTitle wins over English technical list title', () => {
+    expect(
+      resolveTaskDisplayTitle({
+        id: 'T-ANN-REG-FILTER',
+        title: 'Restore purchases + member history readback contract',
+        humanTitle: 'Penerima pengumuman filter tanggal registrasi',
+      }),
+    ).toBe('Penerima pengumuman filter tanggal registrasi')
+  })
+
+  it('falls back to cleaned title when humanTitle absent', () => {
+    expect(
+      resolveTaskDisplayTitle({
+        id: 'T-NO-HD',
+        title: 'Restore purchases + member history readback contract',
+      }),
+    ).toMatch(/Restore purchases/i)
+  })
+
   it('falls back to cleaned title, never bare placeholder', () => {
     expect(
       resolveTaskDisplayTitle({

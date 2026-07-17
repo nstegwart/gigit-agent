@@ -103,7 +103,7 @@ describe('decisionActionAvailability', () => {
     expect(a.canResolve).toBe(true)
     expect(a.canReject).toBe(true)
     expect(a.canSnooze).toBe(false)
-    expect(a.snoozeBlockedReason).toMatch(/Blocking/)
+    expect(a.snoozeBlockedReason).toMatch(/menghambat/)
   })
 
   it('ACKNOWLEDGED skips acknowledge; non-blocking can snooze', () => {
@@ -321,9 +321,9 @@ describe('DecisionCard interactive actions', () => {
     const card = screen.getByTestId('decision-card')
     expect(within(card).queryByTestId('decision-action-snooze')).toBeNull()
     expect(within(card).getByTestId('decision-action-snooze-blocked').textContent).toMatch(
-      /Snooze unavailable/,
+      /Tunda tidak tersedia/,
     )
-    expect(within(card).getByTestId('decision-snooze').textContent).toMatch(/Cannot hide/)
+    expect(within(card).getByTestId('decision-snooze').textContent).toMatch(/Tidak bisa disembunyikan/)
   })
 
   it('EXPIRED shows expired state and no mutation buttons', () => {
@@ -443,7 +443,7 @@ describe('DecisionsScreen action wiring + states', () => {
         })}
       />,
     )
-    expect(screen.getByTestId('decisions-forbidden').textContent).toMatch(/Forbidden/)
+    expect(screen.getByTestId('decisions-forbidden').textContent).toMatch(/Akses ditolak/)
     expect(screen.queryByTestId('decisions-list')).toBeNull()
   })
 
@@ -461,7 +461,7 @@ describe('DecisionsScreen action wiring + states', () => {
     )
     const alert = screen.getByTestId('decisions-error')
     expect(alert.textContent).toMatch(/FETCH_FAILED/)
-    within(alert).getByRole('button', { name: /Retry/i }).click()
+    within(alert).getByRole('button', { name: /Coba lagi/i }).click()
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 

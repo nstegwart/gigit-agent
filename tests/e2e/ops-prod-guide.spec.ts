@@ -77,7 +77,7 @@ test.describe('Ops / Accounts (control-center)', () => {
     const ops = page.getByTestId('control-center-ops')
     await expect(ops).toBeVisible()
     // Shell page-title is bilingual ("Ops / Accounts · Operasi / Akun"); screen h1 is exact.
-    await expect(ops.getByRole('heading', { level: 1, name: 'Ops / Accounts', exact: true })).toBeVisible()
+    await expect(ops.getByRole('heading', { level: 1, name: 'Operasi / Akun', exact: true })).toBeVisible()
     await expect(ops).toHaveAttribute('data-board-id', 'mfs-rebuild')
     await expect(ops).toHaveAttribute('data-surface-state', /.+/)
     await expect(page.getByTestId('ops-live')).toBeAttached()
@@ -85,7 +85,7 @@ test.describe('Ops / Accounts (control-center)', () => {
     // Must not regress to legacy vault DOM on this board.
     await expect(page.locator('.vault .vault-tile')).toHaveCount(0)
     await expect(page.locator('.account-grid .account-card')).toHaveCount(0)
-    await expect(page.getByRole('heading', { level: 2, name: 'Agent accounts' })).toHaveCount(0)
+    await expect(page.getByRole('heading', { level: 2, name: 'Akun agen' })).toHaveCount(0)
   })
 
   test('summary chips and account list are server-derived (no hardcoded vault 21/7/14)', async ({

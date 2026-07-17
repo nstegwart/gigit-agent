@@ -28,7 +28,7 @@ const SECTIONS: Array<{ label: string; urlPattern: RegExp; title: string }> = [
     title: 'Decisions · Keputusan',
   },
   // log + board have EN SECTION_TITLE only (no SECTION_TITLE_ID entry)
-  { label: 'Log', urlPattern: /\/b\/ibils\/log$/, title: 'Activity log' },
+  { label: 'Log', urlPattern: /\/b\/ibils\/log$/, title: 'Log aktivitas' },
   { label: 'Board', urlPattern: /\/b\/ibils\/?$/, title: 'Board' },
 ]
 

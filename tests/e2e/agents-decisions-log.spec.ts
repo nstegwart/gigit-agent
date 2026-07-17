@@ -56,12 +56,12 @@ test.describe('decisions view', () => {
   test('lists decision cards with D# ids', async ({ page }) => {
     await page.goto('/b/ibils/decisions')
 
-    // Batch-2 splits the page into "Open — waiting on you" and "Decided".
-    // Decided decisions render as DecisionCard (.decision) under the "Decided" head.
+    // Batch-2 splits the page into open/waiting and decided sections (id-ID).
+    // Decided decisions render as DecisionCard (.decision) under the decided head.
     const decidedSection = page.locator('.section', {
-      has: page.locator('.sec-head h2', { hasText: 'Decided' }),
+      has: page.locator('.sec-head h2', { hasText: 'Sudah diputuskan' }),
     })
-    await expect(decidedSection.locator('.sec-head h2')).toHaveText('Decided')
+    await expect(decidedSection.locator('.sec-head h2')).toHaveText('Sudah diputuskan')
 
     const count = Number(await decidedSection.locator('.sec-head .count').innerText())
     expect(count).toBeGreaterThan(0)
@@ -87,7 +87,7 @@ test.describe('log view', () => {
   test('renders a chronological activity timeline', async ({ page }) => {
     await page.goto('/b/ibils/log')
 
-    await expect(page.locator('.sec-head h2')).toHaveText('Activity log')
+    await expect(page.locator('.sec-head h2')).toHaveText('Log aktivitas')
 
     const count = Number(await page.locator('.sec-head .count').innerText())
     expect(count).toBeGreaterThan(0)

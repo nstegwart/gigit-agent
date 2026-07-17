@@ -96,7 +96,7 @@ describe('DecisionsScreen', () => {
     expect(root.getAttribute('data-blocking-count')).toBe('1')
     expect(root.getAttribute('data-needs-human')).toBe('true')
     expect(screen.getByTestId('decisions-needs-human')).toBeTruthy()
-    expect(screen.getByTestId('decisions-blocking-count').textContent).toMatch(/1 blocking/)
+    expect(screen.getByTestId('decisions-blocking-count').textContent).toMatch(/1 menghambat/)
   })
 
   it('shows honest partial slots when question/options/evidence missing', () => {
@@ -132,10 +132,10 @@ describe('DecisionsScreen', () => {
     )
     const card = screen.getByTestId('decision-card')
     expect(card.getAttribute('data-blocking')).toBe('true')
-    expect(within(card).getByTestId('decision-snooze').textContent).toMatch(/Cannot hide/)
+    expect(within(card).getByTestId('decision-snooze').textContent).toMatch(/Tidak bisa disembunyikan/)
     expect(within(card).queryByTestId('decision-action-snooze')).toBeNull()
     expect(within(card).getByTestId('decision-action-snooze-blocked').textContent).toMatch(
-      /Snooze unavailable/,
+      /Tunda tidak tersedia/,
     )
     expect(within(card).getByTestId('decision-action-acknowledge').tagName).toBe('BUTTON')
   })
@@ -175,7 +175,7 @@ describe('DecisionsScreen', () => {
     expect(within(card).getByText('Ship now?')).toBeTruthy()
     expect(within(card).getByText('Wait for G5')).toBeTruthy()
     expect(within(card).getByText('Ship')).toBeTruthy()
-    expect(within(card).getByText(/Tradeoff: risk/)).toBeTruthy()
+    expect(within(card).getByText(/Trade-off: risk/)).toBeTruthy()
     expect(within(card).getByTestId('decision-owner').textContent).toBe('owner-1')
     expect(within(card).getByTestId('decision-entity-rev').textContent).toBe('3')
     expect(within(card).getByTestId('decision-approval').textContent).toBe('appr-1')
@@ -295,7 +295,7 @@ describe('DecisionsScreen', () => {
         })}
       />,
     )
-    expect(screen.getByTestId('decisions-empty').textContent).toMatch(/Nothing waiting/)
+    expect(screen.getByTestId('decisions-empty').textContent).toMatch(/Tidak ada yang menunggu/)
     render(
       <DecisionsScreen
         {...baseProps({
@@ -306,7 +306,7 @@ describe('DecisionsScreen', () => {
         })}
       />,
     )
-    expect(screen.getAllByTestId('decisions-empty').at(-1)?.textContent).toMatch(/match the current filters/)
+    expect(screen.getAllByTestId('decisions-empty').at(-1)?.textContent).toMatch(/filter saat ini/)
   })
 
   it('error surface exposes field-linked retry', () => {
@@ -324,7 +324,7 @@ describe('DecisionsScreen', () => {
     const alert = screen.getByTestId('decisions-error')
     expect(alert.textContent).toMatch(/FETCH_FAILED/)
     expect(alert.textContent).toMatch(/upstream down/)
-    within(alert).getByRole('button', { name: /Retry/i }).click()
+    within(alert).getByRole('button', { name: /Coba lagi/i }).click()
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 

@@ -24,11 +24,18 @@ import type { RebuildLineageRecord } from '#/server/rebuild-lineage-store'
 import {
   RebuildDashboardScreen,
   RebuildSparkline,
+  classifyBlindspotMeta,
+  parseEvidenceLines,
+  parseGapsList,
+  verdictChipMeta,
 } from '#/components/control-center/rebuild'
 import {
+  rebuildBlindspotQueryKey,
+  rebuildBlindspotQueryOptions,
   rebuildQueryKey,
   rebuildQueryOptions,
 } from '#/lib/control-center-query'
+import type { RebuildBlindspotWire } from '#/server/control-center-rebuild-fns'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -302,6 +309,78 @@ describe('rebuild query options', () => {
     const opts = rebuildQueryOptions('mfs-rebuild', fetch)
     expect(opts.queryKey).toEqual(['control-center', 'rebuild', 'mfs-rebuild'])
   })
+
+  it('rebuildBlindspotQueryKey / rebuildBlindspotQueryOptions', () => {
+    expect(rebuildBlindspotQueryKey('mfs-rebuild', '  meditation  ')).toEqual([
+      'control-center',
+      'rebuild-blindspot',
+      'mfs-rebuild',
+      'meditation',
+    ])
+    const fetch = async () =>
+      ({
+        available: true,
+        term: 'meditation',
+        boardId: 'mfs-rebuild',
+        matchCount: 0,
+        primary_classification: 'STAGE1_ROW_BLINDSPOT',
+        matches: [],
+        related_feature_ids: [],
+        note_id: 'x',
+      }) satisfies RebuildBlindspotWire
+    const opts = rebuildBlindspotQueryOptions('mfs-rebuild', 'meditation', fetch)
+    expect(opts.queryKey).toEqual([
+      'control-center',
+      'rebuild-blindspot',
+      'mfs-rebuild',
+      'meditation',
+    ])
+    expect(opts.enabled).toBe(true)
+    const disabled = rebuildBlindspotQueryOptions('mfs-rebuild', '  ', fetch)
+    expect(disabled.enabled).toBe(false)
+  })
+})
+
+describe('blindspot classification labels id-ID', () => {
+  it('maps all five classifications to human labels + tones', () => {
+    expect(classifyBlindspotMeta('STAGE1_ROW_BLINDSPOT')).toMatchObject({
+      labelId: 'Tidak ada di peta — inventory kelewat',
+      tone: 'blocked',
+    })
+    expect(classifyBlindspotMeta('STAGE1_VARIANT_BLINDSPOT')).toMatchObject({
+      labelId: 'Varian tak ke-map',
+      tone: 'warn',
+    })
+    expect(classifyBlindspotMeta('STAGE2_NOT_IMPLEMENTED')).toMatchObject({
+      labelId: 'Terpetakan, belum dibangun',
+      tone: 'warn',
+    })
+    expect(classifyBlindspotMeta('STAGE2_PARTIAL')).toMatchObject({
+      labelId: 'Sebagian',
+      tone: 'warn',
+    })
+    expect(classifyBlindspotMeta('L2_FALSE_POSITIVE_OR_REGRESSION')).toMatchObject({
+      labelId: 'Diklaim beres tapi mungkin rusak — audit',
+      tone: 'blocked',
+    })
+  })
+
+  it('verdictChipMeta + parseGapsList + parseEvidenceLines', () => {
+    expect(verdictChipMeta('MAPPED_100').labelId).toBe('Terbukti')
+    expect(verdictChipMeta('PARTIAL').tone).toBe('warn')
+    expect(parseGapsList(JSON.stringify(['gap-a', 'gap-b']))).toEqual([
+      'gap-a',
+      'gap-b',
+    ])
+    expect(
+      parseEvidenceLines(
+        JSON.stringify([
+          { file: 'legacy/foo.php', line: 12 },
+          { path: 'src/bar.ts', line: 3, side: 'rebuild' },
+        ]),
+      ),
+    ).toEqual(['legacy/foo.php:12', 'rebuild · src/bar.ts:3'])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -369,7 +448,7 @@ describe('RebuildDashboardScreen', () => {
     expect(link.getAttribute('href')).toBe('/b/mfs-rebuild/fitur/FEAT-MEDITATION')
   })
 
-  it('blindspot tracer renders JSON panel from injectable fetcher', async () => {
+  it('blindspot tracer full UI: classification badge, matches, gaps, evidence, links', async () => {
     const data = projectRebuildDashboard({
       boardId: 'mfs-rebuild',
       parity: parityAvailable(),
@@ -384,9 +463,25 @@ describe('RebuildDashboardScreen', () => {
       boardId: 'mfs-rebuild',
       matchCount: 1,
       primary_classification: 'STAGE2_PARTIAL',
-      matches: [],
+      matches: [
+        {
+          task_id: 'T-MED-01',
+          classification: 'STAGE2_PARTIAL',
+          parity_verdict: 'PARTIAL',
+          origin: 'existing',
+          disposition: null,
+          feature_contract_id: 'FC-MED',
+          gaps: JSON.stringify(['missing rebuild anchor for timer']),
+          evidence_sample: JSON.stringify([
+            { file: 'legacy/meditation.php', line: 40 },
+            { file: 'src/meditation.ts', line: 12, side: 'rebuild' },
+          ]),
+          stage1_origin: 'existing',
+          task_title: 'Meditasi timer',
+        },
+      ],
       related_feature_ids: ['FEAT-MEDITATION'],
-      note_id: 'placeholder',
+      note_id: 'klasifikasi dari parity_verdict + origin',
     }))
 
     render(
@@ -398,16 +493,144 @@ describe('RebuildDashboardScreen', () => {
       />,
     )
 
+    expect(screen.getByTestId('rebuild-blindspot-input').getAttribute('placeholder')).toBe(
+      'Telusuri akar masalah fitur…',
+    )
+
     const input = screen.getByTestId('rebuild-blindspot-input')
     fireEvent.change(input, { target: { value: 'meditation' } })
     fireEvent.click(screen.getByTestId('rebuild-blindspot-submit'))
 
     await waitFor(() => {
       expect(onTrace).toHaveBeenCalledWith('meditation')
-      expect(screen.getByTestId('rebuild-blindspot-result').textContent).toMatch(
-        /STAGE2_PARTIAL/,
+      expect(screen.getByTestId('rebuild-blindspot-result')).toBeTruthy()
+    })
+
+    expect(screen.getByTestId('rebuild-blindspot-match-count').textContent).toMatch(/1 cocok/)
+    const primary = screen.getByTestId('rebuild-blindspot-primary-badge')
+    expect(primary.textContent).toBe('Sebagian')
+    expect(primary.getAttribute('data-tone')).toBe('warn')
+
+    expect(screen.getByTestId('rebuild-blindspot-match')).toBeTruthy()
+    expect(screen.getByTestId('rebuild-blindspot-class-badge').textContent).toBe('Sebagian')
+    expect(screen.getByTestId('rebuild-blindspot-verdict-chip').textContent).toBe('Sebagian')
+    expect(screen.getByTestId('rebuild-blindspot-gaps').textContent).toMatch(
+      /missing rebuild anchor/,
+    )
+    expect(screen.getByText('Meditasi timer')).toBeTruthy()
+
+    const taskLink = screen.getByTestId('rebuild-blindspot-task-link')
+    expect(taskLink.getAttribute('href')).toBe('/b/mfs-rebuild/tasks/T-MED-01')
+
+    const featLink = screen.getByTestId('rebuild-blindspot-feature-link')
+    expect(featLink.getAttribute('href')).toBe('/b/mfs-rebuild/fitur/FEAT-MEDITATION')
+
+    // evidence collapsible present
+    const evidence = screen.getByTestId('rebuild-blindspot-evidence')
+    expect(evidence.textContent).toMatch(/Bukti file:line/)
+    expect(evidence.textContent).toMatch(/legacy\/meditation\.php:40/)
+  })
+
+  it('blindspot tracer empty/no-match state id-ID (STAGE1_ROW_BLINDSPOT)', async () => {
+    const data = projectRebuildDashboard({
+      boardId: 'mfs-rebuild',
+      parity: parityAvailable(),
+      features: [],
+      maps: [],
+      lineage: [],
+    }) as RebuildDashboardAvailable
+
+    const onTrace = vi.fn(async (term: string) => ({
+      available: true,
+      term,
+      boardId: 'mfs-rebuild',
+      matchCount: 0,
+      primary_classification: 'STAGE1_ROW_BLINDSPOT',
+      matches: [],
+      related_feature_ids: [],
+      note_id:
+        'fitur/term ini TIDAK ADA di denominator lineage (inventory Stage-1 kelewat)',
+    }))
+
+    render(
+      <RebuildDashboardScreen
+        boardId="mfs-rebuild"
+        surfaceState="populated"
+        data={data}
+        onTraceBlindspot={onTrace}
+      />,
+    )
+
+    fireEvent.change(screen.getByTestId('rebuild-blindspot-input'), {
+      target: { value: 'xyz-absent' },
+    })
+    fireEvent.click(screen.getByTestId('rebuild-blindspot-submit'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('rebuild-blindspot-no-match')).toBeTruthy()
+    })
+    const empty = screen.getByTestId('rebuild-blindspot-no-match')
+    expect(empty.textContent).toMatch(/Tidak ada kecocokan/)
+    expect(empty.textContent).toMatch(/Tidak ada di peta — inventory kelewat/)
+    expect(screen.getByTestId('rebuild-blindspot-primary-badge').getAttribute('data-tone')).toBe(
+      'blocked',
+    )
+  })
+
+  it('blindspot red classifications for row blindspot + L2 false positive', async () => {
+    const data = projectRebuildDashboard({
+      boardId: 'mfs-rebuild',
+      parity: parityAvailable(),
+      features: [],
+      maps: [],
+      lineage: [],
+    }) as RebuildDashboardAvailable
+
+    const onTrace = vi.fn(async () => ({
+      available: true,
+      term: 'paywall',
+      boardId: 'mfs-rebuild',
+      matchCount: 1,
+      primary_classification: 'L2_FALSE_POSITIVE_OR_REGRESSION',
+      matches: [
+        {
+          task_id: 'T-PAY-1',
+          classification: 'L2_FALSE_POSITIVE_OR_REGRESSION',
+          parity_verdict: 'MAPPED_100',
+          origin: null,
+          disposition: null,
+          feature_contract_id: null,
+          gaps: null,
+          evidence_sample: null,
+          stage1_origin: null,
+        },
+      ],
+      related_feature_ids: [],
+      note_id: 'audit',
+    }))
+
+    render(
+      <RebuildDashboardScreen
+        boardId="mfs-rebuild"
+        surfaceState="populated"
+        data={data}
+        onTraceBlindspot={onTrace}
+      />,
+    )
+    fireEvent.change(screen.getByTestId('rebuild-blindspot-input'), {
+      target: { value: 'paywall' },
+    })
+    fireEvent.click(screen.getByTestId('rebuild-blindspot-submit'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('rebuild-blindspot-class-badge').textContent).toBe(
+        'Diklaim beres tapi mungkin rusak — audit',
       )
     })
+    expect(screen.getByTestId('rebuild-blindspot-class-badge').getAttribute('data-tone')).toBe(
+      'blocked',
+    )
+    expect(screen.getByTestId('rebuild-blindspot-verdict-chip').textContent).toBe('Terbukti')
   })
 
   it('RebuildSparkline empty history', () => {
