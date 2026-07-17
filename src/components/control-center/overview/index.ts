@@ -1,4 +1,4 @@
-export { Overview } from './Overview'
+export { Overview, reconcileAuthenticatedOverviewProps } from './Overview'
 export { AppSummaryBar } from './AppSummaryBar'
 export { NeedsYourDecision } from './NeedsYourDecision'
 export { PriorityCard } from './PriorityCard'

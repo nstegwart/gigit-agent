@@ -7,14 +7,18 @@ import { useCallback, useMemo } from 'react'
 import { z } from 'zod'
 
 import { SearchScreen } from '#/components/control-center/search'
+import { safeBoardReturnHref } from '#/components/control-center/search/CommandSearch'
 import { boardQueryOptions, useBoardId } from '#/lib/board-query'
 import { coerceControlCenterSearchString } from '#/lib/control-center-search'
 import { searchEnvelopeToViewModel } from '#/lib/control-center-route-adapters'
-import type { PinnedEnvelope } from '#/lib/control-center-query'
 import { getControlCenterSearchFn } from '#/server/control-center-ui-fns'
 
 const searchSchema = z.object({
-  q: z.preprocess((v) => coerceControlCenterSearchString(v), z.string().optional()),
+  q: z.preprocess(
+    (v) => coerceControlCenterSearchString(v),
+    z.string().optional(),
+  ),
+  returnTo: z.string().startsWith('/').max(2048).optional(),
 })
 
 export const Route = createFileRoute('/b/$boardId/search')({
@@ -38,12 +42,14 @@ function SearchRoute() {
     queryKey: ['control-center', 'search', boardId, q],
     queryFn: async () => {
       const wire = await getControlCenterSearchFn({ data: { boardId, q } })
-      return wire as PinnedEnvelope<unknown>
+      return wire
     },
   })
 
   const onRetry = useCallback(() => {
-    void qc.invalidateQueries({ queryKey: ['control-center', 'search', boardId, q] })
+    void qc.invalidateQueries({
+      queryKey: ['control-center', 'search', boardId, q],
+    })
   }, [qc, boardId, q])
 
   const vm = useMemo(
@@ -52,11 +58,24 @@ function SearchRoute() {
   )
 
   const surfaceState =
-    query.isLoading && !query.data ? 'loading' : query.isError ? 'error' : vm.surfaceState
+    query.isLoading && !query.data
+      ? 'loading'
+      : query.isError
+        ? 'error'
+        : vm.surfaceState
 
   return (
     <div className="wrap" data-testid="control-center-search-route">
-      <SearchScreen {...vm} surfaceState={surfaceState} onRetry={onRetry} />
+      <SearchScreen
+        {...vm}
+        surfaceState={surfaceState}
+        onRetry={onRetry}
+        returnHref={
+          search.returnTo
+            ? safeBoardReturnHref(boardId, search.returnTo)
+            : undefined
+        }
+      />
     </div>
   )
 }

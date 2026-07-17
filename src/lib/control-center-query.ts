@@ -383,7 +383,19 @@ export function createDefaultControlCenterFetchers(): ControlCenterFetchers {
   return {
     overview: async ({ boardId }) => {
       const { getControlCenterOverviewFn } = await import('#/server/control-center-ui-fns')
-      return asPinned<OverviewData>(await getControlCenterOverviewFn({ data: { boardId } }))
+      const { attachAdaptiveMappingToEnvelope } = await import('#/lib/mapping-envelope-attach')
+      const envelope = asPinned<OverviewData>(
+        await getControlCenterOverviewFn({ data: { boardId } }),
+      )
+      try {
+        const { loadBoardAdaptiveMappingSurface } = await import(
+          '#/server/mapping-version-loader'
+        )
+        const surface = await loadBoardAdaptiveMappingSurface(boardId)
+        return attachAdaptiveMappingToEnvelope(envelope, surface.mappingVersion)
+      } catch {
+        return envelope
+      }
     },
     work: async ({ boardId, bucket, overlay, staleFamily, cursor, pageSize }) => {
       const { getControlCenterWorkFn } = await import('#/server/control-center-ui-fns')

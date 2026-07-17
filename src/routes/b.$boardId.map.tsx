@@ -1,11 +1,9 @@
-// Dependency map route — typed React port of the prototype dependency graph view.
-// Renders every feature's unlocks-after DAG via <WireGraph>, with project filter
-// chips (reusing `.filters`/`.fbtn`) and a legend explaining edge colors.
+// Peta ketergantungan — ART-022 interactive flow dengan filter proyek dan legenda id-ID.
 import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 
 import { boardQueryOptions, useBoard } from '#/lib/board-query'
-import { WireGraph } from '#/components/WireGraph'
+import { DependencyFlow } from '#/components/control-center/dependency'
 
 export const Route = createFileRoute('/b/$boardId/map')({
   loader: async ({ context, params }) => {
@@ -24,9 +22,12 @@ function MapView() {
     <div className="wrap">
       <section className="section">
         <div className="sec-head">
-          <h2>Dependency map</h2>
+          <h2>Peta ketergantungan</h2>
           <span className="count">{features.length}</span>
         </div>
+        <p className="sec-lead" style={{ marginBottom: 12, fontSize: 14, color: 'var(--text-muted)' }}>
+          Alur kiri→kanan menunjukkan prasyarat fitur. Ini progres pemetaan — bukan kesiapan produksi.
+        </p>
         <div className="wire-legend">
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <span
@@ -46,16 +47,16 @@ function MapView() {
                 borderTop: '1.6px dashed var(--blocked)',
               }}
             />
-            blocked
+            terhambat
           </span>
-          <span>left→right = unlocks-after</span>
+          <span>kiri→kanan = prasyarat selesai dulu</span>
         </div>
         <div className="filters">
           <button
             className={`fbtn ${projectFilter === '' ? 'on' : ''}`}
             onClick={() => setProjectFilter('')}
           >
-            All projects
+            Semua proyek
           </button>
           {m.projects.map((p) => (
             <button
@@ -67,7 +68,7 @@ function MapView() {
             </button>
           ))}
         </div>
-        <WireGraph features={features} />
+        <DependencyFlow features={features} />
       </section>
     </div>
   )

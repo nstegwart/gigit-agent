@@ -6,12 +6,16 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useState } from 'react'
 
 import { ActivityFeed } from '#/components/ActivityFeed'
-import { KpiStrip, type KpiItem } from '#/components/KpiStrip'
+import { KpiStrip } from '#/components/KpiStrip'
+import type { KpiItem } from '#/components/KpiStrip'
 import { ProjectCard } from '#/components/ProjectCard'
 import { QueueCard } from '#/components/QueueCard'
 import { RunCard } from '#/components/RunCard'
 import { EmptyState } from '#/components/primitives'
-import { Overview } from '#/components/control-center/overview'
+import {
+  Overview,
+  reconcileAuthenticatedOverviewProps,
+} from '#/components/control-center/overview'
 import {
   boardQueryOptions,
   useBoard,
@@ -21,21 +25,60 @@ import {
 } from '#/lib/board-query'
 import {
   getDefaultControlCenterFetchers,
+  agentsQueryOptions,
   isControlCenterBoard,
   overviewQueryOptions,
+  workQueryOptions,
 } from '#/lib/control-center-query'
 import { overviewEnvelopeToProps } from '#/lib/control-center-route-adapters'
 import { Icon } from '#/lib/icons'
 import { uiStore } from '#/store/ui'
 import type { PrimaryBucket } from '#/lib/control-plane-types'
 
+type OverviewEnvelopeInput = Parameters<typeof overviewEnvelopeToProps>[0]
+type OverviewAdapterOptions = Parameters<typeof overviewEnvelopeToProps>[1]
+type AuthenticatedWorkInput = Parameters<
+  typeof reconcileAuthenticatedOverviewProps
+>[2]
+type AuthenticatedAgentsInput = Parameters<
+  typeof reconcileAuthenticatedOverviewProps
+>[3]
+
+/** Pure route composition used by runtime and route-level regression tests. */
+export function buildAuthenticatedOverviewProps(
+  overview: OverviewEnvelopeInput,
+  work: AuthenticatedWorkInput,
+  agents: AuthenticatedAgentsInput,
+  opts: OverviewAdapterOptions = {},
+) {
+  return reconcileAuthenticatedOverviewProps(
+    overviewEnvelopeToProps(overview, opts),
+    overview,
+    work,
+    agents,
+  )
+}
+
 export const Route = createFileRoute('/b/$boardId/')({
   loader: async ({ context, params }) => {
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
     if (isControlCenterBoard(params.boardId)) {
-      await context.queryClient.ensureQueryData(
-        overviewQueryOptions(params.boardId, getDefaultControlCenterFetchers().overview),
-      )
+      const fetchers = getDefaultControlCenterFetchers()
+      await Promise.all([
+        context.queryClient.ensureQueryData(
+          overviewQueryOptions(params.boardId, fetchers.overview),
+        ),
+        context.queryClient.ensureQueryData(
+          workQueryOptions(
+            params.boardId,
+            { bucket: 'ONGOING', pageSize: 50 },
+            fetchers.work,
+          ),
+        ),
+        context.queryClient.ensureQueryData(
+          agentsQueryOptions(params.boardId, { pageSize: 100 }, fetchers.agents),
+        ),
+      ])
     }
   },
   component: View,
@@ -52,7 +95,6 @@ function View() {
   // adaptive: boards without a 'board' view land on their first enabled view
   if (!views.includes('board')) {
     const first = views.find((v) => v !== 'board') ?? 'tasks'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return <Navigate {...({ to: `/b/$boardId/${first}`, params: { boardId }, replace: true } as any)} />
   }
   return <BoardHome />
@@ -69,9 +111,23 @@ function ControlCenterOverview() {
   const onPillCollapse = useCallback(() => setPillCollapsed(true), [])
   const fetchers = getDefaultControlCenterFetchers()
   const q = useQuery(overviewQueryOptions(boardId, fetchers.overview))
+  const ongoingWork = useQuery(
+    workQueryOptions(
+      boardId,
+      { bucket: 'ONGOING', pageSize: 50 },
+      fetchers.work,
+    ),
+  )
+  const agents = useQuery(
+    agentsQueryOptions(boardId, { pageSize: 100 }, fetchers.agents),
+  )
 
   const onRetry = useCallback(() => {
-    void qc.invalidateQueries({ queryKey: ['control-center', 'overview', boardId] })
+    void Promise.all([
+      qc.invalidateQueries({ queryKey: ['control-center', 'overview', boardId] }),
+      qc.invalidateQueries({ queryKey: ['control-center', 'work', boardId] }),
+      qc.invalidateQueries({ queryKey: ['control-center', 'agents', boardId] }),
+    ])
   }, [qc, boardId])
 
   const onSelectBucket = useCallback(
@@ -113,16 +169,16 @@ function ControlCenterOverview() {
     const rows = (q.data?.data as { lifecycle?: Array<{ stage?: string; count?: number }> } | null)
       ?.lifecycle
     if (!Array.isArray(rows) || rows.length === 0) return null
-    const mv = rows.find((r) => r?.stage === 'MAP_VERIFIED')
-    const mapped = rows.find((r) => r?.stage === 'MAPPED')
-    const total = rows.reduce((s, r) => s + (typeof r?.count === 'number' ? r.count : 0), 0)
+    const mv = rows.find((r) => r.stage === 'MAP_VERIFIED')
+    const mapped = rows.find((r) => r.stage === 'MAPPED')
+    const total = rows.reduce((s, r) => s + (typeof r.count === 'number' ? r.count : 0), 0)
     const mvN = typeof mv?.count === 'number' ? mv.count : 0
     const mappedN = typeof mapped?.count === 'number' ? mapped.count : 0
     if (total <= 0) return null
     return `MAP_VERIFIED ${mvN}/${total} · MAPPED ${mappedN}`
   })()
 
-  const props = overviewEnvelopeToProps(q.data, {
+  const props = buildAuthenticatedOverviewProps(q.data, ongoingWork.data, agents.data, {
     boardLabel: boardMeta?.name,
     liveStage: liveStageFromLifecycle ?? 'mfs-rebuild control center',
     transport: q.isError ? 'offline' : 'online',
@@ -137,7 +193,7 @@ function ControlCenterOverview() {
 
   // Loading surface when no data yet
   const surfaceProps =
-    q.isLoading && !q.data
+    q.isLoading
       ? { ...props, surfaceState: 'loading' as const }
       : props
 

@@ -1,0 +1,283 @@
+/* Task detail — scoped CSS module (P1-VISUAL). Design tokens only; no layout inline styles. */
+
+.root {
+  --td-surface: var(--surface, #ffffff);
+  --td-surface-2: var(--surface-2, #f4f6f9);
+  --td-border: var(--border, #e4e8ee);
+  --td-text: var(--text, #171a21);
+  --td-text-dim: var(--text-dim, #58616f);
+  --td-text-faint: #4a5568;
+  --td-accent: var(--accent, #6d5efc);
+  --td-warn: #8a5200;
+  --td-warn-bg: rgba(138, 82, 0, 0.12);
+  --td-blocked: #c62828;
+  --td-blocked-bg: rgba(198, 40, 40, 0.12);
+  --td-radius: var(--r-md, 12px);
+  --td-touch: 44px;
+  --td-mono: var(--mono, ui-monospace, monospace);
+
+  color: var(--td-text);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4, 16px);
+  min-width: 0;
+  width: min(100%, 48rem);
+}
+
+/* ---- header ---- */
+
+.pageHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2, 8px);
+  min-width: 0;
+  padding-bottom: var(--sp-3, 12px);
+  border-bottom: 1px solid var(--td-border);
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--td-text-faint);
+}
+
+.pageTitle {
+  margin: 0;
+  font-size: clamp(1.25rem, 2.5vw, 1.5rem);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  color: var(--td-text);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.statusSentence {
+  margin: 0;
+  color: var(--td-text-dim);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  max-width: 68ch;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2, 8px);
+  align-items: center;
+  margin-top: var(--sp-1, 4px);
+}
+
+.linkBtn,
+.modeLink,
+.retryBtn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--td-touch);
+  min-width: var(--td-touch);
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--td-border);
+  background: var(--td-surface);
+  color: var(--td-accent);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.linkBtn:focus-visible,
+.modeLink:focus-visible,
+.retryBtn:focus-visible {
+  outline: 2px solid var(--td-accent);
+  outline-offset: 2px;
+}
+
+.linkBtn:hover,
+.modeLink:hover {
+  border-color: var(--td-accent);
+  background: color-mix(in srgb, var(--td-accent) 8%, var(--td-surface));
+}
+
+.modeLinkActive {
+  border-color: color-mix(in srgb, var(--td-accent) 40%, var(--td-border));
+  background: color-mix(in srgb, var(--td-accent) 10%, var(--td-surface));
+  color: var(--td-accent);
+}
+
+.retryBtn {
+  border-color: var(--td-accent);
+  background: var(--td-accent);
+  color: #fff;
+}
+
+/* ---- body ---- */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3, 12px);
+  min-width: 0;
+}
+
+.reviewBadge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px;
+  min-height: 28px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--td-warn-bg);
+  color: var(--td-warn);
+  border: 1px solid color-mix(in srgb, var(--td-warn) 30%, transparent);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+.ownerField {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--td-text-dim);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.ownerFieldLabel {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--td-text-faint);
+  margin-bottom: 0.15rem;
+}
+
+.ownerAction {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--r-sm, 8px);
+  background: var(--warn-bg, var(--td-warn-bg));
+  border: 1px solid color-mix(in srgb, var(--td-warn) 34%, var(--td-border));
+  font-size: 0.9rem;
+  color: var(--td-text);
+  overflow-wrap: anywhere;
+}
+
+.ownerAction .ownerFieldLabel {
+  color: var(--td-text-faint);
+}
+
+/* ---- technical disclosure / mode ---- */
+
+.technicalDisclosure {
+  margin: 0;
+  color: var(--td-text-dim);
+  font-size: 0.85rem;
+  border: 1px solid var(--td-border);
+  border-radius: var(--td-radius);
+  background: var(--td-surface-2);
+  padding: 4px 12px 8px;
+}
+
+.technicalDisclosure > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--td-touch);
+  cursor: pointer;
+  color: var(--td-text-dim);
+  font-weight: 650;
+  list-style: none;
+}
+
+.technicalDisclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.technicalDisclosure > summary:focus-visible {
+  outline: 2px solid var(--td-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.technicalPanel {
+  margin: 0;
+  padding: var(--sp-2, 8px) 0 var(--sp-1, 4px);
+}
+
+.technicalGrid {
+  display: grid;
+  grid-template-columns: minmax(7rem, 10rem) minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.technicalGrid dt {
+  margin: 0;
+  font-weight: 650;
+  color: var(--td-text-faint);
+}
+
+.technicalGrid dd {
+  margin: 0;
+  font-family: var(--td-mono);
+  font-size: 0.78rem;
+  color: var(--td-text);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.technicalGrid code {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* expanded technical mode (mode=technical) */
+.technicalExpanded {
+  margin: 0;
+  padding: var(--sp-3, 12px) var(--sp-4, 16px);
+  border: 1px solid var(--td-border);
+  border-radius: var(--td-radius);
+  background: var(--td-surface-2);
+}
+
+.technicalExpandedTitle {
+  margin: 0 0 var(--sp-2, 8px);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--td-text-faint);
+}
+
+/* ---- banners / pin ---- */
+
+.errorBanner {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--td-radius);
+  border: 1px solid color-mix(in srgb, var(--td-blocked) 40%, var(--td-border));
+  background: var(--td-blocked-bg);
+  color: var(--td-text);
+  font-size: 0.9rem;
+}
+
+.pinFooter {
+  margin: 0;
+  padding-top: var(--sp-3, 12px);
+  border-top: 1px solid var(--td-border);
+  font-size: 0.75rem;
+  color: var(--td-text-faint);
+  font-family: var(--td-mono);
+  overflow-wrap: anywhere;
+}

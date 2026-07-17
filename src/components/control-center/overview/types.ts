@@ -11,6 +11,7 @@ import type {
   RollupV3BucketCounts,
   StaleOverlayKind,
 } from '#/lib/control-plane-types'
+import type { MappingVersionBannerView } from '#/lib/mapping-version-view'
 
 /** UI_CONTRACT §5 surface states. */
 export type OverviewSurfaceState =
@@ -57,6 +58,11 @@ export interface OverviewAppSummary {
   lifecycleRev?: number
   canonicalSnapshotId?: string | null
   canonicalHash?: string | null
+  /**
+   * Adaptive mapping version + live progress (addendum B).
+   * mappingIsNotReadiness is always true — never treat as delivery readiness.
+   */
+  mappingVersion?: MappingVersionBannerView | null
 }
 
 /** Envelope pin for DOM data attrs — never invent. */

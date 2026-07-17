@@ -6,7 +6,9 @@ import styles from './priority.module.css'
  * Never averages or re-derives denominators client-side.
  * Labels are id-ID primary; technical field names stay on title / Detail teknis.
  */
-export function PriorityDenominatorsPanel(props: PriorityRollupDenominatorsProps) {
+export function PriorityDenominatorsPanel(
+  props: PriorityRollupDenominatorsProps,
+) {
   const {
     productDenominator,
     trackedWorkDenominator,
@@ -33,28 +35,36 @@ export function PriorityDenominatorsPanel(props: PriorityRollupDenominatorsProps
       </header>
 
       {emptyProduct ? (
-        <p className={styles.warnLine} role="status" data-testid="priority-empty-product-scope">
-          Belum ada tugas produk pada cakupan ini, jadi kesiapan belum dapat dihitung dan
-          ditampilkan sebagai <strong>N/A</strong> — tidak pernah dibulatkan menjadi 100% atau
-          lolos dari cakupan kosong.
+        <div
+          className={styles.warnLine}
+          role="status"
+          data-testid="priority-empty-product-scope"
+        >
+          Belum ada tugas produk pada cakupan ini, jadi kesiapan belum dapat
+          dihitung dan ditampilkan sebagai <strong>N/A</strong> — tidak pernah
+          dibulatkan menjadi 100% atau lolos dari cakupan kosong.
           <details className={styles.details}>
             <summary className={styles.detailsSummary}>Detail teknis</summary>
             <code>
-              productDenominator=0 — readiness must stay null / N-A; complete must stay false
-              (never 100% / PASS from empty scope).
+              productDenominator=0 — readiness must stay null / N-A; complete
+              must stay false (never 100% / PASS from empty scope).
             </code>
           </details>
-        </p>
+        </div>
       ) : null}
 
       <dl className={styles.statGrid}>
         <div className={styles.stat}>
           <dt title="productDenominator">Penyebut produk</dt>
-          <dd data-testid="priority-product-denominator">{productDenominator}</dd>
+          <dd data-testid="priority-product-denominator">
+            {productDenominator}
+          </dd>
         </div>
         <div className={styles.stat}>
           <dt title="trackedWorkDenominator">Penyebut pekerjaan terlacak</dt>
-          <dd data-testid="priority-tracked-denominator">{trackedWorkDenominator}</dd>
+          <dd data-testid="priority-tracked-denominator">
+            {trackedWorkDenominator}
+          </dd>
         </div>
         <div className={styles.stat}>
           <dt title="stageProdReady">Tahap PROD_READY</dt>
@@ -62,7 +72,9 @@ export function PriorityDenominatorsPanel(props: PriorityRollupDenominatorsProps
         </div>
         <div className={styles.stat}>
           <dt title="prodReadyWithEvidence">PROD_READY dengan bukti</dt>
-          <dd data-testid="priority-prod-ready-evidence">{prodReadyWithEvidence}</dd>
+          <dd data-testid="priority-prod-ready-evidence">
+            {prodReadyWithEvidence}
+          </dd>
         </div>
         <div className={styles.stat}>
           <dt title="unclassifiedCount">Jumlah belum terklasifikasi</dt>

@@ -1,10 +1,17 @@
 // Control-center Evidence / Audit — material events from pinned aggregation.
 // Existing /log remains the compatibility activity timeline.
+// Page-layout-only: deep-link query `?evidence=` opens the ART-017 drawer.
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 
 import { BoardLink } from '#/components/BoardLink'
+import {
+  EvidenceDrawer,
+  encodeEvidenceDeepLink,
+  materialEventToDrawerModel,
+  parseEvidenceDeepLink,
+} from '#/components/control-center/evidence'
 import { pinnedSurfaceDataAttrs } from '#/components/control-center/PinnedSurface'
 import { boardQueryOptions, useBoardId } from '#/lib/board-query'
 import {
@@ -14,8 +21,21 @@ import {
 import { evidenceEnvelopeToViewModel } from '#/lib/control-center-route-adapters'
 import { parseControlCenterCursorSearch } from '#/lib/control-center-search'
 
+function parseEvidenceRouteSearch(search: unknown) {
+  const cursor = parseControlCenterCursorSearch(search)
+  const raw =
+    search && typeof search === 'object' && !Array.isArray(search)
+      ? (search as Record<string, unknown>)
+      : {}
+  const evidence = parseEvidenceDeepLink(raw)
+  return {
+    ...cursor,
+    ...(evidence ? { evidence } : {}),
+  }
+}
+
 export const Route = createFileRoute('/b/$boardId/evidence')({
-  validateSearch: (search) => parseControlCenterCursorSearch(search),
+  validateSearch: (search) => parseEvidenceRouteSearch(search),
   loader: async ({ context, params, location }) => {
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
     const search = parseControlCenterCursorSearch(location.search)
@@ -57,6 +77,39 @@ function EvidenceRoute() {
     })
   }, [navigate, q.data?.nextCursor])
 
+  const openEvidence = useCallback(
+    (evidenceId: string) => {
+      void navigate({
+        search: (prev) =>
+          encodeEvidenceDeepLink(
+            {
+              cursor: typeof prev.cursor === 'string' ? prev.cursor : undefined,
+              pageSize:
+                typeof prev.pageSize === 'string' ? prev.pageSize : undefined,
+            },
+            evidenceId,
+          ),
+        replace: true,
+      })
+    },
+    [navigate],
+  )
+
+  const closeEvidence = useCallback(() => {
+    void navigate({
+      search: (prev) =>
+        encodeEvidenceDeepLink(
+          {
+            cursor: typeof prev.cursor === 'string' ? prev.cursor : undefined,
+            pageSize:
+              typeof prev.pageSize === 'string' ? prev.pageSize : undefined,
+          },
+          null,
+        ),
+      replace: true,
+    })
+  }, [navigate])
+
   const vm = evidenceEnvelopeToViewModel(q.data)
   const loading = q.isLoading && !q.data
   const pinAttrs = pinnedSurfaceDataAttrs(
@@ -69,6 +122,48 @@ function EvidenceRoute() {
         }
       : null,
   )
+
+  const deepEvidenceId =
+    typeof search.evidence === 'string' ? search.evidence : null
+  const selectedEvent = useMemo(
+    () =>
+      deepEvidenceId
+        ? (vm.events.find((e) => e.id === deepEvidenceId) ?? null)
+        : null,
+    [deepEvidenceId, vm.events],
+  )
+  const drawerModel = useMemo(
+    () =>
+      selectedEvent
+        ? materialEventToDrawerModel(selectedEvent, vm.pin)
+        : deepEvidenceId
+          ? {
+              id: deepEvidenceId,
+              proofSummary: 'Bukti tidak ada di pin halaman ini.',
+              claimSupported: 'Klaim tidak dapat ditampilkan tanpa peristiwa pin.',
+              verifier: null,
+              verifiedAt: null,
+              freshness: null,
+              revision: null,
+              snapshotId: vm.pin?.canonicalSnapshotId ?? null,
+              sourceAnchor: deepEvidenceId,
+              sourceHref: null,
+              warnings: [
+                {
+                  kind: 'stale' as const,
+                  message:
+                    'ID bukti di tautan dalam tidak cocok dengan peristiwa pin saat ini.',
+                },
+              ],
+              rawReceipt: null,
+              citationText: deepEvidenceId,
+            }
+          : null,
+    [selectedEvent, deepEvidenceId, vm.pin],
+  )
+  const deepLinkHref = deepEvidenceId
+    ? `/b/${encodeURIComponent(boardId)}/evidence?evidence=${encodeURIComponent(deepEvidenceId)}`
+    : null
 
   return (
     <div className="wrap" data-testid="control-center-evidence-route">
@@ -147,6 +242,15 @@ function EvidenceRoute() {
                 ) : null}
               </div>
               <div className="tl-text">{ev.summary || '—'}</div>
+              <button
+                type="button"
+                className="btn"
+                data-testid={`evidence-open-${ev.id}`}
+                onClick={() => openEvidence(ev.id)}
+                style={{ marginTop: 6, minHeight: 44 }}
+              >
+                Buka bukti
+              </button>
             </li>
           ))}
         </ul>
@@ -169,6 +273,13 @@ function EvidenceRoute() {
           </div>
         ) : null}
       </section>
+
+      <EvidenceDrawer
+        open={deepEvidenceId != null}
+        model={drawerModel}
+        onClose={closeEvidence}
+        deepLinkHref={deepLinkHref}
+      />
     </div>
   )
 }

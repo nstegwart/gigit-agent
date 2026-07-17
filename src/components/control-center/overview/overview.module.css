@@ -1,5 +1,10 @@
-/* C3 Overview — scoped module. Tokens from global :root design system.
-   Local AA contrast overrides: global --text-faint #98a1af fails 2.6:1 on white. */
+/*
+ * Written visual authority: ART-UX-DIRECTION.md
+ * SHA-256: 4eca14e115223ca4be02ec767dca0a32fb3e104dc4a512ebbc99374f93cddcee
+ * Source type: pinned written art direction; no Figma node was supplied.
+ * Overview narrative order: position, priority, ongoing, next, decision, buckets.
+ * Values added by PKT-06 use the existing global token system only.
+ */
 
 .root {
   --cc-text-faint: #58616f;
@@ -256,6 +261,107 @@
   color: var(--cc-blocked, var(--blocked));
 }
 
+.appBarPrimary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  width: 100%;
+}
+
+.appBarFreshness {
+  min-width: 0;
+}
+
+.mappingBanner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.75rem;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--r-sm);
+  border: 1px solid color-mix(in srgb, var(--info) 28%, var(--border));
+  background: color-mix(in srgb, var(--info) 6%, var(--surface));
+  font-size: 0.8125rem;
+  line-height: 1.35;
+}
+
+.mappingBannerLabel {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--cc-text-faint, #4a5568);
+}
+
+.mappingBannerValue {
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+}
+
+.mappingBannerMeta {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.mappingBannerStale {
+  font-weight: 600;
+  color: var(--cc-warn, var(--warn));
+}
+
+.mappingBannerNote {
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.techDisclosure {
+  width: 100%;
+  margin-top: 0.15rem;
+}
+
+.techDisclosureSummary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  list-style: none;
+}
+
+.techDisclosureSummary::-webkit-details-marker {
+  display: none;
+}
+
+.pinDetailList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.35rem 1rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.pinDetailRow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.pinDetailRow dt {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cc-text-faint, #4a5568);
+}
+
+.pinDetailRow dd {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
 /* ----- cards ----- */
 .card {
   border: 1px solid var(--border);
@@ -267,7 +373,9 @@
 
 .cardElevated {
   border-color: var(--blocked);
-  box-shadow: 0 0 0 1px var(--blocked-bg), var(--shadow-sm);
+  box-shadow:
+    0 0 0 1px var(--blocked-bg),
+    var(--shadow-sm);
 }
 
 .cardTitle {
@@ -703,11 +811,19 @@
 /* ----- priority / global pair ----- */
 .priorityGlobal {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: var(--sp-4);
 }
 
 /* ----- buckets ----- */
+.bucketIntro {
+  max-width: 48rem;
+  margin: 0 0 var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--type-secondary-size);
+  line-height: var(--type-secondary-line);
+}
+
 .bucketStrip {
   display: flex;
   flex-wrap: wrap;
@@ -719,6 +835,52 @@
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
+}
+
+.integrityRail {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-4);
+  margin-top: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--reconcile);
+  border-radius: var(--r-md);
+  background: var(--reconcile-bg);
+  color: var(--text);
+}
+
+.integrityCopy {
+  min-width: 0;
+}
+
+.integrityTitle {
+  margin: 0 0 var(--sp-1);
+  color: var(--reconcile);
+  font-size: var(--type-secondary-size);
+  line-height: var(--type-secondary-line);
+  font-weight: 600;
+}
+
+.integrityCopy p {
+  margin: 0;
+  max-width: 48rem;
+  color: var(--text-dim);
+  font-size: var(--type-secondary-size);
+  line-height: var(--type-secondary-line);
+}
+
+.integrityActions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.integrityBtn {
+  background: var(--surface);
 }
 
 .bucketBtn {
@@ -898,8 +1060,11 @@
 .chip {
   display: inline-flex;
   align-items: center;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
   gap: 0.25rem;
   padding: 0.2rem 0.5rem;
+  box-sizing: border-box;
   border-radius: 999px;
   background: var(--surface-2);
   border: 1px solid var(--border-soft);
@@ -907,6 +1072,12 @@
   color: var(--text-dim);
   max-width: 100%;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chip > strong {
+  min-width: 0;
+  max-width: 100%;
   overflow-wrap: anywhere;
 }
 
@@ -963,7 +1134,7 @@
   background: var(--warn-bg);
 }
 
-/* pulse only when productive and motion allowed */
+/* Stable shape cue: productive status never pulses or steals attention. */
 .pulseDot {
   width: 0.5rem;
   height: 0.5rem;
@@ -973,25 +1144,7 @@
 }
 
 .pulseDotLive {
-  animation: ovPulse 1.6s ease-in-out infinite;
-}
-
-@keyframes ovPulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.45;
-    transform: scale(0.85);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .pulseDotLive {
-    animation: none;
-  }
+  opacity: 1;
 }
 
 .hollowDot {
@@ -1059,31 +1212,8 @@
 .skelBlock {
   height: 4.5rem;
   border-radius: var(--r-md);
-  background: linear-gradient(
-    90deg,
-    var(--surface-2) 0%,
-    var(--surface-3) 50%,
-    var(--surface-2) 100%
-  );
-  background-size: 200% 100%;
-  animation: ovShimmer 1.4s ease-in-out infinite;
+  background: var(--surface-2);
   border: 1px solid var(--border-soft);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .skelBlock {
-    animation: none;
-    background: var(--surface-2);
-  }
-}
-
-@keyframes ovShimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -100% 0;
-  }
 }
 
 .emptySlot {
@@ -1119,8 +1249,33 @@
 
 /* mobile order matches UI_CONTRACT §4 (DOM already ordered; tighten stack) */
 @media (max-width: 768px) {
+  .ongoingCard,
+  .ongoingTop,
+  .ongoingTitleBlock,
+  .ongoingMeta,
+  .ages {
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .chipMono {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   .priorityGlobal {
     grid-template-columns: 1fr;
+  }
+
+  .integrityRail {
+    grid-template-columns: 1fr;
+  }
+
+  .integrityActions {
+    justify-content: flex-start;
   }
 
   .stickyPill {

@@ -1,6 +1,8 @@
 /**
  * Public unauthenticated feature detail with real progress nodes.
  * Source: allowlisted /api/public-snapshot only — no board session.
+ * Title presentation policy (ADDENDUM C) applied in FeatureDetailScreen.
+ * Pin/boardRev/STALE live under "Detail teknis" (W-UI-QW D.3).
  */
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useState } from 'react'

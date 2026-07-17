@@ -5,6 +5,7 @@ import type { SearchResultViewModel } from '#/lib/control-center-route-adapters'
 
 export type SearchScreenProps = SearchResultViewModel & {
   onRetry?: () => void
+  returnHref?: string
   className?: string
 }
 
@@ -16,6 +17,7 @@ export function SearchScreen({
   pin,
   error,
   onRetry,
+  returnHref,
   className,
 }: SearchScreenProps) {
   return (
@@ -27,13 +29,23 @@ export function SearchScreen({
       data-query={query}
     >
       <header style={{ marginBottom: 16 }}>
-        <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: 0 }}>Pencarian</p>
-        <h1 style={{ fontSize: 22, margin: '4px 0 8px' }} data-testid="search-title">
+        <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: 0 }}>
+          Pencarian
+        </p>
+        <h1
+          style={{ fontSize: 22, margin: '4px 0 8px' }}
+          data-testid="search-title"
+        >
           Hasil pencarian
         </h1>
         <p data-testid="search-query">
           Kueri: <strong>{query || '(kosong)'}</strong>
         </p>
+        {returnHref ? (
+          <a href={returnHref} data-testid="search-return-context">
+            Kembali ke konteks sebelumnya
+          </a>
+        ) : null}
         {onRetry ? (
           <button type="button" onClick={onRetry} data-testid="search-retry">
             Muat ulang
@@ -72,14 +84,21 @@ export function SearchScreen({
                 <span data-field="title">{r.title}</span>
               </a>
               {r.subtitle ? (
-                <span data-field="subtitle" style={{ marginLeft: 8, color: 'var(--text-muted)' }}>
+                <span
+                  data-field="subtitle"
+                  style={{ marginLeft: 8, color: 'var(--text-muted)' }}
+                >
                   {r.subtitle}
                 </span>
               ) : null}
               {r.technicalAlias ? (
                 <code
                   data-field="technical-alias"
-                  style={{ marginLeft: 8, fontSize: 12, color: 'var(--text-faint)' }}
+                  style={{
+                    marginLeft: 8,
+                    fontSize: 12,
+                    color: 'var(--text-faint)',
+                  }}
                 >
                   {r.technicalAlias}
                 </code>

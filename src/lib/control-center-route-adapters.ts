@@ -17,7 +17,6 @@ import {
 } from '#/lib/control-center-query'
 import type {
   OverviewProps,
-  OverviewSurfaceState,
   DecisionSeverity,
 } from '#/components/control-center/overview'
 import type {
@@ -34,15 +33,58 @@ import type {
   DecisionItemView,
   DecisionSeverity as DecisionsSeverity,
 } from '#/components/control-center/decisions'
-import { G5_DOMAIN_LABELS, G5_REQUIRED_DOMAINS } from '#/lib/control-plane-types'
-import type { G5DomainId } from '#/lib/control-plane-types'
+import {
+  G5_DOMAIN_LABELS,
+  G5_REQUIRED_DOMAINS,
+  type G5DomainId,
+} from '#/lib/control-plane-types'
 import { sectionErrorHumanSentence } from '#/lib/section-error-copy'
 import {
   knowledgeConflictSourcesFromRaw,
   knowledgeRedactionsFromRaw,
 } from '#/lib/control-center-secondary-route-adapters'
+import {
+  extractMappingVersionWire,
+  mappingVersionWireToBanner,
+  type MappingVersionBannerView,
+} from '#/lib/mapping-version-view'
 
 const SEVERITIES = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
+
+/**
+ * Resolve adaptive mapping banner from envelope / data.mappingVersion when present.
+ * Mapping progress is never readiness (addendum B).
+ * Accepts any pinned envelope (Overview or mapping-attached) — only pin + mappingVersion are read.
+ */
+export function resolveOverviewMappingBanner(
+  envelope: PinnedEnvelope<unknown> | null | undefined,
+): MappingVersionBannerView | null {
+  if (!envelope) return null
+  const fromEnv = extractMappingVersionWire(envelope)
+  if (fromEnv) return mappingVersionWireToBanner(fromEnv)
+  if (envelope.data) {
+    const fromData = extractMappingVersionWire({ mappingVersion: (envelope.data as { mappingVersion?: unknown }).mappingVersion })
+    if (fromData) return mappingVersionWireToBanner(fromData)
+  }
+  // Fallback: pin + freshness only (denominator unknown until mappingVersion is wired server-side)
+  if (envelope.canonicalSnapshotId || envelope.canonicalHash) {
+    return mappingVersionWireToBanner({
+      schemaVersion: envelope.schemaVersion ?? null,
+      knownSchema: true,
+      snapshotId: envelope.canonicalSnapshotId || null,
+      canonicalHash: envelope.canonicalHash || null,
+      boardRev: typeof envelope.boardRev === 'number' ? envelope.boardRev : null,
+      lifecycleRev: typeof envelope.lifecycleRev === 'number' ? envelope.lifecycleRev : null,
+      freshnessAgeSeconds: envelope.freshnessAgeSeconds,
+      stale: envelope.stale,
+      staleReason: envelope.staleReason,
+      dynamicDenominator: 0,
+      mode: 'FULL',
+      mappingIsNotReadiness: true,
+    })
+  }
+  return null
+}
 
 function asSeverity(v: string | null | undefined): DecisionSeverity {
   if (v && SEVERITIES.has(v)) return v as DecisionSeverity
@@ -249,9 +291,9 @@ export function overviewEnvelopeToProps(
   } = {},
 ): OverviewProps {
   const surfaceState = resolveClientSurfaceState(
-    envelope as PinnedEnvelope<unknown> | null | undefined,
+    envelope,
     opts.transport,
-  ) as OverviewSurfaceState
+  )
 
   if (!envelope || !envelope.data) {
     return {
@@ -354,6 +396,8 @@ export function overviewEnvelopeToProps(
     (d.overlays.STALE_DISPATCH_PLAN ?? 0) +
     (d.overlays.STALE_ACCOUNT_SYNC ?? 0)
 
+  const mappingBanner = resolveOverviewMappingBanner(envelope)
+
   return {
     surfaceState,
     appSummary: {
@@ -370,6 +414,9 @@ export function overviewEnvelopeToProps(
       lifecycleRev: envelope.lifecycleRev,
       canonicalSnapshotId: envelope.canonicalSnapshotId,
       canonicalHash: envelope.canonicalHash,
+      // Adaptive mapping surface (P2). Optional for P1 visual banner consumption.
+      // mappingIsNotReadiness is always true — never treat as delivery readiness.
+      mappingVersion: mappingBanner,
     },
     pin: {
       canonicalSnapshotId: envelope.canonicalSnapshotId || null,
@@ -617,9 +664,9 @@ export function workEnvelopeToProps(
   },
 ): WorkScreenProps {
   const state = resolveClientSurfaceState(
-    envelope as PinnedEnvelope<unknown> | null | undefined,
+    envelope,
     opts.transport,
-  ) as WorkScreenProps['state']
+  )
 
   if (!envelope || !envelope.data) {
     return {
@@ -807,9 +854,9 @@ export function priorityEnvelopeToProps(
   } = {},
 ): PriorityScreenProps {
   const uiState = resolveClientSurfaceState(
-    envelope as PinnedEnvelope<unknown> | null | undefined,
+    envelope,
     opts.transport,
-  ) as PriorityScreenProps['uiState']
+  )
 
   if (!envelope || !envelope.data) {
     return {
@@ -1025,9 +1072,9 @@ export function decisionsEnvelopeToProps(
   } = {},
 ): DecisionsScreenProps {
   const surfaceState = resolveClientSurfaceState(
-    envelope as PinnedEnvelope<unknown> | null | undefined,
+    envelope,
     opts.transport,
-  ) as DecisionsScreenProps['surfaceState']
+  )
 
   if (!envelope || !envelope.data) {
     return {
@@ -1132,7 +1179,7 @@ export function evidenceEnvelopeToViewModel(
   if (!envelope || !envelope.data) {
     return {
       surfaceState: resolveClientSurfaceState(
-        envelope as PinnedEnvelope<unknown> | null | undefined,
+        envelope,
       ),
       boardId: envelope?.boardId ?? '',
       events: [],
@@ -1248,7 +1295,7 @@ export function taskDetailEnvelopeToViewModel(
 
   if (!envelope || envelope.data == null) {
     const surfaceState = resolveClientSurfaceState(
-      envelope as PinnedEnvelope<unknown> | null | undefined,
+      envelope,
     )
     return {
       surfaceState:
@@ -1365,8 +1412,8 @@ export function decisionDetailFromEnvelope(
   if (!envelope || !envelope.data) {
     return {
       surfaceState: resolveClientSurfaceState(
-        envelope as PinnedEnvelope<unknown> | null | undefined,
-      ) as DecisionDetailViewModel['surfaceState'],
+        envelope,
+      ),
       boardId: opts.boardId,
       decisionId: opts.decisionId,
       item: null,
@@ -1467,7 +1514,7 @@ export type KnowledgeDomainViewModel = {
   redactions: ReadonlyArray<{
     fieldPath: string
     reason: string
-    hiddenScope: string | null
+    hiddenScope: string
   }>
   knowledgeState: string | null
   lastValidGeneratedAt: string | null
@@ -1524,7 +1571,7 @@ export function knowledgeDomainEnvelopeToViewModel(
   if (!envelope || envelope.data == null) {
     return {
       surfaceState: resolveClientSurfaceState(
-        envelope as PinnedEnvelope<unknown> | null | undefined,
+        envelope,
       ),
       boardId: opts.boardId,
       domain: opts.domain,
@@ -1666,7 +1713,7 @@ export function searchEnvelopeToViewModel(
   if (!envelope || envelope.data == null) {
     return {
       surfaceState: resolveClientSurfaceState(
-        envelope as PinnedEnvelope<unknown> | null | undefined,
+        envelope,
       ),
       boardId: opts.boardId,
       query: opts.query,
@@ -1682,7 +1729,7 @@ export function searchEnvelopeToViewModel(
     ? (raw.results as SearchResultViewModel['results'])
     : []
   const q = opts.query.trim()
-  let surfaceState = envelope.surfaceState as SearchResultViewModel['surfaceState']
+  let surfaceState = envelope.surfaceState
   if (q.length > 0 && results.length === 0 && surfaceState === 'populated') {
     surfaceState = 'zero-results'
   }
@@ -1738,7 +1785,7 @@ export function documentationDomainEnvelopeToViewModel(
   if (!envelope || envelope.data == null) {
     return {
       surfaceState: resolveClientSurfaceState(
-        envelope as PinnedEnvelope<unknown> | null | undefined,
+        envelope,
       ),
       boardId: opts.boardId,
       domain: opts.domain,

@@ -13,6 +13,7 @@ import { Route as WorkRouteImport } from './routes/work'
 import { Route as SearchRouteImport } from './routes/search'
 import { Route as McpRouteImport } from './routes/mcp'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as HealthzRouteImport } from './routes/healthz'
 import { Route as DecisionsRouteImport } from './routes/decisions'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as WorkTaskIdRouteImport } from './routes/work.$taskId'
@@ -69,6 +70,11 @@ const McpRoute = McpRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HealthzRoute = HealthzRouteImport.update({
+  id: '/healthz',
+  path: '/healthz',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DecisionsRoute = DecisionsRouteImport.update({
@@ -266,6 +272,7 @@ const BBoardIdDocumentationDomainsDomainRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/decisions': typeof DecisionsRouteWithChildren
+  '/healthz': typeof HealthzRoute
   '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
   '/search': typeof SearchRoute
@@ -309,6 +316,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/decisions': typeof DecisionsRouteWithChildren
+  '/healthz': typeof HealthzRoute
   '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
   '/search': typeof SearchRoute
@@ -349,6 +357,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/decisions': typeof DecisionsRouteWithChildren
+  '/healthz': typeof HealthzRoute
   '/login': typeof LoginRoute
   '/mcp': typeof McpRoute
   '/search': typeof SearchRoute
@@ -394,6 +403,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/decisions'
+    | '/healthz'
     | '/login'
     | '/mcp'
     | '/search'
@@ -437,6 +447,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/decisions'
+    | '/healthz'
     | '/login'
     | '/mcp'
     | '/search'
@@ -476,6 +487,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/decisions'
+    | '/healthz'
     | '/login'
     | '/mcp'
     | '/search'
@@ -520,6 +532,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DecisionsRoute: typeof DecisionsRouteWithChildren
+  HealthzRoute: typeof HealthzRoute
   LoginRoute: typeof LoginRoute
   McpRoute: typeof McpRoute
   SearchRoute: typeof SearchRoute
@@ -562,6 +575,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/healthz': {
+      id: '/healthz'
+      path: '/healthz'
+      fullPath: '/healthz'
+      preLoaderRoute: typeof HealthzRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/decisions': {
@@ -941,6 +961,7 @@ const PublicFeaturesRouteWithChildren = PublicFeaturesRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DecisionsRoute: DecisionsRouteWithChildren,
+  HealthzRoute: HealthzRoute,
   LoginRoute: LoginRoute,
   McpRoute: McpRoute,
   SearchRoute: SearchRoute,

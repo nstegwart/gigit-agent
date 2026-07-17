@@ -2,10 +2,16 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { useStore } from '@tanstack/react-store'
 import { useEffect, useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
+import type {
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from 'react'
 
 import { BoardLink } from '#/components/BoardLink'
 import { UserMenu } from '#/components/UserMenu'
+import { CommandSearch } from '#/components/control-center/search/CommandSearch'
 import { BrandMark, Icon } from '#/lib/icons'
 import type { IconName } from '#/lib/icons'
 import {
@@ -13,6 +19,7 @@ import {
   useBoardId,
   useBoardViews,
   useBoards,
+  useMe,
 } from '#/lib/board-query'
 import { fmtDate } from '#/lib/format'
 import {
@@ -126,8 +133,8 @@ const NAV: Array<NavItem | { sep: true; label: string }> = [
 /**
  * Nine primary IA destinations for control-center boards (UI_CONTRACT §2).
  * Exact English label order for mfs-rebuild (and any control-center board).
- * id-ID human aliases are aria/title only — nine IA remains reachable.
- * Task/map/design/log remain reachable as drill-downs / compatibility paths.
+ * PRIMARY chrome is id-ID (CONTROL_CENTER_NAV_LABELS_ID); EN stays on title/aria
+ * and data-nav-label-en. Task/map/design/log remain drill-downs.
  */
 export const CONTROL_CENTER_NAV_LABELS = [
   'Overview',
@@ -141,7 +148,7 @@ export const CONTROL_CENTER_NAV_LABELS = [
   'Evidence / Audit',
 ] as const
 
-/** id-ID human chrome aliases (ART); never replaces CONTROL_CENTER_NAV_LABELS order. */
+/** id-ID primary chrome labels (W-UI-QW D.4 / SPEC §0.4). EN remains on title/aria. */
 export const CONTROL_CENTER_NAV_LABELS_ID: Record<
   (typeof CONTROL_CENTER_NAV_LABELS)[number],
   string
@@ -150,11 +157,11 @@ export const CONTROL_CENTER_NAV_LABELS_ID: Record<
   Work: 'Pekerjaan',
   Priority: 'Prioritas',
   Projects: 'Proyek',
-  'Features / Flows': 'Fitur / Alur',
-  'Agents / Runs': 'Agen / Run',
-  'Ops / Accounts': 'Operasi / Akun',
+  'Features / Flows': 'Fitur',
+  'Agents / Runs': 'Agen',
+  'Ops / Accounts': 'Operasi',
   Decisions: 'Keputusan',
-  'Evidence / Audit': 'Bukti / Audit',
+  'Evidence / Audit': 'Bukti',
 }
 
 const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
@@ -258,15 +265,121 @@ const SECTION_TITLE_ID: Record<string, string> = {
   work: 'Pekerjaan',
   priority: 'Prioritas',
   projects: 'Proyek',
-  features: 'Fitur / Alur',
-  agents: 'Agen / Run',
-  ops: 'Operasi / Akun',
+  features: 'Fitur',
+  agents: 'Agen',
+  ops: 'Operasi',
   decisions: 'Keputusan',
-  evidence: 'Bukti / Audit',
+  evidence: 'Bukti',
   knowledge: 'Pengetahuan',
   search: 'Pencarian',
   documentation: 'Dokumentasi',
   tasks: 'Tugas',
+  map: 'Peta',
+  log: 'Log',
+}
+
+/** Preserve the classic shell's global filter producer outside control-center boards. */
+export function LegacyShellSearch({
+  onSearchChange = setSearch,
+}: {
+  onSearchChange?: typeof setSearch
+}) {
+  const search = useStore(uiStore, (state) => state.search)
+  return (
+    <div className="search" data-testid="legacy-shell-search">
+      <Icon name="search" />
+      <input
+        value={search}
+        onChange={(event) => onSearchChange(event.target.value)}
+        placeholder="Search features, agents…"
+        autoComplete="off"
+        aria-label="Search features and agents"
+      />
+    </div>
+  )
+}
+
+/**
+ * Compatibility routes still filter legacy tables through uiStore.search even on a
+ * control-center board. Mirror palette typing only on those routes so the palette
+ * remains the single visible search control everywhere.
+ */
+export function isControlCenterCompatibilitySearchPath(path: string): boolean {
+  return (
+    path === '/log' ||
+    path.startsWith('/log/') ||
+    path === '/tasks' ||
+    path.startsWith('/tasks/') ||
+    /^\/projects\/[^/]+(?:\/|$)/.test(path)
+  )
+}
+
+export function ControlCenterShellSearch({
+  boardId,
+  currentHref,
+  currentPath,
+  role,
+  onNavigate,
+}: {
+  boardId: string
+  currentHref: string
+  currentPath: string
+  role: 'admin' | 'member'
+  onNavigate?: (href: string) => void
+}) {
+  const bridgeCompatibilitySearch =
+    isControlCenterCompatibilitySearchPath(currentPath)
+  const clearCompatibilitySearch = () => {
+    if (bridgeCompatibilitySearch) setSearch('')
+  }
+  const onChangeCapture = (event: FormEvent<HTMLDivElement>) => {
+    if (!bridgeCompatibilitySearch) return
+    const target = event.target
+    if (
+      target instanceof HTMLInputElement &&
+      target.id === 'command-palette-input'
+    ) {
+      setSearch(target.value)
+    }
+  }
+  const onKeyDownCapture = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape' || event.key === 'Enter') {
+      clearCompatibilitySearch()
+    }
+  }
+  const onClickCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target
+    if (
+      target instanceof Element &&
+      target.closest('.command-palette-close, [data-command-id]')
+    ) {
+      clearCompatibilitySearch()
+    }
+  }
+
+  useEffect(() => {
+    setSearch('')
+    return () => setSearch('')
+  }, [currentPath])
+
+  return (
+    <div
+      style={{ display: 'contents' }}
+      onChangeCapture={onChangeCapture}
+      onKeyDownCapture={onKeyDownCapture}
+      onClickCapture={onClickCapture}
+      data-testid="control-center-shell-search"
+      data-compatibility-producer={bridgeCompatibilitySearch ? 'true' : 'false'}
+    >
+      <CommandSearch
+        key={currentPath}
+        boardId={boardId}
+        currentHref={currentHref}
+        role={role}
+        onNavigate={onNavigate}
+      />
+    </div>
+  )
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -274,7 +387,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const boardId = useBoardId()
   const views = useBoardViews()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
-  const search = useStore(uiStore, (s) => s.search)
+  const currentHref = useRouterState({ select: (s) => s.location.href })
+  const me = useMe()
   const controlCenter = isControlCenterBoard(boardId)
   const navSource = controlCenter ? CONTROL_CENTER_NAV : NAV
 
@@ -446,7 +560,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 aria-label={n.label}
                 title={
                   controlCenter && n.label in CONTROL_CENTER_NAV_LABELS_ID
-                    ? `${n.label} · ${CONTROL_CENTER_NAV_LABELS_ID[n.label as keyof typeof CONTROL_CENTER_NAV_LABELS_ID]}`
+                    ? `${CONTROL_CENTER_NAV_LABELS_ID[n.label as keyof typeof CONTROL_CENTER_NAV_LABELS_ID]} · ${n.label}`
                     : n.label
                 }
                 data-nav-id={n.id}
@@ -470,7 +584,8 @@ export function AppShell({ children }: { children: ReactNode }) {
                       }
                     </span>
                   ) : null}
-                  <span className="lbl">{n.label}</span>
+                  {/* EN secondary: sr-only on control-center (primary chrome = id-ID). */}
+                  <span className={controlCenter ? 'lbl sr-only' : 'lbl'}>{n.label}</span>
                 </span>
                 {n.count ? (
                   <span
@@ -504,22 +619,16 @@ export function AppShell({ children }: { children: ReactNode }) {
             )}
           </h1>
           <div className="topbar-spacer" />
-          <div className="search">
-            <Icon name="search" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={
-                controlCenter ? 'Cari fitur, agen…' : 'Search features, agents…'
-              }
-              autoComplete="off"
-              aria-label={
-                controlCenter
-                  ? 'Cari fitur dan agen'
-                  : 'Search features and agents'
-              }
+          {controlCenter && me ? (
+            <ControlCenterShellSearch
+              boardId={boardId}
+              currentHref={currentHref}
+              currentPath={sub}
+              role={me.role}
             />
-          </div>
+          ) : (
+            <LegacyShellSearch />
+          )}
           <UserMenu />
         </header>
         <main

@@ -389,7 +389,11 @@
   }
 }
 
-/* card reflow <=768 */
+/*
+ * Feature cards.
+ * Default: hidden on desktop (FeaturesScreen uses tableWrap); flex on <=768.
+ * .cardListAlways: public list always-on grid (W-UI-QW D.1 desktop bug fix).
+ */
 .cardList {
   display: none;
   list-style: none;
@@ -397,6 +401,24 @@
   padding: 0;
   flex-direction: column;
   gap: 12px;
+}
+
+.cardListAlways {
+  display: grid;
+  grid-template-columns: 1fr;
+  flex-direction: unset;
+}
+
+@media (min-width: 769px) {
+  .cardListAlways {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1100px) {
+  .cardListAlways {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .card {
@@ -409,6 +431,137 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Public list filter toolbar (W-UI-QW D.2) */
+.filterBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: center;
+}
+
+.searchInput {
+  min-height: var(--sec-touch);
+  flex: 1 1 220px;
+  max-width: 28rem;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--sec-border);
+  background: var(--sec-surface);
+  color: var(--sec-text);
+  font-size: 0.9rem;
+  line-height: 1.3;
+}
+
+.searchInput::placeholder {
+  color: var(--sec-text-faint);
+}
+
+.searchInput:focus-visible {
+  outline: 2px solid var(--sec-accent);
+  outline-offset: 2px;
+  border-color: color-mix(in srgb, var(--sec-accent) 40%, var(--sec-border));
+}
+
+.projectChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.projectChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--sec-border);
+  background: var(--sec-surface-2);
+  color: var(--sec-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.projectChip:focus-visible {
+  outline: 2px solid var(--sec-accent);
+  outline-offset: 2px;
+}
+
+.projectChipActive {
+  border-color: color-mix(in srgb, var(--sec-accent) 40%, var(--sec-border));
+  background: color-mix(in srgb, var(--sec-accent) 12%, var(--sec-surface));
+  color: var(--sec-accent);
+}
+
+/* Mini progress bar — §4.2 / §4.3 */
+.miniProgress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.miniProgressTrack {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sec-surface-2);
+  border: 1px solid var(--sec-border);
+  overflow: hidden;
+}
+
+.miniProgressFill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--sec-ok);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.miniProgressFillPartial {
+  background: var(--sec-warn);
+}
+
+.miniProgressFillEmpty {
+  background: var(--sec-text-faint);
+  opacity: 0.35;
+}
+
+.miniProgressMeta {
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--sec-text-dim);
+  line-height: 1.3;
+}
+
+.cardName {
+  margin: 0;
+  font-weight: 650;
+  font-size: 0.98rem;
+  letter-spacing: -0.01em;
+  color: var(--sec-text);
+  word-break: break-word;
+  min-width: 0;
+}
+
+.cardName a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.cardName a:hover {
+  color: var(--sec-accent);
+  text-decoration: underline;
+}
+
+.cardName a:focus-visible {
+  outline: 2px solid var(--sec-accent);
+  outline-offset: 2px;
 }
 
 .cardMeta {
@@ -439,6 +592,41 @@
   font-size: 1.05rem;
   font-weight: 650;
   letter-spacing: -0.01em;
+}
+
+.progressLead {
+  margin: 0 0 12px;
+  color: var(--sec-text-dim);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  max-width: 42rem;
+}
+
+.technicalIdLine {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  color: var(--sec-text-dim);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.technicalIdLine code {
+  font-family: var(--sec-mono);
+  font-size: 0.78rem;
+  color: var(--sec-text);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.technicalIdLabel {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--sec-text-faint);
+  flex: none;
 }
 
 .stageChipStrip {
@@ -548,5 +736,10 @@
 
   .cardList {
     display: flex;
+  }
+
+  .cardListAlways {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 }

@@ -8,14 +8,17 @@
  * non-scrolling chrome band; mission body scrolls in a sibling region so
  * section boxes never geometrically intersect the pill (real flow reservation).
  */
-import { useLayoutEffect, useRef, type RefObject } from 'react'
+import { useLayoutEffect, useRef } from 'react'
+import type { RefObject } from 'react'
 import { formatOperationalLabel } from '#/lib/display-label'
+import { formatAgeSeconds } from '#/lib/control-center-query'
 import { pinnedSurfaceDataAttrs } from '#/components/control-center/PinnedSurface'
 import styles from './overview.module.css'
 import type {
   OverviewAppSummary,
   OverviewBucketStrip,
   OverviewGlobalCard,
+  OverviewOngoingItem,
   OverviewPriorityCard,
   OverviewProps,
 } from './types'
@@ -28,6 +31,255 @@ import { OngoingZeroClick } from './OngoingZeroClick'
 import { LowerPanels } from './LowerPanels'
 import { EmptySlot, OverviewSkeleton, SurfaceBanner } from './SurfaceBanner'
 
+type PinnedSurfaceLike<T> = {
+  boardId: string
+  canonicalSnapshotId: string
+  canonicalHash: string
+  boardRev: number
+  lifecycleRev: number
+  generatedAt: string
+  data: T | null
+}
+
+type OverviewWorkWire = {
+  items: ReadonlyArray<{
+    taskId: string
+    title: string
+    bucket: string | null
+    targetGate: string | null
+    ownerHumanDisplay?: OverviewOngoingItem['ownerHumanDisplay']
+  }>
+}
+
+type OverviewAgentsWire = {
+  runs: ReadonlyArray<{
+    taskId: string | null
+    agentId: string | null
+    role: string | null
+    model: string | null
+    effort: string | null
+    maskedAccount: string | null
+    status: string | null
+    startedAt: string | null
+    heartbeatAt: string | null
+    materialProgressAt: string | null
+    productiveSubstate: string | null
+    evidenceLink?: string | null
+  }>
+  ongoing?: ReadonlyArray<{
+    taskId: string
+    targetGate: string
+    agentId: string
+    role: string
+    model: string | null
+    effort: string | null
+    maskedAccount: string | null
+    startedAgeSeconds: number | null
+    heartbeatAgeSeconds: number | null
+    materialProgressAgeSeconds: number | null
+    productiveSubstate: string | null
+    evidenceLink: string | null
+    ownerHumanDisplay?: OverviewOngoingItem['ownerHumanDisplay']
+  }>
+}
+
+function samePinnedRevision(
+  left: PinnedSurfaceLike<unknown> | null | undefined,
+  right: PinnedSurfaceLike<unknown> | null | undefined,
+): boolean {
+  return Boolean(
+    left &&
+      right &&
+      left.boardId === right.boardId &&
+      left.canonicalSnapshotId === right.canonicalSnapshotId &&
+      left.canonicalHash === right.canonicalHash &&
+      left.boardRev === right.boardRev &&
+      left.lifecycleRev === right.lifecycleRev,
+  )
+}
+
+function presentString(value: string | null | undefined): string | null {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
+}
+
+function pinnedAgeLabel(
+  eventAt: string | null | undefined,
+  generatedAt: string,
+): string | null {
+  const eventMs = eventAt ? Date.parse(eventAt) : Number.NaN
+  const generatedMs = Date.parse(generatedAt)
+  if (!Number.isFinite(eventMs) || !Number.isFinite(generatedMs)) return null
+  return formatAgeSeconds(Math.max(0, Math.floor((generatedMs - eventMs) / 1_000)))
+}
+
+function projectedAgeLabel(value: number | null | undefined): string | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? formatAgeSeconds(value)
+    : null
+}
+
+function productiveState(
+  value: string | null | undefined,
+): OverviewOngoingItem['productiveState'] | null {
+  return value === 'PRODUCTIVE' || value === 'IDLE' || value === 'STALLED'
+    ? value
+    : null
+}
+
+function recoverPinnedOngoing(
+  overview: PinnedSurfaceLike<unknown>,
+  work: PinnedSurfaceLike<OverviewWorkWire> | null | undefined,
+  agents: PinnedSurfaceLike<OverviewAgentsWire> | null | undefined,
+): OverviewOngoingItem[] {
+  if (
+    !samePinnedRevision(overview, work) ||
+    !samePinnedRevision(overview, agents) ||
+    !work?.data ||
+    !agents?.data
+  ) {
+    return []
+  }
+
+  const runsByTaskId = new Map<string, OverviewAgentsWire['runs'][number]>()
+  for (const run of agents.data.runs) {
+    const taskId = presentString(run.taskId)
+    if (!taskId || runsByTaskId.has(taskId)) continue
+    if (run.status !== 'running' && run.status !== 'RUNNING') continue
+    runsByTaskId.set(taskId, run)
+  }
+
+  // The durable Agents projection intentionally keeps evidence off raw run
+  // summaries. Its complete zero-click contract lives in `data.ongoing`.
+  // Prefer that server projection; retain raw runs only for older envelopes.
+  const projectedByTaskId = new Map<
+    string,
+    NonNullable<OverviewAgentsWire['ongoing']>[number]
+  >()
+  for (const row of agents.data.ongoing ?? []) {
+    const taskId = presentString(row.taskId)
+    if (!taskId || projectedByTaskId.has(taskId)) continue
+    projectedByTaskId.set(taskId, row)
+  }
+
+  const recovered: OverviewOngoingItem[] = []
+  for (const row of work.data.items) {
+    if (row.bucket !== 'ONGOING') continue
+    const taskId = presentString(row.taskId)
+    const title = presentString(row.title)
+    const projected = taskId ? projectedByTaskId.get(taskId) : undefined
+    const run = taskId ? runsByTaskId.get(taskId) : undefined
+    const targetGate = presentString(projected?.targetGate ?? row.targetGate)
+    const agentId = presentString(projected ? projected.agentId : run?.agentId)
+    const role = presentString(projected ? projected.role : run?.role)
+    const model = presentString(projected ? projected.model : run?.model)
+    const effort = presentString(projected ? projected.effort : run?.effort)
+    const maskedAccount = presentString(
+      projected ? projected.maskedAccount : run?.maskedAccount,
+    )
+    const startedAge = projected
+      ? projectedAgeLabel(projected.startedAgeSeconds)
+      : pinnedAgeLabel(run?.startedAt, overview.generatedAt)
+    const heartbeatAge = projected
+      ? projectedAgeLabel(projected.heartbeatAgeSeconds)
+      : pinnedAgeLabel(run?.heartbeatAt, overview.generatedAt)
+    const materialProgressAge = projected
+      ? projectedAgeLabel(projected.materialProgressAgeSeconds)
+      : pinnedAgeLabel(run?.materialProgressAt, overview.generatedAt)
+    const state = productiveState(
+      projected ? projected.productiveSubstate : run?.productiveSubstate,
+    )
+    const evidenceHref = presentString(
+      projected ? projected.evidenceLink : run?.evidenceLink,
+    )
+
+    // Fail closed: fallback is permitted only when every pinned zero-click field
+    // exists. Never fill a card with guessed agent/account/age/evidence values.
+    if (
+      !taskId ||
+      !title ||
+      !targetGate ||
+      !agentId ||
+      !role ||
+      !model ||
+      !effort ||
+      !maskedAccount ||
+      !startedAge ||
+      !heartbeatAge ||
+      !materialProgressAge ||
+      !state ||
+      !evidenceHref
+    ) {
+      continue
+    }
+
+    recovered.push({
+      taskId,
+      title,
+      targetGate,
+      agentId,
+      role,
+      model,
+      effort,
+      maskedAccount,
+      startedAge,
+      heartbeatAge,
+      materialProgressAge,
+      productiveState: state,
+      evidenceLabel: 'evidence',
+      evidenceHref,
+      ownerHumanDisplay:
+        row.ownerHumanDisplay ?? projected?.ownerHumanDisplay ?? null,
+    })
+  }
+  return recovered
+}
+
+/**
+ * Reconcile complete, same-pin Overview support surfaces without inventing data.
+ * Server Overview order remains primary; Work order is used only when its own
+ * Overview ongoing list is absent and Agents supplies a complete projected row.
+ */
+export function reconcileAuthenticatedOverviewProps(
+  props: OverviewProps,
+  overview: PinnedSurfaceLike<unknown> | null | undefined,
+  work: PinnedSurfaceLike<OverviewWorkWire> | null | undefined,
+  agents: PinnedSurfaceLike<OverviewAgentsWire> | null | undefined,
+): OverviewProps {
+  if (!overview) return props
+  const ongoing = props.ongoing.length
+    ? props.ongoing
+    : recoverPinnedOngoing(overview, work, agents)
+  const expectedOngoing = props.buckets?.counts.ONGOING ?? 0
+  const pinComplete = Boolean(
+    props.pin?.canonicalSnapshotId &&
+      props.pin.canonicalHash &&
+      typeof props.pin.boardRev === 'number' &&
+      typeof props.pin.lifecycleRev === 'number',
+  )
+  const structurallyComplete = Boolean(
+    pinComplete &&
+      props.appSummary &&
+      props.decision &&
+      props.priority &&
+      props.global &&
+      props.buckets &&
+      props.lower &&
+      !props.error &&
+      ongoing.length >= expectedOngoing,
+  )
+  const surfaceState =
+    props.surfaceState === 'partial' && structurallyComplete
+      ? props.decision?.topItem?.blocking
+        ? 'needs-human'
+        : 'populated'
+      : props.surfaceState
+
+  return ongoing === props.ongoing && surfaceState === props.surfaceState
+    ? props
+    : { ...props, ongoing, surfaceState }
+}
+
 /**
  * Plain id-ID position sentence from already-projected server fields only.
  * Never invents readiness percentages as program truth.
@@ -38,7 +290,7 @@ function programPositionStatement(
   global: OverviewGlobalCard | null,
 ): string {
   const board = appSummary?.boardLabel?.trim() || appSummary?.boardId || 'Program'
-  const stageRaw = appSummary?.liveStage?.trim() || ''
+  const stageRaw = appSummary?.liveStage.trim() || ''
   const stage = stageRaw ? formatOperationalLabel(stageRaw) : 'tahap tidak diketahui'
 
   if (global?.complete === true && global.g5Pass === true) {
@@ -258,7 +510,7 @@ export function Overview({
 
   const needsHuman =
     surfaceState === 'needs-human' ||
-    (decision?.topItem?.blocking === true && (decision?.count ?? 0) > 0)
+    (decision?.topItem?.blocking === true && decision.count > 0)
 
   const pinMeta =
     pin ??

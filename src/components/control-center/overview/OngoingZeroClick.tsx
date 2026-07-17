@@ -28,7 +28,10 @@ function ProductiveBadge({ state }: { state: ProductiveState }) {
       aria-label={`Status kerja: ${label}`}
     >
       {isProd ? (
-        <span className={`${styles.pulseDot} ${styles.pulseDotLive}`} aria-hidden="true" />
+        <span
+          className={`${styles.pulseDot} ${styles.pulseDotLive}`}
+          aria-hidden="true"
+        />
       ) : (
         <span className={styles.hollowDot} aria-hidden="true" />
       )}
@@ -59,7 +62,9 @@ export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
       data-testid="overview-ongoing-card"
       data-task-id={item.taskId}
       data-productive-state={item.productiveState}
-      data-content-review-required={display.contentReviewRequired ? 'true' : 'false'}
+      data-content-review-required={
+        display.contentReviewRequired ? 'true' : 'false'
+      }
       data-owner-primary-title={display.primaryTitle}
     >
       <div className={styles.ongoingTop}>
@@ -72,11 +77,9 @@ export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
           >
             {display.primaryTitle}
           </h3>
-          <div className={styles.taskId} data-field="taskId" title={item.taskId}>
-            {item.taskId}
-          </div>
           {/* Technical title secondary only — never owner primary. */}
-          {display.technicalTitle && display.technicalTitle !== display.primaryTitle ? (
+          {display.technicalTitle &&
+          display.technicalTitle !== display.primaryTitle ? (
             <div
               className={styles.technicalSecondary}
               data-testid="overview-ongoing-technical-title"
@@ -92,23 +95,7 @@ export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
 
       <OwnerHumanFields display={display} testIdPrefix="overview-ongoing" />
 
-      <div className={styles.ongoingMeta}>
-        <span className={styles.chip}>
-          gate <strong>{item.targetGate}</strong>
-        </span>
-        <span className={styles.chip}>
-          agent <strong>{item.agentId}</strong>
-        </span>
-        <span className={styles.chip}>
-          role <strong>{item.role}</strong>
-        </span>
-        <span className={`${styles.chip} ${styles.chipMono}`}>{item.model}</span>
-        <span className={styles.chip}>effort {item.effort}</span>
-        <span className={`${styles.chip} ${styles.chipMono}`} data-field="masked-account">
-          {item.maskedAccount}
-        </span>
-      </div>
-
+      {/* Owner-relevant ages stay primary; agent/model/hash remain disclosed. */}
       <div className={styles.ages} data-testid="ongoing-ages">
         <div>
           <span className={styles.ageLabel}>Dimulai</span>
@@ -140,6 +127,41 @@ export function OngoingCard({ item }: { item: OverviewOngoingItem }) {
           </span>
         )}
       </div>
+
+      <details
+        className={styles.techDisclosure}
+        data-testid="overview-ongoing-tech"
+      >
+        <summary className={styles.techDisclosureSummary}>Detail teknis</summary>
+        <div className={styles.ongoingMeta} data-testid="overview-ongoing-meta">
+          <span className={styles.chip}>
+            gate <strong>{item.targetGate}</strong>
+          </span>
+          <span className={styles.chip}>
+            agent <strong>{item.agentId}</strong>
+          </span>
+          <span className={styles.chip}>
+            role <strong>{item.role}</strong>
+          </span>
+          <span className={`${styles.chip} ${styles.chipMono}`}>
+            {item.model}
+          </span>
+          <span className={styles.chip}>effort {item.effort}</span>
+          <span
+            className={`${styles.chip} ${styles.chipMono}`}
+            data-field="masked-account"
+          >
+            {item.maskedAccount}
+          </span>
+        </div>
+        <div
+          className={styles.taskId}
+          data-field="taskId"
+          title={item.taskId}
+        >
+          {item.taskId}
+        </div>
+      </details>
     </li>
   )
 }

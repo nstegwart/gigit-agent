@@ -44,29 +44,39 @@ export function PriorityCard({ data }: { data: OverviewPriorityCard | null }) {
         <SemanticIcon kind="forward" />
         Prioritas + progres bukti · {formatOperationalLabel(data.portfolioId)}
       </h2>
+      <p className={styles.readinessNote} data-testid="overview-priority-readiness-note">
+        Kesiapan portofolio prioritas dihitung dari evidence — bukan hitungan bucket
+        pekerjaan di strip bawah.
+      </p>
       <div className={styles.cardGrid}>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Denom keanggotaan</span>
-          <span className={styles.metricValue}>{data.membershipDenominator}</span>
+          <span className={styles.metricLabel}>Anggota portofolio</span>
+          <span className={styles.metricValue} data-field="membershipDenominator">
+            {data.membershipDenominator}
+          </span>
         </div>
         <div className={styles.metric}>
           <span className={styles.metricLabel}>Denom produk</span>
-          <span className={styles.metricValue}>{data.productDenominator}</span>
+          <span className={styles.metricValue} data-field="productDenominator">
+            {data.productDenominator}
+          </span>
         </div>
         <div className={styles.metric}>
           <span className={styles.metricLabel}>PROD_READY ber-evidence</span>
-          <span className={styles.metricValue}>
+          <span className={styles.metricValue} data-field="prodReadyWithEvidence">
             {data.prodReadyWithEvidence}
             <span className={styles.panelMuted}> / {data.stageProdReady} tahap</span>
           </span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>G5</span>
-          <span className={`${styles.metricValue} ${g5.cls}`}>{data.g5Pass ? 'PASS' : 'FAIL'}</span>
+          <span className={styles.metricLabel}>G5 prioritas</span>
+          <span className={`${styles.metricValue} ${g5.cls}`} data-field="g5Pass">
+            {data.g5Pass ? 'PASS' : 'FAIL'}
+          </span>
         </div>
         <div className={styles.metric}>
-          <span className={styles.metricLabel}>Selesai</span>
-          <span className={`${styles.metricValue} ${complete.cls}`}>
+          <span className={styles.metricLabel}>Portofolio selesai</span>
+          <span className={`${styles.metricValue} ${complete.cls}`} data-field="complete">
             {data.complete ? 'Ya' : 'Tidak'}
           </span>
         </div>

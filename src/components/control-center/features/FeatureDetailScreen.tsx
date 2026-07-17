@@ -1,6 +1,14 @@
 import { formatLifecycleStageLabel, formatOperationalLabel } from '#/lib/display-label'
-import type { FeatureRowView, FeaturesPinView, FeaturesSurfaceState } from './types'
+import type {
+  FeatureProgressNodeView,
+  FeatureRowView,
+  FeaturesPinView,
+  FeaturesSurfaceState,
+} from './types'
 import styles from './features.module.css'
+
+/** Server placeholder — never render as primary owner title (SPEC §4.5 / ADDENDUM C). */
+const OWNER_CONTENT_PLACEHOLDER = 'Konten pemilik memerlukan peninjauan'
 
 const CONTEXT_FIELDS: Array<{
   key: keyof Pick<
@@ -37,14 +45,63 @@ function branchLabel(branch: FeatureRowView['flowBranch']): string {
 
 function statusLabel(status: string | null): string {
   if (!status) return '—'
-  const u = status.toLowerCase()
+  const u = status.toLowerCase().replace(/_/g, ' ').trim()
   if (u === 'blocked') return 'Terhambat'
   if (u === 'done' || u === 'completed') return 'Selesai'
-  if (u === 'running' || u === 'in_progress' || u === 'active') return 'Berjalan'
+  if (u === 'running' || u === 'in progress' || u === 'active') return 'Berjalan'
   if (u === 'queued' || u === 'pending') return 'Antri'
   if (u === 'failed' || u === 'fail') return 'Gagal'
   if (u === 'expired') return 'Kedaluwarsa'
+  if (u === 'not started' || u === 'notstarted' || u === 'todo' || u === 'idle') {
+    return 'Belum mulai'
+  }
   return formatOperationalLabel(status)
+}
+
+/** Strip technical ids (T-*, [FC-*]) and light-normalize for owner primary title. */
+function cleanTechnicalTitle(raw: string): string {
+  let s = raw.trim()
+  if (!s) return s
+  s = s.replace(/\[[^\]]*\]\s*/g, '')
+  s = s.replace(/\b(?:T|FC|BE|WEB|RN|AFF|SALES)-[A-Z0-9._-]+\b/gi, '')
+  s = s.replace(/[_/]+/g, ' ')
+  s = s.replace(/\s+/g, ' ').trim()
+  if (!s) return raw.trim()
+  // Sentence-case first char; leave rest as source (often already mixed).
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+/**
+ * Presentation-only title policy (ADDENDUM C):
+ * reviewed human title → cleaned technicalTitle + badge → never placeholder as title.
+ */
+function ownerFacingNodeTitle(n: FeatureProgressNodeView): {
+  title: string
+  needsReview: boolean
+} {
+  const rawTitle = typeof n.title === 'string' ? n.title.trim() : ''
+  const isPlaceholder =
+    !rawTitle ||
+    rawTitle === OWNER_CONTENT_PLACEHOLDER ||
+    rawTitle.toLowerCase() === OWNER_CONTENT_PLACEHOLDER.toLowerCase()
+
+  if (!isPlaceholder && !n.contentReviewRequired) {
+    return { title: rawTitle, needsReview: false }
+  }
+
+  if (!isPlaceholder && rawTitle) {
+    return { title: rawTitle, needsReview: n.contentReviewRequired === true }
+  }
+
+  const tech =
+    typeof n.technicalTitle === 'string' && n.technicalTitle.trim()
+      ? n.technicalTitle.trim()
+      : ''
+  if (tech && tech !== OWNER_CONTENT_PLACEHOLDER) {
+    return { title: cleanTechnicalTitle(tech), needsReview: true }
+  }
+
+  return { title: cleanTechnicalTitle(n.taskId) || n.taskId, needsReview: true }
 }
 
 export interface FeatureDetailScreenProps {
@@ -144,19 +201,18 @@ export function FeatureDetailScreen({
 
       <header className={styles.pageHead}>
         <div>
-          <p className={styles.eyebrow}>IA · Detail fitur</p>
+          <p className={styles.eyebrow}>Detail fitur</p>
           <h1 id="feature-detail-title" className={styles.pageTitle} data-testid="feature-detail-title">
             {feature.name}
           </h1>
           <p className={styles.pageSub}>
-            Ringkasan fitur dari pin control-center — progress node tugas nyata dan konteks alur
-            (bukan checklist plan legacy).
+            {feature.taskCount} tugas terhubung
+            {feature.phase ? ` · Fase ${feature.phase}` : ''}
+            {feature.flowBranch ? ` · Alur ${branchLabel(feature.flowBranch)}` : ''}
+            {feature.projectId ? ` · Proyek ${feature.projectId}` : ''}.
           </p>
         </div>
         <div className={styles.summaryStrip}>
-          <span className={`${styles.chip} ${styles.chipAccent}`} data-testid="feature-detail-id">
-            {feature.featureId}
-          </span>
           <span className={styles.chip} data-testid="feature-detail-phase">
             Fase {feature.phase ?? '—'}
           </span>
@@ -169,45 +225,52 @@ export function FeatureDetailScreen({
         </div>
       </header>
 
-      {pin ? (
-        <p className={styles.pinStrip} data-testid="feature-detail-pin">
-          pin <code>{pin.canonicalSnapshotId}</code> · boardRev {pin.boardRev}
-          {pin.stale ? ` · STALE ${pin.staleReason ?? ''}` : ''}
-        </p>
-      ) : null}
-
-      <div className={styles.card} data-testid="feature-detail-meta">
-        <dl className={styles.cardMeta}>
-          <div>
-            <dt>Proyek</dt>
-            <dd className={styles.idCell}>
-              {feature.projectHref && feature.projectId ? (
-                <a href={feature.projectHref}>{feature.projectId}</a>
-              ) : (
-                feature.projectId ?? '—'
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>Tugas terhubung</dt>
-            <dd className={styles.metric}>{feature.taskCount}</dd>
-          </div>
-          <div>
-            <dt>Fase</dt>
-            <dd>{feature.phase ?? '—'}</dd>
-          </div>
-          <div>
-            <dt>Cabang alur</dt>
-            <dd>{branchLabel(feature.flowBranch)}</dd>
-          </div>
-        </dl>
-      </div>
+      {/* pin / boardRev / STALE + IDs only under progressive disclosure (W-UI-QW D.3) */}
+      <details className={styles.gapDisclosure} data-testid="feature-detail-technical">
+        <summary className={styles.gapDisclosureSummary}>Detail teknis</summary>
+        <div className={styles.gapDisclosureBody}>
+          <p className={styles.technicalIdLine} data-testid="feature-detail-id">
+            <span className={styles.technicalIdLabel}>featureId</span>
+            <code>{feature.featureId}</code>
+          </p>
+          {feature.projectId ? (
+            <p className={styles.technicalIdLine} data-testid="feature-detail-project-id">
+              <span className={styles.technicalIdLabel}>projectId</span>
+              <code>{feature.projectId}</code>
+            </p>
+          ) : null}
+          {pin ? (
+            <div data-testid="feature-detail-pin">
+              <p className={styles.technicalIdLine}>
+                <span className={styles.technicalIdLabel}>pin</span>
+                <code>{pin.canonicalSnapshotId}</code>
+              </p>
+              <p className={styles.technicalIdLine}>
+                <span className={styles.technicalIdLabel}>boardRev</span>
+                <code>{pin.boardRev}</code>
+              </p>
+              {pin.lifecycleRev != null ? (
+                <p className={styles.technicalIdLine}>
+                  <span className={styles.technicalIdLabel}>lifecycleRev</span>
+                  <code>{pin.lifecycleRev}</code>
+                </p>
+              ) : null}
+              {pin.stale ? (
+                <p className={`${styles.banner} ${styles.banner_stale}`} style={{ marginTop: 8 }}>
+                  <span className={styles.bannerTitle}>STALE</span>{' '}
+                  <span className={styles.bannerBody}>{pin.staleReason ?? 'snapshot usang'}</span>
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </details>
 
       <div className={styles.card} data-testid="feature-detail-progress">
         <h2 className={styles.progressTitle}>Node progres tugas</h2>
-        <p className={styles.pageSub} style={{ marginTop: 0, marginBottom: 12 }}>
-          Node di bawah berasal dari tugas yang terhubung ke fitur ini (featureContractId) pada pin
-          saat ini — bukan tebakan klien.
+        <p className={styles.progressLead}>
+          Node di bawah berasal dari tugas yang terhubung ke fitur ini pada pin saat ini — bukan
+          tebakan klien.
         </p>
         {stageEntries.length > 0 ? (
           <div
@@ -233,58 +296,73 @@ export function FeatureDetailScreen({
           </p>
         ) : (
           <ol className={styles.progressList} data-testid="feature-detail-progress-list">
-            {nodes.map((n) => (
-              <li
-                key={n.taskId}
-                className={styles.progressNode}
-                data-testid="feature-progress-node"
-                data-task-id={n.taskId}
-                data-stage={n.lifecycleStage ?? undefined}
-              >
-                <div className={styles.progressNodeHead}>
-                  <a href={n.detailHref} className={styles.progressNodeTitle}>
-                    {n.title}
-                  </a>
-                  <code className={styles.progressNodeId}>{n.taskId}</code>
-                </div>
-                <div className={styles.progressNodeMeta}>
-                  <span
-                    className={styles.stageChip}
-                    data-testid="feature-progress-stage"
-                    title={n.lifecycleStage ?? ''}
-                  >
-                    {n.lifecycleStage
-                      ? formatLifecycleStageLabel(n.lifecycleStage)
-                      : 'Tahap tidak diketahui'}
-                  </span>
-                  <span className={styles.chip} data-testid="feature-progress-status">
-                    {statusLabel(n.status)}
-                  </span>
-                  {n.contentReviewRequired ? (
+            {nodes.map((n) => {
+              const facing = ownerFacingNodeTitle(n)
+              return (
+                <li
+                  key={n.taskId}
+                  className={styles.progressNode}
+                  data-testid="feature-progress-node"
+                  data-task-id={n.taskId}
+                  data-stage={n.lifecycleStage ?? undefined}
+                >
+                  <div className={styles.progressNodeHead}>
+                    <a href={n.detailHref} className={styles.progressNodeTitle}>
+                      {facing.title}
+                    </a>
+                    {facing.needsReview ? (
+                      <span
+                        className={styles.progressContentReview}
+                        data-testid="feature-progress-content-review"
+                        title={n.technicalTitle ?? OWNER_CONTENT_PLACEHOLDER}
+                      >
+                        perlu tinjauan
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className={styles.progressNodeMeta}>
                     <span
-                      className={styles.progressContentReview}
-                      data-testid="feature-progress-content-review"
-                      title={n.technicalTitle ?? undefined}
+                      className={styles.stageChip}
+                      data-testid="feature-progress-stage"
+                      title={n.lifecycleStage ?? ''}
                     >
-                      Perlu peninjauan konten
+                      {n.lifecycleStage
+                        ? formatLifecycleStageLabel(n.lifecycleStage)
+                        : 'Tahap tidak diketahui'}
                     </span>
-                  ) : null}
-                  {n.blockedReason ? (
-                    <span className={styles.progressBlocker} data-testid="feature-progress-blocker">
-                      Hambatan: {n.blockedReason}
+                    <span className={styles.chip} data-testid="feature-progress-status">
+                      {statusLabel(n.status)}
                     </span>
-                  ) : null}
-                </div>
-                {n.contentReviewRequired && n.technicalTitle ? (
+                    {n.blockedReason ? (
+                      <span className={styles.progressBlocker} data-testid="feature-progress-blocker">
+                        Hambatan: {n.blockedReason}
+                      </span>
+                    ) : null}
+                  </div>
                   <details className={styles.gapDisclosure} data-testid="feature-progress-technical">
                     <summary className={styles.gapDisclosureSummary}>Detail teknis</summary>
-                    <p className={styles.pageSub} style={{ margin: '8px 0 0' }}>
-                      Judul sumber: <code>{n.technicalTitle}</code>
-                    </p>
+                    <div className={styles.gapDisclosureBody}>
+                      <p className={styles.technicalIdLine}>
+                        <span className={styles.technicalIdLabel}>taskId</span>
+                        <code className={styles.progressNodeId}>{n.taskId}</code>
+                      </p>
+                      {n.technicalTitle ? (
+                        <p className={styles.technicalIdLine}>
+                          <span className={styles.technicalIdLabel}>Judul sumber</span>
+                          <code>{n.technicalTitle}</code>
+                        </p>
+                      ) : null}
+                      {facing.needsReview ? (
+                        <p className={styles.technicalIdLine}>
+                          <span className={styles.technicalIdLabel}>Status konten</span>
+                          <span>{OWNER_CONTENT_PLACEHOLDER}</span>
+                        </p>
+                      ) : null}
+                    </div>
                   </details>
-                ) : null}
-              </li>
-            ))}
+                </li>
+              )
+            })}
           </ol>
         )}
       </div>

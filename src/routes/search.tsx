@@ -8,7 +8,11 @@ import { DEFAULT_CONTROL_CENTER_BOARD_ID } from '#/lib/control-center-default-bo
 import { coerceControlCenterSearchString } from '#/lib/control-center-search'
 
 const searchSchema = z.object({
-  q: z.preprocess((v) => coerceControlCenterSearchString(v), z.string().optional()),
+  q: z.preprocess(
+    (v) => coerceControlCenterSearchString(v),
+    z.string().optional(),
+  ),
+  returnTo: z.string().startsWith('/').max(2048).optional(),
 })
 
 export const Route = createFileRoute('/search')({
@@ -21,7 +25,7 @@ export const Route = createFileRoute('/search')({
     throw redirect({
       to: '/b/$boardId/search',
       params: { boardId: DEFAULT_CONTROL_CENTER_BOARD_ID },
-      search: { q: search.q },
+      search: { q: search.q, returnTo: search.returnTo },
     })
   },
 })
