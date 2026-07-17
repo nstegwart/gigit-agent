@@ -8,10 +8,15 @@
  *  1. MySQL tables when present (010 product_features + feature_task_map,
  *     011 app_flow_nodes/edges, 012 app_pages/api_endpoints/page_api_calls/
  *     nav_edges/knowledge_aliases; plus feature_directory/units if present).
- *  2. Fallback: DESIGN-CANON-V3 JSON bundle with explicit source note.
+ *  2. Fallback: deployed public/flow-data (data-bundle.json + graph.json)
+ *     which ships with the app — never an absolute VPS job path.
  *
  * Tool names (contract):
  *   search_knowledge, get_feature_bundle, get_endpoint_bundle, get_flow
+ *
+ * Auth: all four tools are authenticated MCP reads (board:read), same as
+ * search_knowledge in MCP_TOOL_SPECS. Handlers are pure corpus functions —
+ * they never call HTTP endpoints or attach Authorization headers.
  *
  * Pure handlers are unit-testable with an injected corpus (no live DB required).
  */
@@ -26,10 +31,62 @@ import { z } from 'zod'
 // Paths & constants
 // ---------------------------------------------------------------------------
 
-/** Default offline bundle (DESIGN-CANON-V3). Overridable via TM_KNOWLEDGE_BUNDLE_PATH. */
-export const DEFAULT_KNOWLEDGE_BUNDLE_PATH =
-  process.env.TM_KNOWLEDGE_BUNDLE_PATH?.trim() ||
-  '/home/user/.claude/jobs/3c5adda9/tmp/tm-wave0/DESIGN-CANON-V3/data'
+/** Relative path that ships in the deploy artifact (under process.cwd()). */
+export const DEPLOYED_FLOW_DATA_REL = join('public', 'flow-data')
+
+/**
+ * Resolve the offline knowledge corpus directory.
+ * Priority: explicit arg → TM_KNOWLEDGE_BUNDLE_PATH → public/flow-data under cwd
+ * (and a few nearby deploy-safe candidates). Never defaults to absolute
+ * /home/user/.claude/... job paths (those are absent on prod).
+ */
+export function resolveKnowledgeBundlePath(override?: string): string {
+  const env = (override ?? process.env.TM_KNOWLEDGE_BUNDLE_PATH)?.trim()
+  if (env) {
+    // Refuse known non-deploy job paths even if env is set incorrectly on prod.
+    if (/\/home\/user\/\.claude\//.test(env) || /tm-wave0/.test(env)) {
+      // fall through to deployed path
+    } else {
+      return env
+    }
+  }
+  const candidates = [
+    join(process.cwd(), DEPLOYED_FLOW_DATA_REL),
+    join(process.cwd(), 'task-manager', DEPLOYED_FLOW_DATA_REL),
+    // Next standalone / dist layouts still keep public next to the app root
+    join(process.cwd(), '..', DEPLOYED_FLOW_DATA_REL),
+  ]
+  for (const c of candidates) {
+    if (
+      existsSync(join(c, 'data-bundle.json')) ||
+      existsSync(join(c, 'graph.json')) ||
+      existsSync(join(c, 'knowledge.json'))
+    ) {
+      return c
+    }
+  }
+  // Stable default even when files are not yet present (tests may inject corpus).
+  return join(process.cwd(), DEPLOYED_FLOW_DATA_REL)
+}
+
+/**
+ * Default offline corpus directory (deployed public/flow-data).
+ * Overridable via TM_KNOWLEDGE_BUNDLE_PATH. Evaluated at access time via
+ * resolveKnowledgeBundlePath so cwd is correct under tests/prod.
+ */
+export const DEFAULT_KNOWLEDGE_BUNDLE_PATH = resolveKnowledgeBundlePath()
+
+/**
+ * Auth semantics for product-knowledge tools — same class as search_knowledge
+ * (authenticated board:read). Live tools/call also needs matching MCP_TOOL_SPECS
+ * entries in rbac; handlers themselves never re-auth or proxy HTTP.
+ */
+export const KNOWLEDGE_TOOL_AUTH_SPECS = [
+  { name: 'search_knowledge', kind: 'read' as const, scopes: ['board:read'] as const },
+  { name: 'get_feature_bundle', kind: 'read' as const, scopes: ['board:read'] as const },
+  { name: 'get_endpoint_bundle', kind: 'read' as const, scopes: ['board:read'] as const },
+  { name: 'get_flow', kind: 'read' as const, scopes: ['board:read'] as const },
+] as const
 
 export const KNOWLEDGE_TOOL_NAMES = [
   'search_knowledge',
@@ -229,6 +286,8 @@ export type SearchKnowledgeResult = {
   expandedTerms: string[]
   hits: KnowledgeHit[]
   source: KnowledgeSourceNote
+  /** True when hits come from a non-empty product corpus (json_bundle/mysql/injected). */
+  searchReal: boolean
 }
 
 export type FeatureBundleResult = {
@@ -376,17 +435,35 @@ export function expandQueryTerms(query: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// JSON bundle loader
+// JSON / flow-data corpus loaders (deployed files only — no external job paths)
 // ---------------------------------------------------------------------------
 
-function loadFeaturesFromBundle(dir: string): KnowledgeFeature[] {
+/**
+ * Load corpus from deployed public/flow-data shape:
+ *   data-bundle.json — features, tasks_by_feature, apis_by_feature, premium flow
+ *   graph.json       — pages, endpoints, nav/api_call edges
+ *   knowledge.json   — optional prebuilt corpus override (same KnowledgeCorpus shape)
+ */
+function loadFromFlowDataDir(dir: string): KnowledgeCorpus {
+  const knowledgePath = join(dir, 'knowledge.json')
+  if (existsSync(knowledgePath)) {
+    const prebuilt = loadFromKnowledgeJsonFile(knowledgePath, dir)
+    if (prebuilt.features.length > 0 || prebuilt.pages.length > 0) {
+      return prebuilt
+    }
+  }
+
+  const bundleRaw = readJsonFile(join(dir, 'data-bundle.json'))
+  const graphRaw = readJsonFile(join(dir, 'graph.json'))
+  const bundle = asRecord(bundleRaw) ?? {}
+  const graph = asRecord(graphRaw) ?? {}
+
   const byId = new Map<string, KnowledgeFeature>()
 
-  for (const file of readdirSync(dir).filter((f) => f.startsWith('features-') && f.endsWith('.json'))) {
-    const raw = readJsonFile(join(dir, file))
-    const rec = asRecord(raw)
-    const projectId = str(rec?.project_id) || file.replace(/^features-/, '').replace(/\.json$/, '')
-    for (const item of asArray(rec?.features)) {
+  // Features from data-bundle.features.{project}[]
+  const featuresByProject = asRecord(bundle.features) ?? {}
+  for (const [projectId, list] of Object.entries(featuresByProject)) {
+    for (const item of asArray(list)) {
       const f = asRecord(item)
       if (!f) continue
       const id = str(f.id)
@@ -394,9 +471,9 @@ function loadFeaturesFromBundle(dir: string): KnowledgeFeature[] {
       const prev = byId.get(id)
       const screens = asArray(f.screens).map(str).filter(Boolean)
       const taskIds = asArray(f.task_ids).map(str).filter(Boolean)
-      const merged: KnowledgeFeature = {
+      byId.set(id, {
         id,
-        nama_id: str(f.nama_id) || prev?.nama_id || id,
+        nama_id: str(f.nama_id) || str(f.label) || prev?.nama_id || id,
         area: str(f.area) || prev?.area,
         domain_bisnis: str(f.domain_bisnis) || prev?.domain_bisnis || str(f.area) || undefined,
         ringkasan_id: str(f.ringkasan_id) || prev?.ringkasan_id || null,
@@ -411,115 +488,375 @@ function loadFeaturesFromBundle(dir: string): KnowledgeFeature[] {
         fc_refs: prev?.fc_refs,
         curated: Boolean(f.curated ?? prev?.curated),
         project_ids: [...new Set([...(prev?.project_ids ?? []), projectId])],
-      }
-      byId.set(id, merged)
+      })
     }
   }
 
-  // Enrich from feature_directory (doc_md / domain)
-  const fdPath = join(dir, '_raw', 'feature_directory.json')
-  const fd = readJsonFile(fdPath)
-  for (const item of asArray(fd)) {
-    const r = asRecord(item)
-    if (!r) continue
-    const fc = str(r.feature_contract_id)
-    const judul = str(r.judul_id)
-    const ring = str(r.ringkasan_id)
-    const doc = str(r.doc_md)
-    // attach to features that share keywords or already match via task later
-    if (!fc) continue
-    for (const feat of byId.values()) {
-      const blob = norm(`${feat.id} ${feat.nama_id} ${feat.ringkasan_id ?? ''}`)
-      const jn = norm(judul)
-      if (
-        (feat.ringkasan_id && ring && norm(feat.ringkasan_id) === norm(ring)) ||
-        (jn && blob.includes(jn.split(' ')[0] ?? '')) ||
-        (doc && feat.doc_md && feat.doc_md === doc)
-      ) {
-        if (!feat.doc_md && doc) feat.doc_md = doc
-        if (!feat.domain_bisnis && str(r.domain_bisnis)) feat.domain_bisnis = str(r.domain_bisnis)
-      }
-    }
-  }
-
-  // product_features seed for domain + fc_refs
-  const pfPath = join(dir, '_raw', 'product_features.json')
-  const pf = readJsonFile(pfPath)
-  for (const item of asArray(pf)) {
-    const r = asRecord(item)
-    if (!r) continue
-    const id = str(r.feature_id)
+  // Enrich from graph feature nodes (area / ringkasan / status)
+  for (const item of asArray(graph.nodes)) {
+    const n = asRecord(item)
+    if (!n || str(n.kind) !== 'feature') continue
+    const id = str(n.id)
     if (!id) continue
     const prev = byId.get(id)
-    const fcRefs = asArray(r.fc_refs_json).map(str).filter(Boolean)
+    const projects = asArray(n.projects).map(str).filter(Boolean)
     if (prev) {
-      prev.domain_bisnis = prev.domain_bisnis || str(r.domain_bisnis) || undefined
-      prev.ringkasan_id = prev.ringkasan_id || str(r.ringkasan_id) || null
-      prev.fc_refs = [...new Set([...(prev.fc_refs ?? []), ...fcRefs])]
-      prev.platform =
-        prev.platform ?? (asRecord(r.platform_json) as Record<string, unknown> | null) ?? undefined
-      prev.curated = prev.curated || Boolean(r.curated)
+      prev.area = prev.area || str(n.area) || undefined
+      prev.domain_bisnis = prev.domain_bisnis || str(n.area) || undefined
+      prev.ringkasan_id = prev.ringkasan_id || str(n.ringkasan_id) || null
+      prev.status = prev.status || str(n.status) || undefined
+      prev.nama_id = prev.nama_id || str(n.label_id) || str(n.label) || id
+      prev.project_ids = [...new Set([...(prev.project_ids ?? []), ...projects])]
     } else {
       byId.set(id, {
         id,
-        nama_id: str(r.nama_id) || id,
-        domain_bisnis: str(r.domain_bisnis) || undefined,
-        ringkasan_id: str(r.ringkasan_id) || null,
-        fc_refs: fcRefs,
-        platform: (asRecord(r.platform_json) as Record<string, unknown> | null) ?? undefined,
-        curated: Boolean(r.curated),
+        nama_id: str(n.label_id) || str(n.label) || id,
+        area: str(n.area) || undefined,
+        domain_bisnis: str(n.area) || undefined,
+        ringkasan_id: str(n.ringkasan_id) || null,
+        status: str(n.status) || undefined,
         screens: [],
         task_ids: [],
+        project_ids: projects,
       })
     }
   }
 
-  return [...byId.values()]
-}
+  // Tasks from tasks_by_feature
+  const tasks: KnowledgeTask[] = []
+  const tasksByFeature = asRecord(bundle.tasks_by_feature) ?? {}
+  for (const [featureId, list] of Object.entries(tasksByFeature)) {
+    for (const item of asArray(list)) {
+      const t = asRecord(item)
+      if (!t) continue
+      const id = str(t.id)
+      if (!id) continue
+      tasks.push({
+        id,
+        judul_id: str(t.judul_id) || undefined,
+        verdict: str(t.verdict) || undefined,
+        feature_id: featureId,
+        project_id: str(t.project) || undefined,
+      })
+      const feat = byId.get(featureId)
+      if (feat) {
+        feat.task_ids = [...new Set([...(feat.task_ids ?? []), id])]
+      }
+    }
+  }
 
-function loadPagesFromBundle(dir: string): KnowledgePage[] {
-  const ultimate = join(dir, 'ultimate')
-  if (!existsSync(ultimate)) return []
-  const out: KnowledgePage[] = []
-  for (const file of readdirSync(ultimate).filter(
-    (f) => f.startsWith('pages-') && f.endsWith('.json') && !f.endsWith('.meta.json'),
-  )) {
-    const raw = readJsonFile(join(ultimate, file))
-    for (const item of asArray(raw)) {
-      const p = asRecord(item)
-      if (!p) continue
-      const apiCalls = asArray(p.api_calls)
-        .map((c) => {
-          const r = asRecord(c)
-          if (!r) return null
-          return { method: str(r.method) || 'GET', path: str(r.path) }
-        })
-        .filter((x): x is { method: string; path: string } => !!x && !!x.path)
-      out.push({
-        id: str(p.id),
-        label_id: str(p.label_id),
-        route_or_screen: str(p.route_or_screen),
-        api_calls: apiCalls,
-        nav_to: asArray(p.nav_to).map(str),
-        area: str(p.area) || undefined,
-        feature_id: p.feature_id == null ? null : str(p.feature_id),
-        source_file: file,
+  // Pages + endpoints from graph nodes; wire api_calls + nav_to from edges
+  const apiCallsByPage = new Map<string, Array<{ method: string; path: string }>>()
+  const navByPage = new Map<string, string[]>()
+  for (const item of asArray(graph.edges)) {
+    const e = asRecord(item)
+    if (!e) continue
+    const kind = str(e.kind)
+    const from = str(e.from)
+    const to = str(e.to)
+    if (!from) continue
+    if (kind === 'api_call') {
+      const method = str(e.method) || 'GET'
+      const path = str(e.path_norm) || str(e.path_raw) || str(e.path)
+      if (!path) continue
+      const list = apiCallsByPage.get(from) ?? []
+      list.push({ method, path })
+      apiCallsByPage.set(from, list)
+    } else if (kind === 'nav_to' && to) {
+      const list = navByPage.get(from) ?? []
+      list.push(to)
+      navByPage.set(from, list)
+    } else if (kind === 'page_feature' && to) {
+      // Prefer graph page_feature mapping when page.feature_id is missing/wrong later
+      void to
+    }
+  }
+
+  // page → feature from page_feature edges (overrides noisy feature_id on nodes when useful)
+  const pageFeatureFromEdge = new Map<string, string>()
+  for (const item of asArray(graph.edges)) {
+    const e = asRecord(item)
+    if (!e || str(e.kind) !== 'page_feature') continue
+    const from = str(e.from)
+    const to = str(e.to)
+    if (from && to) pageFeatureFromEdge.set(from, to)
+  }
+
+  // Also map screens → feature for correct page attachment (graph page.feature_id is often wrong)
+  const screenToFeature = new Map<string, string>()
+  for (const feat of byId.values()) {
+    for (const s of feat.screens ?? []) {
+      const key = norm(s)
+      if (key && !screenToFeature.has(key)) screenToFeature.set(key, feat.id)
+    }
+  }
+
+  const pages: KnowledgePage[] = []
+  const endpoints: KnowledgeEndpoint[] = []
+  for (const item of asArray(graph.nodes)) {
+    const n = asRecord(item)
+    if (!n) continue
+    const kind = str(n.kind)
+    if (kind === 'page') {
+      const id = str(n.id)
+      if (!id) continue
+      const route = str(n.route_or_screen)
+      let featureId =
+        n.feature_id == null || n.feature_id === ''
+          ? null
+          : str(n.feature_id)
+      // Prefer screen→feature when screens list owns this route (fixes mis-tagged graph nodes)
+      const byScreen = route ? screenToFeature.get(norm(route)) : undefined
+      if (byScreen) featureId = byScreen
+      else if (!featureId && pageFeatureFromEdge.has(id)) {
+        featureId = pageFeatureFromEdge.get(id) ?? null
+      }
+      // Dedupe api calls
+      const rawCalls = apiCallsByPage.get(id) ?? []
+      const seenCall = new Set<string>()
+      const api_calls: Array<{ method: string; path: string }> = []
+      for (const c of rawCalls) {
+        const k = `${c.method.toUpperCase()} ${c.path}`
+        if (seenCall.has(k)) continue
+        seenCall.add(k)
+        api_calls.push({ method: c.method.toUpperCase(), path: c.path })
+      }
+      pages.push({
+        id,
+        label_id: str(n.label_id) || str(n.label) || route || id,
+        route_or_screen: route,
+        api_calls,
+        nav_to: navByPage.get(id),
+        area: str(n.area) || undefined,
+        feature_id: featureId,
+        source_file: 'graph.json',
+      })
+    } else if (kind === 'endpoint') {
+      const method = str(n.method) || 'GET'
+      const path = str(n.path)
+      if (!path) continue
+      endpoints.push({
+        id: str(n.id) || `${method} ${path}`,
+        method: method.toUpperCase(),
+        path,
+        domain_id: str(n.domain_id) || undefined,
+        label_id: str(n.label_id) || str(n.label) || undefined,
+        controller: str(n.controller) || undefined,
+        repo: str(n.repo) || undefined,
       })
     }
   }
-  return out
+
+  // Supplement endpoints from apis_by_feature when graph is thin for a feature
+  const apisByFeature = asRecord(bundle.apis_by_feature) ?? {}
+  const epKey = new Set(endpoints.map((e) => `${e.method.toUpperCase()} ${e.path}`))
+  for (const [featureId, list] of Object.entries(apisByFeature)) {
+    for (const item of asArray(list)) {
+      const a = asRecord(item)
+      if (!a) continue
+      const method = (str(a.method) || 'GET').toUpperCase()
+      const path = str(a.path)
+      if (!path) continue
+      const k = `${method} ${path}`
+      if (epKey.has(k)) continue
+      epKey.add(k)
+      endpoints.push({
+        id: str(a.id) || `${method} ${path}`,
+        method,
+        path,
+        domain_id: str(a.domain_id) || featureId,
+        label_id: str(a.label_id) || undefined,
+        repo: str(a.repo) || undefined,
+      })
+    }
+  }
+
+  // Flows: one project flow per project id (pages as nodes, nav edges)
+  const flows: KnowledgeFlow[] = []
+  const projectIds = new Set<string>()
+  const projectsWrap = asRecord(bundle.projects)
+  for (const p of asArray(projectsWrap?.projects)) {
+    const r = asRecord(p)
+    if (r) projectIds.add(str(r.id))
+  }
+  const pageById = new Map(pages.map((p) => [p.id, p]))
+  const pagesByProject = new Map<string, KnowledgePage[]>()
+  for (const item of asArray(graph.nodes)) {
+    const n = asRecord(item)
+    if (!n || str(n.kind) !== 'page') continue
+    const proj = str(n.project) || 'unknown'
+    projectIds.add(proj)
+    const page = pageById.get(str(n.id))
+    if (!page) continue
+    const list = pagesByProject.get(proj) ?? []
+    list.push(page)
+    pagesByProject.set(proj, list)
+  }
+  for (const proj of projectIds) {
+    if (!proj || proj === 'unknown') continue
+    const projPages = pagesByProject.get(proj) ?? []
+    const nodeIds = new Set(projPages.map((p) => p.id))
+    const nodes: KnowledgeFlowNode[] = projPages.map((p, i) => ({
+      id: p.id,
+      label_id: p.label_id,
+      feature_id: p.feature_id,
+      kind: 'screen',
+      sort_order: i,
+      source_ref: p.route_or_screen,
+    }))
+    const edges: KnowledgeFlowEdge[] = []
+    let ei = 0
+    for (const item of asArray(graph.edges)) {
+      const e = asRecord(item)
+      if (!e || str(e.kind) !== 'nav_to') continue
+      const from = str(e.from)
+      const to = str(e.to)
+      if (!nodeIds.has(from) || !nodeIds.has(to)) continue
+      edges.push({
+        id: str(e.id) || `${from}__${to}`,
+        from,
+        to,
+        kind: 'nav',
+        sort_order: ei++,
+      })
+    }
+    if (nodes.length > 0) {
+      flows.push({
+        id: proj,
+        project_id: proj,
+        kind: 'project',
+        nodes,
+        edges,
+        source: 'graph.json',
+      })
+    }
+  }
+
+  // Premium / lintas flow from data-bundle.premium
+  const premium = asRecord(bundle.premium)
+  if (premium && Array.isArray(premium.steps)) {
+    const steps = asArray(premium.steps)
+    const nodes: KnowledgeFlowNode[] = steps.map((s, i) => {
+      const r = asRecord(s) ?? {}
+      const id = `step-${str(r.n) || i + 1}`
+      return {
+        id,
+        label_id: str(r.title) || id,
+        kind: str(r.kind) || 'step',
+        sort_order: typeof r.n === 'number' ? r.n : i + 1,
+        meta: {
+          proj: r.proj,
+          api: r.api,
+          db: r.db,
+          file: r.file,
+          fields: r.fields,
+          st: r.st,
+        },
+      }
+    })
+    const edges: KnowledgeFlowEdge[] = []
+    for (let i = 0; i < nodes.length - 1; i++) {
+      edges.push({
+        id: `${nodes[i]!.id}__${nodes[i + 1]!.id}`,
+        from: nodes[i]!.id,
+        to: nodes[i + 1]!.id,
+        kind: 'sequence',
+        sort_order: i,
+      })
+    }
+    flows.push({
+      id: 'premium',
+      name: str(premium.name) || 'Pembelian Premium (lintas-sistem)',
+      desc: str(premium.desc) || undefined,
+      kind: 'lintas',
+      nodes,
+      edges,
+      steps,
+      source: 'data-bundle.json#premium',
+    })
+  }
+
+  // Units: optional from knowledge.json only (none in bare flow-data)
+  const units: KnowledgeUnit[] = []
+
+  const hasData =
+    byId.size > 0 || pages.length > 0 || endpoints.length > 0 || tasks.length > 0
+  return {
+    features: [...byId.values()],
+    pages,
+    endpoints,
+    tasks,
+    units,
+    flows,
+    source: {
+      kind: 'json_bundle',
+      detail: hasData
+        ? `deployed flow-data at ${dir} (data-bundle.json + graph.json)`
+        : `flow-data present but empty at ${dir}`,
+      bundlePath: dir,
+    },
+  }
 }
 
-function loadEndpointsFromBundle(dir: string): KnowledgeEndpoint[] {
-  const raw = readJsonFile(join(dir, 'ultimate', 'backend-endpoints.json'))
-  const out: KnowledgeEndpoint[] = []
-  for (const item of asArray(raw)) {
+function loadFromKnowledgeJsonFile(path: string, dir: string): KnowledgeCorpus {
+  const raw = readJsonFile(path)
+  const rec = asRecord(raw)
+  if (!rec) {
+    return emptyCorpus(dir, `knowledge.json unreadable at ${path}`)
+  }
+  // Accept either { features, pages, ... } or { corpus: { ... } }
+  const body = asRecord(rec.corpus) ?? rec
+  const features: KnowledgeFeature[] = []
+  for (const item of asArray(body.features)) {
+    const f = asRecord(item)
+    if (!f || !str(f.id)) continue
+    features.push({
+      id: str(f.id),
+      nama_id: str(f.nama_id) || str(f.id),
+      area: str(f.area) || undefined,
+      domain_bisnis: str(f.domain_bisnis) || undefined,
+      ringkasan_id: f.ringkasan_id == null ? null : str(f.ringkasan_id),
+      doc_md: f.doc_md == null ? null : str(f.doc_md),
+      screens: asArray(f.screens).map(str).filter(Boolean),
+      status: str(f.status) || undefined,
+      task_ids: asArray(f.task_ids).map(str).filter(Boolean),
+      project_ids: asArray(f.project_ids).map(str).filter(Boolean),
+      fc_refs: asArray(f.fc_refs).map(str).filter(Boolean),
+    })
+  }
+  const pages: KnowledgePage[] = []
+  for (const item of asArray(body.pages)) {
+    const p = asRecord(item)
+    if (!p || !str(p.id)) continue
+    const api_calls: Array<{ method: string; path: string }> = []
+    for (const c of asArray(p.api_calls)) {
+      const r = asRecord(c)
+      if (!r) continue
+      const path = str(r.path)
+      if (!path) continue
+      api_calls.push({ method: str(r.method) || 'GET', path })
+    }
+    const page: KnowledgePage = {
+      id: str(p.id),
+      label_id: str(p.label_id),
+      route_or_screen: str(p.route_or_screen),
+      api_calls,
+      nav_to: asArray(p.nav_to).map(str),
+      area: str(p.area) || undefined,
+      feature_id: p.feature_id == null ? null : str(p.feature_id),
+      source_file: 'knowledge.json',
+    }
+    pages.push(page)
+  }
+
+  const endpoints: KnowledgeEndpoint[] = []
+  for (const item of asArray(body.endpoints)) {
     const e = asRecord(item)
     if (!e) continue
     const method = str(e.method) || 'GET'
     const path = str(e.path)
     if (!path) continue
-    out.push({
+    endpoints.push({
       id: str(e.id) || `${method} ${path}`,
       method,
       path,
@@ -529,63 +866,26 @@ function loadEndpointsFromBundle(dir: string): KnowledgeEndpoint[] {
       repo: str(e.repo) || undefined,
     })
   }
-  return out
-}
 
-function loadTasksFromBundle(dir: string): KnowledgeTask[] {
-  const out: KnowledgeTask[] = []
-  for (const file of readdirSync(dir).filter((f) => f.startsWith('tasks-') && f.endsWith('.json'))) {
-    const raw = readJsonFile(join(dir, file))
-    const rec = asRecord(raw)
-    const projectId = str(rec?.project_id) || file.replace(/^tasks-/, '').replace(/\.json$/, '')
-    for (const item of asArray(rec?.tasks)) {
-      const t = asRecord(item)
-      if (!t) continue
-      const id = str(t.id)
-      if (!id) continue
-      out.push({
-        id,
-        judul_id: str(t.judul_id) || undefined,
-        verdict: str(t.verdict) || undefined,
-        feature_id: t.feature_id == null ? null : str(t.feature_id),
-        acceptance: t.acceptance,
-        evidence: t.evidence,
-        lifecycle_stage: str(t.lifecycle_stage) || undefined,
-        task_class: str(t.task_class) || undefined,
-        disposition: str(t.disposition) || undefined,
-        project_id: projectId,
-      })
-    }
-  }
-  // also raw tasks_prod if present
-  const prod = readJsonFile(join(dir, '_raw', 'tasks_prod.json'))
-  const seen = new Set(out.map((t) => t.id))
-  for (const item of asArray(prod)) {
+  const tasks: KnowledgeTask[] = []
+  for (const item of asArray(body.tasks)) {
     const t = asRecord(item)
-    if (!t) continue
-    const id = str(t.id ?? t.task_id)
-    if (!id || seen.has(id)) continue
-    out.push({
-      id,
-      judul_id: str(t.judul_id ?? t.title ?? t.name) || undefined,
-      verdict: str(t.verdict ?? t.parity_verdict) || undefined,
+    if (!t || !str(t.id)) continue
+    tasks.push({
+      id: str(t.id),
+      judul_id: str(t.judul_id) || undefined,
+      verdict: str(t.verdict) || undefined,
       feature_id: t.feature_id == null ? null : str(t.feature_id),
-      lifecycle_stage: str(t.lifecycle_stage) || undefined,
+      project_id: str(t.project_id) || undefined,
     })
   }
-  return out
-}
 
-function loadUnitsFromBundle(dir: string): KnowledgeUnit[] {
-  const raw = readJsonFile(join(dir, '_raw', 'feature_units.json'))
-  const out: KnowledgeUnit[] = []
-  for (const item of asArray(raw)) {
+  const units: KnowledgeUnit[] = []
+  for (const item of asArray(body.units)) {
     const u = asRecord(item)
-    if (!u) continue
-    const unitId = str(u.unit_id)
-    if (!unitId) continue
-    out.push({
-      unit_id: unitId,
+    if (!u || !str(u.unit_id)) continue
+    units.push({
+      unit_id: str(u.unit_id),
       feature_contract_id: u.feature_contract_id == null ? null : str(u.feature_contract_id),
       unit_type: u.unit_type == null ? null : str(u.unit_type),
       identifier: u.identifier == null ? null : str(u.identifier),
@@ -595,74 +895,233 @@ function loadUnitsFromBundle(dir: string): KnowledgeUnit[] {
       repo: u.repo == null ? null : str(u.repo),
     })
   }
-  return out
+
+  const flows: KnowledgeFlow[] = []
+  for (const item of asArray(body.flows)) {
+    const f = asRecord(item)
+    if (!f || !str(f.id)) continue
+    flows.push({
+      id: str(f.id),
+      project_id: str(f.project_id) || undefined,
+      name: str(f.name) || undefined,
+      desc: str(f.desc) || undefined,
+      kind: str(f.kind) === 'lintas' ? 'lintas' : 'project',
+      nodes: asArray(f.nodes).map((n, i) => {
+        const r = asRecord(n) ?? {}
+        return {
+          id: str(r.id) || `n-${i}`,
+          label_id: str(r.label_id) || str(r.id) || `n-${i}`,
+          feature_id: r.feature_id == null ? null : str(r.feature_id),
+          kind: str(r.kind) || 'screen',
+          sort_order: typeof r.sort_order === 'number' ? r.sort_order : i,
+        }
+      }),
+      edges: asArray(f.edges).map((e, i) => {
+        const r = asRecord(e) ?? {}
+        return {
+          id: str(r.id) || `e-${i}`,
+          from: str(r.from),
+          to: str(r.to),
+          kind: str(r.kind) || 'nav',
+          sort_order: typeof r.sort_order === 'number' ? r.sort_order : i,
+        }
+      }),
+      source: 'knowledge.json',
+    })
+  }
+
+  return {
+    features,
+    pages,
+    endpoints,
+    tasks,
+    units,
+    flows,
+    source: {
+      kind: 'json_bundle',
+      detail: `knowledge.json at ${path}`,
+      bundlePath: dir,
+    },
+  }
 }
 
-function loadFlowsFromBundle(dir: string): KnowledgeFlow[] {
-  const out: KnowledgeFlow[] = []
+function emptyCorpus(bundlePath: string, detail: string): KnowledgeCorpus {
+  return {
+    features: [],
+    pages: [],
+    endpoints: [],
+    tasks: [],
+    units: [],
+    flows: [],
+    source: { kind: 'json_bundle', detail, bundlePath },
+  }
+}
+
+/** Legacy multi-file DESIGN-CANON layout (features-*.json) — no hardcoded absolute path. */
+function loadFromLegacyMultiFileDir(dir: string): KnowledgeCorpus {
+  const byId = new Map<string, KnowledgeFeature>()
+  let featureFiles = 0
+  try {
+    featureFiles = readdirSync(dir).filter((f) => f.startsWith('features-') && f.endsWith('.json')).length
+  } catch {
+    return emptyCorpus(dir, `cannot read dir: ${dir}`)
+  }
+  if (featureFiles === 0) {
+    return emptyCorpus(dir, `no flow-data or legacy features-*.json at ${dir}`)
+  }
+
+  for (const file of readdirSync(dir).filter((f) => f.startsWith('features-') && f.endsWith('.json'))) {
+    const raw = readJsonFile(join(dir, file))
+    const rec = asRecord(raw)
+    const projectId = str(rec?.project_id) || file.replace(/^features-/, '').replace(/\.json$/, '')
+    for (const item of asArray(rec?.features)) {
+      const f = asRecord(item)
+      if (!f) continue
+      const id = str(f.id)
+      if (!id) continue
+      const prev = byId.get(id)
+      const screens = asArray(f.screens).map(str).filter(Boolean)
+      const taskIds = asArray(f.task_ids).map(str).filter(Boolean)
+      byId.set(id, {
+        id,
+        nama_id: str(f.nama_id) || prev?.nama_id || id,
+        area: str(f.area) || prev?.area,
+        domain_bisnis: str(f.domain_bisnis) || prev?.domain_bisnis || str(f.area) || undefined,
+        ringkasan_id: str(f.ringkasan_id) || prev?.ringkasan_id || null,
+        doc_md: str(f.doc_md) || prev?.doc_md || null,
+        screens: [...new Set([...(prev?.screens ?? []), ...screens])],
+        status: str(f.status) || prev?.status,
+        task_ids: [...new Set([...(prev?.task_ids ?? []), ...taskIds])],
+        project_ids: [...new Set([...(prev?.project_ids ?? []), projectId])],
+      })
+    }
+  }
+
+  const pages: KnowledgePage[] = []
+  const ultimate = join(dir, 'ultimate')
+  if (existsSync(ultimate)) {
+    for (const file of readdirSync(ultimate).filter(
+      (f) => f.startsWith('pages-') && f.endsWith('.json') && !f.endsWith('.meta.json'),
+    )) {
+      for (const item of asArray(readJsonFile(join(ultimate, file)))) {
+        const p = asRecord(item)
+        if (!p) continue
+        pages.push({
+          id: str(p.id),
+          label_id: str(p.label_id),
+          route_or_screen: str(p.route_or_screen),
+          api_calls: asArray(p.api_calls)
+            .map((c) => {
+              const r = asRecord(c)
+              if (!r) return null
+              return { method: str(r.method) || 'GET', path: str(r.path) }
+            })
+            .filter((x): x is { method: string; path: string } => !!x && !!x.path),
+          nav_to: asArray(p.nav_to).map(str),
+          area: str(p.area) || undefined,
+          feature_id: p.feature_id == null ? null : str(p.feature_id),
+          source_file: file,
+        })
+      }
+    }
+  }
+
+  const endpoints: KnowledgeEndpoint[] = []
+  for (const item of asArray(readJsonFile(join(dir, 'ultimate', 'backend-endpoints.json')))) {
+    const e = asRecord(item)
+    if (!e) continue
+    const method = str(e.method) || 'GET'
+    const path = str(e.path)
+    if (!path) continue
+    endpoints.push({
+      id: str(e.id) || `${method} ${path}`,
+      method,
+      path,
+      domain_id: str(e.domain_id) || undefined,
+      label_id: str(e.label_id) || undefined,
+      controller: str(e.controller) || undefined,
+      repo: str(e.repo) || undefined,
+    })
+  }
+
+  const tasks: KnowledgeTask[] = []
+  for (const file of readdirSync(dir).filter((f) => f.startsWith('tasks-') && f.endsWith('.json'))) {
+    const raw = readJsonFile(join(dir, file))
+    const rec = asRecord(raw)
+    const projectId = str(rec?.project_id) || file.replace(/^tasks-/, '').replace(/\.json$/, '')
+    for (const item of asArray(rec?.tasks)) {
+      const t = asRecord(item)
+      if (!t) continue
+      const id = str(t.id)
+      if (!id) continue
+      tasks.push({
+        id,
+        judul_id: str(t.judul_id) || undefined,
+        verdict: str(t.verdict) || undefined,
+        feature_id: t.feature_id == null ? null : str(t.feature_id),
+        project_id: projectId,
+      })
+    }
+  }
+
+  const units: KnowledgeUnit[] = []
+  for (const item of asArray(readJsonFile(join(dir, '_raw', 'feature_units.json')))) {
+    const u = asRecord(item)
+    if (!u || !str(u.unit_id)) continue
+    units.push({
+      unit_id: str(u.unit_id),
+      feature_contract_id: u.feature_contract_id == null ? null : str(u.feature_contract_id),
+      unit_type: u.unit_type == null ? null : str(u.unit_type),
+      identifier: u.identifier == null ? null : str(u.identifier),
+      anchor: u.anchor == null ? null : str(u.anchor),
+      notes: u.notes == null ? null : str(u.notes),
+      coverage_status: u.coverage_status == null ? null : str(u.coverage_status),
+      repo: u.repo == null ? null : str(u.repo),
+    })
+  }
+
+  const flows: KnowledgeFlow[] = []
   for (const file of readdirSync(dir).filter((f) => f.startsWith('flow-') && f.endsWith('.json'))) {
     const raw = readJsonFile(join(dir, file))
     const rec = asRecord(raw)
     if (!rec) continue
     const baseId = file.replace(/^flow-/, '').replace(/\.json$/, '')
-
     if (Array.isArray(rec.nodes) && Array.isArray(rec.edges)) {
-      const nodes: KnowledgeFlowNode[] = asArray(rec.nodes).map((n, i) => {
-        const r = asRecord(n) ?? {}
-        const id = str(r.id ?? r.node_id) || `n-${i}`
-        return {
-          id,
-          label_id: str(r.label_id) || id,
-          feature_id: r.feature_id == null ? null : str(r.feature_id),
-          kind: str(r.kind) || 'screen',
-          status: str(r.status) || undefined,
-          sort_order: typeof r.sort_order === 'number' ? r.sort_order : i,
-          layout_col: typeof r.layout_col === 'number' ? r.layout_col : 0,
-          layout_row: typeof r.layout_row === 'number' ? r.layout_row : i,
-          source_ref: r.source_ref == null ? null : str(r.source_ref),
-        }
-      })
-      const edges: KnowledgeFlowEdge[] = asArray(rec.edges).map((e, i) => {
-        const r = asRecord(e) ?? {}
-        return {
-          id: str(r.id ?? r.edge_id) || `e-${i}`,
-          from: str(r.from ?? r.from_node),
-          to: str(r.to ?? r.to_node),
-          kind: str(r.kind ?? r.edge_kind) || 'nav',
-          sort_order: typeof r.sort_order === 'number' ? r.sort_order : i,
-        }
-      })
-      out.push({
+      flows.push({
         id: baseId,
         project_id: str(rec.project_id) || baseId,
         kind: 'project',
-        nodes,
-        edges,
-        stats: (asRecord(rec.stats) as Record<string, unknown> | null) ?? undefined,
-        source: str(rec.source) || file,
+        nodes: asArray(rec.nodes).map((n, i) => {
+          const r = asRecord(n) ?? {}
+          return {
+            id: str(r.id ?? r.node_id) || `n-${i}`,
+            label_id: str(r.label_id) || str(r.id) || `n-${i}`,
+            feature_id: r.feature_id == null ? null : str(r.feature_id),
+            kind: str(r.kind) || 'screen',
+            sort_order: typeof r.sort_order === 'number' ? r.sort_order : i,
+          }
+        }),
+        edges: asArray(rec.edges).map((e, i) => {
+          const r = asRecord(e) ?? {}
+          return {
+            id: str(r.id ?? r.edge_id) || `e-${i}`,
+            from: str(r.from ?? r.from_node),
+            to: str(r.to ?? r.to_node),
+            kind: str(r.kind ?? r.edge_kind) || 'nav',
+            sort_order: typeof r.sort_order === 'number' ? r.sort_order : i,
+          }
+        }),
+        source: file,
       })
-      continue
-    }
-
-    // lintas-style (e.g. flow-premium.json): name/desc/steps → synthetic graph
-    if (Array.isArray(rec.steps)) {
+    } else if (Array.isArray(rec.steps)) {
       const steps = asArray(rec.steps)
       const nodes: KnowledgeFlowNode[] = steps.map((s, i) => {
         const r = asRecord(s) ?? {}
-        const id = `step-${str(r.n) || i + 1}`
         return {
-          id,
-          label_id: str(r.title) || id,
+          id: `step-${str(r.n) || i + 1}`,
+          label_id: str(r.title) || `step-${i + 1}`,
           kind: str(r.kind) || 'step',
           sort_order: typeof r.n === 'number' ? r.n : i + 1,
-          meta: {
-            proj: r.proj,
-            api: r.api,
-            db: r.db,
-            file: r.file,
-            fields: r.fields,
-            st: r.st,
-          },
         }
       })
       const edges: KnowledgeFlowEdge[] = []
@@ -675,7 +1134,7 @@ function loadFlowsFromBundle(dir: string): KnowledgeFlow[] {
           sort_order: i,
         })
       }
-      out.push({
+      flows.push({
         id: baseId,
         name: str(rec.name) || baseId,
         desc: str(rec.desc) || undefined,
@@ -687,39 +1146,46 @@ function loadFlowsFromBundle(dir: string): KnowledgeFlow[] {
       })
     }
   }
-  return out
-}
 
-/** Load corpus purely from a DESIGN-CANON-style JSON directory. */
-export function loadKnowledgeCorpusFromJson(bundlePath: string): KnowledgeCorpus {
-  if (!existsSync(bundlePath)) {
-    return {
-      features: [],
-      pages: [],
-      endpoints: [],
-      tasks: [],
-      units: [],
-      flows: [],
-      source: {
-        kind: 'json_bundle',
-        detail: `bundle path missing: ${bundlePath}`,
-        bundlePath,
-      },
-    }
-  }
   return {
-    features: loadFeaturesFromBundle(bundlePath),
-    pages: loadPagesFromBundle(bundlePath),
-    endpoints: loadEndpointsFromBundle(bundlePath),
-    tasks: loadTasksFromBundle(bundlePath),
-    units: loadUnitsFromBundle(bundlePath),
-    flows: loadFlowsFromBundle(bundlePath),
+    features: [...byId.values()],
+    pages,
+    endpoints,
+    tasks,
+    units,
+    flows,
     source: {
       kind: 'json_bundle',
-      detail: `JSON bundle at ${bundlePath}`,
-      bundlePath,
+      detail: `legacy multi-file JSON bundle at ${dir}`,
+      bundlePath: dir,
     },
   }
+}
+
+/**
+ * Load corpus from a directory that ships with the app.
+ * Prefers public/flow-data (data-bundle.json + graph.json [+ optional knowledge.json]).
+ * Falls back to legacy multi-file layout when present. Never requires absolute job paths.
+ */
+export function loadKnowledgeCorpusFromJson(bundlePath: string): KnowledgeCorpus {
+  if (!bundlePath || !existsSync(bundlePath)) {
+    return emptyCorpus(bundlePath || '(empty)', `bundle path missing: ${bundlePath}`)
+  }
+
+  // File path → treat as knowledge.json
+  if (bundlePath.endsWith('.json') && existsSync(bundlePath)) {
+    const dir = bundlePath.replace(/[/\\][^/\\]+$/, '') || '.'
+    return loadFromKnowledgeJsonFile(bundlePath, dir)
+  }
+
+  const flowBundle = join(bundlePath, 'data-bundle.json')
+  const flowGraph = join(bundlePath, 'graph.json')
+  const flowKnowledge = join(bundlePath, 'knowledge.json')
+  if (existsSync(flowBundle) || existsSync(flowGraph) || existsSync(flowKnowledge)) {
+    return loadFromFlowDataDir(bundlePath)
+  }
+
+  return loadFromLegacyMultiFileDir(bundlePath)
 }
 
 // ---------------------------------------------------------------------------
@@ -965,7 +1431,7 @@ async function tryLoadKnowledgeCorpusFromMysql(): Promise<KnowledgeCorpus | null
     }
 
     // Merge JSON for missing layers / enrichment (always safe offline fallback data).
-    const json = loadKnowledgeCorpusFromJson(DEFAULT_KNOWLEDGE_BUNDLE_PATH)
+    const json = loadKnowledgeCorpusFromJson(resolveKnowledgeBundlePath())
     // Prefer MySQL features when non-empty; still merge screens/task_ids/doc from JSON.
     const featById = new Map(features.map((f) => [f.id, f]))
     for (const jf of json.features) {
@@ -1027,7 +1493,7 @@ async function tryLoadKnowledgeCorpusFromMysql(): Promise<KnowledgeCorpus | null
         kind: 'mysql',
         detail: `MySQL tables present: ${[...tables].sort().join(', ')}; ${pageNote}`,
         tablesPresent: [...tables].sort(),
-        bundlePath: DEFAULT_KNOWLEDGE_BUNDLE_PATH,
+        bundlePath: resolveKnowledgeBundlePath(),
       },
     }
   } catch {
@@ -1059,7 +1525,8 @@ export function resetKnowledgeCorpusCache(): void {
 }
 
 /**
- * Resolve active corpus: injected → MySQL (best-effort) → JSON bundle.
+ * Resolve active corpus: injected → MySQL (best-effort) → deployed flow-data JSON.
+ * Handlers never call remote HTTP; auth is solely the MCP tools/call gate (board:read).
  */
 export async function resolveKnowledgeCorpus(opts?: {
   bundlePath?: string
@@ -1067,7 +1534,7 @@ export async function resolveKnowledgeCorpus(opts?: {
 }): Promise<KnowledgeCorpus> {
   if (injectedCorpus) return injectedCorpus
 
-  const bundlePath = opts?.bundlePath ?? DEFAULT_KNOWLEDGE_BUNDLE_PATH
+  const bundlePath = resolveKnowledgeBundlePath(opts?.bundlePath)
   const preferMysql = opts?.preferMysql !== false
   const key = `${preferMysql ? 'mysql|' : 'json|'}${bundlePath}`
   if (cachedCorpus && cacheKey === key) return cachedCorpus
@@ -1260,12 +1727,30 @@ export async function searchKnowledge(
 
   hits.sort((a, b) => b.score - a.score || a.type.localeCompare(b.type) || a.id.localeCompare(b.id))
 
+  const limited = hits.slice(0, limit)
+  const corpusNonEmpty =
+    corpus.features.length +
+      corpus.pages.length +
+      corpus.endpoints.length +
+      corpus.tasks.length >
+    0
+  const productHit = limited.some(
+    (h) =>
+      h.type === 'feature' ||
+      h.type === 'page' ||
+      h.type === 'endpoint' ||
+      h.type === 'task' ||
+      h.type === 'unit' ||
+      h.type === 'flow',
+  )
+
   return {
     ok: true,
     query: q,
     expandedTerms: terms,
-    hits: hits.slice(0, limit),
+    hits: limited,
     source: corpus.source,
+    searchReal: corpusNonEmpty && productHit && limited.length > 0,
   }
 }
 
@@ -1660,7 +2145,13 @@ function tryRegisterTool(
 /**
  * Register product-knowledge tools on an McpServer.
  * Safe if search_knowledge already exists (domain-knowledge): skips duplicate.
- * Note: live tools/call still requires MCP_TOOL_SPECS entries in rbac (separate packet).
+ *
+ * Auth semantics (same for all four tools):
+ *   authenticated MCP read with board:read — identical class to search_knowledge.
+ *   Handlers are pure (corpus only); they never call HTTP or set Authorization headers.
+ *   A 401 on tools/call for get_feature_bundle with a valid bearer means the tool is
+ *   missing from MCP_TOOL_SPECS (unknown tool → AUTHORIZATION_REQUIRED), not a bad
+ *   internal header. See KNOWLEDGE_TOOL_AUTH_SPECS for the required catalog entries.
  */
 export function registerKnowledgeTools(server: McpServer): {
   registered: string[]
@@ -1674,6 +2165,18 @@ export function registerKnowledgeTools(server: McpServer): {
     else skipped.push(name)
   }
 
+  // Pure handlers — no HTTP proxy, no secondary auth. Same call shape for every tool.
+  const runSearch = async (args: Record<string, unknown>) =>
+    searchKnowledge(str(args.query), {
+      limit: typeof args.limit === 'number' ? args.limit : undefined,
+    })
+  const runFeatureBundle = async (args: Record<string, unknown>) =>
+    getFeatureBundle(str(args.idOrName ?? args.id ?? args.name))
+  const runEndpointBundle = async (args: Record<string, unknown>) =>
+    getEndpointBundle(str(args.methodPath ?? args.path))
+  const runFlow = async (args: Record<string, unknown>) =>
+    getFlow(str(args.project ?? args.projectOrLintas))
+
   mark(
     'search_knowledge',
     tryRegisterTool(
@@ -1683,16 +2186,14 @@ export function registerKnowledgeTools(server: McpServer): {
         title: 'Search product knowledge',
         description:
           'Search Task Manager product knowledge across features (label/ringkasan/doc_md), ' +
-          'pages, endpoints, tasks, units, flows, and EN↔ID aliases. Ranked hits with type.',
+          'pages, endpoints, tasks, units, flows, and EN↔ID aliases. Ranked hits with type. ' +
+          'Auth: board:read (same as get_feature_bundle).',
         inputSchema: {
           query: z.string().describe('Search query (EN or ID), e.g. "period tracker" or "/premium"'),
           limit: z.number().int().optional().describe('Max hits (default 25)'),
         },
       },
-      async (args) =>
-        searchKnowledge(str(args.query), {
-          limit: typeof args.limit === 'number' ? args.limit : undefined,
-        }),
+      runSearch,
     ),
   )
 
@@ -1705,14 +2206,15 @@ export function registerKnowledgeTools(server: McpServer): {
         title: 'Get feature bundle',
         description:
           'One-shot complete feature bundle: ringkasan, doc_md, pages/screens, endpoints, ' +
-          'tasks+verdict, units, related features. Accepts FEAT-* id or human name.',
+          'tasks+verdict, units, related features. Accepts FEAT-* id or human name. ' +
+          'Auth: board:read (same as search_knowledge). Pure corpus — no HTTP.',
         inputSchema: {
           idOrName: z
             .string()
             .describe('Feature id (FEAT-SIKLUS-HAID) or name ("Pelacak Haid", "period tracker")'),
         },
       },
-      async (args) => getFeatureBundle(str(args.idOrName)),
+      runFeatureBundle,
     ),
   )
 
@@ -1732,7 +2234,7 @@ export function registerKnowledgeTools(server: McpServer): {
             .describe('METHOD /path or bare /path, e.g. "GET /api/v1/..."'),
         },
       },
-      async (args) => getEndpointBundle(str(args.methodPath)),
+      runEndpointBundle,
     ),
   )
 
@@ -1745,14 +2247,14 @@ export function registerKnowledgeTools(server: McpServer): {
         title: 'Get navigation/data flow graph',
         description:
           'Return nodes+edges for a project flow (rn|web-member|panel-sales|affiliate|backend) ' +
-          'or a lintas (cross-system) flow such as premium.',
+          'or a lintas (cross-system) flow such as premium. Auth: board:read.',
         inputSchema: {
           project: z
             .string()
             .describe('Project id or lintas key: rn, web-member, sales, affiliate, backend, premium, lintas'),
         },
       },
-      async (args) => getFlow(str(args.project ?? args.projectOrLintas)),
+      runFlow,
     ),
   )
 

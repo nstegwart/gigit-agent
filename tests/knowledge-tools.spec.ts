@@ -3,16 +3,20 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
 import {
   DEFAULT_KNOWLEDGE_BUNDLE_PATH,
+  DEPLOYED_FLOW_DATA_REL,
   expandQueryTerms,
   getEndpointBundle,
   getFeatureBundle,
   getFlow,
+  KNOWLEDGE_TOOL_AUTH_SPECS,
   listKnowledgeToolNames,
   loadKnowledgeCorpusFromJson,
   resetKnowledgeCorpusCache,
+  resolveKnowledgeBundlePath,
   searchKnowledge,
   setKnowledgeCorpusForTests,
   type KnowledgeCorpus,
@@ -213,6 +217,7 @@ describe('search_knowledge (fixture)', () => {
     expect(res.ok).toBe(true)
     if (!res.ok) return
     expect(res.hits.length).toBeGreaterThan(0)
+    expect(res.searchReal).toBe(true)
     const featureHit = res.hits.find((h) => h.type === 'feature' && h.id === 'FEAT-SIKLUS-HAID')
     expect(featureHit).toBeTruthy()
     expect(featureHit!.score).toBeGreaterThan(40)
@@ -319,29 +324,122 @@ describe('get_flow (fixture)', () => {
   })
 })
 
-describe('JSON bundle loader (optional live path)', () => {
-  it('loads DESIGN-CANON-V3 when present and finds period tracker', async () => {
-    if (!existsSync(DEFAULT_KNOWLEDGE_BUNDLE_PATH)) {
-      // Offline CI without bundle — skip soft
-      expect(true).toBe(true)
-      return
-    }
-    const corpus = loadKnowledgeCorpusFromJson(DEFAULT_KNOWLEDGE_BUNDLE_PATH)
-    expect(corpus.features.length).toBeGreaterThan(10)
-    expect(corpus.source.kind).toBe('json_bundle')
-    const res = await searchKnowledge('period tracker', { corpus, limit: 15 })
-    expect(res.ok).toBe(true)
-    if (!res.ok) return
-    const featureHit = res.hits.find(
-      (h) => h.type === 'feature' && (h.id === 'FEAT-SIKLUS-HAID' || /haid|period/i.test(h.label)),
-    )
-    expect(featureHit, JSON.stringify(res.hits.slice(0, 5), null, 2)).toBeTruthy()
+describe('deployed public/flow-data corpus (no absolute external paths)', () => {
+  const flowDataDir = join(process.cwd(), DEPLOYED_FLOW_DATA_REL)
 
-    const bundle = await getFeatureBundle('FEAT-SIKLUS-HAID', { corpus })
-    expect(bundle.ok).toBe(true)
-    if (!bundle.ok) return
-    expect(bundle.feature.nama_id).toMatch(/haid|period/i)
-    expect((bundle.feature.screens ?? []).length + bundle.pages.length).toBeGreaterThan(0)
-    expect(bundle.tasks.length).toBeGreaterThan(0)
+  it('default bundle path resolves under public/flow-data (not tm-wave0 job path)', () => {
+    const resolved = resolveKnowledgeBundlePath()
+    expect(resolved).toContain(join('public', 'flow-data'))
+    expect(resolved.includes('/home/user/.claude')).toBe(false)
+    expect(resolved.includes('tm-wave0')).toBe(false)
+    // DEFAULT constant must also avoid absolute VPS job paths
+    expect(DEFAULT_KNOWLEDGE_BUNDLE_PATH.includes('/home/user/.claude')).toBe(false)
+    expect(DEFAULT_KNOWLEDGE_BUNDLE_PATH.includes('tm-wave0')).toBe(false)
   })
+
+  it('auth specs for get_feature_bundle match search_knowledge (board:read)', () => {
+    const search = KNOWLEDGE_TOOL_AUTH_SPECS.find((s) => s.name === 'search_knowledge')
+    const bundle = KNOWLEDGE_TOOL_AUTH_SPECS.find((s) => s.name === 'get_feature_bundle')
+    expect(search).toBeTruthy()
+    expect(bundle).toBeTruthy()
+    expect(search!.kind).toBe('read')
+    expect(bundle!.kind).toBe('read')
+    expect([...search!.scopes]).toEqual([...bundle!.scopes])
+    expect(search!.scopes).toContain('board:read')
+  })
+
+  it(
+    'loads corpus from public/flow-data and finds period tracker',
+    async () => {
+      expect(existsSync(join(flowDataDir, 'data-bundle.json'))).toBe(true)
+      expect(existsSync(join(flowDataDir, 'graph.json'))).toBe(true)
+      // Prefer deployable knowledge.json when present (no absolute external paths)
+      const hasKnowledge = existsSync(join(flowDataDir, 'knowledge.json'))
+
+      const corpus = loadKnowledgeCorpusFromJson(flowDataDir)
+      expect(corpus.source.kind).toBe('json_bundle')
+      expect(corpus.source.bundlePath).toBe(flowDataDir)
+      expect(corpus.source.detail).toMatch(/flow-data|knowledge\.json/)
+      // Must not claim a missing absolute job path
+      expect(corpus.source.detail.includes('/home/user/.claude')).toBe(false)
+      expect(String(corpus.source.bundlePath ?? '')).not.toMatch(
+        /\/home\/user\/\.claude|tm-wave0/,
+      )
+      if (hasKnowledge) {
+        expect(corpus.source.detail).toMatch(/knowledge\.json/)
+      }
+      expect(corpus.features.length).toBeGreaterThan(10)
+      expect(corpus.pages.length).toBeGreaterThan(10)
+      expect(corpus.endpoints.length).toBeGreaterThan(10)
+      expect(corpus.tasks.length).toBeGreaterThan(10)
+
+      const res = await searchKnowledge('period tracker', { corpus, limit: 15 })
+      expect(res.ok).toBe(true)
+      if (!res.ok) return
+      const featureHit = res.hits.find(
+        (h) =>
+          h.type === 'feature' &&
+          (h.id === 'FEAT-SIKLUS-HAID' || /haid|period/i.test(h.label)),
+      )
+      expect(featureHit, JSON.stringify(res.hits.slice(0, 5), null, 2)).toBeTruthy()
+      // Real data signal for clients (non-empty hits + json_bundle source)
+      expect(res.hits.length).toBeGreaterThan(0)
+      expect(res.searchReal).toBe(true)
+      expect(res.source.kind).toBe('json_bundle')
+      expect(res.source.bundlePath).toBe(flowDataDir)
+      expect(String(res.source.bundlePath ?? '')).not.toMatch(/\/home\/user\/\.claude|tm-wave0/)
+
+      const bundle = await getFeatureBundle('FEAT-SIKLUS-HAID', { corpus })
+      expect(bundle.ok).toBe(true)
+      if (!bundle.ok) return
+      expect(bundle.feature.id).toBe('FEAT-SIKLUS-HAID')
+      expect(bundle.feature.nama_id).toMatch(/haid|period/i)
+      expect((bundle.feature.screens ?? []).length + bundle.pages.length).toBeGreaterThan(0)
+      expect(bundle.tasks.length).toBeGreaterThan(0)
+      // Handler is pure — ok:true, never auth error envelope (live 401 is MCP catalog/RBAC, not handler)
+      expect((bundle as { code?: string }).code).toBeUndefined()
+      expect((bundle as { error?: string }).error).toBeUndefined()
+      expect(bundle.ok).toBe(true)
+    },
+    30_000,
+  )
+
+  it(
+    'get_feature_bundle by human name uses same pure corpus path as search',
+    async () => {
+      const corpus = loadKnowledgeCorpusFromJson(flowDataDir)
+      const res = await getFeatureBundle('period tracker', { corpus })
+      expect(res.ok).toBe(true)
+      if (!res.ok) return
+      expect(res.feature.id).toBe('FEAT-SIKLUS-HAID')
+      expect(res.source.kind).toBe('json_bundle')
+      // Same board:read auth class as search_knowledge (no secondary HTTP/auth in handler)
+      const searchSpec = KNOWLEDGE_TOOL_AUTH_SPECS.find((s) => s.name === 'search_knowledge')!
+      const bundleSpec = KNOWLEDGE_TOOL_AUTH_SPECS.find((s) => s.name === 'get_feature_bundle')!
+      expect(bundleSpec.scopes).toEqual(searchSpec.scopes)
+      expect(bundleSpec.kind).toBe(searchSpec.kind)
+    },
+    30_000,
+  )
+
+  it(
+    'refuses absolute VPS job paths even when TM_KNOWLEDGE_BUNDLE_PATH is poisoned',
+    () => {
+      const prev = process.env.TM_KNOWLEDGE_BUNDLE_PATH
+      try {
+        process.env.TM_KNOWLEDGE_BUNDLE_PATH =
+          '/home/user/.claude/jobs/3c5adda9/tmp/tm-wave0/DESIGN-CANON-V3/data'
+        const resolved = resolveKnowledgeBundlePath()
+        expect(resolved).toContain(join('public', 'flow-data'))
+        expect(resolved.includes('/home/user/.claude')).toBe(false)
+        expect(resolved.includes('tm-wave0')).toBe(false)
+        const corpus = loadKnowledgeCorpusFromJson(resolved)
+        expect(corpus.features.length).toBeGreaterThan(10)
+      } finally {
+        if (prev === undefined) delete process.env.TM_KNOWLEDGE_BUNDLE_PATH
+        else process.env.TM_KNOWLEDGE_BUNDLE_PATH = prev
+      }
+    },
+    30_000,
+  )
 })

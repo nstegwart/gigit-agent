@@ -112,7 +112,7 @@
       {
         "n": 2,
         "proj": "backend",
-        "title": "Simpan ke database",
+        "title": "Save to database",
         "kind": "db",
         "file": "rebuild-backend/database/migrations/..ensure_product_packages_data_model_schema.php",
         "api": "—",
@@ -129,7 +129,7 @@
       {
         "n": 3,
         "proj": "web",
-        "title": "/premium — pricing muncul",
+        "title": "/premium — pricing appears",
         "kind": "page",
         "file": "mfs-web-original-upgrade/src/app/premium/page.tsx",
         "api": "GET /api/web/v1/premium/packages",
@@ -194,7 +194,7 @@
       {
         "n": 7,
         "proj": "backend",
-        "title": "Webhook proses pempaymentan",
+        "title": "Payment webhook processing",
         "kind": "webhook",
         "file": "rebuild-backend/routes/api/payments_subscriptions__webhook.php → CleengWebhookController",
         "api": "POST /api/v1/webhook/payment-notification · /finish",
@@ -210,7 +210,7 @@
       {
         "n": 8,
         "proj": "web",
-        "title": "Halaman Success",
+        "title": "Success page",
         "kind": "page",
         "file": "mfs-web-original-upgrade/src/app/premium/success/…",
         "api": "GET /api/web/v1/premium/status",
@@ -225,7 +225,7 @@
       {
         "n": 9,
         "proj": "sales",
-        "title": "Ter-record di Sales",
+        "title": "Recorded in Sales",
         "kind": "record",
         "file": "sales-rebuild/src/…/transaction/AdminTransactionClientPage.tsx",
         "api": "GET /api/admin/transactions",
@@ -243,7 +243,7 @@
       {
         "n": 10,
         "proj": "affiliate",
-        "title": "Ter-record di Affiliate (jika via affiliate)",
+        "title": "Recorded in Affiliate (if via affiliate)",
         "kind": "record",
         "file": "rebuild-backend/app/Models/UserInvoiceReferral.php · Affiliate/PayoutsProfile/UserInvoice.php",
         "api": "GET /api/affiliate/referrals",
