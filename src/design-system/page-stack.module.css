@@ -1,0 +1,236 @@
+/* Direction B page stack — tokens only (no hex, no shadow). */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4, 16px);
+  min-width: 0;
+  width: 100%;
+  color: var(--text);
+}
+
+.kpiRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--sp-2, 8px);
+  min-width: 0;
+}
+
+.toolbarSlot {
+  padding: var(--sp-3, 12px) var(--sp-4, 16px) 0;
+  min-width: 0;
+}
+
+.pagerSlot {
+  padding: var(--sp-3, 12px) var(--sp-4, 16px);
+  border-top: 1px solid var(--border);
+  min-width: 0;
+}
+
+.filterSep {
+  display: inline-block;
+  width: 1px;
+  align-self: stretch;
+  min-height: 1.5rem;
+  background: var(--border);
+  margin: 0 var(--sp-1, 4px);
+}
+
+.subtitleRow {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  min-width: 0;
+}
+
+.grid2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: var(--sp-4, 16px);
+  min-width: 0;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4, 16px);
+  min-width: 0;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3, 12px);
+  min-width: 0;
+}
+
+.bodyText {
+  margin: 0;
+  font-size: var(--type-body-size, 14px);
+  line-height: 1.5;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.metaRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1, 4px);
+  padding: var(--sp-2, 8px) 0;
+  border-bottom: 1px solid var(--border-soft, var(--border));
+  min-width: 0;
+}
+
+.metaRow:last-child {
+  border-bottom: 0;
+}
+
+.metaKey {
+  font-size: var(--type-caption-size, 12px);
+  font-weight: 600;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
+
+.metaVal {
+  font-size: var(--type-body-size, 14px);
+  color: var(--text);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2, 8px);
+  align-items: center;
+  min-width: 0;
+}
+
+.depLink {
+  text-decoration: none;
+  color: inherit;
+}
+
+.techDl {
+  display: grid;
+  grid-template-columns: minmax(7rem, 11rem) minmax(0, 1fr);
+  gap: var(--sp-2, 8px) var(--sp-3, 12px);
+  margin: 0;
+  font-size: var(--type-small-size, 13px);
+}
+
+.techDl dt {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.techDl dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: var(--type-caption-size, 12px);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+.rowLink {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1, 4px);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.rowLink:focus-visible {
+  outline: 2px solid var(--border-focus, var(--text));
+  outline-offset: 2px;
+  border-radius: var(--r-sm, 6px);
+}
+
+.taskTitle {
+  font-size: var(--type-body-size, 14px);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.taskMeta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  min-width: 0;
+}
+
+.domainHint {
+  font-size: var(--type-caption-size, 12px);
+  color: var(--text-faint);
+}
+
+.stageCell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-1, 4px);
+}
+
+.blockedHint {
+  font-size: var(--type-caption-size, 12px);
+  color: var(--blocked);
+  font-weight: 600;
+}
+
+.nextGate {
+  font-family: var(--mono);
+  font-size: var(--type-caption-size, 12px);
+  color: var(--text-dim);
+}
+
+.date {
+  font-size: var(--type-caption-size, 12px);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.na {
+  color: var(--text-faint);
+}
+
+/* Mobile density: single column KPI / stack when narrow */
+@media (max-width: 480px) {
+  .kpiRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .techDl {
+    grid-template-columns: 1fr;
+    gap: var(--sp-1, 4px) 0;
+  }
+
+  .techDl dt {
+    margin-top: var(--sp-2, 8px);
+  }
+
+  .techDl dt:first-child {
+    margin-top: 0;
+  }
+}
