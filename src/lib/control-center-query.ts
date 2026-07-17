@@ -25,6 +25,13 @@ import type {
   UiSurfaceState,
   WorkData,
 } from '#/server/control-center-ui'
+import type {
+  Feature360UiData,
+  FeatureDirectoryData,
+  FeatureDocMdData,
+  RebuildDashboardData,
+  TaskLineageData,
+} from '#/server/control-center-rebuild-fns'
 import type { PrimaryBucket, StaleOverlayKind } from '#/lib/control-plane-types'
 
 // ---------------------------------------------------------------------------
@@ -61,6 +68,11 @@ export const controlCenterQueryRoot = ['control-center'] as const
 
 export type ControlCenterQueryKey =
   | readonly ['control-center', 'overview', string]
+  | readonly ['control-center', 'rebuild', string]
+  | readonly ['control-center', 'feature-directory', string]
+  | readonly ['control-center', 'feature-360', string, string]
+  | readonly ['control-center', 'feature-doc-md', string, string]
+  | readonly ['control-center', 'task-lineage', string, string]
   | readonly ['control-center', 'work', string, WorkFilterKey]
   | readonly ['control-center', 'priority', string]
   | readonly ['control-center', 'projects', string]
@@ -85,6 +97,36 @@ export interface CursorKey {
 
 export function overviewQueryKey(boardId: string): ControlCenterQueryKey {
   return ['control-center', 'overview', boardId]
+}
+
+export function rebuildQueryKey(boardId: string): ControlCenterQueryKey {
+  return ['control-center', 'rebuild', boardId]
+}
+
+export function featureDirectoryQueryKey(boardId: string): ControlCenterQueryKey {
+  return ['control-center', 'feature-directory', boardId]
+}
+
+export function feature360QueryKey(
+  boardId: string,
+  featureId: string,
+): ControlCenterQueryKey {
+  return ['control-center', 'feature-360', boardId, featureId]
+}
+
+export function featureDocMdQueryKey(
+  boardId: string,
+  featureContractId: string,
+): ControlCenterQueryKey {
+  return ['control-center', 'feature-doc-md', boardId, featureContractId]
+}
+
+/** Per-task lineage panel (W-UI-3). */
+export function taskLineageQueryKey(
+  boardId: string,
+  taskId: string,
+): ControlCenterQueryKey {
+  return ['control-center', 'task-lineage', boardId, taskId]
 }
 
 export function workQueryKey(boardId: string, filter: Partial<WorkFilterKey> = {}): ControlCenterQueryKey {
@@ -163,8 +205,41 @@ export type ControlCenterFetcher<T> = (args: {
   staleFamily?: boolean | null
 }) => Promise<PinnedEnvelope<T>>
 
+/** Rebuild dashboard fetcher (W-UI-1) — not a pinned envelope; flat dashboard data. */
+export type RebuildDashboardFetcher = (args: {
+  boardId: string
+}) => Promise<RebuildDashboardData>
+
+/** Product feature directory (W-UI-2). */
+export type FeatureDirectoryFetcher = (args: {
+  boardId: string
+}) => Promise<FeatureDirectoryData>
+
+/** Product Fitur 360 (W-UI-2). */
+export type Feature360Fetcher = (args: {
+  boardId: string
+  featureId: string
+}) => Promise<Feature360UiData>
+
+/** FC doc_md fetch (W-UI-2). */
+export type FeatureDocMdFetcher = (args: {
+  boardId: string
+  featureContractId: string
+}) => Promise<FeatureDocMdData>
+
+/** Per-task lineage (W-UI-3). */
+export type TaskLineageFetcher = (args: {
+  boardId: string
+  taskId: string
+}) => Promise<TaskLineageData>
+
 export interface ControlCenterFetchers {
   overview: ControlCenterFetcher<OverviewData>
+  rebuild: RebuildDashboardFetcher
+  featureDirectory: FeatureDirectoryFetcher
+  feature360: Feature360Fetcher
+  featureDocMd: FeatureDocMdFetcher
+  taskLineage: TaskLineageFetcher
   work: ControlCenterFetcher<WorkData>
   priority: ControlCenterFetcher<PriorityData>
   projects: ControlCenterFetcher<ProjectsData>
@@ -184,6 +259,64 @@ export function overviewQueryOptions(
   return queryOptions({
     queryKey: overviewQueryKey(boardId),
     queryFn: () => fetch({ boardId }),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  })
+}
+
+export function rebuildQueryOptions(
+  boardId: string,
+  fetch: RebuildDashboardFetcher,
+) {
+  return queryOptions({
+    queryKey: rebuildQueryKey(boardId),
+    queryFn: () => fetch({ boardId }),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  })
+}
+
+export function featureDirectoryQueryOptions(
+  boardId: string,
+  fetch: FeatureDirectoryFetcher,
+) {
+  return queryOptions({
+    queryKey: featureDirectoryQueryKey(boardId),
+    queryFn: () => fetch({ boardId }),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  })
+}
+
+export function feature360QueryOptions(
+  boardId: string,
+  featureId: string,
+  fetch: Feature360Fetcher,
+) {
+  return queryOptions({
+    queryKey: feature360QueryKey(boardId, featureId),
+    queryFn: () => fetch({ boardId, featureId }),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  })
+}
+
+export function featureDocMdQueryOptions(
+  boardId: string,
+  featureContractId: string,
+  fetch: FeatureDocMdFetcher,
+) {
+  return queryOptions({
+    queryKey: featureDocMdQueryKey(boardId, featureContractId),
+    queryFn: () => fetch({ boardId, featureContractId }),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  })
+}
+
+export function taskLineageQueryOptions(
+  boardId: string,
+  taskId: string,
+  fetch: TaskLineageFetcher,
+) {
+  return queryOptions({
+    queryKey: taskLineageQueryKey(boardId, taskId),
+    queryFn: () => fetch({ boardId, taskId }),
     staleTime: DEFAULT_STALE_TIME_MS,
   })
 }
@@ -397,6 +530,40 @@ export function createDefaultControlCenterFetchers(): ControlCenterFetchers {
         return envelope
       }
     },
+    rebuild: async ({ boardId }) => {
+      const { getControlCenterRebuildFn } = await import('#/server/control-center-rebuild-fns')
+      return (await getControlCenterRebuildFn({ data: { boardId } })) as RebuildDashboardData
+    },
+    featureDirectory: async ({ boardId }) => {
+      const { getControlCenterFeatureDirectoryFn } = await import(
+        '#/server/control-center-rebuild-fns'
+      )
+      return (await getControlCenterFeatureDirectoryFn({
+        data: { boardId },
+      })) as FeatureDirectoryData
+    },
+    feature360: async ({ boardId, featureId }) => {
+      const { getControlCenterFeature360Fn } = await import(
+        '#/server/control-center-rebuild-fns'
+      )
+      return (await getControlCenterFeature360Fn({
+        data: { boardId, featureId },
+      })) as Feature360UiData
+    },
+    featureDocMd: async ({ boardId, featureContractId }) => {
+      const { getControlCenterFeatureDocMdFn } = await import(
+        '#/server/control-center-rebuild-fns'
+      )
+      return (await getControlCenterFeatureDocMdFn({
+        data: { boardId, featureContractId },
+      })) as FeatureDocMdData
+    },
+    taskLineage: async ({ boardId, taskId }) => {
+      const { getTaskLineageFn } = await import('#/server/control-center-rebuild-fns')
+      return (await getTaskLineageFn({
+        data: { boardId, taskId },
+      })) as TaskLineageData
+    },
     work: async ({ boardId, bucket, overlay, staleFamily, cursor, pageSize }) => {
       const { getControlCenterWorkFn } = await import('#/server/control-center-ui-fns')
       return asPinned<WorkData>(
@@ -488,4 +655,11 @@ export type {
   EvidenceData,
   PinnedEnvelope,
   UiSurfaceState,
+}
+
+export type {
+  RebuildDashboardData,
+  FeatureDirectoryData,
+  Feature360UiData,
+  FeatureDocMdData,
 }

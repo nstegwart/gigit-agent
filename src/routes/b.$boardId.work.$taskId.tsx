@@ -1,6 +1,7 @@
 /**
  * ART S09–S10 board-scoped task detail via projectTaskDetail pin.
  * mode=technical expands technical identifiers; default is human-first.
+ * W-UI-3: loads per-task lineage for Lineage Rebuild panel.
  */
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -12,7 +13,12 @@ import { boardQueryOptions, useBoardId } from '#/lib/board-query'
 import { coerceControlCenterSearchString } from '#/lib/control-center-search'
 import { taskDetailEnvelopeToViewModel } from '#/lib/control-center-route-adapters'
 import type { PinnedEnvelope } from '#/lib/control-center-query'
+import {
+  getDefaultControlCenterFetchers,
+  taskLineageQueryOptions,
+} from '#/lib/control-center-query'
 import { getControlCenterTaskFn } from '#/server/control-center-ui-fns'
+import type { TaskLineageData } from '#/server/control-center-rebuild-fns'
 
 const taskSearchSchema = z.object({
   mode: z.preprocess(
@@ -47,8 +53,19 @@ function WorkTaskDetailRoute() {
     },
   })
 
+  const lineageQ = useQuery(
+    taskLineageQueryOptions(
+      boardId,
+      taskId,
+      getDefaultControlCenterFetchers().taskLineage,
+    ),
+  )
+
   const onRetry = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['control-center', 'task', boardId, taskId] })
+    void qc.invalidateQueries({
+      queryKey: ['control-center', 'task-lineage', boardId, taskId],
+    })
   }, [qc, boardId, taskId])
 
   const vm = useMemo(
@@ -64,9 +81,23 @@ function WorkTaskDetailRoute() {
   const surfaceState =
     q.isLoading && !q.data ? 'loading' : q.isError ? 'error' : vm.surfaceState
 
+  const lineageData = (lineageQ.data ?? null) as TaskLineageData | null
+  const lineageSurface =
+    lineageQ.isLoading && !lineageQ.data
+      ? ('loading' as const)
+      : lineageData && lineageData.available
+        ? ('ready' as const)
+        : ('unavailable' as const)
+
   return (
     <div className="wrap" data-testid="control-center-work-task-route">
-      <TaskDetailScreen {...vm} surfaceState={surfaceState} onRetry={onRetry} />
+      <TaskDetailScreen
+        {...vm}
+        surfaceState={surfaceState}
+        onRetry={onRetry}
+        lineage={lineageData}
+        lineageSurface={lineageSurface}
+      />
     </div>
   )
 }

@@ -3,13 +3,19 @@
  * Owner humanDisplay primary; technical fields demoted to "Detail teknis"
  * disclosure (human mode) or expanded panel (mode=technical).
  * Never invents humanDisplay copy — only displays projected props.
+ * W-UI-3: Lineage Rebuild panel after main owner summary.
  */
 import type { TaskDetailViewModel } from '#/lib/control-center-route-adapters'
+import type { TaskLineageData } from '#/server/control-center-rebuild-fns'
+import { LineagePanel, type LineagePanelSurface } from './LineagePanel'
 import styles from './task-detail.module.css'
 
 export type TaskDetailScreenProps = TaskDetailViewModel & {
   onRetry?: () => void
   className?: string
+  /** W-UI-3 lineage payload (null while loading / not yet fetched). */
+  lineage?: TaskLineageData | null
+  lineageSurface?: LineagePanelSurface
 }
 
 function TechnicalFields({
@@ -92,6 +98,8 @@ export function TaskDetailScreen({
   humanHref,
   onRetry,
   className,
+  lineage = null,
+  lineageSurface,
 }: TaskDetailScreenProps) {
   const isTechnical = mode === 'technical'
   // Prefer projected owner title; never invent narrative. Fallback shell only when empty.
@@ -213,6 +221,9 @@ export function TaskDetailScreen({
               {blocker}
             </p>
           ) : null}
+
+          {/* W-UI-3: Lineage Rebuild after main summary, before technical disclosure */}
+          <LineagePanel data={lineage} surfaceState={lineageSurface} />
 
           {isTechnical ? (
             <div className={styles.technicalExpanded} data-testid="task-detail-technical-panel">

@@ -1,0 +1,338 @@
+/* Lineage Rebuild panel (W-UI-3) — SPEC §3.C + §4.
+   Semantic colors only via design tokens (--ok / --warn / --blocked / --text-faint). */
+
+.root {
+  --lp-surface: var(--surface, #ffffff);
+  --lp-surface-2: var(--surface-2, #f4f6f9);
+  --lp-border: var(--border, #e4e8ee);
+  --lp-text: var(--text, #171a21);
+  --lp-text-dim: var(--text-dim, #58616f);
+  --lp-text-faint: var(--text-faint, #4a5568);
+  --lp-ok: var(--ok, #067647);
+  --lp-ok-bg: var(--ok-bg, #ecfdf3);
+  --lp-warn: var(--warn, #b54708);
+  --lp-warn-bg: var(--warn-bg, #fffaeb);
+  --lp-blocked: var(--blocked, #b42318);
+  --lp-blocked-bg: var(--blocked-bg, #fef3f2);
+  --lp-accent: var(--accent, #6d5efc);
+  --lp-radius: var(--r-md, 12px);
+  --lp-touch: 44px;
+  --lp-mono: var(--mono, ui-monospace, monospace);
+
+  color: var(--lp-text);
+  min-width: 0;
+}
+
+/* Small graceful line — not a large empty panel */
+.unavailable {
+  margin: 0;
+  padding: 6px 0;
+  font-size: 0.8125rem;
+  color: var(--lp-text-faint);
+  line-height: 1.4;
+}
+
+.panel {
+  margin: 0;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--lp-border);
+  border-radius: var(--lp-radius);
+  background: var(--lp-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.eyebrow {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--lp-text-faint);
+}
+
+.summaryRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px 12px;
+  min-width: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--lp-border);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.chipOk {
+  color: var(--lp-ok);
+  background: var(--lp-ok-bg);
+  border-color: color-mix(in srgb, var(--lp-ok) 28%, var(--lp-border));
+}
+
+.chipWarn {
+  color: var(--lp-warn);
+  background: var(--lp-warn-bg);
+  border-color: color-mix(in srgb, var(--lp-warn) 28%, var(--lp-border));
+}
+
+.chipBlocked {
+  color: var(--lp-blocked);
+  background: var(--lp-blocked-bg);
+  border-color: color-mix(in srgb, var(--lp-blocked) 28%, var(--lp-border));
+}
+
+.chipMuted {
+  color: var(--lp-text-faint);
+  background: var(--lp-surface-2);
+  border-color: var(--lp-border);
+}
+
+.summarySentence {
+  margin: 0;
+  flex: 1 1 12rem;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--lp-text-dim);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Vertical stepper */
+.stepper {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr);
+  gap: 0 12px;
+  min-width: 0;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100%;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--lp-accent);
+  border: 2px solid color-mix(in srgb, var(--lp-accent) 40%, var(--lp-surface));
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.line {
+  width: 2px;
+  flex: 1 1 auto;
+  min-height: 12px;
+  background: var(--lp-border);
+  margin: 4px 0 0;
+}
+
+.step:last-child .line {
+  display: none;
+}
+
+.stepBody {
+  padding-bottom: 14px;
+  min-width: 0;
+}
+
+.stepTitle {
+  margin: 0 0 4px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--lp-text);
+}
+
+.stepLead {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--lp-text-dim);
+  overflow-wrap: anywhere;
+}
+
+.metaLine {
+  margin: 0 0 4px;
+  font-size: 0.8125rem;
+  color: var(--lp-text-dim);
+  line-height: 1.4;
+}
+
+.metaStrong {
+  font-weight: 650;
+  color: var(--lp-text);
+}
+
+/* Evidence two columns on desktop */
+.evidenceGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 6px;
+}
+
+@media (min-width: 720px) {
+  .evidenceGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.evidenceCol {
+  min-width: 0;
+  border: 1px solid var(--lp-border);
+  border-radius: 8px;
+  background: var(--lp-surface-2);
+  padding: 8px 10px;
+}
+
+.evidenceColTitle {
+  margin: 0 0 6px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--lp-text-faint);
+}
+
+.evidenceList {
+  margin: 0;
+  padding: 0 0 0 1.1rem;
+  font-family: var(--lp-mono);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--lp-text);
+  overflow-wrap: anywhere;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.evidenceList li {
+  margin: 0 0 4px;
+}
+
+.gapsBlock {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--lp-warn) 30%, var(--lp-border));
+  background: var(--lp-warn-bg);
+  min-width: 0;
+}
+
+.gapsTitle {
+  margin: 0 0 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--lp-warn);
+}
+
+.gapsList {
+  margin: 0;
+  padding: 0 0 0 1.1rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--lp-text);
+  overflow-wrap: anywhere;
+}
+
+.gapsList li {
+  margin: 0 0 4px;
+}
+
+.disclosure {
+  margin: 4px 0 0;
+  color: var(--lp-text-dim);
+  font-size: 0.8rem;
+  border: 1px solid var(--lp-border);
+  border-radius: 8px;
+  background: var(--lp-surface-2);
+  padding: 2px 10px 6px;
+}
+
+.disclosure > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  cursor: pointer;
+  color: var(--lp-text-dim);
+  font-weight: 650;
+  list-style: none;
+}
+
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure > summary:focus-visible {
+  outline: 2px solid var(--lp-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.disclosureBody {
+  margin: 0;
+  padding: 0 0 6px;
+}
+
+.anchorList {
+  margin: 0;
+  padding: 0 0 0 1.1rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--lp-text);
+  overflow-wrap: anywhere;
+}
+
+.anchorList li {
+  margin: 0 0 6px;
+}
+
+.anchorFact {
+  display: block;
+  margin-top: 2px;
+  color: var(--lp-text-dim);
+  font-size: 0.75rem;
+}
+
+.shaCode {
+  font-family: var(--lp-mono);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.loading {
+  margin: 0;
+  padding: 6px 0;
+  font-size: 0.8125rem;
+  color: var(--lp-text-faint);
+}
+
+.muted {
+  color: var(--lp-text-faint);
+  font-size: 0.8rem;
+}

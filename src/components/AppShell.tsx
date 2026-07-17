@@ -149,11 +149,9 @@ export const CONTROL_CENTER_NAV_LABELS = [
 ] as const
 
 /** id-ID primary chrome labels (W-UI-QW D.4 / SPEC §0.4). EN remains on title/aria. */
-export const CONTROL_CENTER_NAV_LABELS_ID: Record<
-  (typeof CONTROL_CENTER_NAV_LABELS)[number],
-  string
-> = {
+export const CONTROL_CENTER_NAV_LABELS_ID: Record<string, string> = {
   Overview: 'Ringkasan',
+  Rebuild: 'Rebuild',
   Work: 'Pekerjaan',
   Priority: 'Prioritas',
   Projects: 'Proyek',
@@ -171,6 +169,14 @@ const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
     icon: 'board',
     to: '/',
     match: (p) => p === '/' || p === '',
+  },
+  // W-UI-1: Rebuild dashboard after Ringkasan (SPEC §3.A / §4.6).
+  {
+    id: 'rebuild',
+    label: 'Rebuild',
+    icon: 'branch',
+    to: '/rebuild',
+    match: (p) => p === '/rebuild' || p.startsWith('/rebuild/'),
   },
   {
     id: 'work',
@@ -201,8 +207,9 @@ const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
     id: 'features',
     label: 'Features / Flows',
     icon: 'features',
-    to: '/features',
-    match: (p) => p.startsWith('/features'),
+    // W-UI-2: product directory /fitur; legacy FC surface /features remains secondary.
+    to: '/fitur',
+    match: (p) => p.startsWith('/fitur') || p.startsWith('/features'),
     count: (n) => n.features,
   },
   { sep: true, label: 'Operasi' },
@@ -241,6 +248,7 @@ const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
 const SECTION_TITLE: Record<string, string> = {
   board: 'Board',
   overview: 'Overview',
+  rebuild: 'Rebuild',
   work: 'Work',
   priority: 'Priority',
   agents: 'Agents / Runs',
@@ -262,6 +270,7 @@ const SECTION_TITLE: Record<string, string> = {
 
 const SECTION_TITLE_ID: Record<string, string> = {
   overview: 'Ringkasan',
+  rebuild: 'Rebuild',
   work: 'Pekerjaan',
   priority: 'Prioritas',
   projects: 'Proyek',
@@ -497,9 +506,14 @@ export function AppShell({ children }: { children: ReactNode }) {
   let crumb = ''
   const projMatch = sub.match(/^\/projects\/(.+)$/)
   const featMatch = sub.match(/^\/features\/(.+)$/)
+  const fiturMatch = sub.match(/^\/fitur\/(.+)$/)
   if (projMatch) {
     const projectId = decodeURIComponent(projMatch[1])
     crumb = projectId in m.projById ? m.projById[projectId].nama : 'Project'
+  } else if (fiturMatch) {
+    const featureId = decodeURIComponent(fiturMatch[1])
+    crumb =
+      featureId in m.featById ? m.featById[featureId].nama : featureId
   } else if (featMatch) {
     const featureId = decodeURIComponent(featMatch[1])
     crumb = featureId in m.featById ? m.featById[featureId].nama : 'Feature'
