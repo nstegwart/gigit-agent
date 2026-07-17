@@ -168,7 +168,7 @@ function helpText(): string {
   return `Usage: pnpm migrate <command> [options]
 
 Commands:
-  plan       Plan migrations 000..008 (no SQL)
+  plan       Plan migrations 000..010 (no SQL)
   dry-run    Plan + parse statements; load history from MySQL; no apply
   apply      Apply pending migrations (LOCAL|STAGING only; mapping required)
   status     Report applied versions + plan status (schema readback for healthz)
