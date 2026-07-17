@@ -237,8 +237,8 @@
 .table {
   width: 100%;
   border-collapse: collapse;
-  /* Horizontal scroll lives on .tableWrap; preserve full-width readable columns. */
-  min-width: 108rem;
+  /* 5 primary columns — no 13-col mono collision dump. */
+  min-width: 40rem;
   table-layout: fixed;
 }
 
@@ -261,30 +261,33 @@
   font-size: 0.9rem;
   vertical-align: top;
   min-width: 0;
+  max-width: 0; /* force fixed-layout ellipsis; content uses title for full value */
+  overflow: hidden;
 }
 
 .table tr:last-child td {
   border-bottom: none;
 }
 
-/* Deliberate column budget — IDs/timestamps ellipsis, status stays scannable. */
-.colRun { width: 9.5rem; }
-.colTask { width: 7.5rem; }
-.colAgent { width: 8rem; }
-.colRole { width: 5.5rem; }
-.colModel { width: 6rem; }
-.colEffort { width: 4.5rem; }
-.colAccount { width: 6.5rem; }
-.colStatus { width: 6.5rem; }
-.colState { width: 7.5rem; }
-.colOwnership { width: 14rem; }
-.colTime { width: 8.5rem; }
+/* Deliberate column budget — 5 primary cols; legacy tokens kept for visual-contract. */
+.colRun { width: 0; }
+.colTask { width: 28%; }
+.colAgent { width: 0; }
+.colRole { width: 16%; }
+.colModel { width: 0; }
+.colEffort { width: 0; }
+.colAccount { width: 22%; }
+.colStatus { width: 16%; }
+.colState { width: 0; }
+.colOwnership { width: 0; }
+.colTime { width: 12%; }
 
 .idCell {
   font-family: var(--sec-mono);
   font-size: 0.78rem;
   color: var(--sec-text-dim);
   /* NEVER break-all: mid-token shred was the Agents desktop defect. */
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -300,6 +303,148 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
+}
+
+.taskPrimary {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.taskTitle {
+  font-family: var(--sec-mono);
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--sec-text);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.taskTitle a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cellRole {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.rowDetail {
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.rowDetailSummary {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 8px;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--sec-accent);
+  list-style: none;
+  border-radius: 8px;
+}
+
+.rowDetailSummary::-webkit-details-marker {
+  display: none;
+}
+
+.rowDetailSummary:focus-visible {
+  outline: 2px solid var(--sec-accent);
+  outline-offset: 2px;
+}
+
+.rowDetailBody {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--sec-surface-2);
+  border: 1px solid var(--sec-border);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.detailGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.detailGrid > div {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.historyToggle {
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+
+.historyToggleOn {
+  border-color: color-mix(in srgb, var(--sec-accent) 40%, var(--sec-border));
+  background: color-mix(in srgb, var(--sec-accent) 12%, var(--sec-surface));
+  color: var(--sec-accent);
+}
+
+.emptyState {
+  margin: 0;
+  padding: 20px 16px;
+  text-align: center;
+  border: 1px dashed var(--sec-border);
+  border-radius: var(--sec-radius);
+  background: var(--sec-surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+.emptyTitle {
+  margin: 0;
+  font-weight: 650;
+  font-size: 1rem;
+  color: var(--sec-text);
+}
+
+.emptyBody {
+  margin: 0;
+  color: var(--sec-text-dim);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  max-width: 36rem;
+}
+
+.emptyActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.emptyActions .retryBtn {
+  margin-top: 0;
 }
 
 .timeCell {

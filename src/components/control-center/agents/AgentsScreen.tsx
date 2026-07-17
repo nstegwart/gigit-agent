@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 
 import { pinnedSurfaceDataAttrs } from '#/components/control-center/PinnedSurface'
 import { formatDenseTimestamp } from '#/lib/display-label'
@@ -9,6 +9,28 @@ import type {
   ProductiveSubstateView,
 } from './types'
 import styles from './agents.module.css'
+
+/** Active fleet statuses — default table filter (case-insensitive). */
+const ACTIVE_STATUSES = new Set(['RUNNING', 'BLOCKED', 'QUEUED'])
+
+function isActiveRunStatus(status: string | null | undefined): boolean {
+  if (!status) return false
+  return ACTIVE_STATUSES.has(String(status).trim().toUpperCase())
+}
+
+/** Relative age from ISO timestamp (presentation only; full ISO stays in title). */
+function formatAgeFromIso(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return '—'
+  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000))
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m`
+  const h = Math.floor(min / 60)
+  const mm = min % 60
+  return mm ? `${h}h ${mm}m` : `${h}h`
+}
 
 /** Accessible mono cell: ellipsis CSS + full value in title. */
 function IdText({
@@ -165,9 +187,11 @@ function OngoingCard({ row }: { row: AgentOngoingRowView }) {
 
 function RunOwnershipCell({ row }: { row: AgentRunRowView }) {
   const locksLabel =
-    row.lockIds.length === 0 ? '—' : row.lockIds.length <= 2
-      ? row.lockIds.join(', ')
-      : `${row.lockIds.slice(0, 2).join(', ')} +${row.lockIds.length - 2}`
+    row.lockIds.length === 0
+      ? '—'
+      : row.lockIds.length <= 2
+        ? row.lockIds.join(', ')
+        : `${row.lockIds.slice(0, 2).join(', ')} +${row.lockIds.length - 2}`
   return (
     <div
       className={styles.metaChips}
@@ -205,7 +229,70 @@ function RunOwnershipCell({ row }: { row: AgentRunRowView }) {
   )
 }
 
+function TaskCell({ row }: { row: AgentRunRowView }) {
+  const label = row.taskId ?? '—'
+  return (
+    <div className={styles.taskPrimary} data-field="task">
+      {row.taskHref && row.taskId ? (
+        <IdText value={row.taskId} className={styles.taskTitle}>
+          <a href={row.taskHref} data-testid="agent-run-task-link" title={row.taskId}>
+            {label}
+          </a>
+        </IdText>
+      ) : (
+        <IdText value={row.taskId} className={styles.taskTitle} />
+      )}
+    </div>
+  )
+}
+
+function RunDetailPanel({ row }: { row: AgentRunRowView }) {
+  return (
+    <details className={styles.rowDetail} data-testid="agent-run-detail">
+      <summary className={styles.rowDetailSummary}>Detail</summary>
+      <div className={styles.rowDetailBody}>
+        <div className={styles.detailGrid}>
+          <div>
+            <span className={styles.ageLabel}>Run</span>
+            <IdText value={row.runId} />
+          </div>
+          <div>
+            <span className={styles.ageLabel}>Agen</span>
+            <IdText value={row.agentId} />
+          </div>
+          <div>
+            <span className={styles.ageLabel}>Model</span>
+            <IdText value={row.model} />
+          </div>
+          <div>
+            <span className={styles.ageLabel}>Effort</span>
+            <span>{row.effort ?? '—'}</span>
+          </div>
+          <div>
+            <span className={styles.ageLabel}>Keadaan</span>
+            <ProductiveBadge state={row.productiveSubstate} />
+          </div>
+          <div>
+            <span className={styles.ageLabel}>Dimulai</span>
+            <TimeText value={row.startedAt} />
+          </div>
+          <div>
+            <span className={styles.ageLabel}>Heartbeat</span>
+            <TimeText value={row.heartbeatAt} />
+          </div>
+          <div>
+            <span className={styles.ageLabel}>Material</span>
+            <TimeText value={row.materialProgressAt} />
+          </div>
+        </div>
+        <RunOwnershipCell row={row} />
+      </div>
+    </details>
+  )
+}
+
 function RunRowDesktop({ row }: { row: AgentRunRowView }) {
+  const age = formatAgeFromIso(row.startedAt)
   return (
     <tr
       data-testid="agent-run-row"
@@ -213,55 +300,38 @@ function RunRowDesktop({ row }: { row: AgentRunRowView }) {
       data-claim-state={row.claimState ?? 'none'}
       data-controller-run-id={row.controllerRunId ?? undefined}
       data-parent-run-id={row.parentRunId ?? undefined}
+      data-run-status={row.status ?? undefined}
     >
       <td>
-        <IdText value={row.runId} />
+        <TaskCell row={row} />
+      </td>
+      <td className={styles.cellRole} title={row.role ?? undefined}>
+        {row.role ?? '—'}
       </td>
       <td>
-        {row.taskHref && row.taskId ? (
-          <IdText value={row.taskId}>
-            <a href={row.taskHref} data-testid="agent-run-task-link" title={row.taskId}>
-              {row.taskId}
-            </a>
-          </IdText>
-        ) : (
-          <IdText value={row.taskId} />
-        )}
+        <span className={styles.statusDot} title={row.status ?? undefined}>
+          {row.status ?? '—'}
+        </span>
       </td>
       <td>
-        <IdText value={row.agentId} />
+        <span
+          className={styles.timeCell}
+          title={row.startedAt ?? undefined}
+          data-field="age"
+        >
+          {age}
+        </span>
       </td>
-      <td title={row.role ?? undefined}>{row.role ?? '—'}</td>
-      <td>
-        <IdText value={row.model} />
-      </td>
-      <td>{row.effort ?? '—'}</td>
       <td data-field="masked-account">
         <IdText value={row.maskedAccount} />
-      </td>
-      <td>
-        <span className={styles.statusDot}>{row.status ?? '—'}</span>
-      </td>
-      <td>
-        <ProductiveBadge state={row.productiveSubstate} />
-      </td>
-      <td>
-        <RunOwnershipCell row={row} />
-      </td>
-      <td>
-        <TimeText value={row.startedAt} />
-      </td>
-      <td>
-        <TimeText value={row.heartbeatAt} />
-      </td>
-      <td>
-        <TimeText value={row.materialProgressAt} />
+        <RunDetailPanel row={row} />
       </td>
     </tr>
   )
 }
 
 function RunCardMobile({ row }: { row: AgentRunRowView }) {
+  const age = formatAgeFromIso(row.startedAt)
   return (
     <li
       className={styles.card}
@@ -270,22 +340,15 @@ function RunCardMobile({ row }: { row: AgentRunRowView }) {
       data-claim-state={row.claimState ?? 'none'}
       data-controller-run-id={row.controllerRunId ?? undefined}
       data-parent-run-id={row.parentRunId ?? undefined}
+      data-run-status={row.status ?? undefined}
     >
-      <IdText value={row.runId} />
-      <ProductiveBadge state={row.productiveSubstate} />
+      <TaskCell row={row} />
       <div className={styles.metaChips}>
-        <span className={styles.metaChip}>status {row.status ?? '—'}</span>
-        <span className={styles.metaChip} title={row.agentId ?? undefined}>
-          agent {row.agentId ?? '—'}
-        </span>
         <span className={styles.metaChip}>role {row.role ?? '—'}</span>
-        <span
-          className={`${styles.metaChip} ${styles.metaChipMono}`}
-          title={row.model ?? undefined}
-        >
-          {row.model ?? '—'}
+        <span className={styles.metaChip}>status {row.status ?? '—'}</span>
+        <span className={styles.metaChip} title={row.startedAt ?? undefined}>
+          umur {age}
         </span>
-        <span className={styles.metaChip}>effort {row.effort ?? '—'}</span>
         <span
           className={`${styles.metaChip} ${styles.metaChipMono}`}
           data-field="masked-account"
@@ -294,48 +357,62 @@ function RunCardMobile({ row }: { row: AgentRunRowView }) {
           {row.maskedAccount}
         </span>
       </div>
-      <RunOwnershipCell row={row} />
-      <dl className={styles.cardMeta}>
-        <div>
-          <dt>Tugas</dt>
-          <dd>
-            {row.taskHref && row.taskId ? (
-              <IdText value={row.taskId}>
-                <a href={row.taskHref} data-testid="agent-run-task-link" title={row.taskId}>
-                  {row.taskId}
-                </a>
-              </IdText>
-            ) : (
-              <IdText value={row.taskId} />
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt>Dimulai</dt>
-          <dd>
-            <TimeText value={row.startedAt} />
-          </dd>
-        </div>
-        <div>
-          <dt>Heartbeat</dt>
-          <dd>
-            <TimeText value={row.heartbeatAt} />
-          </dd>
-        </div>
-        <div>
-          <dt>Material</dt>
-          <dd>
-            <TimeText value={row.materialProgressAt} />
-          </dd>
-        </div>
-      </dl>
+      <RunDetailPanel row={row} />
     </li>
+  )
+}
+
+function ActiveEmptyState({
+  boardId,
+  historyCount,
+  showHistory,
+  onShowHistory,
+}: {
+  boardId: string
+  historyCount: number
+  showHistory: boolean
+  onShowHistory: () => void
+}) {
+  const workHref = boardId ? `/b/${encodeURIComponent(boardId)}/work` : '/work'
+  const opsHref = boardId ? `/b/${encodeURIComponent(boardId)}/ops` : '/ops'
+  return (
+    <div className={styles.emptyState} data-testid="agents-empty-active">
+      <p className={styles.emptyTitle}>Tidak ada agen yang sedang berjalan</p>
+      <p className={styles.emptyBody}>
+        Tidak ada run dengan status RUNNING, BLOCKED, atau QUEUED pada pin ini. Owner tidak
+        melihat inventaris run lama di sini — itu riwayat, bukan fleet hidup.
+      </p>
+      {historyCount > 0 && !showHistory ? (
+        <p className={styles.emptyBody} data-testid="agents-history-hint">
+          {historyCount} run riwayat (CANCELLED/DONE/dll.) disembunyikan.
+        </p>
+      ) : null}
+      <div className={styles.emptyActions}>
+        {historyCount > 0 && !showHistory ? (
+          <button
+            type="button"
+            className={styles.retryBtn}
+            onClick={onShowHistory}
+            data-testid="agents-show-history-cta"
+          >
+            Lihat riwayat ({historyCount})
+          </button>
+        ) : null}
+        <a className={styles.linkBtn} href={workHref} data-testid="agents-cta-work">
+          Buka Pekerjaan
+        </a>
+        <a className={styles.linkBtn} href={opsHref} data-testid="agents-cta-ops">
+          Buka Operasi
+        </a>
+      </div>
+    </div>
   )
 }
 
 /**
  * Prop-driven Agents/Runs screen.
  * Zero-click ONGOING from server `ongoing`; runs list preserves server order (no stall re-sort).
+ * Client default filter: active statuses only; history behind Riwayat toggle.
  */
 export function AgentsScreen({
   surfaceState,
@@ -353,13 +430,33 @@ export function AgentsScreen({
   onNextPage,
   className,
 }: AgentsScreenProps) {
+  const [showHistory, setShowHistory] = useState(false)
+
   const hideList =
     surfaceState === 'loading' ||
     surfaceState === 'error' ||
     surfaceState === 'forbidden' ||
     surfaceState === 'disconnected'
 
-  const hasRows = ongoing.length + runs.length > 0
+  const { activeRuns, historyRuns, visibleRuns } = useMemo(() => {
+    const active: AgentRunRowView[] = []
+    const history: AgentRunRowView[] = []
+    // Preserve server order in both partitions.
+    for (const r of runs) {
+      if (isActiveRunStatus(r.status)) active.push(r)
+      else history.push(r)
+    }
+    const visible = showHistory ? runs : active
+    return { activeRuns: active, historyRuns: history, visibleRuns: visible }
+  }, [runs, showHistory])
+
+  const hasAnyData = ongoing.length + runs.length > 0
+  const showActiveEmpty =
+    !hideList &&
+    hasAnyData &&
+    ongoing.length === 0 &&
+    activeRuns.length === 0 &&
+    !showHistory
 
   const pinAttrs = pinnedSurfaceDataAttrs(
     pin
@@ -386,6 +483,9 @@ export function AgentsScreen({
       data-board-id={boardId}
       data-ongoing-count={ongoing.length}
       data-run-count={runs.length}
+      data-active-run-count={activeRuns.length}
+      data-history-run-count={historyRuns.length}
+      data-show-history={showHistory ? 'true' : 'false'}
       data-reflow-breakpoint="768"
       aria-labelledby="agents-page-title"
       {...pinAttrs}
@@ -407,20 +507,45 @@ export function AgentsScreen({
             Agen / Run
           </h1>
           <p className={styles.pageSub}>
-            Kepemilikan ONGOING zero-click dan inventaris run dari envelope pin, termasuk claim /
-            lock / controller / parent bila server memproyeksikannya. Urutan stall ditentukan
-            server — tidak dihitung ulang di sini.
+            Siapa mengerjakan apa sekarang: run aktif (RUNNING / BLOCKED / QUEUED) dan ONGOING
+            zero-click. Riwayat CANCELLED/DONE disembunyikan sampai Anda membuka toggle Riwayat.
           </p>
         </div>
         <div className={styles.summaryStrip}>
-          <span className={`${styles.chip} ${styles.chipAccent}`} data-testid="agents-ongoing-count">
+          <span
+            className={`${styles.chip} ${styles.chipAccent}`}
+            data-testid="agents-ongoing-count"
+            title="Run aktif + ONGOING zero-click (fleet hidup)"
+          >
             <span aria-hidden="true">●</span>
-            {ongoing.length} berlangsung
+            {activeRuns.length} berlangsung
           </span>
-          <span className={styles.chip} data-testid="agents-run-count">
-            {runs.length} run
+          <span
+            className={styles.chip}
+            data-testid="agents-run-count"
+            title="Inventaris run non-aktif (CANCELLED/DONE/dll.)"
+          >
+            {historyRuns.length} riwayat
+          </span>
+          <span
+            className={styles.chip}
+            data-testid="agents-live-inventory"
+            title="Live vs inventaris"
+          >
+            {activeRuns.length} berlangsung · {historyRuns.length} riwayat
           </span>
           <span className={styles.chip}>pageSize {pageSize}</span>
+          {historyRuns.length > 0 ? (
+            <button
+              type="button"
+              className={`${styles.chip} ${styles.historyToggle} ${showHistory ? styles.historyToggleOn : ''}`}
+              aria-pressed={showHistory}
+              data-testid="agents-history-toggle"
+              onClick={() => setShowHistory((v) => !v)}
+            >
+              {showHistory ? 'Sembunyikan riwayat' : `Riwayat (${historyRuns.length})`}
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -446,9 +571,7 @@ export function AgentsScreen({
           role="alert"
           data-testid="agents-error"
         >
-          <p className={styles.bannerTitle}>
-            {error.code}: agen tidak tersedia
-          </p>
+          <p className={styles.bannerTitle}>{error.code}: agen tidak tersedia</p>
           <p className={styles.bannerBody}>{error.message}</p>
           {onRetry ? (
             <button type="button" className={styles.retryBtn} onClick={onRetry}>
@@ -479,10 +602,21 @@ export function AgentsScreen({
         </div>
       ) : null}
 
-      {surfaceState === 'empty' || surfaceState === 'zero-results' || (!hideList && !hasRows) ? (
+      {surfaceState === 'empty' ||
+      surfaceState === 'zero-results' ||
+      (!hideList && !hasAnyData) ? (
         <p className={styles.empty} data-testid="agents-empty">
           Tidak ada agen atau run pada pin ini.
         </p>
+      ) : null}
+
+      {showActiveEmpty ? (
+        <ActiveEmptyState
+          boardId={boardId}
+          historyCount={historyRuns.length}
+          showHistory={showHistory}
+          onShowHistory={() => setShowHistory(true)}
+        />
       ) : null}
 
       {!hideList && ongoing.length > 0 ? (
@@ -502,58 +636,50 @@ export function AgentsScreen({
         </>
       ) : null}
 
-      {!hideList && runs.length > 0 ? (
+      {!hideList && visibleRuns.length > 0 ? (
         <>
           <p className={styles.sectionLabel} id="agents-runs-heading">
-            Runs (server order)
+            {showHistory
+              ? 'Runs (semua · urutan server)'
+              : 'Runs aktif (RUNNING / BLOCKED / QUEUED)'}
           </p>
           <div className={styles.tableWrap} data-testid="agents-runs-table">
             <table className={styles.table} aria-labelledby="agents-runs-heading">
               <colgroup>
-                <col className={styles.colRun} />
                 <col className={styles.colTask} />
-                <col className={styles.colAgent} />
                 <col className={styles.colRole} />
-                <col className={styles.colModel} />
-                <col className={styles.colEffort} />
-                <col className={styles.colAccount} />
                 <col className={styles.colStatus} />
-                <col className={styles.colState} />
-                <col className={styles.colOwnership} />
                 <col className={styles.colTime} />
-                <col className={styles.colTime} />
-                <col className={styles.colTime} />
+                <col className={styles.colAccount} />
               </colgroup>
               <thead>
                 <tr>
-                  <th scope="col">Run</th>
                   <th scope="col">Tugas</th>
-                  <th scope="col">Agen</th>
                   <th scope="col">Peran</th>
-                  <th scope="col">Model</th>
-                  <th scope="col">Effort</th>
-                  <th scope="col">Akun</th>
                   <th scope="col">Status</th>
-                  <th scope="col">Keadaan</th>
-                  <th scope="col">Kepemilikan</th>
-                  <th scope="col">Dimulai</th>
-                  <th scope="col">Heartbeat</th>
-                  <th scope="col">Material</th>
+                  <th scope="col">Umur</th>
+                  <th scope="col">Akun</th>
                 </tr>
               </thead>
               <tbody>
-                {runs.map((row) => (
+                {visibleRuns.map((row) => (
                   <RunRowDesktop key={row.runId} row={row} />
                 ))}
               </tbody>
             </table>
           </div>
           <ul className={styles.cardList} data-testid="agents-runs-cards">
-            {runs.map((row) => (
+            {visibleRuns.map((row) => (
               <RunCardMobile key={row.runId} row={row} />
             ))}
           </ul>
         </>
+      ) : null}
+
+      {!hideList && showHistory && historyRuns.length === 0 && activeRuns.length > 0 ? (
+        <p className={styles.empty} data-testid="agents-history-empty">
+          Tidak ada run riwayat pada halaman ini.
+        </p>
       ) : null}
 
       {showProjectionGaps && projectionGapList.length > 0 ? (
