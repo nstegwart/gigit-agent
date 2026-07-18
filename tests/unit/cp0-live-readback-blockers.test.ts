@@ -85,12 +85,14 @@ describe('CP0 live readback blocker closure', () => {
     expect(missing).toMatchObject({
       ok: true,
       status: 'UNKNOWN',
+      rawStatus: null,
       parity: false,
       current_outbox: null,
       legacy_unreplayed: null,
       effectiveBacklog: null,
       zeroBacklogProven: false,
       stale: true,
+      blocker: 'SYNC_ROW_MISSING',
     })
 
     const offPin = buildCp0SyncStatusReadback({
@@ -106,8 +108,11 @@ describe('CP0 live readback blocker closure', () => {
       entity_rev: 2,
     }, PIN, NOW)
     expect(offPin.parity).toBe(false)
+    expect(offPin.status).toBe('READBACK_REQUIRED')
+    expect(offPin.rawStatus).toBe('IN_SYNC')
     expect(offPin.current_outbox).toBeNull()
     expect(offPin.zeroBacklogProven).toBe(false)
+    expect(offPin.blocker).toBe('SYNC_OFF_PIN')
   })
 
   it('proves zero only for a fresh exact-pin IN_SYNC row', () => {
@@ -123,12 +128,15 @@ describe('CP0 live readback blocker closure', () => {
       freshness_at: new Date(NOW - 30_000).toISOString(),
       entity_rev: 3,
     }, PIN, NOW)).toMatchObject({
+      status: 'IN_SYNC',
+      rawStatus: 'IN_SYNC',
       parity: true,
       current_outbox: 0,
       legacy_unreplayed: 0,
       effectiveBacklog: 0,
       zeroBacklogProven: true,
       stale: false,
+      blocker: null,
     })
   })
 })

@@ -39,6 +39,7 @@ import {
 } from '#/server/observability-integration'
 import {
   buildCp0SyncStatusReadback,
+  toHealthzSyncPayload,
   type Cp0SyncStatusRow,
 } from '#/server/cp0-sync-status'
 
@@ -148,6 +149,8 @@ function manifestLatestVersion(): string {
  *   migration SQL (exact names, historical schema preserved).
  * - 004 remains a historical partial probe (classification_receipts + decisions
  *   only; import_audit / human_display* are not probed here).
+ * - 013 is ALTER/MODIFY only (classification task_id collation) — no CREATE TABLE
+ *   probe key (tables already required via 001/004 history).
  *
  * Exported for unit tests (table-probe contract).
  */
@@ -208,7 +211,7 @@ export const REQUIRED_TABLES_BY_MIGRATION: Readonly<Record<string, ReadonlyArray
   ],
 }
 
-/** Tables required given applied migration versions (004..012 table probes). */
+/** Tables required given applied migration versions (004..012 table probes; 013 ALTER-only). */
 export function requiredTablesForAppliedVersions(
   appliedVersions: ReadonlyArray<string>,
 ): Array<string> {
@@ -418,12 +421,15 @@ async function loadObserved(): Promise<HealthObserved> {
   let controlPlaneStatus: DependencyHealth['status'] = 'unknown'
   let requiredTablesStatus: DependencyHealth['status'] = 'unknown'
   let missingRequiredTables: Array<string> = []
-  let syncStatus: HealthObserved['sync'] = {
-    status: 'UNKNOWN',
-    effectiveBacklog: null,
-    zeroBacklogProven: false,
-    freshnessAt: null,
-  }
+  // Full proof-shaped default (never green-by-status alone). Extra fields beyond
+  // HealthObserved.sync base are retained at runtime via structural assign.
+  let syncStatus: HealthObserved['sync'] = toHealthzSyncPayload(
+    buildCp0SyncStatusReadback(null, {
+      boardRev: -1,
+      lifecycleRev: -1,
+      canonicalHash: '',
+    }),
+  ) as HealthObserved['sync']
 
   try {
     // Bounded connectivity probe — no credentials in result.
@@ -618,24 +624,15 @@ async function loadObserved(): Promise<HealthObserved> {
           [boardId],
         )
         const sync = (syncRows as Array<Cp0SyncStatusRow>)[0] ?? null
-        if (sync) {
-          const readback = buildCp0SyncStatusReadback(
-            sync,
-            {
-              boardRev: boardRev ?? -1,
-              lifecycleRev: lifecycleRev ?? -1,
-              canonicalHash: canonicalHash ?? '',
-            },
-          )
-          syncStatus = {
-            status: readback.status,
-            effectiveBacklog: readback.effectiveBacklog,
-            zeroBacklogProven: readback.zeroBacklogProven,
-            freshnessAt: readback.observedAt,
-          }
-        }
+        // Always project (including missing row → UNKNOWN + proof fields).
+        const readback = buildCp0SyncStatusReadback(sync, {
+          boardRev: boardRev ?? -1,
+          lifecycleRev: lifecycleRev ?? -1,
+          canonicalHash: canonicalHash ?? '',
+        })
+        syncStatus = toHealthzSyncPayload(readback) as HealthObserved['sync']
       } catch {
-        /* schema 007 app-only compatibility: sync stays explicit UNKNOWN */
+        /* schema 007 app-only compatibility: sync stays explicit UNKNOWN + unproven */
       }
     } else {
       // No board id — cannot assert control-plane pin identity

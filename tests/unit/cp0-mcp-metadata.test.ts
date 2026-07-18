@@ -6,6 +6,7 @@ import {
   buildCp0SyncStatusReadback,
   resolveCp0ReadBoardId,
 } from '#/server/cp0-mcp-metadata'
+import { buildCp0SyncStatusReadback as buildFromCanonical } from '#/server/cp0-sync-status'
 import { defaultScopesForRole, isToolListable, type Principal } from '#/server/rbac'
 
 const PIN = {
@@ -73,9 +74,14 @@ describe('CP0 MCP metadata', () => {
     })
   })
 
+  it('re-exports the same canonical buildCp0SyncStatusReadback implementation', () => {
+    expect(buildCp0SyncStatusReadback).toBe(buildFromCanonical)
+  })
+
   it('never fabricates a zero backlog from missing or off-pin state', () => {
     expect(buildCp0SyncStatusReadback(null, PIN, NOW)).toMatchObject({
       status: 'UNKNOWN',
+      rawStatus: null,
       parity: false,
       effectiveBacklog: null,
       zeroBacklogProven: false,
@@ -98,7 +104,13 @@ describe('CP0 MCP metadata', () => {
         PIN,
         NOW,
       ),
-    ).toMatchObject({ parity: false, effectiveBacklog: null, zeroBacklogProven: false })
+    ).toMatchObject({
+      status: 'READBACK_REQUIRED',
+      rawStatus: 'IN_SYNC',
+      parity: false,
+      effectiveBacklog: null,
+      zeroBacklogProven: false,
+    })
   })
 
   it('proves zero only for fresh exact-pin IN_SYNC state', () => {
@@ -119,6 +131,13 @@ describe('CP0 MCP metadata', () => {
         PIN,
         NOW,
       ),
-    ).toMatchObject({ parity: true, effectiveBacklog: 0, zeroBacklogProven: true, stale: false })
+    ).toMatchObject({
+      status: 'IN_SYNC',
+      rawStatus: 'IN_SYNC',
+      parity: true,
+      effectiveBacklog: 0,
+      zeroBacklogProven: true,
+      stale: false,
+    })
   })
 })
