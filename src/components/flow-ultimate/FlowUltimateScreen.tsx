@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react'
@@ -67,6 +68,12 @@ interface PanState {
   oy: number
 }
 
+const PAN_STEP = 40
+const PAN_STEP_FAST = 80
+
+const SHEET_FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 function collectApis(
   data: FlowDataBundle,
   n: FlowNode,
@@ -103,9 +110,25 @@ function collectApis(
   return out.slice(0, 24)
 }
 
+function getSheetFocusables(sheet: HTMLElement): HTMLElement[] {
+  return Array.from(sheet.querySelectorAll<HTMLElement>(SHEET_FOCUSABLE)).filter(
+    (el) => {
+      if (el.getAttribute('aria-hidden') === 'true') return false
+      if (el.tabIndex < 0) return false
+      // Skip inert / disabled
+      if ((el as HTMLButtonElement).disabled) return false
+      return true
+    },
+  )
+}
+
 export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
   const stageRef = useRef<HTMLDivElement>(null)
   const edgesRef = useRef<HTMLCanvasElement>(null)
+  const sheetRef = useRef<HTMLElement>(null)
+  const closeBtnRef = useRef<HTMLButtonElement>(null)
+  const openerRef = useRef<HTMLElement | null>(null)
+  const sheetWasOpenRef = useRef(false)
   const [mode, setMode] = useState<FlowMode>('cross')
   const [nodes, setNodes] = useState<FlowNode[]>([])
   const [edges, setEdges] = useState<{ from: string; to: string }[]>([])
@@ -129,14 +152,54 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
   transformRef.current = transform
   sheetOpenRef.current = sheetOpen
 
+  /**
+   * Coherent sheet close / focus policy for every dismiss path.
+   * Clears openerRef always. Restores focus to (in order):
+   * 1) explicit focusTarget (mode pill / brand initiator)
+   * 2) original opener if still mounted
+   * 3) selected mode tab or stage when opener unmounted
+   */
+  const closeSheet = useCallback((opts?: { focusTarget?: HTMLElement | null }) => {
+    const wasOpen = sheetOpenRef.current
+    setSheetOpen(false)
+    setActiveNodeId(null)
+    const opener = openerRef.current
+    openerRef.current = null
+    if (!wasOpen) return
+    const preferred = opts?.focusTarget ?? null
+    requestAnimationFrame(() => {
+      if (preferred && document.contains(preferred)) {
+        preferred.focus()
+        return
+      }
+      if (opener && document.contains(opener)) {
+        opener.focus()
+        return
+      }
+      // Opener unmounted (graph rebuild) — land on intentional chrome
+      const selectedTab = document.querySelector(
+        '.flow-pill[aria-selected="true"]',
+      ) as HTMLElement | null
+      if (selectedTab) {
+        selectedTab.focus()
+        return
+      }
+      stageRef.current?.focus()
+    })
+  }, [])
+
   const rebuild = useCallback(
     (nextMode: FlowMode) => {
       const saved = loadPositions(nextMode)
       const g = buildGraphForMode(data, nextMode, saved)
       setNodes(g.nodes)
       setEdges(g.edges)
+      // Data rebuild always clears selection/sheet state.
+      // Focus policy is applied by closeSheet when the sheet was open
+      // (switchMode / brand paths); pure rebuild must not leave a stale opener.
       setActiveNodeId(null)
       setSheetOpen(false)
+      openerRef.current = null
       // fit after layout
       requestAnimationFrame(() => {
         const stage = stageRef.current
@@ -151,13 +214,46 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     rebuild('cross')
   }, [rebuild])
 
+  const resolveFocusInitiator = useCallback(
+    (explicit?: HTMLElement | null): HTMLElement | null => {
+      if (explicit && typeof document !== 'undefined' && document.contains(explicit)) {
+        return explicit
+      }
+      if (
+        typeof document !== 'undefined' &&
+        document.activeElement instanceof HTMLElement
+      ) {
+        return document.activeElement
+      }
+      return null
+    },
+    [],
+  )
+
   const switchMode = useCallback(
-    (next: FlowMode) => {
-      if (next === mode && nodes.length) return
+    (next: FlowMode, focusTarget?: HTMLElement | null) => {
+      const initiator = resolveFocusInitiator(focusTarget)
+      const sheetWasOpen = sheetOpenRef.current
+
+      // Same mode: still dismiss an open sheet (brand reset / re-click pill).
+      if (next === mode && nodes.length) {
+        if (sheetWasOpen) {
+          closeSheet({ focusTarget: initiator })
+        }
+        return
+      }
+
+      // Mode change rebuilds the graph — openers may unmount. Close with
+      // coherent policy so focus lands on the intentional initiator.
+      if (sheetWasOpen) {
+        closeSheet({ focusTarget: initiator })
+      } else {
+        openerRef.current = null
+      }
       setMode(next)
       rebuild(next)
     },
-    [mode, nodes.length, rebuild],
+    [mode, nodes.length, rebuild, closeSheet, resolveFocusInitiator],
   )
 
   const worldSize = useMemo(() => {
@@ -227,8 +323,36 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     [],
   )
 
+  /** Pan/center without opening sheet (keyboard focus path). */
+  const panToNode = useCallback((id: string) => {
+    const n = nodesRef.current.find((x) => x.id === id)
+    if (!n) return
+    const stage = stageRef.current
+    if (!stage) return
+    setTransform((t) =>
+      centerTransform(
+        n,
+        stage.clientWidth,
+        stage.clientHeight,
+        t.scale,
+        sheetOpenRef.current,
+      ),
+    )
+  }, [])
+
   const openSheetForNode = useCallback(
-    (id: string) => {
+    (id: string, opener?: HTMLElement | null) => {
+      // Remember opener only when first opening (related links keep original).
+      if (!sheetOpenRef.current) {
+        if (opener) {
+          openerRef.current = opener
+        } else if (
+          typeof document !== 'undefined' &&
+          document.activeElement instanceof HTMLElement
+        ) {
+          openerRef.current = document.activeElement
+        }
+      }
       setActiveNodeId(id)
       setSheetOpen(true)
       centerOnNode(id, true)
@@ -236,10 +360,56 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     [centerOnNode],
   )
 
-  const closeSheet = useCallback(() => {
-    setSheetOpen(false)
-    setActiveNodeId(null)
-  }, [])
+  // Initial focus into dialog when it opens
+  useEffect(() => {
+    if (sheetOpen && !sheetWasOpenRef.current) {
+      requestAnimationFrame(() => {
+        const closeBtn = closeBtnRef.current
+        if (closeBtn) {
+          closeBtn.focus()
+          return
+        }
+        const title = document.getElementById('sheet-title')
+        if (title instanceof HTMLElement) title.focus()
+      })
+    }
+    sheetWasOpenRef.current = sheetOpen
+  }, [sheetOpen])
+
+  // Escape + Tab trap while sheet open
+  useEffect(() => {
+    if (!sheetOpen) return
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault()
+        closeSheet()
+        return
+      }
+      if (ev.key !== 'Tab') return
+      const sheet = sheetRef.current
+      if (!sheet) return
+      const list = getSheetFocusables(sheet)
+      if (list.length === 0) {
+        ev.preventDefault()
+        closeBtnRef.current?.focus()
+        return
+      }
+      const first = list[0]
+      const last = list[list.length - 1]
+      const active = document.activeElement as HTMLElement | null
+      if (ev.shiftKey) {
+        if (!active || active === first || !sheet.contains(active)) {
+          ev.preventDefault()
+          last.focus()
+        }
+      } else if (!active || active === last || !sheet.contains(active)) {
+        ev.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [sheetOpen, closeSheet])
 
   const clientToWorld = useCallback((cx: number, cy: number) => {
     const stage = stageRef.current
@@ -335,7 +505,11 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
         const n = nodesRef.current.find((x) => x.id === d.id)
         if (n) savePosition(mode, n.id, n.x, n.y)
       } else {
-        openSheetForNode(d.id)
+        const el =
+          (stageRef.current?.querySelector(
+            `[data-node-id="${d.id.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`,
+          ) as HTMLElement | null) ?? null
+        openSheetForNode(d.id, el)
       }
       dragRef.current = null
       setDraggingId(null)
@@ -365,14 +539,76 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     })
   }
 
-  useEffect(() => {
-    if (!sheetOpen) return
-    const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') closeSheet()
+  /** Stage keyboard pan (Arrow / Shift+Arrow). */
+  const onStageKeyDown = (e: ReactKeyboardEvent<HTMLElement>) => {
+    if (sheetOpenRef.current) return
+    const step = e.shiftKey ? PAN_STEP_FAST : PAN_STEP
+    let dx = 0
+    let dy = 0
+    switch (e.key) {
+      case 'ArrowLeft':
+        dx = step
+        break
+      case 'ArrowRight':
+        dx = -step
+        break
+      case 'ArrowUp':
+        dy = step
+        break
+      case 'ArrowDown':
+        dy = -step
+        break
+      default:
+        return
     }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [sheetOpen, closeSheet])
+    e.preventDefault()
+    setTransform((t) => ({ ...t, x: t.x + dx, y: t.y + dy }))
+    setHintHidden(true)
+  }
+
+  const onNodeKeyDown = (
+    e: ReactKeyboardEvent<HTMLElement>,
+    id: string,
+  ) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      e.stopPropagation()
+      openSheetForNode(id, e.currentTarget)
+    }
+  }
+
+  const onTablistKeyDown = (e: ReactKeyboardEvent<HTMLElement>) => {
+    const idx = FLOW_MODES.indexOf(mode)
+    if (idx < 0) return
+    let nextIdx = idx
+    switch (e.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        nextIdx = (idx + 1) % FLOW_MODES.length
+        break
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        nextIdx = (idx - 1 + FLOW_MODES.length) % FLOW_MODES.length
+        break
+      case 'Home':
+        nextIdx = 0
+        break
+      case 'End':
+        nextIdx = FLOW_MODES.length - 1
+        break
+      default:
+        return
+    }
+    e.preventDefault()
+    const next = FLOW_MODES[nextIdx]
+    switchMode(next)
+    requestAnimationFrame(() => {
+      const btn = document.querySelector(
+        `.flow-pill[data-mode="${next}"]`,
+      ) as HTMLElement | null
+      btn?.focus()
+    })
+  }
 
   const activeNode = activeNodeId
     ? nodes.find((n) => n.id === activeNodeId)
@@ -406,6 +642,21 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
   const pct = feat ? feat.pct || 0 : 0
   const sc = statusClass(st)
 
+  const graphSummary = useMemo(() => {
+    const modeLabel = MODE_LABEL[mode]
+    const count = nodes.length
+    const parts = [
+      `Mode ${modeLabel}.`,
+      `${count} node${count === 1 ? '' : 's'}.`,
+    ]
+    if (activeNode) {
+      parts.push(
+        `Terpilih: ${activeNode.title}, ${statusLabel(activeNode.status)}.`,
+      )
+    }
+    return parts.join(' ')
+  }, [mode, nodes.length, activeNode])
+
   return (
     <div
       className="flow-ultimate-root"
@@ -415,11 +666,15 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
       data-page="alur"
     >
       <header className="flow-top" role="banner">
+        {/* Exactly one document h1; not nested inside the brand button (D-A11Y-13). */}
+        <h1 className="flow-sr-only">Alur</h1>
         <button
           type="button"
           className="flow-brand"
-          onClick={() => switchMode('cross')}
+          data-testid="flow-brand"
+          onClick={(e) => switchMode('cross', e.currentTarget)}
           title="Lintas Proyek"
+          aria-label="Alur — Lintas Proyek"
         >
           <span className="logo" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="15" fill="none">
@@ -432,12 +687,17 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
             </svg>
           </span>
           <div>
-            Alur
+            <span className="flow-brand-title">Alur</span>
             <small>Alur kerja interaktif</small>
           </div>
         </button>
 
-        <nav className="flow-modes" aria-label="Mode alur kerja" role="tablist">
+        <nav
+          className="flow-modes"
+          aria-label="Mode alur kerja"
+          role="tablist"
+          onKeyDown={onTablistKeyDown}
+        >
           {FLOW_MODES.map((m) => (
             <button
               key={m}
@@ -446,7 +706,10 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
               data-mode={m}
               role="tab"
               aria-selected={mode === m}
-              onClick={() => switchMode(m)}
+              aria-controls="flow-stage"
+              id={`flow-tab-${m}`}
+              tabIndex={mode === m ? 0 : -1}
+              onClick={(e) => switchMode(m, e.currentTarget)}
             >
               {m !== 'cross' ? (
                 <span
@@ -475,16 +738,40 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
         </div>
       </header>
 
+      <div
+        className="flow-sr-only"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        data-testid="flow-graph-summary"
+      >
+        {graphSummary}
+      </div>
+      <ol className="flow-sr-only" data-testid="flow-graph-text-alt" aria-label="Daftar node alur">
+        {nodes.map((n) => (
+          <li key={n.id}>
+            {n.title}, {statusLabel(n.status)}
+            {n.project ? ` · ${projectLabel(n.project)}` : ''}
+          </li>
+        ))}
+      </ol>
+
       <main
         className={`flow-stage${panning ? ' is-panning' : ''}`}
         ref={stageRef}
+        id="flow-stage"
+        role="tabpanel"
+        aria-labelledby={`flow-tab-${mode}`}
         aria-label="Kanvas alur kerja"
         data-testid="flow-stage"
+        tabIndex={0}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onWheel={onWheel}
+        onKeyDown={onStageKeyDown}
+        inert={sheetOpen ? true : undefined}
       >
         <div
           className="flow-world"
@@ -509,12 +796,20 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
             {nodes.map((n) => {
               const on = activeNodeId === n.id
               const scN = statusClass(n.status)
+              const stLabel = statusLabel(n.status)
+              const accessibleName = `${n.title}, ${stLabel}`
               return (
                 <div
                   key={n.id}
+                  role="button"
+                  tabIndex={0}
                   className={`fnode${mode === 'cross' || n.project ? ' has-proj' : ''}${on ? ' on is-hl' : ''}${draggingId === n.id ? ' is-dragging' : ''}`}
                   data-node-id={n.id}
                   data-testid="flow-node"
+                  aria-label={accessibleName}
+                  aria-pressed={on || undefined}
+                  onKeyDown={(e) => onNodeKeyDown(e, n.id)}
+                  onFocus={() => panToNode(n.id)}
                   style={{
                     left: n.x,
                     top: n.y,
@@ -523,7 +818,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                       : undefined,
                   }}
                 >
-                  <span className={`fdot ${scN}`} />
+                  <span className={`fdot ${scN}`} aria-hidden="true" />
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <span className="ft">{n.title}</span>
                     {mode === 'cross' && n.project ? (
@@ -548,14 +843,19 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           id="flow-hint"
         >
           Seret kanvas untuk geser · seret node untuk pindah · klik node untuk
-          detail
+          detail · panah untuk geser kanvas
         </div>
       </main>
 
-      <div className="flow-zoom" aria-label="Kontrol zoom">
+      <div
+        className="flow-zoom"
+        aria-label="Kontrol zoom"
+        inert={sheetOpen ? true : undefined}
+      >
         <button
           type="button"
           title="Perbesar"
+          aria-label="Perbesar"
           onClick={() =>
             setTransform((t) => ({
               ...t,
@@ -568,6 +868,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
         <button
           type="button"
           title="Perkecil"
+          aria-label="Perkecil"
           onClick={() =>
             setTransform((t) => ({
               ...t,
@@ -580,6 +881,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
         <button
           type="button"
           title="Muat semua"
+          aria-label="Muat semua"
           onClick={() => {
             const stage = stageRef.current
             if (!stage) return
@@ -597,18 +899,21 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
         className={`flow-backdrop${sheetOpen ? ' is-open' : ''}`}
         aria-label="Tutup detail"
         data-testid="flow-backdrop"
-        onClick={closeSheet}
-        tabIndex={sheetOpen ? 0 : -1}
+        onClick={() => closeSheet()}
+        tabIndex={-1}
+        aria-hidden={!sheetOpen}
       />
 
       <aside
+        ref={sheetRef}
         className={`flow-sheet${sheetOpen ? ' is-open' : ''}`}
         id="flow-sheet"
         aria-hidden={!sheetOpen}
-        role="dialog"
-        aria-modal="true"
+        role={sheetOpen ? 'dialog' : undefined}
+        aria-modal={sheetOpen ? true : undefined}
         aria-labelledby="sheet-title"
         data-testid="flow-sheet"
+        inert={!sheetOpen ? true : undefined}
       >
         <div className="flow-sheet-handle" aria-hidden="true" />
         <header className="flow-sheet-head">
@@ -630,7 +935,11 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                 MODE_LABEL[mode]
               )}
             </div>
-            <h2 className="flow-sheet-title" id="sheet-title">
+            <h2
+              className="flow-sheet-title"
+              id="sheet-title"
+              tabIndex={sheetOpen ? -1 : undefined}
+            >
               {activeNode?.title || feat?.nama_id || 'Detail'}
             </h2>
             <p className="flow-sheet-sub">
@@ -644,7 +953,9 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
             className="flow-sheet-close"
             aria-label="Tutup"
             data-testid="flow-sheet-close"
-            onClick={closeSheet}
+            ref={closeBtnRef}
+            onClick={() => closeSheet()}
+            tabIndex={sheetOpen ? 0 : -1}
           >
             ×
           </button>
@@ -752,6 +1063,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                             <button
                               type="button"
                               data-goto={other.id}
+                              tabIndex={sheetOpen ? 0 : -1}
                               onClick={() => openSheetForNode(other.id)}
                             >
                               <span className="flow-link-nm">{label}</span>
@@ -792,6 +1104,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                           type="button"
                           data-goto={r.id}
                           data-testid="flow-related"
+                          tabIndex={sheetOpen ? 0 : -1}
                           onClick={() => openSheetForNode(r.id)}
                         >
                           <span className="flow-link-nm">{r.title}</span>

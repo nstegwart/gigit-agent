@@ -148,7 +148,8 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   padding: var(--sp-2) var(--sp-4);
   border-bottom: var(--fu-border);
   background: var(--panel);
-  z-index: 20;
+  /* Canon: above backdrop (40) so mode pills stay usable while sheet open */
+  z-index: 60;
   position: relative;
   min-height: 52px;
 }
@@ -165,6 +166,17 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   background: transparent;
   padding: 0;
   font: inherit;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.flow-ultimate-root .flow-brand-title {
+  margin: 0;
+  font: inherit;
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-ui);
+  line-height: 1.15;
+  color: inherit;
 }
 
 .flow-ultimate-root .flow-brand .logo {
@@ -203,6 +215,7 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
 .flow-ultimate-root .flow-pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-3);
   border: var(--fu-border);
@@ -213,6 +226,9 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   font-size: var(--fs-ui);
   cursor: pointer;
   white-space: nowrap;
+  min-width: 44px;
+  min-height: 44px;
+  box-sizing: border-box;
   transition:
     background var(--motion-hover) ease,
     color var(--motion-hover) ease,
@@ -309,7 +325,7 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   left: 50%;
   bottom: 16px;
   transform: translateX(-50%);
-  color: var(--t3);
+  color: var(--t2);
   font-size: var(--fs-caption);
   pointer-events: none;
   z-index: 5;
@@ -409,7 +425,7 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
 .flow-ultimate-root .fnode .flow-meta {
   display: block;
   font-size: var(--fs-caption);
-  color: var(--t3);
+  color: var(--t2);
   margin-top: 0;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -437,8 +453,10 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
 }
 
 .flow-ultimate-root .flow-zoom button {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
   border: var(--fu-border);
   border-radius: var(--r-sm);
   background: var(--panel);
@@ -448,6 +466,10 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   font-weight: 600;
   cursor: pointer;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
 }
 
 .flow-ultimate-root .flow-zoom button:hover {
@@ -553,8 +575,10 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
 }
 
 .flow-ultimate-root .flow-sheet-close {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
   border: var(--fu-border);
   border-radius: var(--r-sm);
   background: var(--bg);
@@ -563,6 +587,10 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   line-height: 1;
   cursor: pointer;
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
 }
 
 .flow-ultimate-root .flow-sheet-close:hover {
@@ -588,7 +616,7 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
 }
 
 .flow-ultimate-root .flow-sec-hint {
-  color: var(--t3);
+  color: var(--t2);
   font-size: var(--fs-caption);
   margin-left: var(--sp-2);
   font-weight: 400;
@@ -659,10 +687,16 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   gap: var(--sp-3);
   color: inherit;
   font: inherit;
+  box-sizing: border-box;
 }
 
 .flow-ultimate-root .flow-list-plain li button:hover .flow-link-nm {
   color: var(--acc);
+}
+
+.flow-ultimate-root .flow-list-plain li button:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
 
 .flow-ultimate-root .flow-link-nm {
@@ -671,7 +705,7 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
 }
 
 .flow-ultimate-root .flow-link-meta {
-  color: var(--t3);
+  color: var(--t2);
   font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -706,7 +740,7 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
 }
 
 .flow-ultimate-root .flow-empty {
-  color: var(--t3);
+  color: var(--t2);
   font-size: var(--fs-caption);
   padding: var(--sp-2) 0;
 }
@@ -802,4 +836,92 @@ html[data-page='alur'] .app {
   height: 100dvh;
   width: 100vw;
   overflow: hidden;
+}
+
+/* —— A11y: visible focus, sr-only, reduced motion, mobile reflow —— */
+
+.flow-ultimate-root .flow-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.flow-ultimate-root :focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.flow-ultimate-root .flow-stage:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.flow-ultimate-root .fnode:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-color: var(--acc);
+  box-shadow: 0 0 0 2px var(--acc-ring);
+}
+
+/* D-A11Y-06: honor prefers-reduced-motion (max ≤50ms / none) */
+@media (prefers-reduced-motion: reduce) {
+  .flow-ultimate-root,
+  .flow-ultimate-root *,
+  .flow-ultimate-root *::before,
+  .flow-ultimate-root *::after {
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* D-A11Y-07 / D-A11Y-10: mobile reflow + horizontal pill access */
+@media (max-width: 900px) {
+  .flow-ultimate-root .flow-top {
+    flex-wrap: wrap;
+    row-gap: var(--sp-2);
+  }
+
+  .flow-ultimate-root .flow-modes {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    min-width: 0;
+    flex: 1 1 100%;
+    order: 3;
+  }
+
+  .flow-ultimate-root .flow-legend {
+    display: none;
+  }
+
+  .flow-ultimate-root .flow-hint {
+    white-space: normal;
+    max-width: calc(100% - 32px);
+    text-align: center;
+  }
+
+  .flow-ultimate-root .flow-pill,
+  .flow-ultimate-root .flow-brand,
+  .flow-ultimate-root .flow-zoom button,
+  .flow-ultimate-root .flow-sheet-close {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 640px) {
+  .flow-ultimate-root .flow-modes {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
 }
