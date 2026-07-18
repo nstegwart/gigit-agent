@@ -1,6 +1,7 @@
 // Tasks list (board-scoped) — Direction B design system.
 // Data/logic from board-query + readiness helpers preserved; presentation via UI kit + design-system.
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before tasks loaders run.
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import { LifecycleEditor } from '#/components/LifecycleEditor'
@@ -55,13 +56,25 @@ import {
   useRollup,
   useTasks,
 } from '#/lib/board-query'
+import { isControlCenterBoard } from '#/lib/control-center-query'
 import { formatDenseTimestamp, formatLifecycleStageLabel } from '#/lib/display-label'
 import { nextStage, rowReadiness } from '#/lib/readiness'
 import type { TaskView } from '#/lib/tasks'
 import type { Run } from '#/lib/types'
 
 export const Route = createFileRoute('/b/$boardId/tasks/')({
+  // Canon-v3: control-center boards demote to /alur before tasks loaders run.
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await Promise.all([
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),

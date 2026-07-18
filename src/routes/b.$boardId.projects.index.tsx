@@ -1,6 +1,7 @@
 // Projects list — Direction B (FAN-PROJECTS). Control-center boards use pinned
 // projects envelope; legacy boards use board model. Presentation only via UI kit.
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before projects loaders run.
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useStore } from '@tanstack/react-store'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
@@ -36,7 +37,17 @@ import type { GroupReadiness, Project } from '#/lib/types'
 const PAGE_SIZE_DEFAULT = 25
 
 export const Route = createFileRoute('/b/$boardId/projects/')({
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
     if (isControlCenterBoard(params.boardId)) {
       await context.queryClient.ensureQueryData(

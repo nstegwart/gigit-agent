@@ -1,14 +1,26 @@
 // Peta ketergantungan — ART-022 interactive flow dengan filter proyek dan legenda id-ID.
 // Route shell is fully deterministic (no window/Date). Graph hydration is handled inside
 // DependencyFlow via clientReady gate (see React #418 fix).
+// Canon-v3: control-center boards demote to /alur before map loaders run.
 import { useMemo, useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { boardQueryOptions, useBoard } from '#/lib/board-query'
 import { DependencyFlow } from '#/components/control-center/dependency'
+import { isControlCenterBoard } from '#/lib/control-center-query'
 
 export const Route = createFileRoute('/b/$boardId/map')({
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
   },
   component: MapView,

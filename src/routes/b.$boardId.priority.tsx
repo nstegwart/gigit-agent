@@ -1,5 +1,6 @@
 // Control-center Priority surface — SALES_WEB_RELATED_BACKEND envelope only.
-import { createFileRoute } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before priority loaders run.
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 
@@ -7,13 +8,24 @@ import { PriorityScreen } from '#/components/control-center/priority'
 import { boardQueryOptions, useBoardId } from '#/lib/board-query'
 import {
   getDefaultControlCenterFetchers,
+  isControlCenterBoard,
   priorityQueryOptions,
   overviewQueryOptions,
 } from '#/lib/control-center-query'
 import { priorityEnvelopeToProps } from '#/lib/control-center-route-adapters'
 
 export const Route = createFileRoute('/b/$boardId/priority')({
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
     const fetchers = getDefaultControlCenterFetchers()
     await Promise.all([

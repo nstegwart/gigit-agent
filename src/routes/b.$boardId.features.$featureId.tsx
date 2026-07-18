@@ -1,6 +1,7 @@
 // Feature detail — control-center boards resolve from pinned FeaturesData;
 // legacy boards keep plan/model featById (prototype vFeature).
-import { createFileRoute } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before feature-detail loaders run.
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 import { BoardLink as Link } from '#/components/BoardLink'
@@ -23,7 +24,18 @@ import { CommentThread } from '#/components/CommentThread'
 import { FeatureDetailScreen } from '#/components/control-center/features'
 
 export const Route = createFileRoute('/b/$boardId/features/$featureId')({
+  // Canon-v3: control-center boards demote to /alur before feature-detail loaders run.
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
     if (isControlCenterBoard(params.boardId)) {
       // W-FIX-FIRM D: no safe by-id features fetcher in public client API without

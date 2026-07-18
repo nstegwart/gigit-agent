@@ -1,6 +1,7 @@
 // Product feature directory — control-center boards only (W-UI-2).
 // SPEC-TM-KOMPAT-VISUAL-V1 §1 IA, §3.B, §4.3 + ADDENDUM V1.1 §B.
-import { Navigate, createFileRoute } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before fitur loaders run.
+import { Navigate, createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 
@@ -13,7 +14,17 @@ import {
 } from '#/lib/control-center-query'
 
 export const Route = createFileRoute('/b/$boardId/fitur/')({
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
     if (isControlCenterBoard(params.boardId)) {
       await context.queryClient.ensureQueryData(

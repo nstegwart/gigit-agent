@@ -1,5 +1,6 @@
 // Features list — control-center boards use pinned features envelope; others keep FeaturesTable.
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before features loaders run.
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 
@@ -16,7 +17,17 @@ import { FeaturesTable } from '#/components/FeaturesTable'
 
 export const Route = createFileRoute('/b/$boardId/features/')({
   validateSearch: (search) => parseControlCenterCursorSearch(search),
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params, location }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
     if (isControlCenterBoard(params.boardId)) {
       const search = parseControlCenterCursorSearch(location.search)

@@ -1,6 +1,7 @@
 // Task detail (board-scoped /tasks/$taskId) — Direction B design system.
 // Data loaders + existing functional panels preserved; chrome via UI kit + design-system.
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before task-detail loaders run.
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 
 import { BoardLink as Link } from '#/components/BoardLink'
 import { resolveTaskDisplayTitle } from '#/components/TasksTable'
@@ -46,12 +47,23 @@ import {
   useTaskLifecycle,
   useTasks,
 } from '#/lib/board-query'
+import { isControlCenterBoard } from '#/lib/control-center-query'
 import { formatLifecycleStageLabel } from '#/lib/display-label'
 import { fmtDate } from '#/lib/format'
 import { stageReadiness } from '#/lib/readiness'
 
 export const Route = createFileRoute('/b/$boardId/tasks/$taskId')({
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await Promise.all([
       context.queryClient.ensureQueryData(tasksQueryOptions(params.boardId)),
       context.queryClient.ensureQueryData(boardQueryOptions(params.boardId)),

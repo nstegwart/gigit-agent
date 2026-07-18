@@ -3,7 +3,7 @@
  * mode=technical expands technical identifiers; default is human-first.
  * W-UI-3: loads per-task lineage for Lineage Rebuild panel.
  */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo } from 'react'
 import { z } from 'zod'
@@ -15,6 +15,7 @@ import { taskDetailEnvelopeToViewModel } from '#/lib/control-center-route-adapte
 import type { PinnedEnvelope } from '#/lib/control-center-query'
 import {
   getDefaultControlCenterFetchers,
+  isControlCenterBoard,
   taskLineageQueryOptions,
 } from '#/lib/control-center-query'
 // Value import of control-center-ui-fns is dynamic below — that module
@@ -34,7 +35,18 @@ export const Route = createFileRoute('/b/$boardId/work/$taskId')({
     const r = taskSearchSchema.safeParse(search ?? {})
     return r.success ? r.data : {}
   },
+  // Canon-v3: control-center boards demote to /alur (parent work also redirects).
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
   },
   component: WorkTaskDetailRoute,
