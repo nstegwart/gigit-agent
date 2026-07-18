@@ -629,6 +629,13 @@ export interface ControlPlaneAtomicStore {
   getBoardState(boardId: string): Promise<ControlPlaneBoardState>
   setBoardState(state: ControlPlaneBoardState): Promise<void>
   bumpBoardRev(boardId: string): Promise<number>
+  /**
+   * Lifecycle advance pin authority: board_rev + lifecycle_rev exactly once.
+   * Optional on older mocks; production MySQL + memory stores implement it.
+   */
+  bumpBoardAndLifecycleRev?(boardId: string): Promise<{ boardRev: number; lifecycleRev: number }>
+  /** Durable pin revs when the store tracks lifecycle (SQL or memory pin map). */
+  getBoardPinRevs?(boardId: string): Promise<{ boardRev: number; lifecycleRev: number }>
   appendAudit(ev: Omit<ControlPlaneAuditEvent, 'eventId'> & { eventId?: string }): Promise<ControlPlaneAuditEvent>
   listAudit(boardId: string): Promise<Array<ControlPlaneAuditEvent>>
   withBoardLock<T>(boardId: string, fn: () => Promise<T> | T): Promise<T>
@@ -636,37 +643,75 @@ export interface ControlPlaneAtomicStore {
 
 /** In-memory atomic board/audit store for C2 unit tests. */
 export function createMemoryControlPlaneAtomicStore(
-  seed: Array<ControlPlaneBoardState> = [],
+  seed: Array<ControlPlaneBoardState & { lifecycleRev?: number }> = [],
 ): ControlPlaneAtomicStore & {
   auditSnapshot(): Array<ControlPlaneAuditEvent>
+  bumpBoardAndLifecycleRev(boardId: string): Promise<{ boardRev: number; lifecycleRev: number }>
+  getBoardPinRevs(boardId: string): Promise<{ boardRev: number; lifecycleRev: number }>
 } {
-  const boards = new Map<string, ControlPlaneBoardState>()
+  type MemBoard = ControlPlaneBoardState & { lifecycleRev: number }
+  const boards = new Map<string, MemBoard>()
   const audit: Array<ControlPlaneAuditEvent> = []
   const chains = new Map<string, Promise<unknown>>()
-  for (const s of seed) boards.set(s.boardId, { ...s })
+  for (const s of seed) {
+    boards.set(s.boardId, {
+      boardId: s.boardId,
+      boardRev: s.boardRev,
+      dispatchBlocked: s.dispatchBlocked,
+      dispatchBlockedReason: s.dispatchBlockedReason,
+      lifecycleRev: typeof s.lifecycleRev === 'number' && Number.isFinite(s.lifecycleRev) ? s.lifecycleRev : 0,
+    })
+  }
+
+  function defaultBoard(boardId: string): MemBoard {
+    return {
+      boardId,
+      boardRev: 0,
+      dispatchBlocked: false,
+      dispatchBlockedReason: null,
+      lifecycleRev: 0,
+    }
+  }
 
   return {
     auditSnapshot() {
       return audit.map((e) => ({ ...e, detail: { ...e.detail } }))
     },
     async getBoardState(boardId) {
-      return (
-        boards.get(boardId) ?? {
-          boardId,
-          boardRev: 0,
-          dispatchBlocked: false,
-          dispatchBlockedReason: null,
-        }
-      )
+      const cur = boards.get(boardId) ?? defaultBoard(boardId)
+      return {
+        boardId: cur.boardId,
+        boardRev: cur.boardRev,
+        dispatchBlocked: cur.dispatchBlocked,
+        dispatchBlockedReason: cur.dispatchBlockedReason,
+      }
     },
     async setBoardState(state) {
-      boards.set(state.boardId, { ...state })
+      const prev = boards.get(state.boardId)
+      boards.set(state.boardId, {
+        ...state,
+        lifecycleRev: prev?.lifecycleRev ?? 0,
+      })
     },
     async bumpBoardRev(boardId) {
-      const cur = await this.getBoardState(boardId)
+      const cur = boards.get(boardId) ?? defaultBoard(boardId)
       const next = { ...cur, boardRev: cur.boardRev + 1 }
       boards.set(boardId, next)
       return next.boardRev
+    },
+    async bumpBoardAndLifecycleRev(boardId) {
+      const cur = boards.get(boardId) ?? defaultBoard(boardId)
+      const next = {
+        ...cur,
+        boardRev: cur.boardRev + 1,
+        lifecycleRev: cur.lifecycleRev + 1,
+      }
+      boards.set(boardId, next)
+      return { boardRev: next.boardRev, lifecycleRev: next.lifecycleRev }
+    },
+    async getBoardPinRevs(boardId) {
+      const cur = boards.get(boardId) ?? defaultBoard(boardId)
+      return { boardRev: cur.boardRev, lifecycleRev: cur.lifecycleRev }
     },
     async appendAudit(ev) {
       const event: ControlPlaneAuditEvent = {

@@ -1457,6 +1457,47 @@ function toMutationGateResult<T extends object>(body: T, replayed?: true): Mutat
   return body
 }
 
+/** Durable board + lifecycle pin after a successful lifecycle advance. */
+export type AdvancePinBump = { boardRev: number; lifecycleRev: number }
+
+/**
+ * Packet A: lifecycle pin authority is board_revisions.lifecycle_rev.
+ * Prefer atomic.bumpBoardAndLifecycleRev (MySQL + memory). Fail closed if absent.
+ */
+async function bumpBoardAndLifecycleRevOrThrow(
+  atomic: ControlPlaneAtomicStore,
+  boardId: string,
+): Promise<AdvancePinBump> {
+  if (typeof atomic.bumpBoardAndLifecycleRev === 'function') {
+    return atomic.bumpBoardAndLifecycleRev(boardId)
+  }
+  throw new McpMutationError(
+    'DATA_INTEGRITY',
+    'advance_task requires atomic.bumpBoardAndLifecycleRev (lifecycle pin authority)',
+    { boardId },
+  )
+}
+
+/**
+ * Align advance_task response pin fields to the durable bump result so response
+ * equals immediate resolveBoardPin / get_board_hash re-read (SQL authority).
+ */
+function alignAdvanceResponsePin(body: object, next: AdvancePinBump): void {
+  const b = body as Record<string, unknown>
+  if ('boardRev' in b) b.boardRev = next.boardRev
+  if ('lifecycleRev' in b) b.lifecycleRev = next.lifecycleRev
+  if (b.pin && typeof b.pin === 'object' && !Array.isArray(b.pin)) {
+    const pin = b.pin as Record<string, unknown>
+    pin.boardRev = next.boardRev
+    pin.lifecycleRev = next.lifecycleRev
+  }
+  if (b.readback && typeof b.readback === 'object' && !Array.isArray(b.readback)) {
+    const rb = b.readback as Record<string, unknown>
+    if ('boardRev' in rb) rb.boardRev = next.boardRev
+    if ('lifecycleRev' in rb) rb.lifecycleRev = next.lifecycleRev
+  }
+}
+
 /**
  * Durable mutation gate: idempotency + atomic board rev + pin subject hash +
  * entity CAS + HOLD/EXCLUDE/UNCLASSIFIED reject. Runs `mutate` only after all checks pass.
@@ -1511,12 +1552,24 @@ export async function runMutationGate<T extends object>(
       if (!opts.skipBoardRevCheck) {
         const board = await atomic.getBoardState(opts.boardId)
         if (board.boardRev !== envelope.expectedBoardRev) {
+          let currentLifecycleRev: number | undefined
+          try {
+            if (typeof atomic.getBoardPinRevs === 'function') {
+              currentLifecycleRev = (await atomic.getBoardPinRevs(opts.boardId)).lifecycleRev
+            } else {
+              const pin = await resolveBoardPin(opts.boardId)
+              currentLifecycleRev = pin.lifecycleRev
+            }
+          } catch {
+            currentLifecycleRev = undefined
+          }
           throw new McpMutationError(
             STALE_REVISION,
             `board rev mismatch: expected ${envelope.expectedBoardRev}, current ${board.boardRev}`,
             {
               expectedBoardRev: envelope.expectedBoardRev,
               currentBoardRev: board.boardRev,
+              ...(currentLifecycleRev !== undefined ? { currentLifecycleRev } : {}),
               boardId: opts.boardId,
             },
           )
@@ -1603,6 +1656,8 @@ export async function runMutationGate<T extends object>(
 
       // Persist entity CAS. Board rev is advanced via atomic.bumpBoardRev (single authority).
       // Align revision store board map by using expectedBoardRev that matches atomic pre-bump.
+      // Lifecycle stage advance (advance_task only): also +1 lifecycle_rev under same lock
+      // so board_revisions.lifecycle_rev is durable pin authority (Packet A / D1).
       const casWrite = await revisions.compareAndSwap({
         boardId: opts.boardId,
         entityType: opts.entityType,
@@ -1616,7 +1671,13 @@ export async function runMutationGate<T extends object>(
         throw new McpMutationError(casWrite.code, casWrite.message, { ...casWrite.current })
       }
       if (!opts.skipBoardRevCheck) {
-        await atomic.bumpBoardRev(opts.boardId)
+        if (opts.toolName === 'advance_task') {
+          const nextPin = await bumpBoardAndLifecycleRevOrThrow(atomic, opts.boardId)
+          // Response pin must equal durable pin authority (same numbers as get_board_hash re-read).
+          alignAdvanceResponsePin(body, nextPin)
+        } else {
+          await atomic.bumpBoardRev(opts.boardId)
+        }
       }
 
       return body

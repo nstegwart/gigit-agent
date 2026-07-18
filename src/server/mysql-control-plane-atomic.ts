@@ -77,12 +77,28 @@ export const ATOMIC_SQL = {
   bumpBoardRev: `
     UPDATE board_revisions SET board_rev = board_rev + 1 WHERE board_id=?
   `,
+  /**
+   * Lifecycle advance pin authority: bump board_rev and lifecycle_rev together.
+   * Non-lifecycle mutations MUST use bumpBoardRev only (lifecycle stays frozen).
+   */
+  bumpBoardAndLifecycleRev: `
+    UPDATE board_revisions
+    SET board_rev = board_rev + 1, lifecycle_rev = lifecycle_rev + 1
+    WHERE board_id=?
+  `,
   /** CAS bump: only succeed when current rev equals expected. */
   casBumpBoardRev: `
     UPDATE board_revisions SET board_rev = board_rev + 1
     WHERE board_id=? AND board_rev=?
   `,
+  /** CAS dual bump for lifecycle advance under observed pin. */
+  casBumpBoardAndLifecycleRev: `
+    UPDATE board_revisions
+    SET board_rev = board_rev + 1, lifecycle_rev = lifecycle_rev + 1
+    WHERE board_id=? AND board_rev=? AND lifecycle_rev=?
+  `,
   getBoardRev: `SELECT board_rev FROM board_revisions WHERE board_id=? LIMIT 1`,
+  getBoardPinRevs: `SELECT board_rev, lifecycle_rev FROM board_revisions WHERE board_id=? LIMIT 1`,
   appendAudit: `
     INSERT INTO audit_log (board_id, ts, actor, action, task_id, from_stage, to_stage, detail)
     VALUES (?,?,?,?,?,?,?,?)
@@ -294,19 +310,38 @@ export interface MysqlControlPlaneAtomicOptions {
   useNamedLock?: boolean
 }
 
+/** Durable board + lifecycle pin counters (board_revisions authority). */
+export type BoardPinRevs = {
+  boardRev: number
+  lifecycleRev: number
+}
+
+/** MySQL atomic store with lifecycle pin bump (Packet A). */
+export type MysqlControlPlaneAtomicStore = ControlPlaneAtomicStore & {
+  casBumpBoardRev(boardId: string, expectedBoardRev: number): Promise<number>
+  /** Exactly-once dual bump for successful lifecycle advance. */
+  bumpBoardAndLifecycleRev(boardId: string): Promise<BoardPinRevs>
+  /** CAS dual bump against observed board + lifecycle pin. */
+  casBumpBoardAndLifecycleRev(
+    boardId: string,
+    expectedBoardRev: number,
+    expectedLifecycleRev: number,
+  ): Promise<BoardPinRevs>
+  /** Read durable pin revs (board_rev + lifecycle_rev). */
+  getBoardPinRevs(boardId: string): Promise<BoardPinRevs>
+}
+
 /**
  * MySQL-backed ControlPlaneAtomicStore.
  * - Board rev: monotonic bump + optimistic CAS on setBoardState
+ * - Lifecycle pin: bumpBoardAndLifecycleRev for advance_task only
  * - Dispatch block: durable on board_revisions
  * - Audit: insert-only immutable rows in audit_log (board-scoped)
  */
 export function createMysqlControlPlaneAtomicStore(
   exec: SqlExecutor,
   opts?: MysqlControlPlaneAtomicOptions,
-): ControlPlaneAtomicStore & {
-  /** CAS bump: returns new rev or throws STALE_REVISION when expected mismatches. */
-  casBumpBoardRev(boardId: string, expectedBoardRev: number): Promise<number>
-} {
+): MysqlControlPlaneAtomicStore {
   if (opts?.useNamedLock === true && typeof exec.getConnection !== 'function') {
     throw new ControlPlaneAtomicError(
       'INVALID_INPUT',
@@ -329,13 +364,24 @@ export function createMysqlControlPlaneAtomicStore(
     return rowToBoardState(row)
   }
 
+  async function readPinRevs(boardId: string): Promise<BoardPinRevs> {
+    const res = await exec.execute<{ board_rev: number; lifecycle_rev: number }>(
+      ATOMIC_SQL.getBoardPinRevs,
+      [boardId],
+    )
+    const row = res.rows[0]
+    if (!row) return { boardRev: 0, lifecycleRev: 0 }
+    return {
+      boardRev: asNumber(row.board_rev, 0),
+      lifecycleRev: asNumber(row.lifecycle_rev, 0),
+    }
+  }
+
   async function ensureBoard(boardId: string): Promise<void> {
     await exec.execute(ATOMIC_SQL.ensureBoardRow, [boardId])
   }
 
-  const store: ControlPlaneAtomicStore & {
-    casBumpBoardRev(boardId: string, expectedBoardRev: number): Promise<number>
-  } = {
+  const store: MysqlControlPlaneAtomicStore = {
     async getBoardState(boardId) {
       return readBoard(boardId)
     },
@@ -419,6 +465,33 @@ export function createMysqlControlPlaneAtomicStore(
       })
     },
 
+    async bumpBoardAndLifecycleRev(boardId) {
+      if (!boardId) {
+        throw new ControlPlaneAtomicError('INVALID_INPUT', 'boardId required', { boardId })
+      }
+      return withLock(boardId, async () => {
+        await ensureBoard(boardId)
+        const bump = await exec.execute(ATOMIC_SQL.bumpBoardAndLifecycleRev, [boardId])
+        if (bump.affectedRows !== 1) {
+          throw new ControlPlaneAtomicError(
+            'DATA_INTEGRITY',
+            'bumpBoardAndLifecycleRev failed to update row',
+            { boardId },
+          )
+        }
+        return readPinRevs(boardId)
+      })
+    },
+
+    async getBoardPinRevs(boardId) {
+      if (!boardId) {
+        throw new ControlPlaneAtomicError('INVALID_INPUT', 'boardId required', { boardId })
+      }
+      const exists = await boardRowExists(exec, boardId)
+      if (!exists) return { boardRev: 0, lifecycleRev: 0 }
+      return readPinRevs(boardId)
+    },
+
     async casBumpBoardRev(boardId, expectedBoardRev) {
       if (!boardId) {
         throw new ControlPlaneAtomicError('INVALID_INPUT', 'boardId required', { boardId })
@@ -446,6 +519,47 @@ export function createMysqlControlPlaneAtomicStore(
         }
         const revRes = await exec.execute<{ board_rev: number }>(ATOMIC_SQL.getBoardRev, [boardId])
         return asNumber(revRes.rows[0]?.board_rev, 0)
+      })
+    },
+
+    async casBumpBoardAndLifecycleRev(boardId, expectedBoardRev, expectedLifecycleRev) {
+      if (!boardId) {
+        throw new ControlPlaneAtomicError('INVALID_INPUT', 'boardId required', { boardId })
+      }
+      if (!Number.isFinite(expectedBoardRev) || expectedBoardRev < 0) {
+        throw new ControlPlaneAtomicError('INVALID_INPUT', 'expectedBoardRev must be non-negative', {
+          expectedBoardRev,
+        })
+      }
+      if (!Number.isFinite(expectedLifecycleRev) || expectedLifecycleRev < 0) {
+        throw new ControlPlaneAtomicError(
+          'INVALID_INPUT',
+          'expectedLifecycleRev must be non-negative',
+          { expectedLifecycleRev },
+        )
+      }
+      return withLock(boardId, async () => {
+        await ensureBoard(boardId)
+        const cas = await exec.execute(ATOMIC_SQL.casBumpBoardAndLifecycleRev, [
+          boardId,
+          expectedBoardRev,
+          expectedLifecycleRev,
+        ])
+        if (cas.affectedRows !== 1) {
+          const cur = await readPinRevs(boardId)
+          throw new ControlPlaneAtomicError(
+            'STALE_REVISION',
+            `casBumpBoardAndLifecycleRev expected board=${expectedBoardRev}/life=${expectedLifecycleRev} != current board=${cur.boardRev}/life=${cur.lifecycleRev}`,
+            {
+              boardId,
+              expectedBoardRev,
+              expectedLifecycleRev,
+              currentBoardRev: cur.boardRev,
+              currentLifecycleRev: cur.lifecycleRev,
+            },
+          )
+        }
+        return readPinRevs(boardId)
       })
     },
 
@@ -580,9 +694,7 @@ async function boardRowExists(exec: SqlExecutor, boardId: string): Promise<boole
  */
 export function createMysqlControlPlaneAtomicStoreStrict(
   exec: SqlExecutor,
-): ControlPlaneAtomicStore & {
-  casBumpBoardRev(boardId: string, expectedBoardRev: number): Promise<number>
-} {
+): MysqlControlPlaneAtomicStore {
   if (typeof exec.getConnection !== 'function') {
     throw new ControlPlaneAtomicError(
       'INVALID_INPUT',
@@ -675,6 +787,16 @@ export function createMemoryAtomicSqlExecutor(): SqlExecutor & {
       }
     }
 
+    if (/SELECT board_rev, lifecycle_rev FROM board_revisions WHERE board_id=\? LIMIT 1/i.test(s)) {
+      const row = boards.get(String(p[0]))
+      return {
+        rows: (row
+          ? [{ board_rev: row.board_rev, lifecycle_rev: row.lifecycle_rev }]
+          : []) as Array<T>,
+        affectedRows: row ? 1 : 0,
+      }
+    }
+
     if (/INSERT INTO board_revisions \(board_id, board_rev, lifecycle_rev, dispatch_blocked, dispatch_blocked_reason\) VALUES \(\?, 0, 0, 0, NULL\) ON DUPLICATE KEY UPDATE board_id=board_id/i.test(s)) {
       const boardId = String(p[0])
       if (!boards.has(boardId)) {
@@ -715,6 +837,36 @@ export function createMemoryAtomicSqlExecutor(): SqlExecutor & {
       row.board_rev = asNumber(p[0], row.board_rev)
       row.dispatch_blocked = asNumber(p[1], 0) ? 1 : 0
       row.dispatch_blocked_reason = p[2] == null ? null : String(p[2])
+      return { rows: [] as Array<T>, affectedRows: 1 }
+    }
+
+    if (
+      /UPDATE board_revisions SET board_rev = board_rev \+ 1, lifecycle_rev = lifecycle_rev \+ 1 WHERE board_id=\? AND board_rev=\? AND lifecycle_rev=\?/i.test(
+        s,
+      )
+    ) {
+      const boardId = String(p[0])
+      const expectedBoard = asNumber(p[1], -1)
+      const expectedLife = asNumber(p[2], -1)
+      const row = boards.get(boardId)
+      if (!row || row.board_rev !== expectedBoard || row.lifecycle_rev !== expectedLife) {
+        return { rows: [] as Array<T>, affectedRows: 0 }
+      }
+      row.board_rev += 1
+      row.lifecycle_rev += 1
+      return { rows: [] as Array<T>, affectedRows: 1 }
+    }
+
+    if (
+      /UPDATE board_revisions SET board_rev = board_rev \+ 1, lifecycle_rev = lifecycle_rev \+ 1 WHERE board_id=\?/i.test(
+        s,
+      )
+    ) {
+      const boardId = String(p[0])
+      const row = boards.get(boardId)
+      if (!row) return { rows: [] as Array<T>, affectedRows: 0 }
+      row.board_rev += 1
+      row.lifecycle_rev += 1
       return { rows: [] as Array<T>, affectedRows: 1 }
     }
 
