@@ -8,9 +8,17 @@ never loses context across sessions.
 - **Transport:** Streamable HTTP (MCP spec `2025-06-18`), Web-standard `Request`/`Response`.
 - **Endpoint:** `/mcp` (dev `http://localhost:3000/mcp`; live `https://task-manager.mfsdev.net/mcp`).
 - **Mode:** stateless, JSON responses. No session id. Each request is independent.
-- **Auth:** READ tools are open. WRITE tools require the header `X-Cairn-Token: <CAIRN_WRITE_TOKEN>`
-  when that env var is set (missing/wrong token on a write → HTTP 401). Ask the owner for the token.
-- **Impl:** `src/routes/mcp.ts` (transport + auth gate) + `src/server/board-mcp.ts` (tools/resources).
+- **Auth (V3):** Bearer principals only (`Authorization: Bearer` / `X-Cairn-Token`). Cookies never elevate.
+  Unauthenticated clients may use protocol methods and **only** the public tool/resource
+  (`get_public_snapshot` / `cairn://public-snapshot`). All other tools (reads and writes),
+  including product knowledge (`search_knowledge`, `get_feature_bundle`, `get_endpoint_bundle`,
+  `get_flow`), require a bearer with the matching RBAC scopes (typically `board:read` for
+  knowledge). `tools/list` is filtered by principal; `tools/call` rechecks via
+  `authorizeToolCall`. Legacy `CAIRN_WRITE_TOKEN` maps to a constrained AGENT principal when
+  board-bound; absent config is fail-closed for writes.
+- **Impl:** `src/routes/mcp.ts` (transport + auth gate) + `src/server/board-mcp.ts` (tools/resources;
+  all non-public tools register through `secureTool`). Product knowledge:
+  `src/server/knowledge-tools.ts` (wired via `registerKnowledgeTools({ secureTool, jsonText })`).
 - **Total:** 51+ tools (incl. domain-knowledge retrieval) + `cairn://playbook` resource.
 
 ## Connect a client

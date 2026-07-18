@@ -15,8 +15,10 @@
  *   search_knowledge, get_feature_bundle, get_endpoint_bundle, get_flow
  *
  * Auth: all four tools are authenticated MCP reads (board:read), same as
- * search_knowledge in MCP_TOOL_SPECS. Handlers are pure corpus functions —
- * they never call HTTP endpoints or attach Authorization headers.
+ * search_knowledge in MCP_TOOL_SPECS. Registration MUST go through board-mcp
+ * secureTool (isToolListable + authorizeToolCall) — never bare server.registerTool.
+ * Handlers are pure corpus functions — they never call HTTP endpoints or attach
+ * Authorization headers.
  *
  * Pure handlers are unit-testable with an injected corpus (no live DB required).
  */
@@ -25,7 +27,6 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 
 // ---------------------------------------------------------------------------
@@ -2146,25 +2147,50 @@ export async function getFlow(
 }
 
 // ---------------------------------------------------------------------------
-// MCP registration (minimal; call from routes/mcp.ts)
+// MCP registration — inject secureTool from board-mcp (never bare registerTool)
 // ---------------------------------------------------------------------------
 
-function jsonText(value: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  return {
-    content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-  }
+export type KnowledgeToolsRegisterDeps = {
+  /**
+   * Same signature as board-mcp `secureTool` — applies isToolListable + authorizeToolCall.
+   * Unauthenticated principals never list or invoke these tools.
+   */
+  secureTool: (
+    name: string,
+    meta: {
+      title: string
+      description: string
+      inputSchema: Record<string, unknown> | object
+    },
+    handler: (args: Record<string, unknown>) => Promise<unknown> | unknown,
+  ) => void
+  /** Serialize tool result into MCP content (usually board-mcp jsonText). */
+  jsonText: (value: unknown) => unknown
 }
 
-function tryRegisterTool(
-  server: McpServer,
-  name: string,
-  meta: { title: string; description: string; inputSchema: Record<string, z.ZodTypeAny> },
-  handler: (args: Record<string, unknown>) => Promise<unknown>,
-): boolean {
-  try {
-    server.registerTool(name, meta as never, async (args: Record<string, unknown>) => {
+/**
+ * Register product-knowledge tools via injected secureTool.
+ * Call from board-mcp `registerBoardTools` **before** domain-knowledge so the
+ * product flow-data corpus owns `search_knowledge`; domain-knowledge skips the
+ * duplicate name. secureTool itself swallows "already registered".
+ *
+ * Auth semantics (same for all four tools):
+ *   authenticated MCP read with board:read — identical class to search_knowledge.
+ *   Listability and invocation go through isToolListable / authorizeToolCall.
+ *   Handlers are pure (corpus only); they never call HTTP or set Authorization headers.
+ *   See KNOWLEDGE_TOOL_AUTH_SPECS for the required catalog entries.
+ */
+export function registerKnowledgeTools(deps: KnowledgeToolsRegisterDeps): void {
+  const { secureTool, jsonText } = deps
+
+  // Pure handlers — no HTTP proxy, no secondary auth. secureTool rechecks RBAC.
+  const wrap = (
+    name: string,
+    run: (args: Record<string, unknown>) => Promise<unknown>,
+  ) =>
+    async (args: Record<string, unknown>) => {
       try {
-        return jsonText(await handler(args ?? {}))
+        return jsonText(await run(args ?? {}))
       } catch {
         return jsonText({
           ok: false,
@@ -2173,132 +2199,82 @@ function tryRegisterTool(
           error: 'KNOWLEDGE_TOOL_ERROR',
         })
       }
-    })
-    return true
-  } catch (e) {
-    // Duplicate name (e.g. domain-knowledge search_knowledge) — skip, keep existing.
-    if (e instanceof Error && /already registered/i.test(e.message)) return false
-    throw e
-  }
-}
+    }
 
-/**
- * Register product-knowledge tools on an McpServer.
- * Safe if search_knowledge already exists (domain-knowledge): skips duplicate.
- *
- * Auth semantics (same for all four tools):
- *   authenticated MCP read with board:read — identical class to search_knowledge.
- *   Handlers are pure (corpus only); they never call HTTP or set Authorization headers.
- *   A 401 on tools/call for get_feature_bundle with a valid bearer means the tool is
- *   missing from MCP_TOOL_SPECS (unknown tool → AUTHORIZATION_REQUIRED), not a bad
- *   internal header. See KNOWLEDGE_TOOL_AUTH_SPECS for the required catalog entries.
- */
-export function registerKnowledgeTools(server: McpServer): {
-  registered: string[]
-  skipped: string[]
-} {
-  const registered: string[] = []
-  const skipped: string[] = []
-
-  const mark = (name: string, ok: boolean) => {
-    if (ok) registered.push(name)
-    else skipped.push(name)
-  }
-
-  // Pure handlers — no HTTP proxy, no secondary auth. Same call shape for every tool.
-  const runSearch = async (args: Record<string, unknown>) =>
-    searchKnowledge(str(args.query), {
-      limit: typeof args.limit === 'number' ? args.limit : undefined,
-    })
-  const runFeatureBundle = async (args: Record<string, unknown>) =>
-    getFeatureBundle(str(args.idOrName ?? args.id ?? args.name))
-  const runEndpointBundle = async (args: Record<string, unknown>) =>
-    getEndpointBundle(str(args.methodPath ?? args.path))
-  const runFlow = async (args: Record<string, unknown>) =>
-    getFlow(str(args.project ?? args.projectOrLintas))
-
-  mark(
+  secureTool(
     'search_knowledge',
-    tryRegisterTool(
-      server,
-      'search_knowledge',
-      {
-        title: 'Search product knowledge',
-        description:
-          'Search Task Manager product knowledge across features (label/ringkasan/doc_md), ' +
-          'pages, endpoints, tasks, units, flows, and EN↔ID aliases. Ranked hits with type. ' +
-          'Auth: board:read (same as get_feature_bundle).',
-        inputSchema: {
-          query: z.string().describe('Search query (EN or ID), e.g. "period tracker" or "/premium"'),
-          limit: z.number().int().optional().describe('Max hits (default 25)'),
-        },
+    {
+      title: 'Search product knowledge',
+      description:
+        'Search Task Manager product knowledge across features (label/ringkasan/doc_md), ' +
+        'pages, endpoints, tasks, units, flows, and EN↔ID aliases. Ranked hits with type. ' +
+        'Auth: board:read (same as get_feature_bundle).',
+      inputSchema: {
+        query: z.string().describe('Search query (EN or ID), e.g. "period tracker" or "/premium"'),
+        limit: z.number().int().optional().describe('Max hits (default 25)'),
       },
-      runSearch,
+    },
+    wrap('search_knowledge', async (args) =>
+      searchKnowledge(str(args.query), {
+        limit: typeof args.limit === 'number' ? args.limit : undefined,
+      }),
     ),
   )
 
-  mark(
+  secureTool(
     'get_feature_bundle',
-    tryRegisterTool(
-      server,
-      'get_feature_bundle',
-      {
-        title: 'Get feature bundle',
-        description:
-          'One-shot complete feature bundle: ringkasan, doc_md, pages/screens, endpoints, ' +
-          'tasks+verdict, units, related features. Accepts FEAT-* id or human name. ' +
-          'Auth: board:read (same as search_knowledge). Pure corpus — no HTTP.',
-        inputSchema: {
-          idOrName: z
-            .string()
-            .describe('Feature id (FEAT-SIKLUS-HAID) or name ("Pelacak Haid", "period tracker")'),
-        },
+    {
+      title: 'Get feature bundle',
+      description:
+        'One-shot complete feature bundle: ringkasan, doc_md, pages/screens, endpoints, ' +
+        'tasks+verdict, units, related features. Accepts FEAT-* id or human name. ' +
+        'Auth: board:read (same as search_knowledge). Pure corpus — no HTTP.',
+      inputSchema: {
+        idOrName: z
+          .string()
+          .describe('Feature id (FEAT-SIKLUS-HAID) or name ("Pelacak Haid", "period tracker")'),
       },
-      runFeatureBundle,
+    },
+    wrap('get_feature_bundle', async (args) =>
+      getFeatureBundle(str(args.idOrName ?? args.id ?? args.name)),
     ),
   )
 
-  mark(
+  secureTool(
     'get_endpoint_bundle',
-    tryRegisterTool(
-      server,
-      'get_endpoint_bundle',
-      {
-        title: 'Get endpoint bundle',
-        description:
-          'Endpoint detail plus calling pages, linked features, and domain. ' +
-          'methodPath e.g. "GET /api/v1/admin-ops/period/cycles".',
-        inputSchema: {
-          methodPath: z
-            .string()
-            .describe('METHOD /path or bare /path, e.g. "GET /api/v1/..."'),
-        },
+    {
+      title: 'Get endpoint bundle',
+      description:
+        'Endpoint detail plus calling pages, linked features, and domain. ' +
+        'methodPath e.g. "GET /api/v1/admin-ops/period/cycles".',
+      inputSchema: {
+        methodPath: z
+          .string()
+          .describe('METHOD /path or bare /path, e.g. "GET /api/v1/..."'),
       },
-      runEndpointBundle,
+    },
+    wrap('get_endpoint_bundle', async (args) =>
+      getEndpointBundle(str(args.methodPath ?? args.path)),
     ),
   )
 
-  mark(
+  secureTool(
     'get_flow',
-    tryRegisterTool(
-      server,
-      'get_flow',
-      {
-        title: 'Get navigation/data flow graph',
-        description:
-          'Return nodes+edges for a project flow (rn|web-member|panel-sales|affiliate|backend) ' +
-          'or a lintas (cross-system) flow such as premium. Auth: board:read.',
-        inputSchema: {
-          project: z
-            .string()
-            .describe('Project id or lintas key: rn, web-member, sales, affiliate, backend, premium, lintas'),
-        },
+    {
+      title: 'Get navigation/data flow graph',
+      description:
+        'Return nodes+edges for a project flow (rn|web-member|panel-sales|affiliate|backend) ' +
+        'or a lintas (cross-system) flow such as premium. Auth: board:read.',
+      inputSchema: {
+        project: z
+          .string()
+          .describe(
+            'Project id or lintas key: rn, web-member, sales, affiliate, backend, premium, lintas',
+          ),
       },
-      runFlow,
-    ),
+    },
+    wrap('get_flow', async (args) => getFlow(str(args.project ?? args.projectOrLintas))),
   )
-
-  return { registered, skipped }
 }
 
 export function listKnowledgeToolNames(): readonly KnowledgeToolName[] {

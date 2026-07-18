@@ -10,6 +10,8 @@
 //   ops (POST/PUT/PATCH body, GET SSE / DELETE terminate with Mcp-Session-Id) — not POST-only.
 // - Authenticated tools/list filtered by registerBoardTools(isToolListable); tools/call
 //   rechecked via authorizeToolCall at gate + again inside secureTool handlers.
+// - Product knowledge tools register only via secureTool inside registerBoardTools
+//   (never bare server.registerTool before the board registrar).
 // - Legacy CAIRN_WRITE_TOKEN absent → fail-closed (no open write path); present → constrained
 //   AGENT principal only (resolution lives in rbac.resolveBearerPrincipal).
 // - Transport/session: fresh McpServer + transport per request; always closed in finally.
@@ -19,7 +21,6 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { createFileRoute } from '@tanstack/react-router'
 
 import { registerBoardTools, resolveMcpRuntimeContext, type McpAuthContext } from '#/server/board-mcp'
-import { registerKnowledgeTools } from '#/server/knowledge-tools'
 import { envVar } from '#/server/db'
 import { peekControlPlaneRuntimeContext } from '#/server/control-plane-runtime-context'
 import {
@@ -515,9 +516,8 @@ async function handle(request: Request): Promise<Response> {
     enableJsonResponse: true, // return JSON, not an SSE stream
   })
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION })
-  // Product knowledge tools FIRST so search_knowledge / get_feature_bundle hit the
-  // deployed flow-data corpus. Board tools (domain-knowledge) skip name clashes.
-  registerKnowledgeTools(server)
+  // All tools (incl. product knowledge) register via registerBoardTools → secureTool
+  // (isToolListable + authorizeToolCall). Unauth lists only public tools.
   registerBoardTools(server, authWithIp)
   try {
     await server.connect(transport)

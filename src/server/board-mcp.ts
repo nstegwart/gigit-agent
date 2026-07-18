@@ -238,6 +238,7 @@ import {
 } from '#/server/classification-sync'
 import { createHash } from 'node:crypto'
 import { registerDomainKnowledgeTools } from '#/server/domain-knowledge-mcp'
+import { registerKnowledgeTools } from '#/server/knowledge-tools'
 import { registerExportDocumentationTool } from '#/server/mcp-register-export-documentation'
 import { registerRebuildParityTools } from '#/server/rebuild-parity-mcp'
 
@@ -4261,7 +4262,7 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
         }
       })
     } catch (e) {
-      // Product knowledge tools register first (mcp.ts); keep flow-data corpus handlers.
+      // Duplicate name (e.g. domain-knowledge after product knowledge) — keep first handler.
       if (e instanceof Error && /already registered/i.test(e.message)) return
       throw e
     }
@@ -4292,6 +4293,9 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
   // Knowledge and documentation are authenticated board reads. Keep their
   // registration beside secureTool so tools/list and tools/call share the
   // exact same RBAC filter as the rest of the production MCP catalog.
+  // Product knowledge FIRST so search_knowledge uses flow-data corpus handlers;
+  // domain-knowledge then skips the duplicate name via secureTool already-registered.
+  registerKnowledgeTools({ secureTool: secureTool as never, jsonText })
   registerDomainKnowledgeTools({ secureTool: secureTool as never, jsonText })
   registerExportDocumentationTool({ secureTool: secureTool as never, jsonText })
   registerRebuildParityTools({ secureTool: secureTool as never, jsonText })

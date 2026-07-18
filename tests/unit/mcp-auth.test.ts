@@ -135,6 +135,11 @@ const SENSITIVE_READ_TOOLS = [
   'get_rollup',
   'get_prod',
   'get_guide',
+  // Product knowledge (board:read) — must never appear on unauth tools/list
+  'search_knowledge',
+  'get_feature_bundle',
+  'get_endpoint_bundle',
+  'get_flow',
 ] as const
 
 const SENSITIVE_WRITE_TOOLS = [
@@ -177,6 +182,9 @@ function makeRequest(body: RpcBody | RpcBody[], headers: Record<string, string> 
  * Mirror of src/routes/mcp.ts handle() — uses exported route APIs only.
  * Cookie never elevates; session principal hard-denied if present.
  * Injects non-spoofable clientIp (resolvePublicSnapshotClientIp) like production.
+ *
+ * Production registration: sole registerBoardTools(server, auth) — product knowledge
+ * tools wire through secureTool inside board-mcp (not bare registerTool).
  */
 async function mcpHandle(request: Request): Promise<Response> {
   // Capture IP before authGate body rebuild drops socket/runtime fields (matches production mcp.ts).
@@ -203,6 +211,7 @@ async function mcpHandle(request: Request): Promise<Response> {
     enableJsonResponse: true,
   })
   const server = new McpServer({ name: 'cairn-board', version: '1.3.0' })
+  // Production order: registerBoardTools only (includes knowledge via secureTool).
   registerBoardTools(server, authWithIp)
   await server.connect(transport)
   try {
@@ -354,6 +363,7 @@ describe('unauth public-only surface', () => {
     expect(r.status).toBeLessThan(400)
     const names = toolNamesFromList(r.json)
     expect(names).toContain('get_public_snapshot')
+    expect(names).toEqual(['get_public_snapshot'])
     for (const n of [...SENSITIVE_READ_TOOLS, ...SENSITIVE_WRITE_TOOLS]) {
       expect(names, `unauth tools/list must not include ${n}`).not.toContain(n)
     }
@@ -361,6 +371,22 @@ describe('unauth public-only surface', () => {
     for (const n of names) {
       const spec = MCP_TOOL_SPECS.find((s) => s.name === n)
       if (spec) expect(spec.kind).toBe('public')
+    }
+    assertNoSecretLeak(r.rawText)
+  })
+
+  it('unauth tools/list never advertises product knowledge tools (search/bundle/flow)', async () => {
+    const r = await mcpRpc(rpc('tools/list'))
+    expect(r.status).toBeLessThan(400)
+    const names = toolNamesFromList(r.json)
+    for (const n of [
+      'search_knowledge',
+      'get_feature_bundle',
+      'get_endpoint_bundle',
+      'get_flow',
+    ]) {
+      expect(names, `unauth list must not advertise ${n}`).not.toContain(n)
+      expect(isToolListable(null, n)).toBe(false)
     }
     assertNoSecretLeak(r.rawText)
   })
@@ -720,6 +746,11 @@ describe('five roles: tools/list filter + tools/call recheck', () => {
     expect(names).toContain('heartbeat_run')
     expect(names).toContain('terminate_run')
     expect(names).toContain('submit_stage_evidence')
+    // board:read already on AGENT maxima — knowledge tools list without scope broadening
+    expect(names).toContain('search_knowledge')
+    expect(names).toContain('get_feature_bundle')
+    expect(names).toContain('get_endpoint_bundle')
+    expect(names).toContain('get_flow')
     expect(names).not.toContain('list_accounts')
     expect(names).not.toContain('list_audit')
     expect(names).not.toContain('publish_dispatch_plan')
