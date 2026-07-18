@@ -125,11 +125,11 @@ export const DRAG_THRESHOLD = 5
 export const STORAGE_KEY = 'cairn-flow-pos-v1'
 
 export const MODE_LABEL: Record<FlowMode, string> = {
-  cross: 'Cross-project',
+  cross: 'Lintas Proyek',
   rn: 'React Native',
   'web-member': 'Web Member',
   'panel-sales': 'Panel Sales',
-  affiliate: 'Affiliate',
+  affiliate: 'Afiliasi',
   backend: 'Backend',
 }
 
@@ -147,7 +147,7 @@ export const PROJ_META: Record<
   },
   sales: { label: 'Panel Sales', color: 'var(--proj-sales)', css: '#e5a54b' },
   affiliate: {
-    label: 'Affiliate',
+    label: 'Afiliasi',
     color: 'var(--proj-affiliate)',
     css: '#5b9dff',
   },

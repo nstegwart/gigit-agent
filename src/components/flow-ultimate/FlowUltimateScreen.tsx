@@ -22,6 +22,7 @@ import {
   savePosition,
 } from './graph'
 import {
+  humanizeNodeMeta,
   humanizeScreen,
   humanizeTaskTitle,
   scrubTechIds,
@@ -418,7 +419,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           type="button"
           className="flow-brand"
           onClick={() => switchMode('cross')}
-          title="Cross-project"
+          title="Lintas Proyek"
         >
           <span className="logo" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="15" fill="none">
@@ -431,12 +432,12 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
             </svg>
           </span>
           <div>
-            Flow
-            <small>Interactive workflow</small>
+            Alur
+            <small>Alur kerja interaktif</small>
           </div>
         </button>
 
-        <nav className="flow-modes" aria-label="Workflow modes" role="tablist">
+        <nav className="flow-modes" aria-label="Mode alur kerja" role="tablist">
           {FLOW_MODES.map((m) => (
             <button
               key={m}
@@ -458,18 +459,18 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           ))}
         </nav>
 
-        <div className="flow-legend" aria-label="Status legend">
+        <div className="flow-legend" aria-label="Legenda status">
           <span>
             <i style={{ background: 'var(--ok)' }} />
-            Proven
+            Terbukti
           </span>
           <span>
             <i style={{ background: 'var(--warn)' }} />
-            Partial
+            Sebagian
           </span>
           <span>
             <i style={{ background: 'var(--bad)' }} />
-            Missing
+            Belum
           </span>
         </div>
       </header>
@@ -477,7 +478,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
       <main
         className={`flow-stage${panning ? ' is-panning' : ''}`}
         ref={stageRef}
-        aria-label="Workflow canvas"
+        aria-label="Kanvas alur kerja"
         data-testid="flow-stage"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -535,7 +536,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                         {projectLabel(n.project)}
                       </span>
                     ) : null}
-                    <span className="flow-meta">{n.meta}</span>
+                    <span className="flow-meta">{humanizeNodeMeta(n.meta)}</span>
                   </div>
                 </div>
               )
@@ -546,14 +547,15 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           className={`flow-hint${hintHidden ? ' is-hidden' : ''}`}
           id="flow-hint"
         >
-          Drag canvas to pan · drag node to move · click node for detail
+          Seret kanvas untuk geser · seret node untuk pindah · klik node untuk
+          detail
         </div>
       </main>
 
-      <div className="flow-zoom" aria-label="Zoom controls">
+      <div className="flow-zoom" aria-label="Kontrol zoom">
         <button
           type="button"
-          title="Zoom in"
+          title="Perbesar"
           onClick={() =>
             setTransform((t) => ({
               ...t,
@@ -565,7 +567,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
         </button>
         <button
           type="button"
-          title="Zoom out"
+          title="Perkecil"
           onClick={() =>
             setTransform((t) => ({
               ...t,
@@ -577,7 +579,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
         </button>
         <button
           type="button"
-          title="Fit all"
+          title="Muat semua"
           onClick={() => {
             const stage = stageRef.current
             if (!stage) return
@@ -586,14 +588,14 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
             )
           }}
         >
-          Fit
+          Muat
         </button>
       </div>
 
       <button
         type="button"
         className={`flow-backdrop${sheetOpen ? ' is-open' : ''}`}
-        aria-label="Close detail"
+        aria-label="Tutup detail"
         data-testid="flow-backdrop"
         onClick={closeSheet}
         tabIndex={sheetOpen ? 0 : -1}
@@ -640,7 +642,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           <button
             type="button"
             className="flow-sheet-close"
-            aria-label="Close"
+            aria-label="Tutup"
             data-testid="flow-sheet-close"
             onClick={closeSheet}
           >
@@ -651,13 +653,13 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           {activeNode ? (
             <>
               <section className="flow-sec">
-                <h3>Status &amp; progress</h3>
+                <h3>Status &amp; progres</h3>
                 <div className="flow-status-row">
                   <span className={`chip ${sc}`}>
                     <b />
                     {statusLabel(st)}
                   </span>
-                  <span className="pct">{pct}%</span>
+                  <span className="pct">{pct}% terverifikasi</span>
                   <div
                     className={`flow-bar ${sc}`}
                     style={{ maxWidth: 220 }}
@@ -667,14 +669,14 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                 </div>
                 {activeNode.flowTitle ? (
                   <p className="flow-empty">
-                    Flow section: {activeNode.flowTitle}
+                    Bagian alur: {activeNode.flowTitle}
                   </p>
                 ) : null}
               </section>
 
               {feat?.ringkasan_id ? (
                 <section className="flow-sec">
-                  <h3>Overview</h3>
+                  <h3>Ringkasan</h3>
                   <p className="flow-doc">
                     {scrubTechIds(feat.ringkasan_id)}
                   </p>
@@ -683,14 +685,14 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
 
               {feat?.doc_md ? (
                 <section className="flow-sec">
-                  <h3>Docs</h3>
+                  <h3>Dokumentasi</h3>
                   <p className="flow-doc">{scrubTechIds(feat.doc_md)}</p>
                 </section>
               ) : null}
 
               <section className="flow-sec">
                 <h3>
-                  Screens{' '}
+                  Layar{' '}
                   <span className="flow-sec-hint">{screens.length}</span>
                 </h3>
                 {screens.length ? (
@@ -700,13 +702,13 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                     ))}
                   </ul>
                 ) : (
-                  <p className="flow-empty">No screens mapped yet.</p>
+                  <p className="flow-empty">Belum ada layar yang dipetakan.</p>
                 )}
               </section>
 
               <section className="flow-sec">
                 <h3>
-                  Related APIs{' '}
+                  API terkait{' '}
                   <span className="flow-sec-hint">{apis.length}</span>
                 </h3>
                 {apis.length ? (
@@ -715,20 +717,19 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                       className="flow-api"
                       key={`${a.method}:${a.path}`}
                     >
-                      <b>{a.method}</b>
-                      {a.path}
+                      <b>{a.method}</b> {a.path}
                     </div>
                   ))
                 ) : (
                   <p className="flow-empty">
-                    No APIs registered for this step.
+                    Belum ada API terdaftar untuk langkah ini.
                   </p>
                 )}
               </section>
 
               <section className="flow-sec">
                 <h3>
-                  Build Tasks{' '}
+                  Tugas bangun{' '}
                   <span className="flow-sec-hint">{tasks.length}</span>
                 </h3>
                 {tasks.length ? (
@@ -774,13 +775,13 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                     })}
                   </ul>
                 ) : (
-                  <p className="flow-empty">No linked tasks.</p>
+                  <p className="flow-empty">Belum ada tugas terkait.</p>
                 )}
               </section>
 
               <section className="flow-sec">
                 <h3>
-                  Related features{' '}
+                  Fitur terkait{' '}
                   <span className="flow-sec-hint">{related.length}</span>
                 </h3>
                 {related.length ? (
@@ -805,7 +806,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                     ))}
                   </ul>
                 ) : (
-                  <p className="flow-empty">No neighbors in this graph.</p>
+                  <p className="flow-empty">Belum ada tetangga di graf ini.</p>
                 )}
               </section>
             </>
