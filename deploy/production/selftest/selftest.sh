@@ -214,6 +214,97 @@ else
   fail=$((fail + 1))
 fi
 
+# --- migrate-apply.sh pnpm argv: must not pass literal "--" into migrate-cli ---
+# Rejected executable form: pnpm ... migrate:apply <separator> --through NNN
+# Repaired form: pnpm migrate:apply --through NNN (no separator token)
+# Strip comments so documentation of the defect cannot false-positive.
+code_only="$(grep -vE '^[[:space:]]*#' "${SCRIPTS}/migrate-apply.sh" || true)"
+if printf '%s\n' "${code_only}" | grep -nE 'pnpm[[:space:]]+migrate:apply[[:space:]]+--[[:space:]]+--through' >/dev/null; then
+  echo "FAIL migrate-apply.sh still uses broken pnpm separator before --through" >&2
+  fail=$((fail + 1))
+else
+  echo "PASS migrate-apply.sh pnpm form has no literal -- separator"
+fi
+if printf '%s\n' "${code_only}" | grep -nE 'pnpm[[:space:]]+migrate:apply[[:space:]]+--through' >/dev/null; then
+  echo "PASS migrate-apply.sh pnpm --through present"
+else
+  echo "FAIL migrate-apply.sh missing pnpm --through" >&2
+  fail=$((fail + 1))
+fi
+if printf '%s\n' "${code_only}" | grep -nE 'npm[[:space:]]+run[[:space:]]+migrate:apply[[:space:]]+--[[:space:]]+--through' >/dev/null; then
+  echo "PASS migrate-apply.sh npm keeps -- separator"
+else
+  echo "FAIL migrate-apply.sh npm --through form missing" >&2
+  fail=$((fail + 1))
+fi
+
+# Live argv propagation (no DB mutation required; connect refusal after parse is OK).
+# 1) Document pre-fix broken form: literal -- reaches migrate-cli.
+set +e
+out_broken="$(pnpm migrate:apply -- --through 011 --lifecycle-mapping g0 2>&1)"
+rc_broken=$?
+set -e
+if printf '%s\n' "${out_broken}" | grep -q 'Unknown flag: --'; then
+  echo "PASS pre-fix pnpm -- form yields Unknown flag: -- (rc=${rc_broken})"
+else
+  echo "FAIL expected Unknown flag: -- from pnpm migrate:apply -- --through" >&2
+  printf '%s\n' "${out_broken}" | tail -15 >&2
+  fail=$((fail + 1))
+fi
+
+# Helper: parse succeeded when CLI did not reject flags; downstream ECONNREFUSED is fine.
+argv_parse_ok() {
+  local out="$1"
+  if printf '%s\n' "${out}" | grep -q 'Unknown flag: --'; then
+    return 1
+  fi
+  if printf '%s\n' "${out}" | grep -Eqi 'Unknown flag:'; then
+    return 1
+  fi
+  # Accept: connection refused / production authority fail / missing env — all post-parse.
+  if printf '%s\n' "${out}" | grep -Eqi 'ECONNREFUSED|connect ECONNREFUSED|PRODUCTION|MIGRATION_APPROVED|authority|Cannot find|ENOTFOUND|Access denied|Unknown database|migrate'; then
+    return 0
+  fi
+  # Empty success would be unexpected without DB; still treat non-unknown-flag as parse OK.
+  return 0
+}
+
+set +e
+out_pnpm="$(pnpm migrate:apply --through 011 --lifecycle-mapping g0 2>&1)"
+rc_pnpm=$?
+set -e
+if argv_parse_ok "${out_pnpm}"; then
+  echo "PASS repaired pnpm argv parses --through 011 (rc=${rc_pnpm}, no DB required)"
+else
+  echo "FAIL repaired pnpm argv parse" >&2
+  printf '%s\n' "${out_pnpm}" | tail -20 >&2
+  fail=$((fail + 1))
+fi
+
+set +e
+out_npm="$(npm run migrate:apply -- --through 011 --lifecycle-mapping g0 2>&1)"
+rc_npm=$?
+set -e
+if argv_parse_ok "${out_npm}"; then
+  echo "PASS npm argv parses --through 011 (rc=${rc_npm})"
+else
+  echo "FAIL npm argv parse" >&2
+  printf '%s\n' "${out_npm}" | tail -20 >&2
+  fail=$((fail + 1))
+fi
+
+set +e
+out_node="$(node src/server/migrate-runner.mjs apply --through 011 --lifecycle-mapping g0 2>&1)"
+rc_node=$?
+set -e
+if argv_parse_ok "${out_node}"; then
+  echo "PASS node-runner argv parses --through 011 (rc=${rc_node})"
+else
+  echo "FAIL node-runner argv parse" >&2
+  printf '%s\n' "${out_node}" | tail -20 >&2
+  fail=$((fail + 1))
+fi
+
 rm -f "${RECEIPT}"
 
 if [[ "${fail}" -ne 0 ]]; then

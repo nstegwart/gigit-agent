@@ -249,6 +249,22 @@ export const MIGRATION_MANIFEST: ReadonlyArray<MigrationEntry> = [
     description:
       'Additive product-feature taxonomy FEAT-*: product_features + feature_task_map; no pin/lifecycle/classification table changes',
   },
+  {
+    version: '011',
+    filename: '011_feature_flow_edges.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '011_feature_flow_edges.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'Additive app-flow nav graph: app_flow_nodes + app_flow_edges; soft feature_id refs only; no pin/lifecycle/classification table changes',
+  },
+  {
+    version: '012',
+    filename: '012_ultimate_map.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '012_ultimate_map.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'Additive ultimate map layer: app_pages, api_endpoints, page_api_calls, nav_edges, knowledge_aliases (+ idempotent 011 flow tables); no pin/lifecycle changes',
+  },
 ] as const
 
 export function sha256Hex(content: string | Buffer): string {
@@ -323,12 +339,22 @@ export interface PlanOptions {
   productionAuthority?: ProductionMigrationAuthority | null
   /** DB name bound by productionAuthority. */
   database?: string
+  /**
+   * Apply only through this version (inclusive). Production one-step sets this to the
+   * exact approved next version so later pending migrations are never auto-applied.
+   */
+  throughVersion?: string
 }
 
+/**
+ * Exact owner-approved production migration binding.
+ * `migrationVersion` must be an exact manifest NNN (not hard-coded to a single cutover).
+ * Production apply still requires one-step progression to that version only.
+ */
 export interface ProductionMigrationAuthority {
   releaseSha: string
   approvalId: string
-  migrationVersion: '008'
+  migrationVersion: string
   migrationSha256: string
   targetHost: string
   targetDatabase: string
@@ -348,7 +374,7 @@ export function validateProductionMigrationAuthority(
     nowMs?: number
   },
 ): boolean {
-  if (!authority || authority.migrationVersion !== '008') return false
+  if (!authority || !/^\d{3}$/.test(authority.migrationVersion)) return false
   if (!/^[0-9a-f]{40}$/.test(authority.releaseSha)) return false
   if (!authority.approvalId.trim()) return false
   if (!/^[0-9a-f]{64}$/.test(authority.migrationSha256)) return false
@@ -476,12 +502,16 @@ export function planMigrations(opts: PlanOptions = {}): MigrationPlanResult {
   const mode = opts.mode ?? 'plan'
   const loaded = loadMigrationManifest(cwd)
   assertManifestOrder(loaded)
+  const authorityVersion = opts.productionAuthority?.migrationVersion
+  const authorityMigration = authorityVersion
+    ? loaded.find((entry) => entry.version === authorityVersion)
+    : undefined
   const applyAllowed =
     migrationApplyAllowed(hostClass) ||
     validateProductionMigrationAuthority(opts.productionAuthority, {
       host,
       database: opts.database ?? '',
-      migration: loaded.find((entry) => entry.version === '008'),
+      migration: authorityMigration,
     })
 
   const appliedMap = new Map((opts.applied ?? []).map((r) => [r.version, r]))
@@ -716,9 +746,12 @@ export async function dryRunMigrations(opts: PlanOptions & { executor?: Migratio
 }
 
 /**
- * Apply migrations through an injected executor. Refuses PRODUCTION / UNKNOWN_REMOTE.
+ * Apply migrations through an injected executor. Refuses PRODUCTION / UNKNOWN_REMOTE
+ * unless a fully re-proven ProductionMigrationAuthority is supplied.
  * Loads applied history from executor.listApplied when `applied` omitted (real MySQL path).
  * Requires approved lifecycle mapping (IDENTITY/RENAME/LEGACY_ONLY only) before any SQL/history write.
+ * Production authority + optional throughVersion enforce exact one-step next-version apply
+ * (never all remaining migrations, never skip).
  * Tolerates MySQL errno 1060 (duplicate column) and 1061 (duplicate key) for idempotent expand.
  * No destructive down migration path exists.
  */
@@ -771,11 +804,97 @@ export async function applyMigrations(opts: PlanOptions & { executor: MigrationS
     }
   }
 
+  // Production one-step: approved version must be the exact next pending APPLY item.
+  // throughVersion (or authority.migrationVersion) caps apply so later pendings never run.
+  const throughVersion =
+    opts.throughVersion ??
+    (opts.productionAuthority ? opts.productionAuthority.migrationVersion : undefined)
+  if (opts.productionAuthority) {
+    const approved = opts.productionAuthority.migrationVersion
+    if (throughVersion !== approved) {
+      return {
+        ok: false,
+        applied: [],
+        skipped: [],
+        plan,
+        error: `Production apply throughVersion=${throughVersion ?? '(none)'} must equal approved ${approved}`,
+        mapping: plan.mapping,
+      }
+    }
+    const pending = plan.items.filter((i) => i.action === 'APPLY')
+    if (pending.length === 0) {
+      return {
+        ok: false,
+        applied: [],
+        skipped: [],
+        plan,
+        error: `Production one-step: no pending APPLY; approved ${approved} is not the next migration`,
+        mapping: plan.mapping,
+      }
+    }
+    if (pending[0]!.version !== approved) {
+      return {
+        ok: false,
+        applied: [],
+        skipped: [],
+        plan,
+        error: `Production one-step refuses skip/arbitrary version: next pending=${pending[0]!.version} approved=${approved}`,
+        mapping: plan.mapping,
+      }
+    }
+    if (pending[0]!.expectedSha256 !== opts.productionAuthority.migrationSha256) {
+      return {
+        ok: false,
+        applied: [],
+        skipped: [],
+        plan,
+        error: `Production one-step: next pending sha256 does not match MIGRATION_APPROVED_SHA256 for ${approved}`,
+        mapping: plan.mapping,
+      }
+    }
+  } else if (throughVersion) {
+    if (!/^\d{3}$/.test(throughVersion)) {
+      return {
+        ok: false,
+        applied: [],
+        skipped: [],
+        plan,
+        error: `Invalid throughVersion=${throughVersion} (expected NNN)`,
+        mapping: plan.mapping,
+      }
+    }
+    if (!plan.orderedVersions.includes(throughVersion)) {
+      return {
+        ok: false,
+        applied: [],
+        skipped: [],
+        plan,
+        error: `throughVersion=${throughVersion} is not in the migration manifest`,
+        mapping: plan.mapping,
+      }
+    }
+    const pending = plan.items.filter((i) => i.action === 'APPLY')
+    if (pending.length > 0 && pending[0]!.version > throughVersion) {
+      return {
+        ok: false,
+        applied: [],
+        skipped: [],
+        plan,
+        error: `throughVersion=${throughVersion} is behind next pending ${pending[0]!.version}`,
+        mapping: plan.mapping,
+      }
+    }
+  }
+
   const loaded = loadMigrationManifest(opts.cwd ?? process.cwd())
   const applied: Array<string> = []
   const skipped: Array<string> = []
 
   for (const m of loaded) {
+    if (throughVersion && m.version > throughVersion) {
+      // Bounded apply: leave later pending versions unapplied (require separate approval).
+      break
+    }
     const item = plan.items.find((i) => i.version === m.version)!
     if (item.action === 'SKIP_ALREADY_APPLIED') {
       skipped.push(m.version)

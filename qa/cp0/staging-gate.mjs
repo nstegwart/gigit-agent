@@ -13,7 +13,18 @@ import { captureEnvironmentTable } from '../evidence/capture-environment-table.m
 import { validateTerminalReceipt } from '../evidence/validate-terminal-receipt.mjs'
 
 export const CP0_STAGING_GATE = 'CP0_EXACT_SHA_STAGING_GATE_V1'
-export const CP0_SCHEMA_VERSION = '008'
+/**
+ * Historical CP0 control-plane baseline (migration 008 + CP0 tables).
+ * This is the minimum schema for CP0 evidence — NOT the product schema latest.
+ * Product manifest latest is SCHEMA_LATEST_VERSION (012). Do not relabel CP0-008
+ * evidence as 012 proof; a host may be at 008 (CP0 only) or later (product).
+ */
+export const CP0_BASELINE_SCHEMA_VERSION = '008'
+/** @deprecated Use CP0_BASELINE_SCHEMA_VERSION; kept as alias for historical imports. */
+export const CP0_SCHEMA_VERSION = CP0_BASELINE_SCHEMA_VERSION
+/** Current migration manifest tip (product schema latest). */
+export const SCHEMA_LATEST_VERSION = '012'
+/** CP0 minimum migration chain (000..008). Later versions are product expands. */
 export const REQUIRED_MIGRATIONS = Object.freeze([
   '000',
   '001',
@@ -150,7 +161,7 @@ export function buildPlan({
     checksRequired: [
       'authenticated health HTTP 200',
       'observed release SHA equals expected SHA',
-      'schema 008 and migrations 000..008 READY',
+      `CP0 baseline schema ≥${CP0_BASELINE_SCHEMA_VERSION} with migrations 000..008 applied (product latest pin ${SCHEMA_LATEST_VERSION})`,
       'canonical hash and board/lifecycle revisions present',
       'sync IN_SYNC with effective backlog zero',
       'CP0 tests, secret scan, typecheck and build PASS',
@@ -196,20 +207,38 @@ export function validateEvidence(evidence, expectedSha, target = 'staging') {
   add(failures, health.status === 'ok', 'HEALTH_NOT_OK')
   add(failures, health.deployedSha === expectedSha, 'HEALTH_SHA_MISMATCH')
   add(failures, health.release?.match === true, 'HEALTH_RELEASE_MATCH_FALSE')
-  add(failures, health.schema?.version === CP0_SCHEMA_VERSION, 'SCHEMA_NOT_008')
-  add(failures, health.schema?.match === true, 'SCHEMA_MATCH_FALSE')
-  add(failures, health.migration?.status === 'READY', 'MIGRATIONS_NOT_READY')
+  // CP0 baseline: applied chain must include 000..008; schema version may be 008
+  // (historical CP0 proof) or later product tip (e.g. 012). Never require falsely
+  // that CP0-only 008 evidence equals product-latest 012.
+  const appliedVersions = health.migration?.appliedVersions ?? []
+  const schemaVersion =
+    typeof health.schema?.version === 'string' ? health.schema.version : ''
   add(
     failures,
-    REQUIRED_MIGRATIONS.every((version) =>
-      health.migration?.appliedVersions?.includes(version),
-    ),
+    REQUIRED_MIGRATIONS.every((version) => appliedVersions.includes(version)),
     'MIGRATION_CHAIN_INCOMPLETE',
   )
   add(
     failures,
-    health.migration?.expectedLatestVersion === CP0_SCHEMA_VERSION,
-    'MIGRATION_LATEST_NOT_008',
+    /^\d{3}$/.test(schemaVersion) &&
+      schemaVersion >= CP0_BASELINE_SCHEMA_VERSION,
+    'SCHEMA_BELOW_CP0_BASELINE',
+  )
+  add(failures, health.schema?.match === true, 'SCHEMA_MATCH_FALSE')
+  add(failures, health.migration?.status === 'READY', 'MIGRATIONS_NOT_READY')
+  // expectedLatest must match observed schema pin for this evidence pack
+  // (008 for historical CP0-only, 012 for product latest — not a free-form value).
+  const expectedLatest = health.migration?.expectedLatestVersion
+  add(
+    failures,
+    expectedLatest === schemaVersion &&
+      (expectedLatest === CP0_BASELINE_SCHEMA_VERSION ||
+        expectedLatest === SCHEMA_LATEST_VERSION ||
+        (typeof expectedLatest === 'string' &&
+          /^\d{3}$/.test(expectedLatest) &&
+          expectedLatest >= CP0_BASELINE_SCHEMA_VERSION &&
+          expectedLatest <= SCHEMA_LATEST_VERSION)),
+    'MIGRATION_LATEST_SCHEMA_MISMATCH',
   )
   add(
     failures,

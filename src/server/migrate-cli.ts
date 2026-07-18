@@ -47,6 +47,11 @@ export interface MigrateCliArgs {
   help: boolean
   /** When true, skip opening MySQL (plan-only offline). */
   offline: boolean
+  /**
+   * Apply only through this exact manifest version (inclusive).
+   * Production one-step also derives this from MIGRATION_APPROVED_VERSION.
+   */
+  throughVersion?: string
 }
 
 export interface MigrateCliResult {
@@ -120,6 +125,14 @@ export function parseMigrateCliArgs(argv: ReadonlyArray<string>): MigrateCliArgs
       args.lifecycleMapping = a.slice('--mapping='.length)
       continue
     }
+    if (a === '--through' && argv[i + 1]) {
+      args.throughVersion = argv[++i]
+      continue
+    }
+    if (a.startsWith('--through=')) {
+      args.throughVersion = a.slice('--through='.length)
+      continue
+    }
     if (a.startsWith('-')) {
       throw new Error(`Unknown flag: ${a}`)
     }
@@ -168,9 +181,9 @@ function helpText(): string {
   return `Usage: pnpm migrate <command> [options]
 
 Commands:
-  plan       Plan migrations 000..010 (no SQL)
+  plan       Plan migrations 000..012 (no SQL)
   dry-run    Plan + parse statements; load history from MySQL; no apply
-  apply      Apply pending migrations (LOCAL|STAGING only; mapping required)
+  apply      Apply pending migrations (LOCAL|STAGING; production only with exact authority)
   status     Report applied versions + plan status (schema readback for healthz)
 
 Options:
@@ -178,12 +191,14 @@ Options:
   --host <host>                Override CAIRN_DB_HOST
   --database <name>            Override CAIRN_DB_NAME
   --lifecycle-mapping <spec>   g0 | path/to/LIFECYCLE_MAPPING_V1.json (required for apply)
+  --through <NNN>              Apply only through exact version NNN (inclusive); production one-step
   --offline                    plan only without opening MySQL
   --json                       Machine-readable JSON on stdout
   --help                       Show this help
 
 Authority:
-  Apply refused for PRODUCTION / UNKNOWN_REMOTE.
+  Apply refused for PRODUCTION / UNKNOWN_REMOTE without exact ProductionMigrationAuthority.
+  Production apply is one-step only: next pending must equal MIGRATION_APPROVED_VERSION.
   Remote hosts require CAIRN_ALLOW_REMOTE_DB=1.
   Staging hosts: CAIRN_STAGING_DB_HOSTS or known labels (tm-v3-staging, …).
   No down migration. No PRODUCT classification guess.
@@ -211,8 +226,8 @@ export function productionMigrationAuthorityFromEnv(
   return {
     releaseSha: String(env.APPROVED_FULL_SHA || ''),
     approvalId: String(env.PRODUCTION_APPROVAL_ID || ''),
-    migrationVersion: String(env.MIGRATION_APPROVED_VERSION || '') as '008',
-    migrationSha256: String(env.MIGRATION_APPROVED_SHA256 || ''),
+    migrationVersion: String(env.MIGRATION_APPROVED_VERSION || '').trim(),
+    migrationSha256: String(env.MIGRATION_APPROVED_SHA256 || '').trim(),
     targetHost: String(env.MIGRATION_TARGET_HOST || ''),
     targetDatabase: String(env.MIGRATION_TARGET_DATABASE || ''),
     backupReceiptPath,
@@ -434,6 +449,11 @@ export async function runMigrateCli(
     }
 
     if (args.command === 'apply') {
+      // Production authority always caps to the exact approved next version (one-step).
+      // Explicit --through also bounds LOCAL/STAGING multi-pending apply.
+      const throughVersion =
+        args.throughVersion ??
+        (productionAuthority ? productionAuthority.migrationVersion : undefined)
       const result = await applyMigrations({
         cwd: args.cwd,
         host: executor.host,
@@ -442,6 +462,7 @@ export async function runMigrateCli(
         executor,
         lifecycleMapping,
         productionAuthority,
+        throughVersion,
       })
       const schema = result.ok
         ? await readMigrationSchemaState({

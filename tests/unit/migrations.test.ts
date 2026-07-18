@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -33,7 +34,7 @@ const cwd = process.cwd()
 /** Explicit safe mapping evidence for memory apply tests (G0 identity nine). */
 const SAFE_MAPPING = g0IdentityLifecycleMappingRows()
 
-/** Product manifest 000..010 (paritas staging-migrations / MIGRATION_MANIFEST). */
+/** Product manifest 000..012 (paritas staging-migrations / MIGRATION_MANIFEST). */
 const ALL_VERSIONS = [
   '000',
   '001',
@@ -46,10 +47,12 @@ const ALL_VERSIONS = [
   '008',
   '009',
   '010',
+  '011',
+  '012',
 ] as const
 
 describe('migration manifest ordering + checksums', () => {
-  it('has strictly ordered 000..010 entries', () => {
+  it('has strictly ordered 000..012 entries', () => {
     assertManifestOrder(MIGRATION_MANIFEST)
     expect(MIGRATION_MANIFEST.map((m) => m.version)).toEqual([...ALL_VERSIONS])
     expect(MIGRATION_MANIFEST.map((m) => m.classification)).toEqual([
@@ -64,12 +67,14 @@ describe('migration manifest ordering + checksums', () => {
       'REVERSIBLE',
       'REVERSIBLE', // 009 rebuild_lineage
       'REVERSIBLE', // 010 product_features
+      'REVERSIBLE', // 011 feature_flow_edges
+      'REVERSIBLE', // 012 ultimate_map
     ])
   })
 
   it('loads on-disk SQL and computes stable SHA-256', () => {
     const loaded = loadMigrationManifest(cwd)
-    expect(loaded).toHaveLength(11)
+    expect(loaded).toHaveLength(13)
     for (const m of loaded) {
       const disk = fs.readFileSync(path.join(cwd, m.relativePath), 'utf8')
       expect(m.sha256).toBe(sha256Hex(disk))
@@ -234,6 +239,45 @@ describe('migration manifest ordering + checksums', () => {
     expect(MIGRATION_MANIFEST.filter((m) => m.version === '010')).toHaveLength(1)
   })
 
+  it('011 feature_flow_edges SQL is additive IF NOT EXISTS only', () => {
+    const entry = MIGRATION_MANIFEST.find((m) => m.version === '011')!
+    expect(entry.filename).toBe('011_feature_flow_edges.sql')
+    expect(entry.classification).toBe('REVERSIBLE')
+    const sql = fs.readFileSync(path.join(cwd, entry.relativePath), 'utf8')
+    expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS app_flow_nodes/)
+    expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS app_flow_edges/)
+    const stmts = splitSqlStatements(sql).map((s) => s.toLowerCase())
+    expect(stmts.length).toBeGreaterThan(0)
+    for (const s of stmts) {
+      expect(s).not.toMatch(/\bdrop\s+table\b/)
+      expect(s).not.toMatch(/\btruncate\b/)
+    }
+    expect(MIGRATION_MANIFEST.filter((m) => m.version === '011')).toHaveLength(1)
+  })
+
+  it('012 ultimate_map SQL is additive IF NOT EXISTS only', () => {
+    const entry = MIGRATION_MANIFEST.find((m) => m.version === '012')!
+    expect(entry.filename).toBe('012_ultimate_map.sql')
+    expect(entry.classification).toBe('REVERSIBLE')
+    const sql = fs.readFileSync(path.join(cwd, entry.relativePath), 'utf8')
+    for (const table of [
+      'app_pages',
+      'api_endpoints',
+      'page_api_calls',
+      'nav_edges',
+      'knowledge_aliases',
+    ]) {
+      expect(sql).toContain(`CREATE TABLE IF NOT EXISTS ${table}`)
+    }
+    const stmts = splitSqlStatements(sql).map((s) => s.toLowerCase())
+    expect(stmts.length).toBeGreaterThan(0)
+    for (const s of stmts) {
+      expect(s).not.toMatch(/\bdrop\s+table\b/)
+      expect(s).not.toMatch(/\btruncate\b/)
+    }
+    expect(MIGRATION_MANIFEST.filter((m) => m.version === '012')).toHaveLength(1)
+  })
+
   it('splitSqlStatements strips comments and yields statements', () => {
     const stmts = splitSqlStatements(
       '-- c\nCREATE TABLE a (id INT);\n-- x\nALTER TABLE a ADD KEY k (id);',
@@ -267,6 +311,10 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(plan.items.find((i) => i.version === '009')!.action).toBe('APPLY')
     expect(plan.items.filter((i) => i.version === '010')).toHaveLength(1)
     expect(plan.items.find((i) => i.version === '010')!.action).toBe('APPLY')
+    expect(plan.items.filter((i) => i.version === '011')).toHaveLength(1)
+    expect(plan.items.find((i) => i.version === '011')!.action).toBe('APPLY')
+    expect(plan.items.filter((i) => i.version === '012')).toHaveLength(1)
+    expect(plan.items.find((i) => i.version === '012')!.action).toBe('APPLY')
   })
 
   it('idempotent plan is NOOP when history matches checksums', () => {
@@ -322,8 +370,8 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(first.mapping?.identityCount).toBe(9)
     expect(exec.statements.length).toBeGreaterThan(10)
     expect(exec.history.map((h) => h.version)).toEqual([...ALL_VERSIONS])
-    // 006..010 each appear exactly once in apply output + history
-    for (const v of ['006', '007', '008', '009', '010'] as const) {
+    // 006..012 each appear exactly once in apply output + history
+    for (const v of ['006', '007', '008', '009', '010', '011', '012'] as const) {
       expect(first.applied.filter((x) => x === v)).toHaveLength(1)
       expect(exec.history.filter((h) => h.version === v)).toHaveLength(1)
     }
@@ -343,11 +391,13 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(second.mapping?.approved).toBe(true)
   })
 
-  it('plan/dry-run/status/apply include 008..010 once; partial 000-007 then apply 008+009+010', async () => {
+  it('plan/dry-run/status/apply include 008..012; partial 000-007 then apply 008..012', async () => {
     const loaded = loadMigrationManifest(cwd)
     expect(loaded.filter((m) => m.version === '008')).toHaveLength(1)
     expect(loaded.filter((m) => m.version === '009')).toHaveLength(1)
     expect(loaded.filter((m) => m.version === '010')).toHaveLength(1)
+    expect(loaded.filter((m) => m.version === '011')).toHaveLength(1)
+    expect(loaded.filter((m) => m.version === '012')).toHaveLength(1)
     const m008 = loaded.find((m) => m.version === '008')!
     const m009 = loaded.find((m) => m.version === '009')!
     const m010 = loaded.find((m) => m.version === '010')!
@@ -387,7 +437,7 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(plan.items.find((i) => i.version === '008')!.action).toBe('APPLY')
     expect(
       plan.items.filter((i) => i.action === 'APPLY').map((i) => i.version),
-    ).toEqual(['008', '009', '010'])
+    ).toEqual(['008', '009', '010', '011', '012'])
 
     const dry = await dryRunMigrations({
       host: '127.0.0.1',
@@ -401,7 +451,7 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(dry.items.find((i) => i.version === '008')!.action).toBe('APPLY')
     expect(
       dry.items.filter((i) => i.action === 'APPLY').map((i) => i.version),
-    ).toEqual(['008', '009', '010'])
+    ).toEqual(['008', '009', '010', '011', '012'])
 
     const status = migrationStatus({
       host: '127.0.0.1',
@@ -422,7 +472,7 @@ describe('migration plan / dry-run / idempotent rerun', () => {
       lifecycleMapping: SAFE_MAPPING,
     })
     expect(first.ok).toBe(true)
-    expect(first.applied).toEqual(['008', '009', '010'])
+    expect(first.applied).toEqual(['008', '009', '010', '011', '012'])
     expect(first.skipped).toEqual([
       '000',
       '001',
@@ -512,7 +562,7 @@ describe('authority guards — production / unknown remote refuse apply', () => 
     expect(classifyDbHost('tm-v3-staging')).toBe('STAGING')
   })
 
-  it('allows only exact backup/release/artifact/db-bound production migration 008', async () => {
+  it('allows only exact backup/release/artifact/db-bound production one-step next migration', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp0-prod-auth-'))
     const backup = path.join(dir, 'schema007.sql')
     fs.writeFileSync(backup, '-- verified schema007 backup\n')
@@ -521,7 +571,7 @@ describe('authority guards — production / unknown remote refuse apply', () => 
       const base = {
         releaseSha: 'a'.repeat(40),
         approvalId: 'owner-cp0-008',
-        migrationVersion: '008' as const,
+        migrationVersion: '008',
         migrationSha256: migration.sha256,
         targetHost: 'db.production.internal',
         targetDatabase: 'cairn_taskmanager',
@@ -547,8 +597,9 @@ describe('authority guards — production / unknown remote refuse apply', () => 
         database: base.targetDatabase,
         migration,
       })).toBe(true)
+      // Honest history: only 000..007 applied (next pending is 008). Later 009..012 remain pending.
       const through007 = loadMigrationManifest(cwd)
-        .filter((item) => item.version !== '008')
+        .filter((item) => item.version <= '007')
         .map((item) => ({
           version: item.version,
           filename: item.filename,
@@ -566,7 +617,11 @@ describe('authority guards — production / unknown remote refuse apply', () => 
         productionAuthority: authority,
       })
       expect(result.ok).toBe(true)
+      // One-step: only approved 008, never 009..012 in the same production apply.
       expect(result.applied).toEqual(['008'])
+      expect(exec.history.map((h) => h.version)).toEqual([
+        '000', '001', '002', '003', '004', '005', '006', '007', '008',
+      ])
       expect(validateProductionMigrationAuthority({ ...authority, targetHost: 'other' }, {
         host: base.targetHost,
         database: base.targetDatabase,
@@ -740,7 +795,7 @@ describe('lifecycle mapping guard wired into migration plan/apply (AC-LIFE-02)',
     expect(result.applied).toEqual([...ALL_VERSIONS])
     expect(result.mapping?.approved).toBe(true)
     expect(exec.statements.length).toBeGreaterThan(0)
-    expect(exec.history).toHaveLength(11)
+    expect(exec.history).toHaveLength(13)
   })
 
   it('apply missing mapping → DECISION_LIFECYCLE_MAPPING_REQUIRED, zero SQL/history', async () => {
@@ -952,4 +1007,41 @@ describe('lifecycle mapping guard wired into migration plan/apply (AC-LIFE-02)',
     expect(exec.statements).toHaveLength(0)
     expect(exec.history).toHaveLength(0)
   })
+})
+
+describe('migrate-runner.mjs teardown exit honesty', () => {
+  it('does not swallow server.close errors into a silent success path', () => {
+    const runnerPath = path.join(cwd, 'src/server/migrate-runner.mjs')
+    const src = fs.readFileSync(runnerPath, 'utf8')
+    // Empty catch that ignores teardown is the rejected defect.
+    expect(src).not.toMatch(
+      /await server\.close\(\)\s*\}\s*catch\s*\{\s*\/\*\s*ignore/s,
+    )
+    // Must report teardown and escalate zero → non-zero without hiding prior code.
+    expect(src).toMatch(/server\.close\(\)/)
+    expect(src).toMatch(/if \(code === 0\) code = 1/)
+    expect(src).toMatch(/process\.exit\(code\)/)
+  })
+
+  it('offline plan still exits 0 with ordered 000..012 (load/main path intact)', () => {
+    const out = execFileSync(
+      'node',
+      ['src/server/migrate-runner.mjs', 'plan', '--offline', '--json'],
+      { encoding: 'utf8', cwd },
+    )
+    const jsonStart = out.indexOf('{')
+    expect(jsonStart).toBeGreaterThanOrEqual(0)
+    const body = JSON.parse(out.slice(jsonStart)) as {
+      plan?: { status?: string; orderedVersions?: string[] }
+      orderedVersions?: string[]
+      status?: string
+    }
+    const ordered =
+      body.plan?.orderedVersions ?? body.orderedVersions ?? []
+    const status = body.plan?.status ?? body.status
+    expect(status).toBe('READY')
+    expect(ordered[0]).toBe('000')
+    expect(ordered[ordered.length - 1]).toBe('012')
+    expect(ordered).toHaveLength(13)
+  }, 60_000)
 })

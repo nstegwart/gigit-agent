@@ -447,3 +447,104 @@ describe('production package shell/node self-tests', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 })
+
+describe('migrate-apply.sh entrypoint argv propagation (no DB)', () => {
+  const applySh = join(SCRIPTS, 'migrate-apply.sh')
+
+  function runCapture(cmd: string, args: string[]): { status: number; out: string } {
+    try {
+      const out = execFileSync(cmd, args, {
+        encoding: 'utf8',
+        cwd: ROOT,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      return { status: 0, out }
+    } catch (e: unknown) {
+      const err = e as { status?: number; stderr?: string; stdout?: string }
+      return {
+        status: err.status ?? 1,
+        out: `${err.stdout || ''}${err.stderr || ''}`,
+      }
+    }
+  }
+
+  it('shell source: pnpm omits literal -- separator; npm/node forms correct', () => {
+    const src = readFileSync(applySh, 'utf8')
+    // Executable lines only (ignore comments that may document the rejected form).
+    const codeLines = src
+      .split('\n')
+      .map((l) => l.replace(/^\s*#.*$/, '').trim())
+      .filter(Boolean)
+      .join('\n')
+    // Rejected form that pnpm forwards as bare "--" into migrate-cli
+    expect(codeLines).not.toMatch(/pnpm\s+migrate:apply\s+--\s+--through/)
+    expect(codeLines).toMatch(/pnpm\s+migrate:apply\s+--through/)
+    expect(codeLines).toMatch(/npm\s+run\s+migrate:apply\s+--\s+--through/)
+    expect(codeLines).toMatch(
+      /node\s+src\/server\/migrate-runner\.mjs\s+apply\s+--through/,
+    )
+  })
+
+  it('pre-fix pnpm form with literal -- reaches Unknown flag: --', () => {
+    const { status, out } = runCapture('pnpm', [
+      'migrate:apply',
+      '--',
+      '--through',
+      '011',
+      '--lifecycle-mapping',
+      'g0',
+    ])
+    expect(status).not.toBe(0)
+    expect(out).toMatch(/Unknown flag: --/)
+  }, 60_000)
+
+  it('repaired pnpm / npm / node argv all parse --through 011 (fail-closed post-parse OK)', () => {
+    const cases: Array<{ cmd: string; args: string[]; label: string }> = [
+      {
+        label: 'pnpm',
+        cmd: 'pnpm',
+        args: ['migrate:apply', '--through', '011', '--lifecycle-mapping', 'g0'],
+      },
+      {
+        label: 'npm',
+        cmd: 'npm',
+        args: [
+          'run',
+          'migrate:apply',
+          '--',
+          '--through',
+          '011',
+          '--lifecycle-mapping',
+          'g0',
+        ],
+      },
+      {
+        label: 'node-runner',
+        cmd: 'node',
+        args: [
+          'src/server/migrate-runner.mjs',
+          'apply',
+          '--through',
+          '011',
+          '--lifecycle-mapping',
+          'g0',
+        ],
+      },
+    ]
+    for (const c of cases) {
+      const { status, out } = runCapture(c.cmd, c.args)
+      // Must not fail at argv parse layer (the rejected defect).
+      expect(out, c.label).not.toMatch(/Unknown flag: --/)
+      expect(out, c.label).not.toMatch(/Unknown flag: --through/)
+      // Without a live DB, connect refusal / authority fail is expected fail-closed.
+      expect(status, c.label).not.toBe(0)
+      expect(
+        /ECONNREFUSED|connect ECONNREFUSED|PRODUCTION|authority|MIGRATION_APPROVED|Access denied|ENOTFOUND|Unknown database|refused/i.test(
+          out,
+        ) || /Error|error/.test(out),
+        `${c.label} expected post-parse fail-closed, got: ${out.slice(-400)}`,
+      ).toBe(true)
+    }
+  }, 120_000)
+})

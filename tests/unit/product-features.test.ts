@@ -49,7 +49,8 @@ describe('migration 010 schema + manifest', () => {
     const versions = loaded.map((m) => m.version)
     expect(versions).toContain('009')
     expect(versions).toContain('010')
-    expect(versions[versions.length - 1]).toBe('010')
+    // 010 remains registered after 009; product tip may advance past 010 (011/012).
+    expect(versions.indexOf('010')).toBeGreaterThan(versions.indexOf('009'))
     const m010 = loaded.find((m) => m.version === '010')!
     expect(m010.filename).toBe('010_product_features.sql')
     expect(m010.classification).toBe('REVERSIBLE')

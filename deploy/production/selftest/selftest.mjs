@@ -203,6 +203,36 @@ check(
   classifyHealthReadback({ loopbackStatus: null }).ok === false,
 )
 
+// --- migrate-apply.sh pnpm argv contract (static; live spawn is shell selftest) ---
+// Rejected executable form inserts a bare end-of-options token into migrate-cli argv.
+// Required: pnpm without separator; npm with separator; node-runner direct flags.
+// Strip full-line comments so docs of the defect cannot false-positive the check.
+const migrateApplySh = readFileSync(
+  new URL('../scripts/migrate-apply.sh', import.meta.url),
+  'utf8',
+)
+const migrateApplyCode = migrateApplySh
+  .split('\n')
+  .map((l) => l.replace(/^\s*#.*$/, '').trim())
+  .filter(Boolean)
+  .join('\n')
+check(
+  'migrate-apply.sh rejects broken pnpm separator before --through',
+  !/pnpm\s+migrate:apply\s+--\s+--through/.test(migrateApplyCode),
+)
+check(
+  'migrate-apply.sh pnpm uses --through without separator',
+  /pnpm\s+migrate:apply\s+--through/.test(migrateApplyCode),
+)
+check(
+  'migrate-apply.sh npm keeps -- separator before --through',
+  /npm\s+run\s+migrate:apply\s+--\s+--through/.test(migrateApplyCode),
+)
+check(
+  'migrate-apply.sh node-runner uses direct --through',
+  /node\s+src\/server\/migrate-runner\.mjs\s+apply\s+--through/.test(migrateApplyCode),
+)
+
 rmSync(dir, { recursive: true, force: true })
 
 if (failed) {

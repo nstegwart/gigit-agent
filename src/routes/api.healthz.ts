@@ -139,9 +139,16 @@ function manifestLatestVersion(): string {
 }
 
 /**
- * Required CREATE TABLE objects introduced by migrations 004/005/006.
+ * Required CREATE TABLE objects introduced by migrations 004..012.
  * History claiming these versions is not healthy if the tables are absent
  * (partial apply / drift). ALTER-only expands are not listed here.
+ *
+ * Completeness:
+ * - 005 and 006–012 lists match every CREATE TABLE IF NOT EXISTS in that
+ *   migration SQL (exact names, historical schema preserved).
+ * - 004 remains a historical partial probe (classification_receipts + decisions
+ *   only; import_audit / human_display* are not probed here).
+ *
  * Exported for unit tests (table-probe contract).
  */
 export const REQUIRED_TABLES_BY_MIGRATION: Readonly<Record<string, ReadonlyArray<string>>> = {
@@ -149,10 +156,22 @@ export const REQUIRED_TABLES_BY_MIGRATION: Readonly<Record<string, ReadonlyArray
     'control_plane_classification_receipts',
     'control_plane_decisions',
   ],
+  // 005 control-plane runtime — all 14 CREATE TABLE objects from 005_*.sql
   '005': [
     'control_plane_dispatch_plans',
+    'control_plane_dispatch_plan_items',
     'control_plane_runs',
     'control_plane_collision_locks',
+    'control_plane_integration_locks',
+    'control_plane_account_snapshots',
+    'control_plane_account_readbacks',
+    'control_plane_reconciler_leaders',
+    'control_plane_reconciler_dryruns',
+    'control_plane_reconciler_apply',
+    'control_plane_reconciler_task_flags',
+    'control_plane_retention_policies',
+    'control_plane_retention_hot_state',
+    'control_plane_retention_audit_sample',
   ],
   '006': ['control_plane_stage_evidence_receipts'],
   '007': ['globals'],
@@ -162,9 +181,34 @@ export const REQUIRED_TABLES_BY_MIGRATION: Readonly<Record<string, ReadonlyArray
     'control_plane_account_probes',
     'control_plane_sync_status',
   ],
+  // 009 rebuild lineage — all four CREATE TABLE objects must exist when history claims 009
+  '009': [
+    'rebuild_lineage_records',
+    'parity_rollups',
+    'feature_units',
+    'feature_directory',
+  ],
+  // 010 product features — both taxonomy tables
+  '010': [
+    'product_features',
+    'feature_task_map',
+  ],
+  // 011 app-flow nav graph
+  '011': [
+    'app_flow_nodes',
+    'app_flow_edges',
+  ],
+  // 012 ultimate map (complete per-version set; 011 tables may already exist via 011)
+  '012': [
+    'app_pages',
+    'api_endpoints',
+    'page_api_calls',
+    'nav_edges',
+    'knowledge_aliases',
+  ],
 }
 
-/** Tables required given applied migration versions (004/005/006 probes). */
+/** Tables required given applied migration versions (004..012 table probes). */
 export function requiredTablesForAppliedVersions(
   appliedVersions: ReadonlyArray<string>,
 ): Array<string> {
@@ -431,7 +475,7 @@ async function loadObserved(): Promise<HealthObserved> {
       }
     }
 
-    // Required tables for applied 004/005/006 (history alone is not sufficient proof)
+    // Required tables for applied 004..012 (history alone is not sufficient proof)
     const requiredTables = requiredTablesForAppliedVersions(appliedVersions)
     if (requiredTables.length > 0) {
       missingRequiredTables = await probeRequiredTables(requiredTables)
@@ -446,7 +490,7 @@ async function loadObserved(): Promise<HealthObserved> {
         requiredTablesStatus = 'up'
       }
     } else if (appliedVersions.length > 0) {
-      // Applied history does not yet include 004/005/006 — no table probe needed.
+      // Applied history does not include any version with required CREATE TABLE probes.
       requiredTablesStatus = 'up'
     }
 
@@ -618,7 +662,7 @@ async function loadObserved(): Promise<HealthObserved> {
     { name: 'mysql', status: dbStatus }, // up only after SELECT 1; else down/unknown
     { name: 'control-plane', status: controlPlaneStatus }, // up only with proven pin row
   ]
-  // Surface 004/005/006 required-table probe when we attempted it (or DB was up enough to classify).
+  // Surface required-table probe when we attempted it (or DB was up enough to classify).
   if (requiredTablesStatus !== 'unknown' || missingRequiredTables.length > 0) {
     dependencies.push({
       name: 'schema-required-tables',
