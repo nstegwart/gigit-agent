@@ -92,16 +92,32 @@ function makeAuthority(
   return base
 }
 
-describe('manifest completeness 000..012 + exact hashes', () => {
-  it('registers ordered 000..012 with exact on-disk SHA-256 and REVERSIBLE 011/012', () => {
-    expect(manifestLatestVersion()).toBe('012')
-    expect(MIGRATION_MANIFEST.map((m) => m.version)).toEqual(Object.keys(EXPECTED_SHA256))
+describe('manifest completeness 000..012 exact hashes (preserved under tip advance)', () => {
+  it('pins exact on-disk SHA-256 for 000..012 and REVERSIBLE 011/012 (tip may be later)', () => {
+    // Tip advances past 012 (see migration-gate-013); this file freezes 000-012 hashes.
+    expect(manifestLatestVersion() >= '012').toBe(true)
+    expect(Object.keys(EXPECTED_SHA256)).toEqual([
+      '000',
+      '001',
+      '002',
+      '003',
+      '004',
+      '005',
+      '006',
+      '007',
+      '008',
+      '009',
+      '010',
+      '011',
+      '012',
+    ])
     const loaded = loadMigrationManifest(cwd)
-    expect(loaded).toHaveLength(13)
-    for (const m of loaded) {
+    expect(loaded.length).toBeGreaterThanOrEqual(13)
+    for (const version of Object.keys(EXPECTED_SHA256)) {
+      const m = loaded.find((x) => x.version === version)!
       const disk = fs.readFileSync(path.join(cwd, m.relativePath))
       expect(m.sha256).toBe(sha256Hex(disk))
-      expect(m.sha256).toBe(EXPECTED_SHA256[m.version])
+      expect(m.sha256).toBe(EXPECTED_SHA256[version])
     }
     expect(MIGRATION_MANIFEST.find((m) => m.version === '011')).toMatchObject({
       filename: '011_feature_flow_edges.sql',
@@ -113,7 +129,7 @@ describe('manifest completeness 000..012 + exact hashes', () => {
     })
   })
 
-  it('offline plan orderedVersions is 000..012', () => {
+  it('offline plan orderedVersions includes 000..012 (and may continue past tip)', () => {
     const plan = planMigrations({
       host: '127.0.0.1',
       hostClass: 'LOCAL',
@@ -122,7 +138,7 @@ describe('manifest completeness 000..012 + exact hashes', () => {
       mode: 'plan',
     })
     expect(plan.status).toBe('READY')
-    expect(plan.orderedVersions).toEqual([
+    expect(plan.orderedVersions.slice(0, 13)).toEqual([
       '000',
       '001',
       '002',

@@ -265,6 +265,17 @@ export const MIGRATION_MANIFEST: ReadonlyArray<MigrationEntry> = [
     description:
       'Additive ultimate map layer: app_pages, api_endpoints, page_api_calls, nav_edges, knowledge_aliases (+ idempotent 011 flow tables); no pin/lifecycle changes',
   },
+  {
+    version: '013',
+    filename: '013_classification_task_id_case_sensitive.sql',
+    relativePath: path.join(
+      MIGRATIONS_DIR_NAME,
+      '013_classification_task_id_case_sensitive.sql',
+    ),
+    classification: 'FORWARD_FIX_ONLY',
+    description:
+      'Case-sensitive classification task identity: utf8mb4_bin on control_plane_classification.task_id (PK) and receipts.task_id; no canonical ID rewrite; no complete-set/CAS weaken',
+  },
 ] as const
 
 export function sha256Hex(content: string | Buffer): string {

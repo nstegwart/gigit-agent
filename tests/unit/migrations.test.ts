@@ -34,7 +34,7 @@ const cwd = process.cwd()
 /** Explicit safe mapping evidence for memory apply tests (G0 identity nine). */
 const SAFE_MAPPING = g0IdentityLifecycleMappingRows()
 
-/** Product manifest 000..012 (paritas staging-migrations / MIGRATION_MANIFEST). */
+/** Product manifest 000..013 (paritas staging-migrations / MIGRATION_MANIFEST). */
 const ALL_VERSIONS = [
   '000',
   '001',
@@ -49,10 +49,11 @@ const ALL_VERSIONS = [
   '010',
   '011',
   '012',
+  '013',
 ] as const
 
 describe('migration manifest ordering + checksums', () => {
-  it('has strictly ordered 000..012 entries', () => {
+  it('has strictly ordered 000..013 entries', () => {
     assertManifestOrder(MIGRATION_MANIFEST)
     expect(MIGRATION_MANIFEST.map((m) => m.version)).toEqual([...ALL_VERSIONS])
     expect(MIGRATION_MANIFEST.map((m) => m.classification)).toEqual([
@@ -69,12 +70,13 @@ describe('migration manifest ordering + checksums', () => {
       'REVERSIBLE', // 010 product_features
       'REVERSIBLE', // 011 feature_flow_edges
       'REVERSIBLE', // 012 ultimate_map
+      'FORWARD_FIX_ONLY', // 013 classification task_id case-sensitive
     ])
   })
 
   it('loads on-disk SQL and computes stable SHA-256', () => {
     const loaded = loadMigrationManifest(cwd)
-    expect(loaded).toHaveLength(13)
+    expect(loaded).toHaveLength(14)
     for (const m of loaded) {
       const disk = fs.readFileSync(path.join(cwd, m.relativePath), 'utf8')
       expect(m.sha256).toBe(sha256Hex(disk))
@@ -278,6 +280,25 @@ describe('migration manifest ordering + checksums', () => {
     expect(MIGRATION_MANIFEST.filter((m) => m.version === '012')).toHaveLength(1)
   })
 
+  it('013 classification task_id case-sensitive SQL is MODIFY utf8mb4_bin only', () => {
+    const entry = MIGRATION_MANIFEST.find((m) => m.version === '013')!
+    expect(entry.filename).toBe('013_classification_task_id_case_sensitive.sql')
+    expect(entry.classification).toBe('FORWARD_FIX_ONLY')
+    const sql = fs.readFileSync(path.join(cwd, entry.relativePath), 'utf8')
+    expect(sql).toMatch(/utf8mb4_bin/)
+    expect(sql).toMatch(/control_plane_classification/)
+    expect(sql).toMatch(/control_plane_classification_receipts/)
+    expect(sql).not.toMatch(/DEFAULT 'PRODUCT'/)
+    const stmts = splitSqlStatements(sql).map((s) => s.toLowerCase())
+    expect(stmts).toHaveLength(2)
+    for (const s of stmts) {
+      expect(s).not.toMatch(/\bdrop\s+table\b/)
+      expect(s).not.toMatch(/\btruncate\b/)
+      expect(s).toMatch(/modify column task_id/)
+    }
+    expect(MIGRATION_MANIFEST.filter((m) => m.version === '013')).toHaveLength(1)
+  })
+
   it('splitSqlStatements strips comments and yields statements', () => {
     const stmts = splitSqlStatements(
       '-- c\nCREATE TABLE a (id INT);\n-- x\nALTER TABLE a ADD KEY k (id);',
@@ -315,6 +336,8 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(plan.items.find((i) => i.version === '011')!.action).toBe('APPLY')
     expect(plan.items.filter((i) => i.version === '012')).toHaveLength(1)
     expect(plan.items.find((i) => i.version === '012')!.action).toBe('APPLY')
+    expect(plan.items.filter((i) => i.version === '013')).toHaveLength(1)
+    expect(plan.items.find((i) => i.version === '013')!.action).toBe('APPLY')
   })
 
   it('idempotent plan is NOOP when history matches checksums', () => {
@@ -370,8 +393,17 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(first.mapping?.identityCount).toBe(9)
     expect(exec.statements.length).toBeGreaterThan(10)
     expect(exec.history.map((h) => h.version)).toEqual([...ALL_VERSIONS])
-    // 006..012 each appear exactly once in apply output + history
-    for (const v of ['006', '007', '008', '009', '010', '011', '012'] as const) {
+    // 006..013 each appear exactly once in apply output + history
+    for (const v of [
+      '006',
+      '007',
+      '008',
+      '009',
+      '010',
+      '011',
+      '012',
+      '013',
+    ] as const) {
       expect(first.applied.filter((x) => x === v)).toHaveLength(1)
       expect(exec.history.filter((h) => h.version === v)).toHaveLength(1)
     }
@@ -391,19 +423,22 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(second.mapping?.approved).toBe(true)
   })
 
-  it('plan/dry-run/status/apply include 008..012; partial 000-007 then apply 008..012', async () => {
+  it('plan/dry-run/status/apply include 008..013; partial 000-007 then apply 008..013', async () => {
     const loaded = loadMigrationManifest(cwd)
     expect(loaded.filter((m) => m.version === '008')).toHaveLength(1)
     expect(loaded.filter((m) => m.version === '009')).toHaveLength(1)
     expect(loaded.filter((m) => m.version === '010')).toHaveLength(1)
     expect(loaded.filter((m) => m.version === '011')).toHaveLength(1)
     expect(loaded.filter((m) => m.version === '012')).toHaveLength(1)
+    expect(loaded.filter((m) => m.version === '013')).toHaveLength(1)
     const m008 = loaded.find((m) => m.version === '008')!
     const m009 = loaded.find((m) => m.version === '009')!
     const m010 = loaded.find((m) => m.version === '010')!
+    const m013 = loaded.find((m) => m.version === '013')!
     expect(m008.filename).toBe('008_cp0_control_plane.sql')
     expect(m009.filename).toBe('009_rebuild_lineage.sql')
     expect(m010.filename).toBe('010_product_features.sql')
+    expect(m013.filename).toBe('013_classification_task_id_case_sensitive.sql')
 
     const through007 = loaded
       .filter((m) => m.version <= '007')
@@ -437,7 +472,7 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(plan.items.find((i) => i.version === '008')!.action).toBe('APPLY')
     expect(
       plan.items.filter((i) => i.action === 'APPLY').map((i) => i.version),
-    ).toEqual(['008', '009', '010', '011', '012'])
+    ).toEqual(['008', '009', '010', '011', '012', '013'])
 
     const dry = await dryRunMigrations({
       host: '127.0.0.1',
@@ -451,7 +486,7 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(dry.items.find((i) => i.version === '008')!.action).toBe('APPLY')
     expect(
       dry.items.filter((i) => i.action === 'APPLY').map((i) => i.version),
-    ).toEqual(['008', '009', '010', '011', '012'])
+    ).toEqual(['008', '009', '010', '011', '012', '013'])
 
     const status = migrationStatus({
       host: '127.0.0.1',
@@ -472,7 +507,7 @@ describe('migration plan / dry-run / idempotent rerun', () => {
       lifecycleMapping: SAFE_MAPPING,
     })
     expect(first.ok).toBe(true)
-    expect(first.applied).toEqual(['008', '009', '010', '011', '012'])
+    expect(first.applied).toEqual(['008', '009', '010', '011', '012', '013'])
     expect(first.skipped).toEqual([
       '000',
       '001',
@@ -494,8 +529,14 @@ describe('migration plan / dry-run / idempotent rerun', () => {
     expect(exec.history.find((h) => h.version === '010')!.sha256).toBe(
       m010.sha256,
     )
+    expect(exec.history.find((h) => h.version === '013')!.sha256).toBe(
+      m013.sha256,
+    )
     expect(
       exec.statements.some((s) => /control_plane_spawn_budgets/i.test(s)),
+    ).toBe(true)
+    expect(
+      exec.statements.some((s) => /utf8mb4_bin/i.test(s)),
     ).toBe(true)
 
     const second = await applyMigrations({
@@ -795,7 +836,7 @@ describe('lifecycle mapping guard wired into migration plan/apply (AC-LIFE-02)',
     expect(result.applied).toEqual([...ALL_VERSIONS])
     expect(result.mapping?.approved).toBe(true)
     expect(exec.statements.length).toBeGreaterThan(0)
-    expect(exec.history).toHaveLength(13)
+    expect(exec.history).toHaveLength(14)
   })
 
   it('apply missing mapping → DECISION_LIFECYCLE_MAPPING_REQUIRED, zero SQL/history', async () => {
@@ -1023,7 +1064,7 @@ describe('migrate-runner.mjs teardown exit honesty', () => {
     expect(src).toMatch(/process\.exit\(code\)/)
   })
 
-  it('offline plan still exits 0 with ordered 000..012 (load/main path intact)', () => {
+  it('offline plan still exits 0 with ordered 000..013 (load/main path intact)', () => {
     const out = execFileSync(
       'node',
       ['src/server/migrate-runner.mjs', 'plan', '--offline', '--json'],
@@ -1041,7 +1082,7 @@ describe('migrate-runner.mjs teardown exit honesty', () => {
     const status = body.plan?.status ?? body.status
     expect(status).toBe('READY')
     expect(ordered[0]).toBe('000')
-    expect(ordered[ordered.length - 1]).toBe('012')
-    expect(ordered).toHaveLength(13)
+    expect(ordered[ordered.length - 1]).toBe('013')
+    expect(ordered).toHaveLength(14)
   }, 60_000)
 })

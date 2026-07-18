@@ -67,14 +67,14 @@ Every mutating script under `deploy/production/scripts/` refuses to run unless:
 
 Laptop dry-run of `pm2-atomic.sh` / `release.sh` does **not** require the `pm2` binary (command gate runs only on the real mutation branch).
 
-Optional for schema apply (code path ready through manifest **012**; runtime apply stays closed until independent verification + exact owner approval):
+Optional for schema apply (code path ready through manifest **013**; runtime apply stays closed until independent verification + exact owner approval):
 
 | Env | Rule |
 |---|---|
 | `MIGRATE_APPLY_APPROVED=1` | Explicit owner opt-in for DDL apply |
 | `DB_DUMP_PATH` | Fresh dump (defaults to `BACKUP_RECEIPT`) |
 | `BACKUP_MAX_AGE_HOURS` | Default 24h freshness gate |
-| `MIGRATION_APPROVED_VERSION` | Exact next pending manifest NNN only (one-step; never skip; never all remaining). Product tip **012**; CP0 baseline **008**. |
+| `MIGRATION_APPROVED_VERSION` | Exact next pending manifest NNN only (one-step; never skip; never all remaining). Product tip **013**; CP0 baseline **008**. |
 | `MIGRATION_APPROVED_SHA256` | Lowercase SHA-256 of that version's SQL file |
 | `MIGRATION_TARGET_HOST` / `MIGRATION_TARGET_DATABASE` | Must equal `CAIRN_DB_HOST` / `CAIRN_DB_NAME` |
 | `MIGRATION_APPROVAL_BINDING` | Binding over release SHA, approval id, version, migration sha, host, db, backup sha |

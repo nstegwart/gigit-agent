@@ -20,8 +20,8 @@ import {
   validateEvidence,
 } from './staging-gate.mjs'
 
-/** Product schema tip (manifest 012). Kept local so .d.mts need not expand for this pin. */
-const SCHEMA_LATEST_VERSION = '012'
+/** Product schema tip (manifest 013). Kept local so .d.mts need not expand for this pin. */
+const SCHEMA_LATEST_VERSION = '013'
 /** Historical CP0 baseline (alias of CP0_SCHEMA_VERSION). */
 const CP0_BASELINE_SCHEMA_VERSION = CP0_SCHEMA_VERSION
 
@@ -159,18 +159,18 @@ describe('CP0 capacity and lineage contract', () => {
 })
 
 describe('CP0 schema, route, scan, and staging proof contract', () => {
-  it('keeps migration 008 as CP0 baseline while product manifest latest is 012', () => {
+  it('keeps migration 008 as CP0 baseline while product manifest latest is 013', () => {
     expect(CP0_BASELINE_SCHEMA_VERSION).toBe('008')
     expect(CP0_SCHEMA_VERSION).toBe('008')
-    expect(SCHEMA_LATEST_VERSION).toBe('012')
+    expect(SCHEMA_LATEST_VERSION).toBe('013')
     expect(MIGRATION_MANIFEST.find((m) => m.version === '008')).toMatchObject({
       version: '008',
       filename: '008_cp0_control_plane.sql',
     })
-    // Product tip is 012; do not claim CP0 baseline is the product latest.
+    // Product tip is 013; do not claim CP0 baseline is the product latest.
     expect(MIGRATION_MANIFEST.at(-1)).toMatchObject({
-      version: '012',
-      filename: '012_ultimate_map.sql',
+      version: '013',
+      filename: '013_classification_task_id_case_sensitive.sql',
     })
     expect(REQUIRED_TABLES_BY_MIGRATION['008']).toEqual([
       'control_plane_spawn_budgets',
