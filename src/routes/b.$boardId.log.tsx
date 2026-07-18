@@ -1,11 +1,23 @@
-import { createFileRoute } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before log loaders run.
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useStore } from '@tanstack/react-store'
 import { boardQueryOptions, useBoard } from '#/lib/board-query'
+import { isControlCenterBoard } from '#/lib/control-center-query'
 import { uiStore } from '#/store/ui'
 import { Timeline } from '#/components/Timeline'
 
 export const Route = createFileRoute('/b/$boardId/log')({
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
   },
   component: View,

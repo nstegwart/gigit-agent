@@ -1,5 +1,6 @@
 // Agents route — control-center boards use pinned agents envelope; others keep legacy status groups.
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before agents loaders run.
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useStore } from '@tanstack/react-store'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
@@ -31,7 +32,17 @@ import type { Run } from '#/lib/types'
 
 export const Route = createFileRoute('/b/$boardId/agents')({
   validateSearch: (search) => parseControlCenterCursorSearch(search),
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params, location }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     if (isControlCenterBoard(params.boardId)) {
       await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
       const search = parseControlCenterCursorSearch(location.search)

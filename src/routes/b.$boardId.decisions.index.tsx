@@ -4,7 +4,8 @@
 //
 // Client/server boundary: mutators live in #/server/decisions-owner-fns (createServerFn
 // only). This route imports serializable handles only — never board-store/db runtime.
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+// Canon-v3: control-center boards demote to /alur before decisions list loaders run.
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useStore } from '@tanstack/react-store'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo, useState } from 'react'
@@ -45,7 +46,17 @@ import {
 
 export const Route = createFileRoute('/b/$boardId/decisions/')({
   validateSearch: (search) => parseControlCenterCursorSearch(search),
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params, location }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
     if (isControlCenterBoard(params.boardId)) {
       const search = parseControlCenterCursorSearch(location.search)
