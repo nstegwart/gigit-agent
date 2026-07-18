@@ -1,9 +1,8 @@
-// Board home / Overview — control-center boards use pinned Overview; others keep adaptive Board.
-import { Navigate, createFileRoute } from '@tanstack/react-router'
+// Board home — control-center boards redirect to Alur (canon-v3 primary);
+// classic / non-control-center boards keep adaptive Board Overview.
+import { Navigate, createFileRoute, redirect } from '@tanstack/react-router'
 import { BoardLink as Link } from '#/components/BoardLink'
 import { useStore } from '@tanstack/react-store'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useState } from 'react'
 
 import { ActivityFeed } from '#/components/ActivityFeed'
 import { KpiStrip } from '#/components/KpiStrip'
@@ -13,7 +12,6 @@ import { QueueCard } from '#/components/QueueCard'
 import { RunCard } from '#/components/RunCard'
 import { EmptyState } from '#/components/primitives'
 import {
-  Overview,
   reconcileAuthenticatedOverviewProps,
 } from '#/components/control-center/overview'
 import {
@@ -21,19 +19,11 @@ import {
   useBoard,
   useBoardId,
   useBoardViews,
-  useCurrentBoard,
 } from '#/lib/board-query'
-import {
-  getDefaultControlCenterFetchers,
-  agentsQueryOptions,
-  isControlCenterBoard,
-  overviewQueryOptions,
-  workQueryOptions,
-} from '#/lib/control-center-query'
+import { isControlCenterBoard } from '#/lib/control-center-query'
 import { overviewEnvelopeToProps } from '#/lib/control-center-route-adapters'
 import { Icon } from '#/lib/icons'
 import { uiStore } from '#/store/ui'
-import type { PrimaryBucket } from '#/lib/control-plane-types'
 
 type OverviewEnvelopeInput = Parameters<typeof overviewEnvelopeToProps>[0]
 type OverviewAdapterOptions = Parameters<typeof overviewEnvelopeToProps>[1]
@@ -44,7 +34,10 @@ type AuthenticatedAgentsInput = Parameters<
   typeof reconcileAuthenticatedOverviewProps
 >[3]
 
-/** Pure route composition used by runtime and route-level regression tests. */
+/**
+ * Pure route composition retained for overview unit tests / secondary consumers.
+ * Control-center board index no longer mounts Overview as primary (redirects to Alur).
+ */
 export function buildAuthenticatedOverviewProps(
   overview: OverviewEnvelopeInput,
   work: AuthenticatedWorkInput,
@@ -59,27 +52,22 @@ export function buildAuthenticatedOverviewProps(
   )
 }
 
+/** Control-center board index (`/b/mfs-rebuild/`) promotes to Alur; classic stays. */
+export function shouldRedirectBoardIndexToAlur(boardId: string): boolean {
+  return isControlCenterBoard(boardId)
+}
+
 export const Route = createFileRoute('/b/$boardId/')({
+  beforeLoad: ({ params }) => {
+    if (shouldRedirectBoardIndexToAlur(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+      })
+    }
+  },
   loader: async ({ context, params }) => {
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
-    if (isControlCenterBoard(params.boardId)) {
-      const fetchers = getDefaultControlCenterFetchers()
-      await Promise.all([
-        context.queryClient.ensureQueryData(
-          overviewQueryOptions(params.boardId, fetchers.overview),
-        ),
-        context.queryClient.ensureQueryData(
-          workQueryOptions(
-            params.boardId,
-            { bucket: 'ONGOING', pageSize: 50 },
-            fetchers.work,
-          ),
-        ),
-        context.queryClient.ensureQueryData(
-          agentsQueryOptions(params.boardId, { pageSize: 100 }, fetchers.agents),
-        ),
-      ])
-    }
   },
   component: View,
 })
@@ -88,120 +76,33 @@ function View() {
   const views = useBoardViews()
   const boardId = useBoardId()
 
-  if (isControlCenterBoard(boardId)) {
-    return <ControlCenterOverview />
+  // Defense in depth: if beforeLoad is bypassed in tests, still leave CC index.
+  if (shouldRedirectBoardIndexToAlur(boardId)) {
+    return (
+      <Navigate
+        {...({
+          to: '/b/$boardId/alur',
+          params: { boardId },
+          replace: true,
+        } as any)}
+      />
+    )
   }
 
   // adaptive: boards without a 'board' view land on their first enabled view
   if (!views.includes('board')) {
     const first = views.find((v) => v !== 'board') ?? 'tasks'
-    return <Navigate {...({ to: `/b/$boardId/${first}`, params: { boardId }, replace: true } as any)} />
+    return (
+      <Navigate
+        {...({
+          to: `/b/$boardId/${first}`,
+          params: { boardId },
+          replace: true,
+        } as any)}
+      />
+    )
   }
   return <BoardHome />
-}
-
-function ControlCenterOverview() {
-  const boardId = useBoardId()
-  const boardMeta = useCurrentBoard()
-  const qc = useQueryClient()
-  // Controlled sticky pill: child IntersectionObserver calls these when the
-  // decision card leaves/enters the #view scroll root (must not skip IO).
-  const [pillCollapsed, setPillCollapsed] = useState(false)
-  const onPillExpand = useCallback(() => setPillCollapsed(false), [])
-  const onPillCollapse = useCallback(() => setPillCollapsed(true), [])
-  const fetchers = getDefaultControlCenterFetchers()
-  const q = useQuery(overviewQueryOptions(boardId, fetchers.overview))
-  const ongoingWork = useQuery(
-    workQueryOptions(
-      boardId,
-      { bucket: 'ONGOING', pageSize: 50 },
-      fetchers.work,
-    ),
-  )
-  const agents = useQuery(
-    agentsQueryOptions(boardId, { pageSize: 100 }, fetchers.agents),
-  )
-
-  const onRetry = useCallback(() => {
-    void Promise.all([
-      qc.invalidateQueries({ queryKey: ['control-center', 'overview', boardId] }),
-      qc.invalidateQueries({ queryKey: ['control-center', 'work', boardId] }),
-      qc.invalidateQueries({ queryKey: ['control-center', 'agents', boardId] }),
-    ])
-  }, [qc, boardId])
-
-  const onSelectBucket = useCallback(
-    (bucket: PrimaryBucket) => {
-      // Deep-link to Work with server-validated bucket filter + pin when known.
-      const params = new URLSearchParams({ bucket })
-      const env = q.data
-      if (env) {
-        params.set('boardRev', String(env.boardRev))
-        params.set('lifecycleRev', String(env.lifecycleRev))
-        if (env.canonicalSnapshotId) params.set('canonicalSnapshotId', env.canonicalSnapshotId)
-        if (env.canonicalHash) params.set('canonicalHash', env.canonicalHash)
-      }
-      window.location.assign(
-        `/b/${encodeURIComponent(boardId)}/work?${params.toString()}`,
-      )
-    },
-    [boardId, q.data],
-  )
-
-  const onToggleStale = useCallback(() => {
-    // AC-BUCKET-05: STALE chip → Work with stale family filter (not a 7th bucket).
-    const params = new URLSearchParams({ stale: '1' })
-    const env = q.data
-    if (env) {
-      params.set('boardRev', String(env.boardRev))
-      params.set('lifecycleRev', String(env.lifecycleRev))
-      if (env.canonicalSnapshotId) params.set('canonicalSnapshotId', env.canonicalSnapshotId)
-      if (env.canonicalHash) params.set('canonicalHash', env.canonicalHash)
-    }
-    window.location.assign(
-      `/b/${encodeURIComponent(boardId)}/work?${params.toString()}`,
-    )
-  }, [boardId, q.data])
-
-  // Surface live lifecycle progress in the app summary bar (owner-visible).
-  // Prefer server task-stage histogram; never invent MAP_VERIFIED when absent.
-  const liveStageFromLifecycle = (() => {
-    const rows = (q.data?.data as { lifecycle?: Array<{ stage?: string; count?: number }> } | null)
-      ?.lifecycle
-    if (!Array.isArray(rows) || rows.length === 0) return null
-    const mv = rows.find((r) => r.stage === 'MAP_VERIFIED')
-    const mapped = rows.find((r) => r.stage === 'MAPPED')
-    const total = rows.reduce((s, r) => s + (typeof r.count === 'number' ? r.count : 0), 0)
-    const mvN = typeof mv?.count === 'number' ? mv.count : 0
-    const mappedN = typeof mapped?.count === 'number' ? mapped.count : 0
-    if (total <= 0) return null
-    return `MAP_VERIFIED ${mvN}/${total} · MAPPED ${mappedN}`
-  })()
-
-  const props = buildAuthenticatedOverviewProps(q.data, ongoingWork.data, agents.data, {
-    boardLabel: boardMeta?.name,
-    liveStage: liveStageFromLifecycle ?? 'mfs-rebuild control center',
-    transport: q.isError ? 'offline' : 'online',
-    onRetry,
-    onReconnect: onRetry,
-    onSelectBucket,
-    onToggleStale,
-    pillCollapsed,
-    onPillExpand,
-    onPillCollapse,
-  })
-
-  // Loading surface when no data yet
-  const surfaceProps =
-    q.isLoading
-      ? { ...props, surfaceState: 'loading' as const }
-      : props
-
-  return (
-    <div className="wrap" data-testid="control-center-overview-route">
-      <Overview {...surfaceProps} />
-    </div>
-  )
 }
 
 function BoardHome() {

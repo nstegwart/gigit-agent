@@ -1,5 +1,5 @@
-// Root (/) — ART S01–S02: default human control center = mfs-rebuild Overview.
-// Board picker preserved at /?boards=1 (nine-IA board switcher still reaches all boards).
+// Root (/) — canon-v3 primary: default human control center = mfs-rebuild Alur (Flow Ultimate).
+// Board picker preserved at /?boards=1 (ops escape hatch; still reaches all boards).
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
@@ -11,7 +11,8 @@ import { DEFAULT_CONTROL_CENTER_BOARD_ID } from '#/lib/control-center-default-bo
 import { createBoardFn } from '#/server/board'
 import { UserMenu } from '#/components/UserMenu'
 
-function wantsBoardPicker(search: unknown): boolean {
+/** True when `/` should render the board picker instead of redirecting to primary Alur. */
+export function wantsBoardPicker(search: unknown): boolean {
   if (!search || typeof search !== 'object' || Array.isArray(search)) return false
   const boards = (search as Record<string, unknown>).boards
   return boards === '1' || boards === 1 || boards === true || boards === 'true'
@@ -20,10 +21,10 @@ function wantsBoardPicker(search: unknown): boolean {
 export const Route = createFileRoute('/')({
   beforeLoad: ({ context, location }) => {
     if (!context.me) throw redirect({ to: '/login' })
-    // ART default: control-center overview unless explicit board picker (?boards=1).
+    // Canon-v3 default: control-center Alur canvas unless explicit board picker (?boards=1).
     if (!wantsBoardPicker(location.search)) {
       throw redirect({
-        to: '/b/$boardId',
+        to: '/b/$boardId/alur',
         params: { boardId: DEFAULT_CONTROL_CENTER_BOARD_ID },
       })
     }

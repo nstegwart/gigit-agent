@@ -1,4 +1,57 @@
-/* Flow Ultimate — in-app canvas. Bridges design-canon vars to app styles.css tokens. */
+/* Flow Ultimate — in-app canvas. Bridges design-canon vars to app styles.css tokens.
+ * Primary shell (data-page=alur, no AppShell): true 100dvh/100vw + dark canon tokens.
+ * Classic/public/admin routes are unaffected (tokens only apply under data-page=alur). */
+
+/* Primary host from BoardLayout when AppShell is skipped */
+.alur-primary-shell {
+  display: block;
+  height: 100dvh;
+  width: 100vw;
+  max-width: 100vw;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Full-viewport document lock — alur only */
+html[data-page='alur'],
+body[data-page='alur'] {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/*
+ * Canon-v3 dark surface tokens — scoped to alur document only.
+ * Does not rewrite global styles.css for classic / public / admin.
+ */
+html[data-page='alur'] {
+  color-scheme: dark;
+  --bg: #0d1017;
+  --surface: #12161e;
+  --surface-2: #171c26;
+  --surface-3: #1b2130;
+  --surface-hover: #171c26;
+  --surface-active: #1b2130;
+  --border: #232a35;
+  --border-soft: #232a35;
+  --border-strong: #2f3a48;
+  --border-focus: #5b9dff;
+  --text: #e8edf3;
+  --text-dim: #8a95a3;
+  --text-faint: #586170;
+  --text-secondary: #8a95a3;
+  --text-tertiary: #586170;
+  --text-inverse: #0d1017;
+  --accent: #5b9dff;
+  --accent-bright: #5b9dff;
+  --accent-line: color-mix(in srgb, #5b9dff 33%, transparent);
+  --ok: #35c479;
+  --warn: #e5a54b;
+  --blocked: #e8635f;
+  --next: #f472b6;
+}
 
 .flow-ultimate-root {
   /* Canon → app design-system bridge (no raw hex/px fallbacks — token fence) */
@@ -41,10 +94,11 @@
 
   display: flex;
   flex-direction: column;
-  /* Fill main column under AppShell header */
-  height: calc(100vh - 0px);
+  /* Primary: true full viewport like canon body.flow-app */
+  height: 100dvh;
+  width: 100vw;
+  max-width: 100vw;
   min-height: 0;
-  width: 100%;
   margin: 0;
   overflow: hidden;
   background: var(--bg);
@@ -55,11 +109,34 @@
   position: relative;
 }
 
-/* When rendered inside shell .main, steal full viewport of the content pane */
+/* Canon project identity under primary alur shell (exact design tokens) */
+html[data-page='alur'] .flow-ultimate-root {
+  --proj-rn: #f472b6;
+  --proj-web: #35c479;
+  --proj-sales: #e5a54b;
+  --proj-affiliate: #5b9dff;
+  --proj-backend: #a78bfa;
+  height: 100dvh;
+  width: 100vw;
+  max-width: 100vw;
+}
+
+/* Primary shell host → canvas fills host */
+.alur-primary-shell > .flow-ultimate-root,
+html[data-page='alur'] .alur-primary-shell > .flow-ultimate-root,
+body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
+  height: 100dvh;
+  width: 100vw;
+  max-width: 100vw;
+}
+
+/* Legacy fallback if ever nested under AppShell .main (should not be primary) */
 .main > .flow-ultimate-root,
 .shell-main > .flow-ultimate-root,
 [data-shell-main] > .flow-ultimate-root {
   height: 100%;
+  width: 100%;
+  max-width: none;
   min-height: calc(100vh - 56px);
 }
 
@@ -692,7 +769,7 @@
   font-size: var(--fs-caption);
 }
 
-/* Full-bleed: collapse shell content padding on alur route */
+/* Full-bleed: if shell ever wraps alur again, collapse content padding only on alur */
 html[data-page='alur'] .main,
 body[data-page='alur'] .main {
   padding: 0 !important;
@@ -707,4 +784,22 @@ body[data-page='alur'] .main > .flow-ultimate-root {
   flex: 1;
   min-height: 0;
   height: 100%;
+  width: 100%;
+  max-width: none;
+}
+
+/* Hide any residual AppShell chrome if data-page=alur is set while shell is present */
+html[data-page='alur'] .sidebar,
+html[data-page='alur'] .topbar,
+html[data-page='alur'] .app > aside,
+body[data-page='alur'] .sidebar,
+body[data-page='alur'] .topbar {
+  display: none !important;
+}
+
+html[data-page='alur'] .app {
+  display: block;
+  height: 100dvh;
+  width: 100vw;
+  overflow: hidden;
 }
