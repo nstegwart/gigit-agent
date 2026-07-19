@@ -85,10 +85,10 @@ services:
       CAIRN_DEPLOYED_SHA: ${RELEASE_SHA}
       CAIRN_EXPECTED_SHA: ${RELEASE_SHA}
       # Fail-closed schema pins — no silent :-003 (or any stale default).
-      # Product latest = 013 (manifest tip). CP0 baseline remains 008 (historical).
+      # Product latest = 014 (manifest tip). CP0 baseline remains 008 (historical).
       # Set both in deploy/staging/.env (see env.staging.example).
-      CAIRN_SCHEMA_VERSION: ${CAIRN_SCHEMA_VERSION:?set CAIRN_SCHEMA_VERSION in deploy/staging/.env (current latest 013)}
-      CAIRN_MIGRATION_LATEST: ${CAIRN_MIGRATION_LATEST:?set CAIRN_MIGRATION_LATEST in deploy/staging/.env (current latest 013)}
+      CAIRN_SCHEMA_VERSION: ${CAIRN_SCHEMA_VERSION:?set CAIRN_SCHEMA_VERSION in deploy/staging/.env (current latest 014)}
+      CAIRN_MIGRATION_LATEST: ${CAIRN_MIGRATION_LATEST:?set CAIRN_MIGRATION_LATEST in deploy/staging/.env (current latest 014)}
     networks:
       - cairn-tm-v3-net
     # LIVENESS only (Docker health). Accepts 401 (auth required), 200 (ready), 503

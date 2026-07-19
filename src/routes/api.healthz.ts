@@ -140,7 +140,7 @@ function manifestLatestVersion(): string {
 }
 
 /**
- * Required CREATE TABLE objects introduced by migrations 004..012.
+ * Required CREATE TABLE objects introduced by migrations 004..012 and 014.
  * History claiming these versions is not healthy if the tables are absent
  * (partial apply / drift). ALTER-only expands are not listed here.
  *
@@ -151,6 +151,7 @@ function manifestLatestVersion(): string {
  *   only; import_audit / human_display* are not probed here).
  * - 013 is ALTER/MODIFY only (classification task_id collation) — no CREATE TABLE
  *   probe key (tables already required via 001/004 history).
+ * - 014 CP0 backlog sources — both CREATE TABLE objects (outbox + legacy residuals).
  *
  * Exported for unit tests (table-probe contract).
  */
@@ -209,9 +210,14 @@ export const REQUIRED_TABLES_BY_MIGRATION: Readonly<Record<string, ReadonlyArray
     'nav_edges',
     'knowledge_aliases',
   ],
+  // 014 CP0 authoritative backlog source tables (sink remains 008)
+  '014': [
+    'control_plane_sync_outbox',
+    'control_plane_legacy_residuals',
+  ],
 }
 
-/** Tables required given applied migration versions (004..012 table probes; 013 ALTER-only). */
+/** Tables required given applied migration versions (004..012+014 table probes; 013 ALTER-only). */
 export function requiredTablesForAppliedVersions(
   appliedVersions: ReadonlyArray<string>,
 ): Array<string> {

@@ -276,6 +276,14 @@ export const MIGRATION_MANIFEST: ReadonlyArray<MigrationEntry> = [
     description:
       'Case-sensitive classification task identity: utf8mb4_bin on control_plane_classification.task_id (PK) and receipts.task_id; no canonical ID rewrite; no complete-set/CAS weaken',
   },
+  {
+    version: '014',
+    filename: '014_cp0_sync_backlog_sources.sql',
+    relativePath: path.join(MIGRATIONS_DIR_NAME, '014_cp0_sync_backlog_sources.sql'),
+    classification: 'REVERSIBLE',
+    description:
+      'CP0 additive backlog source tables: control_plane_sync_outbox + control_plane_legacy_residuals; no sink zeros, no backfill, no writers/measurers',
+  },
 ] as const
 
 export function sha256Hex(content: string | Buffer): string {

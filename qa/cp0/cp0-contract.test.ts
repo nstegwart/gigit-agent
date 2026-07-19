@@ -20,8 +20,8 @@ import {
   validateEvidence,
 } from './staging-gate.mjs'
 
-/** Product schema tip (manifest 013). Kept local so .d.mts need not expand for this pin. */
-const SCHEMA_LATEST_VERSION = '013'
+/** Product schema tip (manifest 014). Kept local so .d.mts need not expand for this pin. */
+const SCHEMA_LATEST_VERSION = '014'
 /** Historical CP0 baseline (alias of CP0_SCHEMA_VERSION). */
 const CP0_BASELINE_SCHEMA_VERSION = CP0_SCHEMA_VERSION
 
@@ -159,18 +159,18 @@ describe('CP0 capacity and lineage contract', () => {
 })
 
 describe('CP0 schema, route, scan, and staging proof contract', () => {
-  it('keeps migration 008 as CP0 baseline while product manifest latest is 013', () => {
+  it('keeps migration 008 as CP0 baseline while product manifest latest is 014', () => {
     expect(CP0_BASELINE_SCHEMA_VERSION).toBe('008')
     expect(CP0_SCHEMA_VERSION).toBe('008')
-    expect(SCHEMA_LATEST_VERSION).toBe('013')
+    expect(SCHEMA_LATEST_VERSION).toBe('014')
     expect(MIGRATION_MANIFEST.find((m) => m.version === '008')).toMatchObject({
       version: '008',
       filename: '008_cp0_control_plane.sql',
     })
-    // Product tip is 013; do not claim CP0 baseline is the product latest.
+    // Product tip is 014; do not claim CP0 baseline is the product latest.
     expect(MIGRATION_MANIFEST.at(-1)).toMatchObject({
-      version: '013',
-      filename: '013_classification_task_id_case_sensitive.sql',
+      version: '014',
+      filename: '014_cp0_sync_backlog_sources.sql',
     })
     expect(REQUIRED_TABLES_BY_MIGRATION['008']).toEqual([
       'control_plane_spawn_budgets',
@@ -178,9 +178,17 @@ describe('CP0 schema, route, scan, and staging proof contract', () => {
       'control_plane_account_probes',
       'control_plane_sync_status',
     ])
+    expect(REQUIRED_TABLES_BY_MIGRATION['014']).toEqual([
+      'control_plane_sync_outbox',
+      'control_plane_legacy_residuals',
+    ])
     const sql = readFileSync('migrations/008_cp0_control_plane.sql', 'utf8')
     for (const table of REQUIRED_TABLES_BY_MIGRATION['008']) {
       expect(sql).toContain(`CREATE TABLE IF NOT EXISTS ${table}`)
+    }
+    const sql014 = readFileSync('migrations/014_cp0_sync_backlog_sources.sql', 'utf8')
+    for (const table of REQUIRED_TABLES_BY_MIGRATION['014']!) {
+      expect(sql014).toContain(`CREATE TABLE IF NOT EXISTS ${table}`)
     }
   })
 

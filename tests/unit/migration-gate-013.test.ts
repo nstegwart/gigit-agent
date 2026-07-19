@@ -1,8 +1,9 @@
 /**
  * TM-AUTHOR-MIGRATION-013-CLASSIFICATION-TASK-ID-CS — non-vacuous contract for
- * ledgered path 000..013. Covers: exact on-disk hashes (000-012 preserved),
- * sequential production one-step 012→013, fail-closed skip of 011/012, and
- * adversarial case-distinct classification task_id coexistence after 013.
+ * ledgered path 000..013 (frozen under tip advance). Covers: exact on-disk
+ * hashes (000-013 preserved), sequential production one-step 012→013,
+ * fail-closed skip of 011/012, and adversarial case-distinct classification
+ * task_id coexistence after 013. Product tip may be later (see migration-gate-014).
  */
 import fs from 'node:fs'
 import os from 'node:os'
@@ -95,18 +96,35 @@ function makeAuthority(
   return base
 }
 
-describe('manifest completeness 000..013 + exact hashes', () => {
-  it('registers ordered 000..013 with preserved 000-012 hashes and FORWARD_FIX 013', () => {
-    expect(manifestLatestVersion()).toBe('013')
-    expect(MIGRATION_MANIFEST.map((m) => m.version)).toEqual(Object.keys(EXPECTED_SHA256))
+describe('manifest completeness 000..013 exact hashes (preserved under tip advance)', () => {
+  it('pins exact on-disk SHA-256 for 000..013 and FORWARD_FIX 013 (tip may be later)', () => {
+    // Tip advances past 013 (see migration-gate-014); this file freezes 000-013 hashes.
+    expect(manifestLatestVersion() >= '013').toBe(true)
+    expect(Object.keys(EXPECTED_SHA256)).toEqual([
+      '000',
+      '001',
+      '002',
+      '003',
+      '004',
+      '005',
+      '006',
+      '007',
+      '008',
+      '009',
+      '010',
+      '011',
+      '012',
+      '013',
+    ])
     const loaded = loadMigrationManifest(cwd)
-    expect(loaded).toHaveLength(14)
-    for (const m of loaded) {
+    expect(loaded.length).toBeGreaterThanOrEqual(14)
+    for (const version of Object.keys(EXPECTED_SHA256)) {
+      const m = loaded.find((x) => x.version === version)!
       const disk = fs.readFileSync(path.join(cwd, m.relativePath))
       expect(m.sha256).toBe(sha256Hex(disk))
-      expect(m.sha256).toBe(EXPECTED_SHA256[m.version])
+      expect(m.sha256).toBe(EXPECTED_SHA256[version])
     }
-    // 000-012 hashes pinned exactly (no silent rewrite)
+    // 000-012 hashes pinned exactly (no silent rewrite under 013 freeze)
     for (const v of Object.keys(EXPECTED_SHA256).filter((x) => x < '013')) {
       expect(EXPECTED_SHA256[v]).toMatch(/^[a-f0-9]{64}$/)
     }
@@ -120,7 +138,7 @@ describe('manifest completeness 000..013 + exact hashes', () => {
     })
   })
 
-  it('offline plan orderedVersions is 000..013', () => {
+  it('offline plan orderedVersions includes 000..013 (and may continue past tip)', () => {
     const plan = planMigrations({
       host: '127.0.0.1',
       hostClass: 'LOCAL',
@@ -129,7 +147,7 @@ describe('manifest completeness 000..013 + exact hashes', () => {
       mode: 'plan',
     })
     expect(plan.status).toBe('READY')
-    expect(plan.orderedVersions).toEqual([
+    expect(plan.orderedVersions.slice(0, 14)).toEqual([
       '000',
       '001',
       '002',
@@ -646,7 +664,9 @@ describe('adversarial case-distinct classification task_id after 013', () => {
     })
     expect(plan.status).toBe('READY')
     const pending = plan.items.filter((i) => i.action === 'APPLY')
-    expect(pending.map((i) => i.version)).toEqual(['013'])
+    // After 012 the next apply is always 013; tip may continue (014+) after that.
+    expect(pending[0]!.version).toBe('013')
+    expect(pending.map((i) => i.version)).toContain('013')
 
     const skipPlan = planMigrations({
       host: '127.0.0.1',
@@ -658,5 +678,6 @@ describe('adversarial case-distinct classification task_id after 013', () => {
     expect(skipPending[0]!.version).toBe('011')
     expect(skipPending.map((i) => i.version)).toContain('012')
     expect(skipPending.map((i) => i.version)).toContain('013')
+    // Tip may continue past 013; one-step 013 contract still holds for next=011 history
   })
 })
