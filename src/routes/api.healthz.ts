@@ -404,6 +404,18 @@ export function resolveHealthzSnapshotPin(args: {
  * Never invents boardRev=0 / lifecycleRev=0 / READY / dependency up without evidence.
  */
 async function loadObserved(): Promise<HealthObserved> {
+  // P3D warm contract: authenticated health path may ensure CP0 publisher start
+  // when env master is ON. Env default-OFF ⇒ no-op. Never throws into health.
+  // Unauth 401 never reaches loadObserved (auth guard runs first).
+  try {
+    const { warmCp0SyncStatusPublisherRuntime } = await import(
+      '#/server/cp0-sync-status-publisher-runtime'
+    )
+    warmCp0SyncStatusPublisherRuntime()
+  } catch {
+    /* publisher warm must not fail health observation */
+  }
+
   const sha = readLocalSha()
   const expectedLatest =
     (envVar('CAIRN_MIGRATION_LATEST') || envVar('CAIRN_SCHEMA_VERSION') || manifestLatestVersion()).trim()

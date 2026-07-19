@@ -69,6 +69,11 @@ import {
   type RetentionEnvironmentDetails,
   resolveRetentionEnvironmentDetails,
 } from './audit-retention'
+import {
+  attachCp0SyncStatusPublisherRuntime,
+  stopCp0SyncStatusPublisherRuntimeForTests,
+  type Cp0PublisherRuntimeHandle,
+} from './cp0-sync-status-publisher-runtime'
 
 // ---------------------------------------------------------------------------
 // Global symbol holder (survives HMR / multi-import identity)
@@ -115,6 +120,12 @@ export interface ControlPlaneRuntimeContext {
    * (unit tests that drive tick() manually). Always stop via cleanup helpers.
    */
   accountSyncSchedulerLoop: AccountSyncSchedulerLoopHandle | null
+  /**
+   * Optional CP0 sync-status publisher loop (P3D). Null when env default-OFF,
+   * allowlist empty, production gate blocks, or autoStartCp0PublisherLoop=false.
+   * Existence never implies sink readiness; health remains independent.
+   */
+  cp0SyncStatusPublisherLoop: Cp0PublisherRuntimeHandle | null
 }
 
 interface ContextHolder {
@@ -145,6 +156,14 @@ function getHolder(): ContextHolder {
 
 function stopLoop(handle: AccountSyncSchedulerLoopHandle | null | undefined): void {
   if (handle && handle.isRunning()) handle.stop()
+}
+
+function stopCp0Loop(handle: Cp0PublisherRuntimeHandle | null | undefined): void {
+  if (handle && handle.isRunning()) {
+    void handle.stop()
+  }
+  // Always clear process-singleton holder so re-get can re-evaluate env.
+  void stopCp0SyncStatusPublisherRuntimeForTests()
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +318,14 @@ export interface BuildMysqlContextOptions {
    * Default: process-local createMemoryMetricsRegistry() when omitted.
    */
   metrics?: MetricsRegistry
+  /**
+   * When true, attempt CP0 sink-publisher attach (still env-default-OFF).
+   * Production mysql get() path defaults true; memory/unit contexts default false.
+   * Env master flag / empty boards / production gate still fail-closed.
+   */
+  autoStartCp0PublisherLoop?: boolean
+  /** Optional env override for CP0 publisher parse (tests). */
+  cp0PublisherEnv?: NodeJS.ProcessEnv
 }
 
 /**
@@ -481,6 +508,22 @@ export function buildMysqlControlPlaneRuntimeContext(
     metrics: opts.metrics,
   })
 
+  // P3D: CP0 sink publisher — env-default-OFF; process singleton; no outbox writer.
+  // Production get() path sets autoStartCp0PublisherLoop true (or omits → true).
+  // Injected unit builds that set requireDbConfig:false default autoStartCp0 false
+  // so process.env noise cannot open a real pool mid-test.
+  const autoStartCp0 =
+    opts.autoStartCp0PublisherLoop ?? opts.requireDbConfig !== false
+  const cp0SyncStatusPublisherLoop = autoStartCp0
+    ? attachCp0SyncStatusPublisherRuntime({
+        env: opts.cp0PublisherEnv ?? env,
+        nowMs: () => clock.nowMs(),
+        autoStart: true,
+        // Best-effort SIGTERM drain only when master enable is live (handle path).
+        installSignalHandlers: true,
+      })
+    : null
+
   return {
     mode: 'mysql',
     clock,
@@ -492,6 +535,7 @@ export function buildMysqlControlPlaneRuntimeContext(
     humanDisplay,
     accountSyncScheduler,
     accountSyncSchedulerLoop,
+    cp0SyncStatusPublisherLoop,
   }
 }
 
@@ -521,6 +565,9 @@ export function createMemoryControlPlaneRuntimeContext(opts?: {
   onAccountSyncLoopFatal?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
   /** Runtime-owned metrics for FATAL emit / tertiary sink. */
   metrics?: MetricsRegistry
+  /** Default false for memory/unit contexts (parity with AccountSync memory defaults). */
+  autoStartCp0PublisherLoop?: boolean
+  cp0PublisherEnv?: NodeJS.ProcessEnv
 }): ControlPlaneRuntimeContext {
   const controlData = createMemoryBackedControlDataPersistence()
   const runtime = createMemoryControlPlaneRuntimePersistence()
@@ -547,6 +594,15 @@ export function createMemoryControlPlaneRuntimeContext(opts?: {
     nowMs: () => clock.nowMs(),
     metrics: opts?.metrics,
   })
+  // Memory/unit: CP0 loop default OFF (autoStartCp0PublisherLoop must be explicit true).
+  const cp0SyncStatusPublisherLoop =
+    opts?.autoStartCp0PublisherLoop === true
+      ? attachCp0SyncStatusPublisherRuntime({
+          env: opts.cp0PublisherEnv ?? process.env,
+          nowMs: () => clock.nowMs(),
+          autoStart: true,
+        })
+      : null
   return {
     mode: 'memory',
     clock,
@@ -558,6 +614,7 @@ export function createMemoryControlPlaneRuntimeContext(opts?: {
     humanDisplay,
     accountSyncScheduler,
     accountSyncSchedulerLoop,
+    cp0SyncStatusPublisherLoop,
   }
 }
 
@@ -578,6 +635,8 @@ export function createMemorySqlBackedControlPlaneRuntimeContext(opts?: {
   onAccountSyncLoopFatal?: (event: AccountSyncLoopFatalEvent) => void | Promise<void>
   /** Runtime-owned metrics for FATAL emit / tertiary sink. */
   metrics?: MetricsRegistry
+  autoStartCp0PublisherLoop?: boolean
+  cp0PublisherEnv?: NodeJS.ProcessEnv
 }): ControlPlaneRuntimeContext & {
   atomicExec: ReturnType<typeof createMemoryAtomicSqlExecutor>
 } {
@@ -609,6 +668,14 @@ export function createMemorySqlBackedControlPlaneRuntimeContext(opts?: {
     nowMs: () => clock.nowMs(),
     metrics: opts?.metrics,
   })
+  const cp0SyncStatusPublisherLoop =
+    opts?.autoStartCp0PublisherLoop === true
+      ? attachCp0SyncStatusPublisherRuntime({
+          env: opts.cp0PublisherEnv ?? process.env,
+          nowMs: () => clock.nowMs(),
+          autoStart: true,
+        })
+      : null
   return {
     mode: 'memory',
     clock,
@@ -620,6 +687,7 @@ export function createMemorySqlBackedControlPlaneRuntimeContext(opts?: {
     humanDisplay,
     accountSyncScheduler,
     accountSyncSchedulerLoop,
+    cp0SyncStatusPublisherLoop,
     atomicExec,
   }
 }
@@ -675,6 +743,8 @@ export function getControlPlaneRuntimeContext(
     env,
     requireDbConfig: true,
     autoStartSchedulerLoop: true,
+    // P3D: attempt attach (still env-default-OFF; empty boards / prod gate fail-closed).
+    autoStartCp0PublisherLoop: true,
   })
   holder.productionLoop = holder.instance.accountSyncSchedulerLoop
   return holder.instance
@@ -694,18 +764,22 @@ export function setTestControlPlaneRuntimeContext(
   holder.productionLoop = null
   // If replacing a previous override that had a loop, stop it.
   stopLoop(holder.testOverride?.accountSyncSchedulerLoop)
+  stopCp0Loop(holder.testOverride?.cp0SyncStatusPublisherLoop)
+  stopCp0Loop(holder.instance?.cp0SyncStatusPublisherLoop)
   holder.testOverride = ctx
 }
 
 /**
  * Test-only: clear override + cached production instance so the next get() re-inits.
- * Stops every scheduler loop started by this holder.
+ * Stops every scheduler loop started by this holder (AccountSync + CP0 publisher).
  */
 export function resetControlPlaneRuntimeContextForTests(): void {
   const holder = getHolder()
   stopLoop(holder.testOverride?.accountSyncSchedulerLoop)
   stopLoop(holder.instance?.accountSyncSchedulerLoop)
   stopLoop(holder.productionLoop)
+  stopCp0Loop(holder.testOverride?.cp0SyncStatusPublisherLoop)
+  stopCp0Loop(holder.instance?.cp0SyncStatusPublisherLoop)
   holder.testOverride = null
   holder.instance = null
   holder.productionLoop = null
