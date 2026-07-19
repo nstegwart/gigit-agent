@@ -68,6 +68,145 @@ export interface FlowPremiumStep {
   project?: string
 }
 
+// ---------------------------------------------------------------------------
+// Semantic navigation wire (migration 011 app_flow + 012 page_nav)
+// Two ID spaces never merged; materializer attaches; never invent edges.
+// ---------------------------------------------------------------------------
+
+/** Per-layer honesty codes (match server flow-semantic-edges). */
+export type FlowSemanticLayerCode =
+  | 'OK'
+  | 'TABLES_MISSING'
+  | 'EMPTY_ROWS'
+  | 'PROJECTED_EMPTY'
+  | 'DB_ERROR'
+
+/**
+ * Bundle-level semantic honesty for the attached nav block.
+ * - OK: layers materialised without missing/error tables
+ * - PARTIAL: one or more layers TABLES_MISSING / DB_ERROR (base may still be mysql)
+ * - NO_SEMANTIC_SOURCE: file XOR path without authoritative file semantic data
+ * - UNAVAILABLE: both mysql and file failed; empty skeleton
+ */
+export type FlowSemanticNavState =
+  | 'OK'
+  | 'PARTIAL'
+  | 'NO_SEMANTIC_SOURCE'
+  | 'UNAVAILABLE'
+
+export type FlowSemanticNavSource = 'mysql' | 'file' | 'none'
+
+export interface FlowSemanticLayerReason {
+  code: string
+  count: number
+  samples: string[]
+}
+
+export interface FlowSemanticLayerMeta {
+  layer: 'app_flow' | 'page_nav'
+  code: FlowSemanticLayerCode
+  tablesRequired: string[]
+  tablesPresent: string[]
+  rawNodeCount: number
+  rawEdgeCount: number
+  projectedNodeCount: number
+  projectedEdgeCount: number
+  droppedDangling: number
+  droppedUnknownProject: number
+  droppedDuplicate: number
+  droppedCrossProject: number
+  droppedInvalid: number
+  reasons: FlowSemanticLayerReason[]
+  detail?: string
+}
+
+/** Exact 011 node_id space (never rewritten). */
+export interface FlowAppFlowSemanticNode {
+  node_id: string
+  project_id_storage: string
+  project_id: string
+  feature_id: string | null
+  label_id: string
+  kind: string
+  sort_order: number
+  layout_col: number
+  layout_row: number
+  source_ref: string | null
+  provenance: 'app_flow_nodes'
+}
+
+/** Exact 011 edge; edge_class always `nav`. */
+export interface FlowAppFlowSemanticEdge {
+  edge_id: string
+  from_node: string
+  to_node: string
+  edge_kind: string
+  edge_class: 'nav'
+  sort_order: number
+  project_id_storage: string
+  project_id: string
+  provenance: 'app_flow_edges'
+}
+
+/** Exact 012 page id space (never rewritten). */
+export interface FlowPageNavSemanticNode {
+  page_id: string
+  project_id_storage: string
+  project_id: string
+  label_id: string
+  route: string
+  area: string | null
+  feature_id: string | null
+  provenance: 'app_pages'
+}
+
+/** Exact 012 page edge; edge_class always `page_nav`. */
+export interface FlowPageNavSemanticEdge {
+  edge_id: string
+  from_page: string
+  to_page: string
+  edge_kind: 'nav_to'
+  edge_class: 'page_nav'
+  sort_order: number
+  project_id: string
+  from_project_id_storage: string
+  to_project_id_storage: string
+  provenance: 'nav_edges'
+}
+
+export interface FlowSemanticProjectGraphs {
+  project_id: string
+  app_flow: {
+    nodes: FlowAppFlowSemanticNode[]
+    edges: FlowAppFlowSemanticEdge[]
+  }
+  page_nav: {
+    nodes: FlowPageNavSemanticNode[]
+    edges: FlowPageNavSemanticEdge[]
+  }
+}
+
+/**
+ * Semantic navigation truth on FlowDataBundle.
+ * Namespaces: app_flow (edge_class=nav) vs page_nav (edge_class=page_nav).
+ * Never a top-level flat `edges` invent key; never merge ID spaces.
+ */
+export interface FlowDataSemanticNav {
+  version: 1
+  source: FlowSemanticNavSource
+  state: FlowSemanticNavState
+  sourceHash: string
+  boardId: string
+  /** Always five UI project keys when materializer-produced. */
+  by_project: Record<string, FlowSemanticProjectGraphs>
+  layers: {
+    app_flow: FlowSemanticLayerMeta
+    page_nav: FlowSemanticLayerMeta
+  }
+  /** Explicit when state is NO_SEMANTIC_SOURCE or UNAVAILABLE. */
+  reason?: string
+}
+
 export interface FlowDataBundle {
   projects: {
     version?: number
@@ -84,6 +223,12 @@ export interface FlowDataBundle {
   tasks_by_feature: Record<string, FlowTask[]>
   apis_by_feature: Record<string, FlowApi[]>
   premium_apis?: FlowApi[]
+  /**
+   * Semantic navigation (011 app_flow + 012 page_nav).
+   * Always set by materializer / resolve. Legacy static fixtures may omit;
+   * resolve attaches NO_SEMANTIC_SOURCE rather than inventing edges.
+   */
+  nav?: FlowDataSemanticNav
 }
 
 export interface FlowNode {

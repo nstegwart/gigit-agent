@@ -41,7 +41,9 @@ type Corpus = {
   feature_units: Array<Record<string, unknown>>
   parity_rollups: Array<Record<string, unknown>>
   app_flow_nodes: Array<Record<string, unknown>>
+  app_flow_edges: Array<Record<string, unknown>>
   app_pages: Array<Record<string, unknown>>
+  nav_edges: Array<Record<string, unknown>>
   api_endpoints: Array<Record<string, unknown>>
   page_api_calls: Array<Record<string, unknown>>
 }
@@ -56,7 +58,9 @@ function baseCorpus(over: Partial<Corpus> = {}): Corpus {
       'feature_units',
       'feature_directory',
       'app_flow_nodes',
+      'app_flow_edges',
       'app_pages',
+      'nav_edges',
       'api_endpoints',
       'page_api_calls',
     ],
@@ -70,7 +74,9 @@ function baseCorpus(over: Partial<Corpus> = {}): Corpus {
     feature_units: over.feature_units ?? [],
     parity_rollups: over.parity_rollups ?? [],
     app_flow_nodes: over.app_flow_nodes ?? [],
+    app_flow_edges: over.app_flow_edges ?? [],
     app_pages: over.app_pages ?? [],
+    nav_edges: over.nav_edges ?? [],
     api_endpoints: over.api_endpoints ?? [],
     page_api_calls: over.page_api_calls ?? [],
   }
@@ -217,16 +223,41 @@ function fixtureCorpus(): Corpus {
         label_id: 'Login Web',
         kind: 'screen',
         sort_order: 1,
+        layout_col: 0,
+        layout_row: 0,
         source_ref: null,
         meta_json: { route: '/login' },
       },
       {
+        project_id: 'web',
+        node_id: 'n1b',
+        feature_id: 'FEAT-AUTH-MEMBER',
+        label_id: 'Login Next',
+        kind: 'screen',
+        sort_order: 2,
+        layout_col: 1,
+        layout_row: 0,
+        source_ref: null,
+      },
+      {
         project_id: 'rn',
         node_id: 'n2',
-        feature_id: null, // unmapped — ignored
+        feature_id: null, // unmapped — ignored for feature screens
         label_id: 'Orphan',
         kind: 'screen',
         sort_order: 2,
+        layout_col: 0,
+        layout_row: 0,
+      },
+    ],
+    app_flow_edges: [
+      {
+        project_id: 'web',
+        edge_id: 'e-web-login',
+        from_node: 'n1',
+        to_node: 'n1b',
+        edge_kind: 'nav',
+        sort_order: 0,
       },
     ],
     app_pages: [
@@ -240,6 +271,15 @@ function fixtureCorpus(): Corpus {
         extracted_at: '2026-07-12T10:00:00.000Z',
       },
       {
+        id: 'page-home',
+        project_id: 'web',
+        label_id: 'Home',
+        route: '/app/home',
+        feature_id: null,
+        source_hash: 'k'.repeat(64),
+        extracted_at: '2026-07-12T10:00:00.000Z',
+      },
+      {
         id: 'page-aff',
         project_id: 'affiliate',
         label_id: 'Portal',
@@ -248,6 +288,9 @@ function fixtureCorpus(): Corpus {
         source_hash: 'j'.repeat(64),
         extracted_at: '2026-07-11T10:00:00.000Z',
       },
+    ],
+    nav_edges: [
+      { from_page: 'page-login', to_page: 'page-home' },
     ],
     api_endpoints: [
       {
@@ -292,6 +335,18 @@ function createMemoryExecutor(corpus: Corpus): FlowDataSqlExecutor & {
       if (/COUNT\(\*\) AS n FROM feature_task_map/i.test(sql)) {
         return [[{ n: corpus.feature_task_map.length }]]
       }
+      if (/COUNT\(\*\)\s+AS\s+n\s+FROM\s+app_flow_nodes/i.test(sql)) {
+        return [[{ n: corpus.app_flow_nodes.length }]]
+      }
+      if (/COUNT\(\*\)\s+AS\s+n\s+FROM\s+app_flow_edges/i.test(sql)) {
+        return [[{ n: corpus.app_flow_edges.length }]]
+      }
+      if (/COUNT\(\*\)\s+AS\s+n\s+FROM\s+app_pages/i.test(sql)) {
+        return [[{ n: corpus.app_pages.length }]]
+      }
+      if (/COUNT\(\*\)\s+AS\s+n\s+FROM\s+nav_edges/i.test(sql)) {
+        return [[{ n: corpus.nav_edges.length }]]
+      }
       if (/FROM product_features/i.test(sql)) {
         return [[...corpus.product_features]]
       }
@@ -316,18 +371,35 @@ function createMemoryExecutor(corpus: Corpus): FlowDataSqlExecutor & {
         return [[...corpus.parity_rollups]]
       }
       if (/FROM app_flow_nodes/i.test(sql)) {
-        return [
-          corpus.app_flow_nodes.filter(
-            (n) => n.feature_id != null && n.feature_id !== '',
-          ),
-        ]
+        let rows = corpus.app_flow_nodes
+        // Base materializer filters feature-linked screens only.
+        if (/feature_id\s+IS\s+NOT\s+NULL/i.test(sql)) {
+          rows = rows.filter((n) => n.feature_id != null && n.feature_id !== '')
+        }
+        if (/WHERE\s+project_id\s+IN/i.test(sql) && params.length) {
+          const set = new Set(params.map(String))
+          rows = rows.filter((r) => set.has(String(r.project_id)))
+        }
+        return [[...rows]]
+      }
+      if (/FROM app_flow_edges/i.test(sql)) {
+        let rows = corpus.app_flow_edges
+        if (/WHERE\s+project_id\s+IN/i.test(sql) && params.length) {
+          const set = new Set(params.map(String))
+          rows = rows.filter((r) => set.has(String(r.project_id)))
+        }
+        return [[...rows]]
       }
       if (/FROM app_pages/i.test(sql)) {
-        return [
-          corpus.app_pages.filter(
-            (p) => p.feature_id != null && p.feature_id !== '',
-          ),
-        ]
+        let rows = corpus.app_pages
+        // Base materializer (screens/apis) wants feature-linked pages only.
+        if (/feature_id\s+IS\s+NOT\s+NULL/i.test(sql)) {
+          rows = rows.filter((p) => p.feature_id != null && p.feature_id !== '')
+        }
+        return [[...rows]]
+      }
+      if (/FROM nav_edges/i.test(sql)) {
+        return [[...corpus.nav_edges]]
       }
       if (/FROM page_api_calls/i.test(sql) || /page_api_calls c/i.test(sql)) {
         // join simulation
@@ -657,7 +729,7 @@ describe('materializeFromMysql', () => {
     expect(auth.doc_md).toBe('# Auth docs')
   })
 
-  it('T12: no edges key; premium is curated constant not empty invent', async () => {
+  it('T12: no flat edges key; premium curated; semantic nav attached', async () => {
     const result = await materializeFromMysql({
       executor: createMemoryExecutor(fixtureCorpus()),
       now: FIXED_NOW,
@@ -670,6 +742,9 @@ describe('materializeFromMysql', () => {
     expect(result.load.bundle.premium_apis).toHaveLength(9)
     expect(result.load.bundle.projects.version).toBe(MATERIALIZER_VERSION)
     expect(result.load.bundle.projects.source).toMatch(/^mysql:010/)
+    expect(result.load.bundle.nav).toBeDefined()
+    expect(result.load.bundle.nav!.source).toBe('mysql')
+    expect(result.load.bundle.nav!.state).toBe('OK')
   })
 
   it('T13: boardId filters lineage; default mfs-rebuild', async () => {
@@ -760,9 +835,9 @@ describe('materializeFromMysql', () => {
     expect(rBig.ok).toBe(true)
     if (!rBig.ok) return
     expect(rBig.load.meta.queryCount).toBe(qSmall)
-    // upper bound: probe + 2 counts + features + maps + 009×4 + nodes + pages + apis ≈ 12
-    expect(qSmall).toBeLessThanOrEqual(14)
-    expect(qSmall).toBeGreaterThanOrEqual(5)
+    // upper bound: base bulk (~12) + semantic probe/bulk (~5) — still O(1), no N+1
+    expect(qSmall).toBeLessThanOrEqual(24)
+    expect(qSmall).toBeGreaterThanOrEqual(8)
   })
 
   it('deterministic feature/task ordering', async () => {
@@ -940,6 +1015,35 @@ describe('resolveFlowDataBundle', () => {
     const b = emptyFlowDataBundle('2026-07-18T00:00:00.000Z')
     expect(b.projects.projects.map((p) => p.id)).toEqual([...CANON_UI_PROJECT_IDS])
     expect(b.premium.steps).toEqual([])
+    expect(b.nav?.state).toBe('UNAVAILABLE')
+    expect(b.nav?.by_project.rn.app_flow.edges).toEqual([])
+    expect(b.nav?.by_project.rn.page_nav.edges).toEqual([])
+  })
+
+  it('file fallback does not leak mysql semantic edges', async () => {
+    const mysqlOnlyEdgeId = 'e-web-login'
+    const load = await resolveFlowDataBundle({
+      preferMysql: true,
+      executor: createMemoryExecutor(
+        baseCorpus({ tables: new Set(['app_pages']) }),
+      ),
+      fileBundle: FILE_FIXTURE_A,
+      now: FIXED_NOW,
+    })
+    expect(load.meta.source).toBe('file')
+    expect(load.meta.code).toBe('FILE_FALLBACK')
+    expect(load.bundle.nav?.state).toBe('NO_SEMANTIC_SOURCE')
+    expect(load.bundle.nav?.source).toBe('none')
+    const allAppEdges = Object.values(load.bundle.nav?.by_project ?? {}).flatMap(
+      (g) => g.app_flow.edges.map((e) => e.edge_id),
+    )
+    const allPageEdges = Object.values(load.bundle.nav?.by_project ?? {}).flatMap(
+      (g) => g.page_nav.edges.map((e) => e.edge_id),
+    )
+    expect(allAppEdges).not.toContain(mysqlOnlyEdgeId)
+    expect(allAppEdges).toEqual([])
+    expect(allPageEdges).toEqual([])
+    expect(load.bundle).not.toHaveProperty('edges')
   })
 })
 

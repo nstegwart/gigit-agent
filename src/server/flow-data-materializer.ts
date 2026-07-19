@@ -5,7 +5,12 @@
  * - Source is MySQL XOR full file fallback — never field-merge revisions.
  * - MySQL gate: product_features + feature_task_map present and features non-empty.
  * - 009/011/012 optional layers → partial meta when any are missing.
- * - Never invent navigation edges (no edges array on FlowDataBundle).
+ * - Semantic nav (011 app_flow + 012 page_nav) via flow-semantic-edges on the
+ *   MySQL path only; never invent edges from features/order/grid/layout.
+ * - Never attach a flat top-level `edges` invent key; namespaces stay separate
+ *   under `bundle.nav` (app_flow edge_class=nav, page_nav edge_class=page_nav).
+ * - File fallback must not leak MySQL semantic edges; attach NO_SEMANTIC_SOURCE
+ *   unless the file already carries authoritative nav data.
  * - Premium on MySQL path is versioned curated constant (hashed), never spliced
  *   from static file fields onto mysql features.
  *
@@ -20,10 +25,14 @@ import path from 'node:path'
 import type {
   FlowApi,
   FlowDataBundle,
+  FlowDataSemanticNav,
   FlowFeature,
   FlowPremiumStep,
   FlowProjectMeta,
   FlowProjectRollup,
+  FlowSemanticLayerMeta,
+  FlowSemanticNavState,
+  FlowSemanticProjectGraphs,
   FlowTask,
 } from '#/components/flow-ultimate/types'
 import {
@@ -32,6 +41,13 @@ import {
   normalizeCanonProjectId,
   type CanonUiProjectId,
 } from '#/lib/canon-flow-projects'
+import {
+  hashSemanticEdges,
+  materializeSemanticEdges,
+  SEMANTIC_EDGES_VERSION,
+  type SemanticEdgesResult,
+  type SemanticLayerMeta,
+} from '#/server/flow-semantic-edges'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -330,7 +346,171 @@ function projectLabel(id: CanonUiProjectId): string {
   return getCanonFlowProject(id).labelId
 }
 
+/** Empty five-project semantic graphs (no invented edges). */
+export function emptySemanticByProject(): Record<
+  CanonUiProjectId,
+  FlowSemanticProjectGraphs
+> {
+  const out = {} as Record<CanonUiProjectId, FlowSemanticProjectGraphs>
+  for (const id of CANON_UI_PROJECT_IDS) {
+    out[id] = {
+      project_id: id,
+      app_flow: { nodes: [], edges: [] },
+      page_nav: { nodes: [], edges: [] },
+    }
+  }
+  return out
+}
+
+function emptyLayerWire(
+  layer: 'app_flow' | 'page_nav',
+  tablesRequired: readonly string[],
+  code: FlowSemanticLayerMeta['code'],
+  detail?: string,
+): FlowSemanticLayerMeta {
+  return {
+    layer,
+    code,
+    tablesRequired: [...tablesRequired],
+    tablesPresent: [],
+    rawNodeCount: 0,
+    rawEdgeCount: 0,
+    projectedNodeCount: 0,
+    projectedEdgeCount: 0,
+    droppedDangling: 0,
+    droppedUnknownProject: 0,
+    droppedDuplicate: 0,
+    droppedCrossProject: 0,
+    droppedInvalid: 0,
+    reasons: [],
+    ...(detail ? { detail } : {}),
+  }
+}
+
+function layerMetaToWire(meta: SemanticLayerMeta): FlowSemanticLayerMeta {
+  return {
+    layer: meta.layer,
+    code: meta.code,
+    tablesRequired: [...meta.tablesRequired],
+    tablesPresent: [...meta.tablesPresent],
+    rawNodeCount: meta.rawNodeCount,
+    rawEdgeCount: meta.rawEdgeCount,
+    projectedNodeCount: meta.projectedNodeCount,
+    projectedEdgeCount: meta.projectedEdgeCount,
+    droppedDangling: meta.droppedDangling,
+    droppedUnknownProject: meta.droppedUnknownProject,
+    droppedDuplicate: meta.droppedDuplicate,
+    droppedCrossProject: meta.droppedCrossProject,
+    droppedInvalid: meta.droppedInvalid,
+    reasons: meta.reasons.map((r) => ({
+      code: r.code,
+      count: r.count,
+      samples: [...r.samples],
+    })),
+    ...(meta.detail ? { detail: meta.detail } : {}),
+  }
+}
+
+function semanticResultToNav(
+  result: SemanticEdgesResult,
+  source: 'mysql',
+): FlowDataSemanticNav {
+  const by_project = {} as Record<string, FlowSemanticProjectGraphs>
+  for (const id of CANON_UI_PROJECT_IDS) {
+    const g = result.by_project[id]
+    by_project[id] = {
+      project_id: id,
+      app_flow: {
+        nodes: g.app_flow.nodes.map((n) => ({ ...n })),
+        edges: g.app_flow.edges.map((e) => ({ ...e })),
+      },
+      page_nav: {
+        nodes: g.page_nav.nodes.map((n) => ({ ...n })),
+        edges: g.page_nav.edges.map((e) => ({ ...e })),
+      },
+    }
+  }
+  const appCode = result.layers.app_flow.code
+  const pageCode = result.layers.page_nav.code
+  const partial =
+    appCode === 'TABLES_MISSING' ||
+    appCode === 'DB_ERROR' ||
+    pageCode === 'TABLES_MISSING' ||
+    pageCode === 'DB_ERROR'
+  const state: FlowSemanticNavState = partial ? 'PARTIAL' : 'OK'
+  return {
+    version: SEMANTIC_EDGES_VERSION,
+    source,
+    state,
+    sourceHash: result.sourceHash,
+    boardId: result.boardId,
+    by_project,
+    layers: {
+      app_flow: layerMetaToWire(result.layers.app_flow),
+      page_nav: layerMetaToWire(result.layers.page_nav),
+    },
+  }
+}
+
+/**
+ * Honest empty semantic block when no authoritative nav source is available.
+ * Does not invent edges from features/order/grid/layout.
+ */
+export function noSemanticSourceNav(opts: {
+  boardId: string
+  state: 'NO_SEMANTIC_SOURCE' | 'UNAVAILABLE'
+  reason: string
+}): FlowDataSemanticNav {
+  const by_project = emptySemanticByProject()
+  const layers = {
+    app_flow: emptyLayerWire(
+      'app_flow',
+      ['app_flow_nodes', 'app_flow_edges'],
+      'TABLES_MISSING',
+      opts.reason,
+    ),
+    page_nav: emptyLayerWire(
+      'page_nav',
+      ['app_pages', 'nav_edges'],
+      'TABLES_MISSING',
+      opts.reason,
+    ),
+  }
+  const sourceHash = hashSemanticEdges(
+    by_project as SemanticEdgesResult['by_project'],
+    layers as SemanticEdgesResult['layers'],
+    [...CANON_UI_PROJECT_IDS],
+  )
+  return {
+    version: SEMANTIC_EDGES_VERSION,
+    source: 'none',
+    state: opts.state,
+    sourceHash,
+    boardId: opts.boardId,
+    by_project,
+    layers,
+    reason: opts.reason,
+  }
+}
+
+/**
+ * True when a file (or injected) bundle already carries authoritative semantic nav
+ * — preserved as-is on file XOR path; never mixed with MySQL edges.
+ */
+export function isAuthoritativeFileSemanticNav(
+  nav: FlowDataSemanticNav | undefined | null,
+): nav is FlowDataSemanticNav {
+  if (!nav || typeof nav !== 'object') return false
+  if (nav.version !== 1) return false
+  if (nav.source !== 'file' && nav.source !== 'mysql') return false
+  if (!nav.by_project || typeof nav.by_project !== 'object') return false
+  if (!nav.layers?.app_flow || !nav.layers?.page_nav) return false
+  if (typeof nav.sourceHash !== 'string' || !nav.sourceHash) return false
+  return true
+}
+
 export function emptyFlowDataBundle(generatedAt: string): FlowDataBundle {
+  const boardId = DEFAULT_FLOW_BOARD_ID
   return {
     projects: {
       version: MATERIALIZER_VERSION,
@@ -351,6 +531,11 @@ export function emptyFlowDataBundle(generatedAt: string): FlowDataBundle {
     features: Object.fromEntries(CANON_UI_PROJECT_IDS.map((id) => [id, []])),
     tasks_by_feature: {},
     apis_by_feature: {},
+    nav: noSemanticSourceNav({
+      boardId,
+      state: 'UNAVAILABLE',
+      reason: 'no mysql or file source',
+    }),
   }
 }
 
@@ -1031,9 +1216,27 @@ export async function materializeFromMysql(
   if (tables.has('app_pages')) layers.push('012')
   const sourceTag = `mysql:${layers.join('+')}`
 
+  // Semantic nav (011 edges + 012 nav_edges) — same executor + board; bulk only.
+  // Independent layer honesty; never invent edges; never field-merge file.
+  const semanticResult = await materializeSemanticEdges({
+    executor: exec,
+    boardId,
+    now,
+  })
+  queryCount += semanticResult.queryCount
+  const nav = semanticResultToNav(semanticResult, 'mysql')
+  if (tables.has('app_flow_edges') && !layers.includes('011')) {
+    layers.push('011')
+  }
+  if (tables.has('nav_edges') && !layers.includes('012')) {
+    layers.push('012')
+  }
+
   const missingOptional = OPTIONAL_LAYER_TABLES.some((t) => !tables.has(t))
-  const availability = missingOptional ? 'partial' : 'available'
-  const code: FlowBundleMetaCode = missingOptional ? 'OK_PARTIAL' : 'OK'
+  const semanticPartial = nav.state === 'PARTIAL'
+  const partial = missingOptional || semanticPartial
+  const availability = partial ? 'partial' : 'available'
+  const code: FlowBundleMetaCode = partial ? 'OK_PARTIAL' : 'OK'
 
   // freshness anchors
   let anchorMs: number | null = null
@@ -1075,6 +1278,7 @@ export async function materializeFromMysql(
   platformSigParts.sort()
   featureIdsSorted.sort()
 
+  // Semantic hash participates so edge-set changes cannot hide behind stale hash.
   const sourceHash = sha256Hex(
     stableStringify({
       materializerVersion: MATERIALIZER_VERSION,
@@ -1086,6 +1290,13 @@ export async function materializeFromMysql(
       tableSet: tablesPresent,
       lineageMaxSyncedAt,
       pagesMaxExtractedAt,
+      semanticHash: nav.sourceHash,
+      semanticLayers: {
+        app_flow: nav.layers.app_flow.code,
+        page_nav: nav.layers.page_nav.code,
+        app_projected: nav.layers.app_flow.projectedEdgeCount,
+        page_projected: nav.layers.page_nav.projectedEdgeCount,
+      },
     }),
   )
 
@@ -1114,9 +1325,10 @@ export async function materializeFromMysql(
     tasks_by_feature: tasksByFeature,
     apis_by_feature: apisOut,
     premium_apis: PREMIUM_FLOW_V1.premium_apis.map((a) => ({ ...a })),
+    nav,
   }
 
-  // Honesty: no edges key
+  // Honesty: never a flat invent `edges` key (namespaces live under nav only).
   if ('edges' in (bundle as object)) {
     delete (bundle as { edges?: unknown }).edges
   }
@@ -1135,7 +1347,7 @@ export async function materializeFromMysql(
       staleReason,
     },
     code,
-    detail: `${sourceTag}; curated:${PREMIUM_FLOW_V1.tag}`,
+    detail: `${sourceTag}; curated:${PREMIUM_FLOW_V1.tag}; semantic:${nav.state}`,
     layers,
     queryCount,
   }
@@ -1249,7 +1461,7 @@ export async function resolveFlowDataBundle(
     mysqlFailDetail = 'preferMysql=false'
   }
 
-  // File fallback (whole bundle only)
+  // File fallback (whole bundle only) — never attach MySQL semantic edges.
   try {
     let bundle: FlowDataBundle
     let fileHash: string
@@ -1287,6 +1499,48 @@ export async function resolveFlowDataBundle(
       }
     }
 
+    // XOR honesty: file path must not leak MySQL nav. Preserve only when the
+    // file contract already carries authoritative semantic data; else explicit
+    // no-semantic-source (never invent edges from features/order/grid/layout).
+    const existingNav = bundle.nav
+    let nav: FlowDataSemanticNav
+    if (isAuthoritativeFileSemanticNav(existingNav)) {
+      // Data lives on the file body; never claim a live mysql materialize here.
+      nav = {
+        ...existingNav,
+        source: 'file',
+      }
+    } else {
+      nav = noSemanticSourceNav({
+        boardId,
+        state: 'NO_SEMANTIC_SOURCE',
+        reason: mysqlFailCode
+          ? redactSecrets(
+              `no authoritative file semantic nav after ${mysqlFailCode}${
+                mysqlFailDetail ? `: ${mysqlFailDetail}` : ''
+              }`,
+            )
+          : 'file bundle has no authoritative semantic nav',
+      })
+    }
+    bundle = { ...bundle, nav }
+    // Strip invent flat edges if a bad file fixture carried them
+    if ('edges' in (bundle as object)) {
+      const { edges: _drop, ...rest } = bundle as FlowDataBundle & {
+        edges?: unknown
+      }
+      bundle = rest
+    }
+
+    // File hash includes nav honesty so cache cannot hide semantic attachment changes.
+    const resolvedFileHash = sha256Hex(
+      stableStringify({
+        fileHash,
+        semanticHash: nav.sourceHash,
+        semanticState: nav.state,
+      }),
+    )
+
     const load: FlowBundleLoad = {
       bundle,
       meta: {
@@ -1298,19 +1552,19 @@ export async function resolveFlowDataBundle(
                 `fallback after ${mysqlFailCode}: ${mysqlFailDetail}`,
               )
             : 'file',
-          fileHash,
+          fileHash: resolvedFileHash,
           generatedAt,
         }),
         tablesPresent,
       },
     }
 
-    const key = `flow|file|${filePath}|${fileHash}`
+    const key = `flow|file|${filePath}|${resolvedFileHash}`
     // File fallback after mysql gate fail uses soft key that includes fail code so a later
     // successful mysql path (after reset) is not blocked; softKey already set above for prefer mode.
     const fileSoftKey =
       mysqlFailCode && mysqlFailCode !== 'FILE_FORCED'
-        ? `flow|file-fallback|${boardId}|${mysqlFailCode}|${fileHash}`
+        ? `flow|file-fallback|${boardId}|${mysqlFailCode}|${resolvedFileHash}`
         : softKey
     cacheEntry = { key, softKey: fileSoftKey, load }
     return load
@@ -1327,11 +1581,19 @@ export async function resolveFlowDataBundle(
         .join('; '),
     )
     const bundle = emptyFlowDataBundle(generatedAt)
+    // Ensure UNAVAILABLE skeleton has empty explicit semantic layers + reason.
+    bundle.nav = noSemanticSourceNav({
+      boardId,
+      state: 'UNAVAILABLE',
+      reason: detail,
+    })
     const sourceHash = sha256Hex(
       stableStringify({
         materializerVersion: MATERIALIZER_VERSION,
         boardId,
         empty: true,
+        semanticHash: bundle.nav.sourceHash,
+        semanticState: bundle.nav.state,
       }),
     )
     const load: FlowBundleLoad = {
