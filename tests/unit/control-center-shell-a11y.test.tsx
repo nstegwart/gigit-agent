@@ -36,23 +36,12 @@ const EXPECTED_CC_LABELS = [
 ] as const
 
 /**
- * Live CONTROL_CENTER_NAV order after W-UI-1: Rebuild sits after Overview/Ringkasan
- * (SPEC-TM-KOMPAT-VISUAL-V1 §3.A / §4.6). Alur is an intentional extra route between
- * Features / Flows and Agents / Runs. Export CONTROL_CENTER_NAV_LABELS stays 9.
+ * Living CONTROL_CENTER_NAV product labels after canon-v3 contraction.
+ * Chrome advertises Alur + Ops only; demoted multi-page IA is not in living nav.
+ * Historical nine-label export (EXPECTED_CC_LABELS / CONTROL_CENTER_NAV_LABELS) is
+ * asserted separately above and stays length 9 for UI_CONTRACT / older consumers.
  */
-const EXPECTED_CC_NAV_MARKUP_LABELS = [
-  'Overview',
-  'Rebuild',
-  'Work',
-  'Priority',
-  'Projects',
-  'Features / Flows',
-  'Alur',
-  'Agents / Runs',
-  'Ops / Accounts',
-  'Decisions',
-  'Evidence / Audit',
-] as const
+const EXPECTED_CC_NAV_MARKUP_LABELS = ['Alur', 'Ops / Accounts'] as const
 
 describe('control-center shell a11y — nav order + names', () => {
   it('exports the exact nine IA labels in UI_CONTRACT order', () => {
@@ -61,9 +50,9 @@ describe('control-center shell a11y — nav order + names', () => {
     expect(CONTROL_CENTER_PRIMARY_NAV_IDS).toHaveLength(9)
   })
 
-  it('CONTROL_CENTER_NAV markup includes each primary label exactly once in order', () => {
-    // Slice the control-center nav array body (between export const CONTROL_CENTER_NAV_LABELS
-    // and SECTION_TITLE) and assert label order by source scan.
+  it('CONTROL_CENTER_NAV markup includes each living primary label exactly once in order', () => {
+    // Slice the living control-center nav array body (CONTROL_CENTER_NAV → SECTION_TITLE)
+    // and assert canon product labels only: Alur then Ops / Accounts.
     const start = appShellSrc.indexOf('const CONTROL_CENTER_NAV:')
     const end = appShellSrc.indexOf('const SECTION_TITLE:')
     expect(start).toBeGreaterThan(-1)
@@ -78,6 +67,7 @@ describe('control-center shell a11y — nav order + names', () => {
       labels.push(m[1])
     }
     expect(labels).toEqual([...EXPECTED_CC_NAV_MARKUP_LABELS])
+    expect(labels).toHaveLength(2)
   })
 
   it('nav BoardLink always sets aria-label from the item label (mobile icon-only name)', () => {
@@ -267,7 +257,8 @@ describe('legacy adaptive nav compatibility (non-CC boards)', () => {
     }
   })
 
-  it('control-center boards force full nine nav; others filter by views', () => {
+  it('control-center boards use full living navSource; others filter by views', () => {
+    // CC boards take CONTROL_CENTER_NAV as-is (now Alur+Ops); classic boards filter NAV by views.
     expect(appShellSrc).toMatch(
       /const controlCenter = isControlCenterBoard\(boardId\)/,
     )

@@ -26,6 +26,12 @@ export interface CommandSearchProps {
   currentHref: string
   role: Role
   onNavigate?: (href: string) => void
+  /**
+   * Optional command list override. AppShell passes canon Alur+Ops(+admin) so
+   * control-center chrome does not advertise demoted multi-page product IA.
+   * When omitted, buildRbacSafeCommands remains the default (unit-test path).
+   */
+  commands?: Array<SafeCommand>
 }
 
 function boardRoot(boardId: string) {
@@ -212,6 +218,7 @@ export function CommandSearch({
   currentHref,
   role,
   onNavigate,
+  commands: commandsProp,
 }: CommandSearchProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -221,8 +228,8 @@ export function CommandSearch({
   const inputRef = useRef<HTMLInputElement>(null)
   const wasOpenRef = useRef(false)
   const commands = useMemo(
-    () => buildRbacSafeCommands(boardId, role),
-    [boardId, role],
+    () => commandsProp ?? buildRbacSafeCommands(boardId, role),
+    [boardId, role, commandsProp],
   )
 
   useEffect(() => {

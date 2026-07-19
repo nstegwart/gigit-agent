@@ -11,7 +11,10 @@ import type {
 
 import { BoardLink } from '#/components/BoardLink'
 import { UserMenu } from '#/components/UserMenu'
-import { CommandSearch } from '#/components/control-center/search/CommandSearch'
+import {
+  CommandSearch,
+  type SafeCommand,
+} from '#/components/control-center/search/CommandSearch'
 import { BrandMark, Icon } from '#/lib/icons'
 import type { IconName } from '#/lib/icons'
 import {
@@ -28,6 +31,7 @@ import {
   isControlCenterBoard,
   overviewQueryOptions,
 } from '#/lib/control-center-query'
+import type { Role } from '#/lib/types'
 import { initTheme, setSearch, uiStore } from '#/store/ui'
 import '#/components/control-center/control-center-shell.css'
 
@@ -138,10 +142,9 @@ const NAV: Array<NavItem | { sep: true; label: string }> = [
 ]
 
 /**
- * Nine primary IA destinations for control-center boards (UI_CONTRACT §2).
- * Exact English label order for mfs-rebuild (and any control-center board).
- * PRIMARY chrome is id-ID (CONTROL_CENTER_NAV_LABELS_ID); EN stays on title/aria
- * and data-nav-label-en. Task/map/design/log remain drill-downs.
+ * Historical UI_CONTRACT §2 nine English IA labels (export retained for
+ * documentation / older contract consumers). Living control-center chrome is
+ * canon Alur + intentional Ops only — see CONTROL_CENTER_NAV.
  */
 export const CONTROL_CENTER_NAV_LABELS = [
   'Overview',
@@ -155,7 +158,7 @@ export const CONTROL_CENTER_NAV_LABELS = [
   'Evidence / Audit',
 ] as const
 
-/** id-ID primary chrome labels (W-UI-QW D.4 / SPEC §0.4). EN remains on title/aria. */
+/** id-ID labels for living + residual section chrome. EN remains on title/aria. */
 export const CONTROL_CENTER_NAV_LABELS_ID: Record<string, string> = {
   Overview: 'Ringkasan',
   Rebuild: 'Rebuild',
@@ -170,56 +173,16 @@ export const CONTROL_CENTER_NAV_LABELS_ID: Record<string, string> = {
   'Evidence / Audit': 'Bukti',
 }
 
-const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
-  {
-    id: 'overview',
-    label: 'Overview',
-    icon: 'board',
-    to: '/',
-    match: (p) => p === '/' || p === '',
-  },
-  // W-UI-1: Rebuild dashboard after Ringkasan (SPEC §3.A / §4.6).
-  {
-    id: 'rebuild',
-    label: 'Rebuild',
-    icon: 'branch',
-    to: '/rebuild',
-    match: (p) => p === '/rebuild' || p.startsWith('/rebuild/'),
-  },
-  {
-    id: 'work',
-    label: 'Work',
-    icon: 'check',
-    to: '/work',
-    match: (p) =>
-      p === '/work' || p.startsWith('/work?') || p.startsWith('/work/'),
-  },
-  {
-    id: 'priority',
-    label: 'Priority',
-    icon: 'flag',
-    to: '/priority',
-    match: (p) => p.startsWith('/priority'),
-  },
-  // Separator chrome id-ID; item .lbl stays English (UI_CONTRACT §2 / e2e).
-  { sep: true, label: 'Struktur' },
-  {
-    id: 'projects',
-    label: 'Projects',
-    icon: 'projects',
-    to: '/projects',
-    match: (p) => p.startsWith('/projects'),
-    count: (n) => n.projects,
-  },
-  {
-    id: 'features',
-    label: 'Features / Flows',
-    icon: 'features',
-    // W-UI-2: product directory /fitur; legacy FC surface /features remains secondary.
-    to: '/fitur',
-    match: (p) => p.startsWith('/fitur') || p.startsWith('/features'),
-    count: (n) => n.features,
-  },
+/**
+ * Canon control-center AppShell destinations after total-replacement.
+ * Demoted multi-page product IA (overview/rebuild/work/priority/projects/fitur/
+ * features/tasks/map/agents/evidence/decisions/design/log/search/knowledge/
+ * documentation) must not appear here. Keep Alur primary + intentional Ops.
+ * Classic boards still use NAV (unchanged).
+ */
+export const CONTROL_CENTER_NAV: Array<
+  NavItem | { sep: true; label: string }
+> = [
   {
     id: 'alur',
     label: 'Alur',
@@ -227,36 +190,12 @@ const CONTROL_CENTER_NAV: Array<NavItem | { sep: true; label: string }> = [
     to: '/alur',
     match: (p) => p === '/alur' || p.startsWith('/alur/'),
   },
-  { sep: true, label: 'Operasi' },
-  {
-    id: 'agents',
-    label: 'Agents / Runs',
-    icon: 'agents',
-    to: '/agents',
-    match: (p) => p.startsWith('/agents'),
-    count: (n) => n.agents,
-  },
   {
     id: 'ops',
     label: 'Ops / Accounts',
     icon: 'users',
     to: '/ops',
     match: (p) => p.startsWith('/ops'),
-  },
-  {
-    id: 'decisions',
-    label: 'Decisions',
-    icon: 'decisions',
-    to: '/decisions',
-    match: (p) => p.startsWith('/decisions'),
-    count: (n) => n.decisions,
-  },
-  {
-    id: 'evidence',
-    label: 'Evidence / Audit',
-    icon: 'log',
-    to: '/evidence',
-    match: (p) => p.startsWith('/evidence'),
   },
 ]
 
@@ -302,6 +241,50 @@ const SECTION_TITLE_ID: Record<string, string> = {
   tasks: 'Tugas',
   map: 'Peta',
   log: 'Log',
+}
+
+/** Board-relative product destinations still advertised on CC AppShell nav. */
+export const CONTROL_CENTER_CANON_NAV_IDS = ['alur', 'ops'] as const
+
+/**
+ * Command-palette board product destinations for AppShell-mounted CC chrome.
+ * Alur + Ops only; admin users command remains for authorized admins.
+ * Free-text “Cari …” rows (if any) are utility, not product IA destinations.
+ */
+export function buildControlCenterCanonCommands(
+  boardId: string,
+  role: Role,
+): Array<SafeCommand> {
+  const root = `/b/${encodeURIComponent(boardId)}`
+  const commands: Array<SafeCommand> = [
+    {
+      id: 'alur',
+      label: 'Buka Alur',
+      description: 'Buka alur kerja kanonik board ini',
+      href: `${root}/alur`,
+      keywords: 'alur flow workflow canon primary',
+      access: 'authenticated',
+    },
+    {
+      id: 'ops',
+      label: 'Buka Operasi / Akun',
+      description: 'Lihat status operasi dan akun yang diizinkan',
+      href: `${root}/ops`,
+      keywords: 'ops operasi accounts akun',
+      access: 'authenticated',
+    },
+  ]
+  if (role === 'admin') {
+    commands.push({
+      id: 'admin-users',
+      label: 'Kelola pengguna',
+      description: 'Buka administrasi pengguna',
+      href: '/admin/users',
+      keywords: 'admin users pengguna role access',
+      access: 'admin',
+    })
+  }
+  return commands
 }
 
 /** Preserve the classic shell's global filter producer outside control-center boards. */
@@ -383,6 +366,11 @@ export function ControlCenterShellSearch({
     }
   }
 
+  const canonCommands = useMemo(
+    () => buildControlCenterCanonCommands(boardId, role),
+    [boardId, role],
+  )
+
   useEffect(() => {
     setSearch('')
     return () => setSearch('')
@@ -402,6 +390,7 @@ export function ControlCenterShellSearch({
         boardId={boardId}
         currentHref={currentHref}
         role={role}
+        commands={canonCommands}
         onNavigate={onNavigate}
       />
     </div>
@@ -419,7 +408,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navSource = controlCenter ? CONTROL_CENTER_NAV : NAV
 
   // adaptive nav: keep enabled items + any separator that precedes ≥1 enabled item
-  // control-center boards: always show the nine primary IA destinations (UI_CONTRACT §2)
+  // control-center boards: canon Alur + Ops only (demoted multi-page IA removed)
   const visible = controlCenter
     ? navSource
     : navSource.filter((n, i) => {
@@ -536,7 +525,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     crumb = featureId in m.featById ? m.featById[featureId].nama : 'Feature'
   }
   const baseTitleEn =
-    SECTION_TITLE[section] ?? (controlCenter ? 'Overview' : 'Board')
+    SECTION_TITLE[section] ?? (controlCenter ? 'Alur' : 'Board')
   const baseTitleId = SECTION_TITLE_ID[section]
   // Primary title chrome: id-ID when available; EN kept for e2e + bilingual contract.
   const pageTitlePrimary = baseTitleId ?? baseTitleEn
