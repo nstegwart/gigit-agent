@@ -890,7 +890,8 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
     expect(summary.getAttribute('role')).toBe('status')
     expect(summary.getAttribute('aria-live')).toBe('polite')
     expect(summary.textContent || '').toMatch(/Lintas Proyek/)
-    expect(summary.textContent || '').toMatch(/\d+\s+nodes?/)
+    expect(summary.textContent || '').toMatch(/\d+\s+simpul/)
+    expect(summary.textContent || '').not.toMatch(/\bnodes?\b/i)
 
     const textAlt = screen.getByTestId('flow-graph-text-alt')
     expect(textAlt.querySelectorAll('li').length).toBeGreaterThan(0)
@@ -898,7 +899,8 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Web Member/i }))
     await flushRaf()
     expect(summary.textContent || '').toMatch(/Web Member/)
-    expect(summary.textContent || '').toMatch(/\d+\s+nodes?/)
+    expect(summary.textContent || '').toMatch(/\d+\s+simpul/)
+    expect(summary.textContent || '').not.toMatch(/\bnodes?\b/i)
   })
 
   it('D-A11Y-12/13: zoom aria-labels and document h1 not inside button', () => {

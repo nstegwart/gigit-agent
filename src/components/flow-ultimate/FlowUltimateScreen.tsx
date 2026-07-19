@@ -728,7 +728,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     const parts = [
       `Mode ${modeLabel}.`,
       mode !== 'cross' ? `Lapisan ${LAYER_LABEL[layer]}.` : '',
-      `${count} node${count === 1 ? '' : 's'}.`,
+      `${count} simpul.`,
       `${edgeCount} koneksi navigasi.`,
     ].filter(Boolean)
     if (activeNode) {

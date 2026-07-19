@@ -80,8 +80,9 @@ html[data-page='alur'] {
   --lh-tight: 1.25;
   --fw-medium: 500;
   --fw-semibold: 600;
-  --dot-size: var(--sp-3);
-  --dot-size-sm: var(--sp-2);
+  /* Canon tokens.css: exact 10px fdot + 7px chip (not spacing ladder --sp-3=12 / --sp-2=8) */
+  --dot-size: 10px;
+  --dot-size-sm: 7px;
   --dot-halo: 0 0 0 2px color-mix(in srgb, var(--dc, var(--t3)) 22%, transparent);
   --shadow-none: none;
 
@@ -579,8 +580,9 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 65%;
-  max-height: 65%;
+  /* Canon flow.css: exact 65vh sheet (not 65% of containing block) */
+  height: 65vh;
+  max-height: 65vh;
   background: var(--panel);
   border-top: var(--fu-border);
   border-radius: var(--r-xl) var(--r-xl) 0 0;

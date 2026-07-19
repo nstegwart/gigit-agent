@@ -553,4 +553,19 @@ describe('canon-flow-id-copy — rendered chrome', () => {
     )
     expect(screen.getByLabelText('Tutup detail')).toBeTruthy()
   })
+
+  it('graph summary uses Indonesian simpul count (no English node/nodes)', () => {
+    render(<FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />)
+    const summary = screen.getByTestId('flow-graph-summary')
+    const text = summary.textContent || ''
+    expect(summary.getAttribute('role')).toBe('status')
+    expect(summary.getAttribute('aria-live')).toBe('polite')
+    expect(text).toMatch(/Mode\s+Lintas Proyek/)
+    // Accessible count announcement preserved with id-ID term
+    expect(text).toMatch(/\d+\s+simpul\./)
+    expect(text).toMatch(/\d+\s+koneksi navigasi\./)
+    // Residual English graph-summary pluralization must be gone
+    expect(text).not.toMatch(/\bnodes?\b/i)
+    expect(text).not.toMatch(/\d+\s+node/i)
+  })
 })
