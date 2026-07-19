@@ -254,6 +254,60 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   flex: none;
 }
 
+.flow-ultimate-root .flow-layers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  flex: none;
+  align-items: center;
+}
+
+.flow-ultimate-root .flow-layer-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px dashed var(--line2);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--t2);
+  font: inherit;
+  font-size: var(--fs-caption);
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 36px;
+  box-sizing: border-box;
+  transition:
+    background var(--motion-hover) ease,
+    color var(--motion-hover) ease,
+    border-color var(--motion-hover) ease;
+}
+
+.flow-ultimate-root .flow-layer-pill:hover {
+  background: var(--panel2);
+  color: var(--tx);
+}
+
+.flow-ultimate-root .flow-layer-pill.on {
+  background: var(--panel2);
+  color: var(--tx);
+  border-style: solid;
+  border-color: var(--acc);
+  box-shadow: 0 0 0 1px var(--acc-ring);
+}
+
+.flow-ultimate-root .flow-honesty-pin {
+  flex: none;
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: var(--fu-border);
+  background: color-mix(in srgb, var(--warn) 12%, var(--panel));
+  color: var(--tx);
+  font-size: var(--fs-caption);
+  line-height: 1.35;
+  z-index: 55;
+  position: relative;
+}
+
 .flow-ultimate-root .flow-legend {
   flex: none;
   display: flex;
@@ -389,6 +443,31 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
 .flow-ultimate-root .fnode.has-proj {
   border-left: 3px solid var(--proj-c, var(--line2));
   padding-left: var(--sp-3);
+}
+
+/* Inventory cards: muted / dashed — never edge endpoints */
+.flow-ultimate-root .fnode.is-inventory {
+  border-style: dashed;
+  border-color: var(--line2);
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  opacity: 0.88;
+}
+
+.flow-ultimate-root .fnode.is-inventory .ft {
+  color: var(--t2);
+}
+
+.flow-ultimate-root .fnode.is-inventory .flow-meta {
+  color: var(--t3);
+}
+
+.flow-ultimate-root .fnode .flow-inv-badge {
+  display: inline-block;
+  font-size: var(--type-caption-size);
+  letter-spacing: 0.02em;
+  color: var(--t3);
+  font-weight: var(--fw-medium);
+  margin-top: 0;
 }
 
 .flow-ultimate-root .fdot {

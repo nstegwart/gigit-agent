@@ -2,6 +2,11 @@
 /**
  * Canon v3 — owner standing language: every visible FlowUltimate non-API
  * string is human-readable id-ID. Technical IDs stay off the chrome.
+ *
+ * R2 residual repair: fixtures seed honest `bundle.nav` semantic app_flow
+ * nodes/edges; sheet sections use Navigasi terkait / Fitur sama (not
+ * legacy Fitur terkait); empty neighbor copy matches production.
+ * Graph nodes come only from production builders — never handcrafted DOM.
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -18,8 +23,157 @@ import {
   statusLabel,
   verdictLabel,
 } from '#/components/flow-ultimate/humanize'
-import type { FlowDataBundle } from '#/components/flow-ultimate/types'
+import type {
+  FlowDataBundle,
+  FlowDataSemanticNav,
+  FlowSemanticLayerMeta,
+} from '#/components/flow-ultimate/types'
 import { FLOW_MODES, MODE_LABEL, PROJ_META } from '#/components/flow-ultimate/types'
+
+function layerMeta(
+  layer: 'app_flow' | 'page_nav',
+  code: FlowSemanticLayerMeta['code'] = 'OK',
+): FlowSemanticLayerMeta {
+  return {
+    layer,
+    code,
+    tablesRequired: [],
+    tablesPresent: [],
+    rawNodeCount: 0,
+    rawEdgeCount: 0,
+    projectedNodeCount: 0,
+    projectedEdgeCount: 0,
+    droppedDangling: 0,
+    droppedUnknownProject: 0,
+    droppedDuplicate: 0,
+    droppedCrossProject: 0,
+    droppedInvalid: 0,
+    reasons: [],
+  }
+}
+
+function emptyProject(id: string) {
+  return {
+    project_id: id,
+    app_flow: { nodes: [] as never[], edges: [] as never[] },
+    page_nav: { nodes: [] as never[], edges: [] as never[] },
+  }
+}
+
+/**
+ * Honest semantic nav for id-copy chrome proofs.
+ * - Cross: multi-project app_flow → visible af: journey nodes
+ * - web-member: checkout soft-linked to FEAT-CHECKOUT-WEB (API enrichment)
+ * - panel-sales: two-node edge for Navigasi terkait neighbor proof
+ * - backend: empty journey → inventory-only empty-neighbor path
+ * No COL_CAP / premium sequential / inventory edges.
+ */
+const semanticNav: FlowDataSemanticNav = {
+  version: 1,
+  source: 'mysql',
+  state: 'OK',
+  sourceHash: 'id-copy-fixture',
+  boardId: 'mfs-rebuild',
+  by_project: {
+    rn: {
+      project_id: 'rn',
+      app_flow: {
+        nodes: [
+          {
+            node_id: 'rn_home',
+            project_id_storage: 'rn',
+            project_id: 'rn',
+            feature_id: null,
+            label_id: 'Beranda RN',
+            kind: 'screen',
+            sort_order: 1,
+            layout_col: 0,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+        ],
+        edges: [],
+      },
+      page_nav: { nodes: [], edges: [] },
+    },
+    'web-member': {
+      project_id: 'web-member',
+      app_flow: {
+        nodes: [
+          {
+            node_id: 'checkout',
+            project_id_storage: 'web',
+            project_id: 'web-member',
+            feature_id: 'FEAT-CHECKOUT-WEB',
+            label_id: 'Checkout web',
+            kind: 'screen',
+            sort_order: 1,
+            layout_col: 0,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+        ],
+        edges: [],
+      },
+      page_nav: { nodes: [], edges: [] },
+    },
+    'panel-sales': {
+      project_id: 'panel-sales',
+      app_flow: {
+        nodes: [
+          {
+            node_id: 'set_paket',
+            project_id_storage: 'sales',
+            project_id: 'panel-sales',
+            feature_id: 'FEAT-HARGA-PAKET',
+            label_id: 'Set paket harga',
+            kind: 'screen',
+            sort_order: 1,
+            layout_col: 0,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+          {
+            node_id: 'konfirmasi',
+            project_id_storage: 'sales',
+            project_id: 'panel-sales',
+            feature_id: null,
+            label_id: 'Konfirmasi paket',
+            kind: 'screen',
+            sort_order: 2,
+            layout_col: 1,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+        ],
+        edges: [
+          {
+            edge_id: 'set_paket->konfirmasi',
+            from_node: 'set_paket',
+            to_node: 'konfirmasi',
+            edge_kind: 'nav',
+            edge_class: 'nav',
+            sort_order: 1,
+            project_id_storage: 'sales',
+            project_id: 'panel-sales',
+            provenance: 'app_flow_edges',
+          },
+        ],
+      },
+      page_nav: { nodes: [], edges: [] },
+    },
+    affiliate: emptyProject('affiliate'),
+    backend: emptyProject('backend'),
+  },
+  layers: {
+    app_flow: layerMeta('app_flow', 'OK'),
+    page_nav: layerMeta('page_nav', 'OK'),
+  },
+}
 
 const fixture: FlowDataBundle = {
   projects: { version: 1, projects: [] },
@@ -56,12 +210,20 @@ const fixture: FlowDataBundle = {
         doc_md: 'Dokumen FC-CHECKOUT-01 dan T-WEB-99 di sales-rebuild',
       },
     ],
-    'panel-sales': [],
-    affiliate: [],
-    backend: [
+    'panel-sales': [
       {
         id: 'FEAT-HARGA-PAKET',
         nama_id: 'Harga paket',
+        status: 'terbukti',
+        pct: 100,
+        screens: [],
+      },
+    ],
+    affiliate: [],
+    backend: [
+      {
+        id: 'FEAT-HARGA-PAKET-BE',
+        nama_id: 'Harga paket backend',
         status: 'terbukti',
         pct: 100,
         screens: [],
@@ -89,6 +251,10 @@ const fixture: FlowDataBundle = {
       { method: 'POST', path: '/api/checkout/session' },
       { method: 'GET', path: '/api/checkout/status' },
     ],
+    // Soft enrichment for panel-sales semantic node set_paket (not graph fiction).
+    'FEAT-HARGA-PAKET': [
+      { method: 'POST', path: '/api/admin/product-packages' },
+    ],
   },
   premium_apis: [
     {
@@ -98,6 +264,7 @@ const fixture: FlowDataBundle = {
       proj: 'sales',
     },
   ],
+  nav: semanticNav,
 }
 
 /** English chrome phrases that must not surface in owner-visible text. */
@@ -268,36 +435,58 @@ describe('canon-flow-id-copy — rendered chrome', () => {
       <FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />,
     )
 
-    // open a cross node that has an API
+    // Cross has seeded semantic journey nodes (not premium:N fiction).
     const nodes = screen.getAllByTestId('flow-node')
-    fireEvent.pointerDown(nodes[0], { button: 0, clientX: 5, clientY: 5 })
-    fireEvent.pointerUp(nodes[0], { button: 0, clientX: 5, clientY: 5 })
+    expect(nodes.length).toBeGreaterThan(0)
+    for (const n of nodes) {
+      const id = n.getAttribute('data-node-id') || ''
+      expect(id).toMatch(/^af:/)
+      expect(id).not.toMatch(/^premium:|^auth:|^aff:|^iap:/)
+    }
+
+    // Soft feature enrichment on real semantic node (production builder).
+    const salesNode = nodes.find(
+      (n) => n.getAttribute('data-node-id') === 'af:panel-sales:set_paket',
+    )
+    expect(salesNode).toBeTruthy()
+    fireEvent.pointerDown(salesNode!, { button: 0, clientX: 5, clientY: 5 })
+    fireEvent.pointerUp(salesNode!, { button: 0, clientX: 5, clientY: 5 })
 
     const sheetBody = screen.getByTestId('flow-sheet-body')
     const bodyText = sheetBody.innerText || sheetBody.textContent || ''
-    // allowed technical surface
+    // allowed technical surface — from apis_by_feature soft enrichment only
     expect(bodyText).toMatch(/POST\s+\/api\/admin\/product-packages/)
 
     const full =
       (container as HTMLElement).innerText || container.textContent || ''
     assertNoForbiddenVisible(full)
 
-    // section headings id-ID
+    // section headings id-ID — Navigasi terkait (not legacy Fitur terkait)
     expect(within(sheetBody).getByText(/Status & progres/i)).toBeTruthy()
     expect(within(sheetBody).getByText(/^Layar/i)).toBeTruthy()
     expect(within(sheetBody).getByText(/API terkait/i)).toBeTruthy()
     expect(within(sheetBody).getByText(/Tugas bangun/i)).toBeTruthy()
-    expect(within(sheetBody).getByText(/Fitur terkait/i)).toBeTruthy()
+    expect(within(sheetBody).getByText(/Navigasi terkait/i)).toBeTruthy()
+    // Semantic neighbor via real app_flow edge (not same-feature masquerade)
+    expect(within(sheetBody).getByTestId('flow-related').textContent || '').toMatch(
+      /Konfirmasi/,
+    )
+    // No legacy related-features heading as navigation
+    expect(within(sheetBody).queryByText(/^Fitur terkait$/i)).toBeNull()
   })
 
   it('web-member sheet humanizes screens, scrubs docs/tasks, keeps APIs', () => {
     render(<FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />)
     fireEvent.click(screen.getByRole('tab', { name: /Web Member/i }))
-    const node = screen.getAllByTestId('flow-node')[0]
-    expect(node.textContent).toMatch(/layar/)
-    expect(node.textContent).toMatch(/% terverifikasi/)
-    fireEvent.pointerDown(node, { button: 0, clientX: 4, clientY: 4 })
-    fireEvent.pointerUp(node, { button: 0, clientX: 4, clientY: 4 })
+    // Journey card from bundle.nav app_flow (exact-prefixed client id)
+    const node = screen
+      .getAllByTestId('flow-node')
+      .find((n) => n.getAttribute('data-node-id') === 'af:web-member:checkout')
+    expect(node).toBeTruthy()
+    expect(node!.textContent).toMatch(/layar/)
+    expect(node!.textContent).toMatch(/% terverifikasi/)
+    fireEvent.pointerDown(node!, { button: 0, clientX: 4, clientY: 4 })
+    fireEvent.pointerUp(node!, { button: 0, clientX: 4, clientY: 4 })
 
     const body = screen.getByTestId('flow-sheet-body')
     const t = body.innerText || body.textContent || ''
@@ -307,6 +496,13 @@ describe('canon-flow-id-copy — rendered chrome', () => {
     expect(t).toMatch(/POST\s+\/api\/checkout\/session/)
     expect(t).toMatch(/GET\s+\/api\/checkout\/status/)
     expect(t).toMatch(/fitur terkait|tugas terkait|kontrak fitur|repo terkait/)
+    expect(t).toMatch(/Navigasi terkait/)
+    // Same-feature inventory may appear separately (not as navigation)
+    const same = within(body).queryByTestId('flow-same-feature')
+    if (same) {
+      expect(same.textContent || '').toMatch(/Fitur sama/)
+      expect(same.textContent || '').toMatch(/bukan navigasi/)
+    }
     assertNoForbiddenVisible(t)
   })
 
@@ -327,10 +523,12 @@ describe('canon-flow-id-copy — rendered chrome', () => {
       },
       tasks_by_feature: {},
       apis_by_feature: {},
+      // backend still empty journey in nav → inventory-only, no semantic neighbors
     }
     render(<FlowUltimateScreen data={emptyish} boardId="mfs-rebuild" />)
     fireEvent.click(screen.getByRole('tab', { name: /^Backend$/i }))
     const node = screen.getAllByTestId('flow-node')[0]
+    expect(node.getAttribute('data-node-id') || '').toMatch(/^inv:/)
     fireEvent.pointerDown(node, { button: 0, clientX: 3, clientY: 3 })
     fireEvent.pointerUp(node, { button: 0, clientX: 3, clientY: 3 })
     const body = screen.getByTestId('flow-sheet-body')
@@ -338,13 +536,16 @@ describe('canon-flow-id-copy — rendered chrome', () => {
     expect(t).toMatch(/Belum ada layar yang dipetakan/)
     expect(t).toMatch(/Belum ada API terdaftar untuk langkah ini/)
     expect(t).toMatch(/Belum ada tugas terkait/)
-    expect(t).toMatch(/Belum ada tetangga di graf ini/)
+    // Production empty-neighbor copy (Navigasi terkait section)
+    expect(t).toMatch(/Belum ada tetangga navigasi di graf ini/)
+    expect(t).toMatch(/Navigasi terkait/)
     assertNoForbiddenVisible(t)
   })
 
   it('close control aria is id-ID', () => {
     render(<FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />)
     const nodes = screen.getAllByTestId('flow-node')
+    expect(nodes.length).toBeGreaterThan(0)
     fireEvent.pointerDown(nodes[0], { button: 0, clientX: 2, clientY: 2 })
     fireEvent.pointerUp(nodes[0], { button: 0, clientX: 2, clientY: 2 })
     expect(screen.getByTestId('flow-sheet-close').getAttribute('aria-label')).toBe(

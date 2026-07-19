@@ -17,6 +17,7 @@ import {
   fitTransform,
   loadPositions,
   nodeCenter,
+  positionStorageKey,
   projectColor,
   projectCss,
   projectLabel,
@@ -26,6 +27,7 @@ import {
   humanizeNodeMeta,
   humanizeScreen,
   humanizeTaskTitle,
+  navHonestyBanner,
   scrubTechIds,
   statusClass,
   statusLabel,
@@ -36,10 +38,12 @@ import {
   CARD_W,
   DRAG_THRESHOLD,
   FLOW_MODES,
+  LAYER_LABEL,
   MODE_LABEL,
   type FlowApi,
   type FlowDataBundle,
   type FlowMode,
+  type FlowNavLayer,
   type FlowNode,
   type FlowTransform,
 } from './types'
@@ -70,6 +74,8 @@ interface PanState {
 
 const PAN_STEP = 40
 const PAN_STEP_FAST = 80
+/** Project-mode layer tabs (hidden in cross — no hidden-focus target). */
+const FLOW_NAV_LAYERS: FlowNavLayer[] = ['app_flow', 'page_nav']
 
 const SHEET_FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -102,11 +108,6 @@ function collectApis(
   if (featId && data.apis_by_feature[featId]) {
     data.apis_by_feature[featId].forEach((a) => push(a.method, a.path))
   }
-  if (n.kind === 'cross' && n.step?.n && data.premium_apis) {
-    data.premium_apis
-      .filter((a) => a.n === n.step?.n)
-      .forEach((a) => push(a.method, a.path))
-  }
   return out.slice(0, 24)
 }
 
@@ -130,6 +131,8 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
   const openerRef = useRef<HTMLElement | null>(null)
   const sheetWasOpenRef = useRef(false)
   const [mode, setMode] = useState<FlowMode>('cross')
+  /** Project-mode layer; cross always uses app_flow (no route reload). */
+  const [layer, setLayer] = useState<FlowNavLayer>('app_flow')
   const [nodes, setNodes] = useState<FlowNode[]>([])
   const [edges, setEdges] = useState<{ from: string; to: string }[]>([])
   const [transform, setTransform] = useState<FlowTransform>({
@@ -147,10 +150,14 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
   const nodesRef = useRef(nodes)
   const transformRef = useRef(transform)
   const sheetOpenRef = useRef(sheetOpen)
+  const modeRef = useRef(mode)
+  const layerRef = useRef(layer)
 
   nodesRef.current = nodes
   transformRef.current = transform
   sheetOpenRef.current = sheetOpen
+  modeRef.current = mode
+  layerRef.current = layer
 
   /**
    * Coherent sheet close / focus policy for every dismiss path.
@@ -189,9 +196,11 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
   }, [])
 
   const rebuild = useCallback(
-    (nextMode: FlowMode) => {
-      const saved = loadPositions(nextMode)
-      const g = buildGraphForMode(data, nextMode, saved)
+    (nextMode: FlowMode, nextLayer: FlowNavLayer = 'app_flow') => {
+      const effectiveLayer = nextMode === 'cross' ? 'app_flow' : nextLayer
+      const storageKey = positionStorageKey(nextMode, effectiveLayer)
+      const saved = loadPositions(storageKey)
+      const g = buildGraphForMode(data, nextMode, saved, effectiveLayer)
       setNodes(g.nodes)
       setEdges(g.edges)
       // Data rebuild always clears selection/sheet state.
@@ -211,7 +220,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
   )
 
   useEffect(() => {
-    rebuild('cross')
+    rebuild('cross', 'app_flow')
   }, [rebuild])
 
   const resolveFocusInitiator = useCallback(
@@ -250,10 +259,31 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
       } else {
         openerRef.current = null
       }
+      // Reset layer to app_flow when entering project mode from another mode
+      const nextLayer: FlowNavLayer =
+        next === 'cross' ? 'app_flow' : layerRef.current
+      if (next === 'cross') setLayer('app_flow')
       setMode(next)
-      rebuild(next)
+      rebuild(next, nextLayer)
     },
     [mode, nodes.length, rebuild, closeSheet, resolveFocusInitiator],
+  )
+
+  /** In-screen layer toggle — no route / navigation reload. */
+  const switchLayer = useCallback(
+    (next: FlowNavLayer, focusTarget?: HTMLElement | null) => {
+      if (mode === 'cross') return
+      if (next === layer) return
+      const initiator = resolveFocusInitiator(focusTarget)
+      if (sheetOpenRef.current) {
+        closeSheet({ focusTarget: initiator })
+      } else {
+        openerRef.current = null
+      }
+      setLayer(next)
+      rebuild(mode, next)
+    },
+    [mode, layer, rebuild, closeSheet, resolveFocusInitiator],
   )
 
   const worldSize = useMemo(() => {
@@ -503,7 +533,13 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
       const d = dragRef.current
       if (d.moved) {
         const n = nodesRef.current.find((x) => x.id === d.id)
-        if (n) savePosition(mode, n.id, n.x, n.y)
+        if (n) {
+          const key = positionStorageKey(
+            modeRef.current,
+            modeRef.current === 'cross' ? 'app_flow' : layerRef.current,
+          )
+          savePosition(key, n.id, n.x, n.y)
+        }
       } else {
         const el =
           (stageRef.current?.querySelector(
@@ -610,6 +646,41 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     })
   }
 
+  /** Layer pills: Arrow/Home/End parity with mode tablist. Hidden in cross. */
+  const onLayerTablistKeyDown = (e: ReactKeyboardEvent<HTMLElement>) => {
+    if (mode === 'cross') return
+    const idx = FLOW_NAV_LAYERS.indexOf(layer)
+    if (idx < 0) return
+    let nextIdx = idx
+    switch (e.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        nextIdx = (idx + 1) % FLOW_NAV_LAYERS.length
+        break
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        nextIdx = (idx - 1 + FLOW_NAV_LAYERS.length) % FLOW_NAV_LAYERS.length
+        break
+      case 'Home':
+        nextIdx = 0
+        break
+      case 'End':
+        nextIdx = FLOW_NAV_LAYERS.length - 1
+        break
+      default:
+        return
+    }
+    e.preventDefault()
+    const next = FLOW_NAV_LAYERS[nextIdx]
+    switchLayer(next)
+    requestAnimationFrame(() => {
+      const btn = document.querySelector(
+        `.flow-layer-pill[data-layer="${next}"]`,
+      ) as HTMLElement | null
+      btn?.focus()
+    })
+  }
+
   const activeNode = activeNodeId
     ? nodes.find((n) => n.id === activeNodeId)
     : null
@@ -618,6 +689,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     : null
   const feat = found?.feature ?? null
   const proj = found?.project ?? activeNode?.project
+  /** Navigasi terkait — undirected semantic edge walk only (cap 12). */
   const related = useMemo(() => {
     if (!activeNode) return [] as FlowNode[]
     const ids = new Set<string>()
@@ -625,15 +697,19 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
       if (e.from === activeNode.id) ids.add(e.to)
       if (e.to === activeNode.id) ids.add(e.from)
     })
-    if (activeNode.featureId) {
-      nodes.forEach((o) => {
-        if (o.id !== activeNode.id && o.featureId === activeNode.featureId) {
-          ids.add(o.id)
-        }
-      })
-    }
     return nodes.filter((o) => ids.has(o.id)).slice(0, 12)
   }, [activeNode, edges, nodes])
+
+  /** Same soft feature — separately labeled; not navigation. */
+  const sameFeature = useMemo(() => {
+    if (!activeNode?.featureId) return [] as FlowNode[]
+    return nodes
+      .filter(
+        (o) =>
+          o.id !== activeNode.id && o.featureId === activeNode.featureId,
+      )
+      .slice(0, 12)
+  }, [activeNode, nodes])
 
   const apis = activeNode ? collectApis(data, activeNode, feat?.id) : []
   const screens = (feat && feat.screens) || []
@@ -641,21 +717,27 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
   const st = feat ? feat.status : activeNode?.status
   const pct = feat ? feat.pct || 0 : 0
   const sc = statusClass(st)
+  const effectiveLayer: FlowNavLayer =
+    mode === 'cross' ? 'app_flow' : layer
+  const honestyMsg = navHonestyBanner(data.nav, effectiveLayer)
 
   const graphSummary = useMemo(() => {
     const modeLabel = MODE_LABEL[mode]
     const count = nodes.length
+    const edgeCount = edges.length
     const parts = [
       `Mode ${modeLabel}.`,
+      mode !== 'cross' ? `Lapisan ${LAYER_LABEL[layer]}.` : '',
       `${count} node${count === 1 ? '' : 's'}.`,
-    ]
+      `${edgeCount} koneksi navigasi.`,
+    ].filter(Boolean)
     if (activeNode) {
       parts.push(
         `Terpilih: ${activeNode.title}, ${statusLabel(activeNode.status)}.`,
       )
     }
     return parts.join(' ')
-  }, [mode, nodes.length, activeNode])
+  }, [mode, layer, nodes.length, edges.length, activeNode])
 
   return (
     <div
@@ -663,6 +745,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
       data-testid="flow-ultimate"
       data-board-id={boardId || ''}
       data-mode={mode}
+      data-layer={effectiveLayer}
       data-page="alur"
     >
       <header className="flow-top" role="banner">
@@ -722,6 +805,31 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           ))}
         </nav>
 
+        {mode !== 'cross' ? (
+          <div
+            className="flow-layers"
+            role="tablist"
+            aria-label="Lapisan navigasi"
+            data-testid="flow-layer-toggle"
+            onKeyDown={onLayerTablistKeyDown}
+          >
+            {FLOW_NAV_LAYERS.map((l) => (
+              <button
+                key={l}
+                type="button"
+                className={`flow-layer-pill${layer === l ? ' on' : ''}`}
+                data-layer={l}
+                role="tab"
+                aria-selected={layer === l}
+                tabIndex={layer === l ? 0 : -1}
+                onClick={(e) => switchLayer(l, e.currentTarget)}
+              >
+                {LAYER_LABEL[l]}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
         <div className="flow-legend" aria-label="Legenda status">
           <span>
             <i style={{ background: 'var(--ok)' }} />
@@ -737,6 +845,16 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           </span>
         </div>
       </header>
+
+      {honestyMsg ? (
+        <div
+          className="flow-honesty-pin"
+          role="status"
+          data-testid="flow-honesty-pin"
+        >
+          {honestyMsg}
+        </div>
+      ) : null}
 
       <div
         className="flow-sr-only"
@@ -797,14 +915,18 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
               const on = activeNodeId === n.id
               const scN = statusClass(n.status)
               const stLabel = statusLabel(n.status)
-              const accessibleName = `${n.title}, ${stLabel}`
+              const isInv = n.kind === 'inventory' || n.inventoryBadge
+              const accessibleName = isInv
+                ? `${n.title}, Inventaris, ${stLabel}`
+                : `${n.title}, ${stLabel}`
               return (
                 <div
                   key={n.id}
                   role="button"
                   tabIndex={0}
-                  className={`fnode${mode === 'cross' || n.project ? ' has-proj' : ''}${on ? ' on is-hl' : ''}${draggingId === n.id ? ' is-dragging' : ''}`}
+                  className={`fnode${mode === 'cross' || n.project ? ' has-proj' : ''}${isInv ? ' is-inventory' : ''}${on ? ' on is-hl' : ''}${draggingId === n.id ? ' is-dragging' : ''}`}
                   data-node-id={n.id}
+                  data-node-kind={n.kind}
                   data-testid="flow-node"
                   aria-label={accessibleName}
                   aria-pressed={on || undefined}
@@ -821,6 +943,9 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                   <span className={`fdot ${scN}`} aria-hidden="true" />
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <span className="ft">{n.title}</span>
+                    {isInv ? (
+                      <span className="flow-inv-badge">Inventaris</span>
+                    ) : null}
                     {mode === 'cross' && n.project ? (
                       <span
                         className="flow-proj-tag"
@@ -1093,7 +1218,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
 
               <section className="flow-sec">
                 <h3>
-                  Fitur terkait{' '}
+                  Navigasi terkait{' '}
                   <span className="flow-sec-hint">{related.length}</span>
                 </h3>
                 {related.length ? (
@@ -1119,9 +1244,42 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                     ))}
                   </ul>
                 ) : (
-                  <p className="flow-empty">Belum ada tetangga di graf ini.</p>
+                  <p className="flow-empty">Belum ada tetangga navigasi di graf ini.</p>
                 )}
               </section>
+
+              {sameFeature.length > 0 ? (
+                <section className="flow-sec" data-testid="flow-same-feature">
+                  <h3>
+                    Fitur sama{' '}
+                    <span className="flow-sec-hint">{sameFeature.length}</span>
+                  </h3>
+                  <p className="flow-empty" style={{ marginBottom: 8 }}>
+                    Kartu lain dengan tautan fitur yang sama — bukan navigasi.
+                  </p>
+                  <ul className="flow-list-plain">
+                    {sameFeature.map((r) => (
+                      <li key={r.id}>
+                        <button
+                          type="button"
+                          data-goto={r.id}
+                          data-testid="flow-same-feature-item"
+                          tabIndex={sheetOpen ? 0 : -1}
+                          onClick={() => openSheetForNode(r.id)}
+                        >
+                          <span className="flow-link-nm">{r.title}</span>
+                          <span className="flow-link-meta">
+                            {r.project
+                              ? `${projectLabel(r.project)} · `
+                              : ''}
+                            {statusLabel(r.status)}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
             </>
           ) : null}
         </div>

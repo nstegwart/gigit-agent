@@ -8,7 +8,19 @@ export type FlowMode =
   | 'affiliate'
   | 'backend'
 
+/** In-screen layer toggle (project mode). Cross always uses app_flow. */
+export type FlowNavLayer = 'app_flow' | 'page_nav'
+
 export type FlowStatusClass = 'ok' | 'warn' | 'bad'
+
+export type FlowNodeKind =
+  | 'journey_app'
+  | 'journey_page'
+  | 'inventory'
+  /** @deprecated residual — treat as inventory if encountered */
+  | 'feature'
+  /** @deprecated residual — removed synthetic cross journey */
+  | 'cross'
 
 export interface FlowProjectRollup {
   terbukti: number
@@ -231,6 +243,12 @@ export interface FlowDataBundle {
   nav?: FlowDataSemanticNav
 }
 
+export interface FlowNodeSemanticRef {
+  layer: FlowNavLayer
+  exactId: string
+  project: string
+}
+
 export interface FlowNode {
   id: string
   x: number
@@ -239,16 +257,24 @@ export interface FlowNode {
   meta: string
   status: string
   project?: string
+  /** Soft feature link for sheet enrichment — never an edge endpoint. */
   featureId?: string | null
   step?: FlowPremiumStep & { flowTitle?: string }
-  kind: 'cross' | 'feature'
+  kind: FlowNodeKind
   flowTitle?: string
   apis?: string[]
+  semanticRef?: FlowNodeSemanticRef
+  /** Inventory badge for owner chrome. */
+  inventoryBadge?: boolean
 }
 
 export interface FlowEdge {
   from: string
   to: string
+  /** Runtime edge class from semantic wire only. Never `layout`. */
+  edge_class?: 'nav' | 'page_nav'
+  /** Prefixed client edge id for tests/debug. */
+  id?: string
 }
 
 export interface FlowGraph {
@@ -267,6 +293,7 @@ export const CARD_H = 64
 export const GAP_X = 72
 export const GAP_Y = 36
 export const DRAG_THRESHOLD = 5
+/** Canon-compatible key; positions are namespaced by mode+layer + prefixed node ids. */
 export const STORAGE_KEY = 'cairn-flow-pos-v1'
 
 export const MODE_LABEL: Record<FlowMode, string> = {
@@ -276,6 +303,11 @@ export const MODE_LABEL: Record<FlowMode, string> = {
   'panel-sales': 'Panel Sales',
   affiliate: 'Afiliasi',
   backend: 'Backend',
+}
+
+export const LAYER_LABEL: Record<FlowNavLayer, string> = {
+  app_flow: 'Alur aplikasi',
+  page_nav: 'Navigasi laman',
 }
 
 export const PROJ_META: Record<
@@ -301,6 +333,15 @@ export const PROJ_META: Record<
 
 export const FLOW_MODES: FlowMode[] = [
   'cross',
+  'rn',
+  'web-member',
+  'panel-sales',
+  'affiliate',
+  'backend',
+]
+
+/** Stable project-row order for cross-mode layout. */
+export const CROSS_PROJECT_ORDER: string[] = [
   'rn',
   'web-member',
   'panel-sales',

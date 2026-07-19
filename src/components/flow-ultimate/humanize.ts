@@ -1,4 +1,10 @@
-import type { FlowStatusClass } from './types'
+import type {
+  FlowDataSemanticNav,
+  FlowNavLayer,
+  FlowSemanticLayerCode,
+  FlowSemanticNavState,
+  FlowStatusClass,
+} from './types'
 
 /** Scrub technical IDs/enums/repo slugs for owner-facing id-ID display. */
 export function scrubTechIds(s: string): string {
@@ -177,4 +183,67 @@ export function hasTechIdLeak(text: string): boolean {
  */
 export function hasVisibleTechIdLeak(text: string): boolean {
   return hasTechIdLeak(stripAllowedApiEndpoints(text))
+}
+
+/** Owner-facing id-ID honesty for bundle-level nav state. */
+export function navStateHonestyMessage(
+  state: FlowSemanticNavState | undefined | null,
+): string | null {
+  if (!state) return 'Belum ada sumber navigasi semantik'
+  switch (state) {
+    case 'OK':
+      return null
+    case 'PARTIAL':
+      return 'Navigasi semantik sebagian tersedia'
+    case 'NO_SEMANTIC_SOURCE':
+      return 'Belum ada sumber navigasi semantik'
+    case 'UNAVAILABLE':
+      return 'Navigasi semantik tidak tersedia'
+    default:
+      return 'Belum ada sumber navigasi semantik'
+  }
+}
+
+/** Owner-facing id-ID honesty for per-layer codes (no SQL / raw codes). */
+export function layerCodeHonestyMessage(
+  code: FlowSemanticLayerCode | undefined | null,
+): string | null {
+  if (!code || code === 'OK') return null
+  switch (code) {
+    case 'TABLES_MISSING':
+      return 'Tabel navigasi belum tersedia'
+    case 'EMPTY_ROWS':
+      return 'Belum ada data navigasi'
+    case 'PROJECTED_EMPTY':
+      return 'Data navigasi kosong setelah proyeksi'
+    case 'DB_ERROR':
+      return 'Gagal memuat navigasi'
+    default:
+      return 'Belum ada data navigasi'
+  }
+}
+
+/**
+ * Combined honesty pin for Alur chrome.
+ * Never surfaces SQL, table names, or technical enum tokens to the owner.
+ */
+export function navHonestyBanner(
+  nav: FlowDataSemanticNav | undefined | null,
+  layer: FlowNavLayer = 'app_flow',
+): string | null {
+  if (!nav) return 'Belum ada sumber navigasi semantik'
+  const stateMsg = navStateHonestyMessage(nav.state)
+  if (nav.state === 'NO_SEMANTIC_SOURCE' || nav.state === 'UNAVAILABLE') {
+    return stateMsg
+  }
+  const layerMeta = nav.layers?.[layer]
+  const layerMsg = layerCodeHonestyMessage(layerMeta?.code)
+  if (nav.state === 'PARTIAL') {
+    // Prefer layer-specific when the selected layer is unhealthy
+    if (layerMsg) return `${stateMsg}: ${layerMsg}`
+    return stateMsg
+  }
+  // OK at bundle level but this layer empty / missing
+  if (layerMsg) return layerMsg
+  return null
 }

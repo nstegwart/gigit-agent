@@ -15,7 +15,210 @@ import {
   hasTechIdLeak,
   hasVisibleTechIdLeak,
 } from '#/components/flow-ultimate/humanize'
-import type { FlowDataBundle } from '#/components/flow-ultimate/types'
+import type {
+  FlowDataBundle,
+  FlowDataSemanticNav,
+  FlowSemanticLayerMeta,
+} from '#/components/flow-ultimate/types'
+
+function layerMeta(
+  layer: 'app_flow' | 'page_nav',
+  code: FlowSemanticLayerMeta['code'] = 'OK',
+): FlowSemanticLayerMeta {
+  return {
+    layer,
+    code,
+    tablesRequired: [],
+    tablesPresent: [],
+    rawNodeCount: 0,
+    rawEdgeCount: 0,
+    projectedNodeCount: 0,
+    projectedEdgeCount: 0,
+    droppedDangling: 0,
+    droppedUnknownProject: 0,
+    droppedDuplicate: 0,
+    droppedCrossProject: 0,
+    droppedInvalid: 0,
+    reasons: [],
+  }
+}
+
+function emptyProject(id: string) {
+  return {
+    project_id: id,
+    app_flow: { nodes: [] as never[], edges: [] as never[] },
+    page_nav: { nodes: [] as never[], edges: [] as never[] },
+  }
+}
+
+const semanticNav: FlowDataSemanticNav = {
+  version: 1,
+  source: 'mysql',
+  state: 'OK',
+  sourceHash: 'screen-fixture',
+  boardId: 'mfs-rebuild',
+  by_project: {
+    rn: {
+      project_id: 'rn',
+      app_flow: {
+        nodes: [
+          {
+            node_id: 'Login',
+            project_id_storage: 'rn',
+            project_id: 'rn',
+            feature_id: 'FEAT-AUTH-MEMBER',
+            label_id: 'Masuk aplikasi',
+            kind: 'screen',
+            sort_order: 1,
+            layout_col: 0,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+          {
+            node_id: 'home',
+            project_id_storage: 'rn',
+            project_id: 'rn',
+            feature_id: null,
+            label_id: 'Beranda app',
+            kind: 'screen',
+            sort_order: 2,
+            layout_col: 1,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+        ],
+        edges: [
+          {
+            edge_id: 'Login->home',
+            from_node: 'Login',
+            to_node: 'home',
+            edge_kind: 'auth',
+            edge_class: 'nav',
+            sort_order: 1,
+            project_id_storage: 'rn',
+            project_id: 'rn',
+            provenance: 'app_flow_edges',
+          },
+        ],
+      },
+      page_nav: {
+        nodes: [
+          {
+            page_id: 'rn-about',
+            project_id_storage: 'rn',
+            project_id: 'rn',
+            label_id: 'Tentang',
+            route: '/about',
+            area: 'info',
+            feature_id: null,
+            provenance: 'app_pages',
+          },
+          {
+            page_id: 'rn-home',
+            project_id_storage: 'rn',
+            project_id: 'rn',
+            label_id: 'Beranda laman',
+            route: '/home',
+            area: 'main',
+            feature_id: null,
+            provenance: 'app_pages',
+          },
+        ],
+        edges: [
+          {
+            edge_id: 'rn-about->rn-home',
+            from_page: 'rn-about',
+            to_page: 'rn-home',
+            edge_kind: 'nav_to',
+            edge_class: 'page_nav',
+            sort_order: 1,
+            project_id: 'rn',
+            from_project_id_storage: 'rn',
+            to_project_id_storage: 'rn',
+            provenance: 'nav_edges',
+          },
+        ],
+      },
+    },
+    'web-member': {
+      project_id: 'web-member',
+      app_flow: {
+        nodes: [
+          {
+            node_id: 'checkout',
+            project_id_storage: 'web',
+            project_id: 'web-member',
+            feature_id: 'FEAT-CHECKOUT-WEB',
+            label_id: 'Checkout web',
+            kind: 'screen',
+            sort_order: 1,
+            layout_col: 0,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+        ],
+        edges: [],
+      },
+      page_nav: { nodes: [], edges: [] },
+    },
+    'panel-sales': emptyProject('panel-sales'),
+    affiliate: emptyProject('affiliate'),
+    backend: {
+      project_id: 'backend',
+      app_flow: {
+        nodes: [
+          {
+            node_id: 'api_root',
+            project_id_storage: 'backend',
+            project_id: 'backend',
+            feature_id: 'FEAT-HARGA-PAKET',
+            label_id: 'API root',
+            kind: 'hub',
+            sort_order: 1,
+            layout_col: 0,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+          {
+            node_id: 'webhook',
+            project_id_storage: 'backend',
+            project_id: 'backend',
+            feature_id: 'FEAT-CLEENG',
+            label_id: 'Webhook proses',
+            kind: 'screen',
+            sort_order: 2,
+            layout_col: 1,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+        ],
+        edges: [
+          {
+            edge_id: 'api_root->webhook',
+            from_node: 'api_root',
+            to_node: 'webhook',
+            edge_kind: 'nav',
+            edge_class: 'nav',
+            sort_order: 1,
+            project_id_storage: 'backend',
+            project_id: 'backend',
+            provenance: 'app_flow_edges',
+          },
+        ],
+      },
+      page_nav: { nodes: [], edges: [] },
+    },
+  },
+  layers: {
+    app_flow: layerMeta('app_flow', 'OK'),
+    page_nav: layerMeta('page_nav', 'OK'),
+  },
+}
 
 const fixture: FlowDataBundle = {
   projects: { version: 1, projects: [] },
@@ -38,7 +241,16 @@ const fixture: FlowDataBundle = {
     ],
   },
   features: {
-    rn: [],
+    rn: [
+      {
+        id: 'FEAT-AUTH-MEMBER',
+        nama_id: 'Masuk anggota',
+        ringkasan_id: 'Sesi anggota tanpa FEAT mentah',
+        status: 'sebagian',
+        pct: 70,
+        screens: ['/login'],
+      },
+    ],
     'web-member': [
       {
         id: 'FEAT-CHECKOUT-WEB',
@@ -77,9 +289,24 @@ const fixture: FlowDataBundle = {
         verdict: 'MAPPED_100',
       },
     ],
+    'FEAT-AUTH-MEMBER': [
+      {
+        id: 'T-AUTH-01',
+        judul_id: 'T-AUTH-01 Wire login',
+        verdict: 'MAPPED_100',
+      },
+    ],
   },
-  apis_by_feature: {},
+  apis_by_feature: {
+    'FEAT-AUTH-MEMBER': [{ method: 'POST', path: '/api/auth/login' }],
+  },
   premium_apis: [],
+  nav: semanticNav,
+}
+
+const fixtureNoNav: FlowDataBundle = {
+  ...fixture,
+  nav: undefined,
 }
 
 /** Known EN chrome leftovers that must not appear as owner-visible strings. */
@@ -124,7 +351,7 @@ afterEach(() => {
 })
 
 describe('FlowUltimateScreen', () => {
-  it('renders cross-project nodes and opens slide-up without navigation', () => {
+  it('renders semantic cross journey nodes and opens sheet without navigation', () => {
     const { container } = render(
       <FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />,
     )
@@ -132,6 +359,9 @@ describe('FlowUltimateScreen', () => {
     expect(screen.getByTestId('flow-ultimate')).toBeTruthy()
     expect(screen.getByTestId('flow-ultimate').getAttribute('data-mode')).toBe(
       'cross',
+    )
+    expect(screen.getByTestId('flow-ultimate').getAttribute('data-layer')).toBe(
+      'app_flow',
     )
 
     const rootText = container.innerText || container.textContent || ''
@@ -147,17 +377,19 @@ describe('FlowUltimateScreen', () => {
 
     const nodes = screen.getAllByTestId('flow-node')
     expect(nodes.length).toBeGreaterThan(3)
+    // no synthetic premium:N
+    for (const n of nodes) {
+      const id = n.getAttribute('data-node-id') || ''
+      expect(id).toMatch(/^af:/)
+      expect(id).not.toMatch(/^premium:/)
+    }
 
-    // human-readable: no technical IDs in node titles / meta
     for (const n of nodes) {
       const title = n.querySelector('.ft')?.textContent || ''
       const meta = n.querySelector('.flow-meta')?.textContent || ''
       expect(hasTechIdLeak(title)).toBe(false)
       expect(hasTechIdLeak(meta)).toBe(false)
       expect(meta).not.toMatch(/\bscreens\b/i)
-      if (meta.includes('%')) {
-        expect(meta).toMatch(/terverifikasi/)
-      }
     }
 
     const first = nodes[0]
@@ -171,15 +403,14 @@ describe('FlowUltimateScreen', () => {
     const body = screen.getByTestId('flow-sheet-body')
     expect(within(body).getByText(/Status/i)).toBeTruthy()
     expect(within(body).getByText(/Status & progres/i)).toBeTruthy()
-    // scrubbed content — no FEAT/T/enums in visible sheet text
     expect(hasVisibleTechIdLeak(body.textContent || '')).toBe(false)
     expect(body.textContent || '').not.toMatch(/MAPPED_100|PROD_READY|\bMISSING\b/)
+    expect(within(body).getByText(/Navigasi terkait/i)).toBeTruthy()
 
-    // URL is not a browser concern here — assert we did not add links that navigate away
     expect(container.querySelector('a[href*="/tasks/"]')).toBeNull()
   })
 
-  it('switches mode pills and related buttons re-open sheet', () => {
+  it('switches mode pills; project shows inventory + journey; layer toggle same route', () => {
     render(<FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />)
 
     const webPill = screen.getByRole('tab', { name: /Web Member/i })
@@ -187,11 +418,97 @@ describe('FlowUltimateScreen', () => {
     expect(screen.getByTestId('flow-ultimate').getAttribute('data-mode')).toBe(
       'web-member',
     )
+    expect(screen.getByTestId('flow-ultimate').getAttribute('data-layer')).toBe(
+      'app_flow',
+    )
     const webNodes = screen.getAllByTestId('flow-node')
-    expect(webNodes.length).toBe(1)
-    expect(webNodes[0].textContent).toMatch(/Checkout web/)
-    expect(webNodes[0].textContent).toMatch(/layar/)
-    expect(webNodes[0].textContent).toMatch(/terverifikasi/)
+    // journey checkout + inventory FEAT-CHECKOUT-WEB
+    expect(webNodes.length).toBeGreaterThanOrEqual(1)
+    expect(webNodes.some((n) => (n.textContent || '').includes('Checkout'))).toBe(
+      true,
+    )
+
+    // RN with layer toggle
+    fireEvent.click(screen.getByRole('tab', { name: /React Native/i }))
+    expect(screen.getByTestId('flow-ultimate').getAttribute('data-mode')).toBe(
+      'rn',
+    )
+    const layerToggle = screen.getByTestId('flow-layer-toggle')
+    expect(layerToggle).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Alur aplikasi/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Navigasi laman/i })).toBeTruthy()
+
+    const appNodes = screen.getAllByTestId('flow-node')
+    expect(
+      appNodes.some((n) => n.getAttribute('data-node-id') === 'af:rn:Login'),
+    ).toBe(true)
+    // inventory present in project mode
+    expect(
+      appNodes.some((n) => n.className.includes('is-inventory')),
+    ).toBe(true)
+    expect(
+      appNodes.some((n) => (n.textContent || '').includes('Inventaris')),
+    ).toBe(true)
+
+    // Switch layer — no route change (still data-page=alur, mode=rn)
+    fireEvent.click(screen.getByRole('tab', { name: /Navigasi laman/i }))
+    expect(screen.getByTestId('flow-ultimate').getAttribute('data-layer')).toBe(
+      'page_nav',
+    )
+    expect(screen.getByTestId('flow-ultimate').getAttribute('data-mode')).toBe(
+      'rn',
+    )
+    expect(screen.getByTestId('flow-ultimate').getAttribute('data-page')).toBe(
+      'alur',
+    )
+    const pageNodes = screen.getAllByTestId('flow-node')
+    expect(
+      pageNodes.some((n) => n.getAttribute('data-node-id') === 'pn:rn:rn-about'),
+    ).toBe(true)
+    expect(
+      pageNodes.some((n) => n.getAttribute('data-node-id')?.startsWith('af:')),
+    ).toBe(false)
+  })
+
+  it('semantic-only related; inventory unconnected honesty pin when no nav', () => {
+    render(<FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />)
+    fireEvent.click(screen.getByRole('tab', { name: /React Native/i }))
+
+    const login = screen
+      .getAllByTestId('flow-node')
+      .find((n) => n.getAttribute('data-node-id') === 'af:rn:Login')
+    expect(login).toBeTruthy()
+    fireEvent.pointerDown(login!, { button: 0, clientX: 5, clientY: 5 })
+    fireEvent.pointerUp(login!, { button: 0, clientX: 5, clientY: 5 })
+
+    const body = screen.getByTestId('flow-sheet-body')
+    expect(within(body).getByText(/Navigasi terkait/i)).toBeTruthy()
+    const related = within(body).queryAllByTestId('flow-related')
+    expect(related.length).toBe(1)
+    expect(related[0].textContent || '').toMatch(/Beranda/)
+    // same feature inventory must not masquerade as related nav
+    for (const r of related) {
+      expect(r.getAttribute('data-goto') || '').not.toMatch(/^inv:/)
+    }
+  })
+
+  it('honesty pin when semantic source absent; zero journey; inventory only in project', () => {
+    render(<FlowUltimateScreen data={fixtureNoNav} boardId="mfs-rebuild" />)
+    // cross with no nav → empty canvas
+    expect(screen.queryAllByTestId('flow-node')).toHaveLength(0)
+    expect(screen.getByTestId('flow-honesty-pin').textContent || '').toMatch(
+      /navigasi/i,
+    )
+    expect(
+      hasVisibleTechIdLeak(screen.getByTestId('flow-honesty-pin').textContent || ''),
+    ).toBe(false)
+
+    fireEvent.click(screen.getByRole('tab', { name: /Web Member/i }))
+    const nodes = screen.getAllByTestId('flow-node')
+    expect(nodes.length).toBe(1)
+    expect(nodes[0].className).toMatch(/is-inventory/)
+    expect(nodes[0].textContent).toMatch(/Checkout web/)
+    expect(nodes[0].textContent).toMatch(/Inventaris/)
   })
 
   it('exposes id-ID aria labels for chrome controls', () => {
@@ -259,7 +576,6 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
     expect(afterDown.y).toBeLessThan(afterRight.y)
 
     const node = screen.getAllByTestId('flow-node')[0]
-    // center-on-focused-node path must not throw (jsdom stage size may be 0)
     expect(() => fireEvent.focus(node)).not.toThrow()
     await flushRaf()
     expect(node.getAttribute('role')).toBe('button')
@@ -294,6 +610,100 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
     expect(backend.tabIndex).toBe(0)
   })
 
+  it('D-A11Y-03b: layer tablist Arrow/Home/End wrap + rebuild; hidden in cross', async () => {
+    render(<FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />)
+    const root = screen.getByTestId('flow-ultimate')
+
+    // Cross: layer tabs must not exist (no hidden-focus target).
+    expect(screen.queryByTestId('flow-layer-toggle')).toBeNull()
+    expect(screen.queryByRole('tab', { name: /Alur aplikasi/i })).toBeNull()
+    expect(screen.queryByRole('tab', { name: /Navigasi laman/i })).toBeNull()
+    expect(root.getAttribute('data-layer')).toBe('app_flow')
+    expect(root.getAttribute('data-page')).toBe('alur')
+
+    // Enter project mode — layer tablist appears with roving tabindex.
+    fireEvent.click(screen.getByRole('tab', { name: /React Native/i }))
+    await flushRaf()
+    expect(root.getAttribute('data-mode')).toBe('rn')
+    expect(root.getAttribute('data-layer')).toBe('app_flow')
+    expect(root.getAttribute('data-page')).toBe('alur')
+
+    const layerList = screen.getByRole('tablist', { name: /Lapisan navigasi/i })
+    expect(layerList.getAttribute('data-testid')).toBe('flow-layer-toggle')
+    const appFlowTab = screen.getByRole('tab', { name: /Alur aplikasi/i })
+    const pageNavTab = screen.getByRole('tab', { name: /Navigasi laman/i })
+    expect(appFlowTab.getAttribute('aria-selected')).toBe('true')
+    expect(pageNavTab.getAttribute('aria-selected')).toBe('false')
+    expect(appFlowTab.tabIndex).toBe(0)
+    expect(pageNavTab.tabIndex).toBe(-1)
+
+    // Semantic app_flow nodes present before switch
+    expect(
+      screen
+        .getAllByTestId('flow-node')
+        .some((n) => n.getAttribute('data-node-id') === 'af:rn:Login'),
+    ).toBe(true)
+
+    // ArrowRight → page_nav; no route reload
+    appFlowTab.focus()
+    fireEvent.keyDown(appFlowTab, { key: 'ArrowRight' })
+    await flushRaf()
+    expect(root.getAttribute('data-layer')).toBe('page_nav')
+    expect(root.getAttribute('data-mode')).toBe('rn')
+    expect(root.getAttribute('data-page')).toBe('alur')
+    expect(pageNavTab.getAttribute('aria-selected')).toBe('true')
+    expect(appFlowTab.getAttribute('aria-selected')).toBe('false')
+    expect(pageNavTab.tabIndex).toBe(0)
+    expect(appFlowTab.tabIndex).toBe(-1)
+    // Semantic rebuild: page_nav nodes, no leftover af: journey
+    expect(
+      screen
+        .getAllByTestId('flow-node')
+        .some((n) => n.getAttribute('data-node-id') === 'pn:rn:rn-about'),
+    ).toBe(true)
+    expect(
+      screen
+        .getAllByTestId('flow-node')
+        .some((n) => n.getAttribute('data-node-id')?.startsWith('af:')),
+    ).toBe(false)
+
+    // ArrowLeft wrap back to app_flow
+    fireEvent.keyDown(pageNavTab, { key: 'ArrowLeft' })
+    await flushRaf()
+    expect(root.getAttribute('data-layer')).toBe('app_flow')
+    expect(appFlowTab.tabIndex).toBe(0)
+    expect(
+      screen
+        .getAllByTestId('flow-node')
+        .some((n) => n.getAttribute('data-node-id') === 'af:rn:Login'),
+    ).toBe(true)
+
+    // ArrowDown → page_nav; ArrowUp → app_flow
+    fireEvent.keyDown(appFlowTab, { key: 'ArrowDown' })
+    await flushRaf()
+    expect(root.getAttribute('data-layer')).toBe('page_nav')
+    fireEvent.keyDown(pageNavTab, { key: 'ArrowUp' })
+    await flushRaf()
+    expect(root.getAttribute('data-layer')).toBe('app_flow')
+
+    // End → last layer; Home → first; wrap ArrowRight from End
+    fireEvent.keyDown(appFlowTab, { key: 'End' })
+    await flushRaf()
+    expect(root.getAttribute('data-layer')).toBe('page_nav')
+    expect(pageNavTab.tabIndex).toBe(0)
+    fireEvent.keyDown(pageNavTab, { key: 'ArrowRight' })
+    await flushRaf()
+    expect(root.getAttribute('data-layer')).toBe('app_flow')
+    expect(appFlowTab.tabIndex).toBe(0)
+    fireEvent.keyDown(appFlowTab, { key: 'Home' })
+    await flushRaf()
+    expect(root.getAttribute('data-layer')).toBe('app_flow')
+    expect(appFlowTab.getAttribute('aria-selected')).toBe('true')
+    // Still in-place Alur — no route
+    expect(root.getAttribute('data-page')).toBe('alur')
+    expect(root.getAttribute('data-mode')).toBe('rn')
+  })
+
   it('D-A11Y-04: initial focus, Tab trap, Escape return, closed non-tabbable', async () => {
     render(<FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />)
     const first = screen.getAllByTestId('flow-node')[0]
@@ -312,20 +722,16 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
       )
     })
 
-    // Tab from close should stay inside sheet (cycle)
     const closeBtn = screen.getByTestId('flow-sheet-close')
     closeBtn.focus()
     fireEvent.keyDown(document, { key: 'Tab' })
-    // After trap handler: if only close is focusable-ish, still contained
     await act(async () => {
-      // dispatch real keydown on document as product listens there
       document.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
       )
     })
     expect(sheet.contains(document.activeElement as Node)).toBe(true)
 
-    // Escape closes and returns focus to opener node
     await act(async () => {
       document.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
@@ -341,7 +747,6 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
       expect(document.activeElement).toBe(first)
     })
 
-    // Closed sheet: close control not tabbable
     expect(closeBtn.tabIndex).toBe(-1)
   })
 
@@ -370,20 +775,17 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
       'web-member',
     )
 
-    // Focus on intentional initiating control (mode pill), not lost / not body
     await waitFor(() => {
       expect(document.activeElement).toBe(webMember)
     })
     expect(document.activeElement?.getAttribute('role')).toBe('tab')
 
-    // Original opener unmounted after rebuild — must not remain as focused stale node
     if (firstId) {
       expect(
         document.activeElement?.getAttribute('data-node-id') === firstId,
       ).toBe(false)
     }
 
-    // Escape restore still works on a fresh open in the new mode
     const nodeAfter = screen.getAllByTestId('flow-node')[0]
     nodeAfter.focus()
     fireEvent.keyDown(nodeAfter, { key: 'Enter' })
@@ -411,7 +813,6 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
     const sheet = screen.getByTestId('flow-sheet')
     expect(sheet.className).toContain('is-open')
 
-    // Activate mode tab via keyboard APG while sheet is open (pointer/SR parity path)
     const cross = screen.getByRole('tab', { name: /Lintas Proyek/i })
     const rn = screen.getByRole('tab', { name: /React Native/i })
     cross.focus()
@@ -426,7 +827,6 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(rn)
     })
-    // Focus is a real control, not document body / null
     expect(
       document.activeElement === document.body ||
         document.activeElement == null,
@@ -435,7 +835,6 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
 
   it('D-A11Y-04 repair: brand reset while sheet open closes + focuses brand', async () => {
     render(<FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />)
-    // Open sheet in a non-cross mode so brand reset also rebuilds
     fireEvent.click(screen.getByRole('tab', { name: /Web Member/i }))
     await flushRaf()
 
@@ -460,7 +859,6 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
       expect(document.activeElement).toBe(brand)
     })
 
-    // Same-mode brand reset also closes (sheet open on cross)
     const crossNode = screen.getAllByTestId('flow-node')[0]
     crossNode.focus()
     fireEvent.keyDown(crossNode, { key: 'Enter' })
@@ -500,7 +898,7 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Web Member/i }))
     await flushRaf()
     expect(summary.textContent || '').toMatch(/Web Member/)
-    expect(summary.textContent || '').toMatch(/1 node/)
+    expect(summary.textContent || '').toMatch(/\d+\s+nodes?/)
   })
 
   it('D-A11Y-12/13: zoom aria-labels and document h1 not inside button', () => {
@@ -512,9 +910,7 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
     const headings = screen.getAllByRole('heading', { level: 1 })
     expect(headings).toHaveLength(1)
     expect(headings[0].textContent || '').toMatch(/Alur/i)
-    // Adversarial: heading must not be contained by a button (pre-repair structure)
     expect(headings[0].closest('button')).toBeNull()
-    // Brand remains a real button with reset affordance
     expect(screen.getByTestId('flow-brand').tagName).toBe('BUTTON')
     expect(screen.getByTestId('flow-brand').getAttribute('aria-label')).toMatch(
       /Alur/i,

@@ -1,17 +1,23 @@
-import { humanizeTitle } from './humanize'
+import { formatNodeMeta, humanizeTitle } from './humanize'
 import {
   CARD_H,
   CARD_W,
+  CROSS_PROJECT_ORDER,
   GAP_X,
   GAP_Y,
   PROJ_META,
   STORAGE_KEY,
+  type FlowAppFlowSemanticEdge,
+  type FlowAppFlowSemanticNode,
   type FlowDataBundle,
+  type FlowEdge,
   type FlowFeature,
   type FlowGraph,
   type FlowMode,
+  type FlowNavLayer,
   type FlowNode,
-  type FlowPremiumStep,
+  type FlowPageNavSemanticEdge,
+  type FlowPageNavSemanticNode,
 } from './types'
 
 export function projectKey(p: string | undefined | null): string {
@@ -66,20 +72,49 @@ export function findFeature(
   return null
 }
 
-function premiumFeatureMap(step: FlowPremiumStep): string | null {
-  const map: Record<number, string> = {
-    1: 'FEAT-HARGA-PAKET',
-    2: 'FEAT-HARGA-PAKET',
-    3: 'FEAT-LANDING-HARGA',
-    4: 'FEAT-CHECKOUT-WEB',
-    5: 'FEAT-HARGA-PAKET',
-    6: 'FEAT-CHECKOUT-WEB',
-    7: 'FEAT-CLEENG',
-    8: 'FEAT-PAYWALL',
-    9: 'FEAT-SALES-TXN',
-    10: 'FEAT-AFFILIATE',
-  }
-  return map[step.n] || null
+// ---------------------------------------------------------------------------
+// Semantic client ID namespaces — never merge; never rewrite exact endpoints
+// ---------------------------------------------------------------------------
+
+/** app_flow journey card id */
+export function clientAppFlowNodeId(project: string, nodeId: string): string {
+  return `af:${projectKey(project)}:${nodeId}`
+}
+
+/** page_nav journey card id */
+export function clientPageNavNodeId(project: string, pageId: string): string {
+  return `pn:${projectKey(project)}:${pageId}`
+}
+
+/** feature inventory card id — never an edge endpoint */
+export function clientInventoryNodeId(
+  project: string,
+  featureId: string,
+): string {
+  return `inv:${projectKey(project)}:${featureId}`
+}
+
+/** app_flow edge runtime id */
+export function clientAppFlowEdgeId(project: string, edgeId: string): string {
+  return `nav:${projectKey(project)}:${edgeId}`
+}
+
+/** page_nav edge runtime id (edge_id already `${from}->${to}`) */
+export function clientPageNavEdgeId(edgeId: string): string {
+  return `page_nav:${edgeId}`
+}
+
+/**
+ * localStorage mode bucket under STORAGE_KEY (`cairn-flow-pos-v1`).
+ * Namespaced by mode+layer so old bare feature / sequential fiction entries
+ * cannot collide with prefixed semantic node ids.
+ */
+export function positionStorageKey(
+  mode: FlowMode | string,
+  layer: FlowNavLayer = 'app_flow',
+): string {
+  if (mode === 'cross') return 'cross:app_flow'
+  return `${mode}:${layer}`
 }
 
 export type PositionMap = Record<string, { x: number; y: number }>
@@ -117,214 +152,390 @@ export function savePosition(
   }
 }
 
-export function buildCrossGraph(
-  data: FlowDataBundle,
-  saved?: PositionMap,
-): FlowGraph {
-  const ns: FlowNode[] = []
-  const es: { from: string; to: string }[] = []
-  const posMap = saved || loadPositions('cross')
-  let row = 0
+// ---------------------------------------------------------------------------
+// Layout (positions only — never edges)
+// ---------------------------------------------------------------------------
 
-  function placeFlow(
-    flowId: string,
-    title: string,
-    steps: Array<FlowPremiumStep & { feature_id?: string | null }>,
-  ) {
-    const baseY = row * (CARD_H + GAP_Y + 48) + 40
-    steps.forEach((step, i) => {
-      const id = `${flowId}:${i + 1}`
-      const proj = projectKey(step.proj || step.project)
-      const featId = step.feature_id || premiumFeatureMap(step) || null
-      const found = featId ? findFeature(data, featId, proj) : null
-      const st =
-        step.st === 'ok'
-          ? 'terbukti'
-          : step.st === 'warn'
-            ? 'sebagian'
-            : found
-              ? found.feature.status
-              : 'sebagian'
-      const pct = found ? found.feature.pct : step.st === 'ok' ? 100 : 70
-      const screens = found ? (found.feature.screens || []).length : 0
-      const defaultX = 40 + i * (CARD_W + GAP_X)
-      const defaultY = baseY
-      const pos = posMap[id] || { x: defaultX, y: defaultY }
-      ns.push({
-        id,
-        x: pos.x,
-        y: pos.y,
-        title: humanizeTitle(step.title),
-        meta: screens ? `${screens} screens · ${pct}%` : `${pct}%`,
-        status: st,
-        project: proj,
-        featureId: featId,
-        step,
-        kind: 'cross',
-        flowTitle: title,
-        apis: step.api && step.api !== '—' ? [step.api] : [],
-      })
-      if (i > 0) es.push({ from: `${flowId}:${i}`, to: id })
-    })
-    row += 1
+const GRID_COL_CAP = 7
+
+function defaultGridPos(index: number): { x: number; y: number } {
+  const col = Math.floor(index / GRID_COL_CAP)
+  const row = index % GRID_COL_CAP
+  return {
+    x: 40 + col * (CARD_W + GAP_X),
+    y: 40 + row * (CARD_H + GAP_Y),
   }
-
-  const premiumSteps = (data.premium && data.premium.steps) || []
-  placeFlow(
-    'premium',
-    (data.premium && data.premium.name) || 'Pembelian Premium',
-    premiumSteps.map((s) => ({
-      ...s,
-      feature_id: premiumFeatureMap(s) ?? undefined,
-    })),
-  )
-
-  placeFlow('auth', 'Login & sesi anggota', [
-    {
-      n: 1,
-      proj: 'rn',
-      title: 'Masuk di aplikasi',
-      feature_id: 'FEAT-AUTH-MEMBER',
-      st: 'warn',
-    },
-    {
-      n: 2,
-      proj: 'backend',
-      title: 'Terbitkan sesi & token',
-      feature_id: 'FEAT-AUTH-MEMBER',
-      st: 'warn',
-    },
-    {
-      n: 3,
-      proj: 'web-member',
-      title: 'Masuk di web member',
-      feature_id: 'FEAT-AUTH-MEMBER',
-      st: 'warn',
-    },
-  ])
-
-  placeFlow('aff', 'Atribusi & komisi afiliasi', [
-    {
-      n: 1,
-      proj: 'web-member',
-      title: 'Tautan undangan publik',
-      feature_id: 'FEAT-AFFILIATE',
-      st: 'warn',
-    },
-    {
-      n: 2,
-      proj: 'web-member',
-      title: 'Checkout ber-kode mitra',
-      feature_id: 'FEAT-CHECKOUT-WEB',
-      st: 'warn',
-    },
-    {
-      n: 3,
-      proj: 'backend',
-      title: 'Catat referral & komisi',
-      feature_id: 'FEAT-AFFILIATE',
-      st: 'warn',
-    },
-    {
-      n: 4,
-      proj: 'affiliate',
-      title: 'Portal mitra melihat saldo',
-      feature_id: 'FEAT-AFFILIATE',
-      st: 'warn',
-    },
-    {
-      n: 5,
-      proj: 'backend',
-      title: 'Payout lewat Xendit',
-      feature_id: 'FEAT-XENDIT',
-      st: 'warn',
-    },
-  ])
-
-  placeFlow('iap', 'Pembelian dalam aplikasi', [
-    {
-      n: 1,
-      proj: 'rn',
-      title: 'Paywall di aplikasi',
-      feature_id: 'FEAT-PAYWALL',
-      st: 'warn',
-    },
-    {
-      n: 2,
-      proj: 'rn',
-      title: 'Beli lewat toko aplikasi',
-      feature_id: 'FEAT-REVENUECAT',
-      st: 'warn',
-    },
-    {
-      n: 3,
-      proj: 'backend',
-      title: 'Webhook pembelian',
-      feature_id: 'FEAT-REVENUECAT',
-      st: 'warn',
-    },
-    {
-      n: 4,
-      proj: 'backend',
-      title: 'Status premium aktif',
-      feature_id: 'FEAT-PAYWALL',
-      st: 'warn',
-    },
-  ])
-
-  return { nodes: ns, edges: es }
 }
 
-export function buildProjectGraph(
+function layoutFromSemantic(
+  col: number | undefined | null,
+  row: number | undefined | null,
+  fallbackIndex: number,
+): { x: number; y: number } {
+  if (
+    col != null &&
+    row != null &&
+    Number.isFinite(col) &&
+    Number.isFinite(row) &&
+    (col > 0 || row > 0 || col === 0)
+  ) {
+    // layout_col/row may be 0-based; treat as grid coords when both set
+    return {
+      x: 40 + Number(col) * (CARD_W + GAP_X),
+      y: 40 + Number(row) * (CARD_H + GAP_Y),
+    }
+  }
+  return defaultGridPos(fallbackIndex)
+}
+
+function journeyMetaFromFeature(
+  data: FlowDataBundle,
+  featureId: string | null | undefined,
+  preferProj: string,
+  fallbackKind: string,
+): { meta: string; status: string } {
+  const found = featureId ? findFeature(data, featureId, preferProj) : null
+  if (found) {
+    const sc = (found.feature.screens || []).length
+    return {
+      meta: formatNodeMeta(sc, found.feature.pct),
+      status: found.feature.status,
+    }
+  }
+  return { meta: fallbackKind, status: 'sebagian' }
+}
+
+// ---------------------------------------------------------------------------
+// Inventory nodes (project mode only) — never connected
+// ---------------------------------------------------------------------------
+
+export function buildInventoryNodes(
   data: FlowDataBundle,
   projId: string,
   saved?: PositionMap,
-): FlowGraph {
+  startIndex = 0,
+): FlowNode[] {
   const list = (data.features[projId] || []).slice()
-  const posMap = saved || loadPositions(projId)
+  // Stable order by id for deterministic layout
+  list.sort((a, b) => a.id.localeCompare(b.id))
+  const posMap = saved || {}
   const ns: FlowNode[] = []
-  const es: { from: string; to: string }[] = []
-  if (!list.length) return { nodes: ns, edges: es }
-
-  const COL_CAP = 7
-  list.forEach((f, idx) => {
-    const col = Math.floor(idx / COL_CAP)
-    const row = idx % COL_CAP
-    const id = f.id
-    const defaultX = 40 + col * (CARD_W + GAP_X)
-    const defaultY = 40 + row * (CARD_H + GAP_Y)
+  list.forEach((f, i) => {
+    const id = clientInventoryNodeId(projId, f.id)
+    const idx = startIndex + i
+    const def = defaultGridPos(idx)
+    // Offset inventory below journey area when mixed
+    const defaultX = def.x
+    const defaultY = def.y + (startIndex > 0 ? CARD_H + GAP_Y : 0)
     const pos = posMap[id] || { x: defaultX, y: defaultY }
     const sc = (f.screens || []).length
     ns.push({
       id,
       x: pos.x,
       y: pos.y,
-      title: f.nama_id,
-      meta: `${sc} screens · ${f.pct || 0}%`,
+      title: humanizeTitle(f.nama_id),
+      meta: formatNodeMeta(sc, f.pct),
       status: f.status,
       project: projId,
       featureId: f.id,
-      kind: 'feature',
+      kind: 'inventory',
+      inventoryBadge: true,
     })
-    if (row > 0) {
-      const prev = list[idx - 1]
-      if (prev) es.push({ from: prev.id, to: id })
-    } else if (col > 0) {
-      const hub = list[(col - 1) * COL_CAP]
-      if (hub) es.push({ from: hub.id, to: id })
-    }
   })
+  return ns
+}
+
+// ---------------------------------------------------------------------------
+// Semantic edge mappers — drop dangling; never invent stubs
+// ---------------------------------------------------------------------------
+
+export function mapAppFlowEdge(
+  project: string,
+  edge: FlowAppFlowSemanticEdge,
+  nodeIds: Set<string>,
+): FlowEdge | null {
+  const from = clientAppFlowNodeId(project, edge.from_node)
+  const to = clientAppFlowNodeId(project, edge.to_node)
+  if (!nodeIds.has(from) || !nodeIds.has(to)) return null
+  return {
+    id: clientAppFlowEdgeId(project, edge.edge_id),
+    from,
+    to,
+    edge_class: 'nav',
+  }
+}
+
+export function mapPageNavEdge(
+  project: string,
+  edge: FlowPageNavSemanticEdge,
+  nodeIds: Set<string>,
+): FlowEdge | null {
+  const from = clientPageNavNodeId(project, edge.from_page)
+  const to = clientPageNavNodeId(project, edge.to_page)
+  if (!nodeIds.has(from) || !nodeIds.has(to)) return null
+  return {
+    id: clientPageNavEdgeId(edge.edge_id),
+    from,
+    to,
+    edge_class: 'page_nav',
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Project graph — one layer at a time + optional unconnected inventory
+// ---------------------------------------------------------------------------
+
+function sortAppFlowNodes(
+  nodes: FlowAppFlowSemanticNode[],
+): FlowAppFlowSemanticNode[] {
+  return nodes.slice().sort((a, b) => {
+    if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
+    return a.node_id.localeCompare(b.node_id)
+  })
+}
+
+function sortPageNavNodes(
+  nodes: FlowPageNavSemanticNode[],
+): FlowPageNavSemanticNode[] {
+  return nodes.slice().sort((a, b) => {
+    const sa = (a as { sort_order?: number }).sort_order ?? 0
+    const sb = (b as { sort_order?: number }).sort_order ?? 0
+    if (sa !== sb) return sa - sb
+    return a.page_id.localeCompare(b.page_id)
+  })
+}
+
+export function buildSemanticProjectGraph(
+  data: FlowDataBundle,
+  projId: string,
+  layer: FlowNavLayer = 'app_flow',
+  saved?: PositionMap,
+): FlowGraph {
+  const proj = projectKey(projId)
+  const posMap = saved || loadPositions(positionStorageKey(proj, layer))
+  const ns: FlowNode[] = []
+  const es: FlowEdge[] = []
+  const nav = data.nav
+  const projectNav = nav?.by_project?.[proj]
+
+  if (layer === 'app_flow' && projectNav?.app_flow) {
+    const sorted = sortAppFlowNodes(projectNav.app_flow.nodes)
+    sorted.forEach((n, i) => {
+      const id = clientAppFlowNodeId(proj, n.node_id)
+      const def = layoutFromSemantic(n.layout_col, n.layout_row, i)
+      const pos = posMap[id] || def
+      const { meta, status } = journeyMetaFromFeature(
+        data,
+        n.feature_id,
+        proj,
+        'Layar',
+      )
+      ns.push({
+        id,
+        x: pos.x,
+        y: pos.y,
+        title: humanizeTitle(n.label_id || n.node_id),
+        meta,
+        status,
+        project: proj,
+        featureId: n.feature_id,
+        kind: 'journey_app',
+        semanticRef: {
+          layer: 'app_flow',
+          exactId: n.node_id,
+          project: proj,
+        },
+      })
+    })
+    const nodeIds = new Set(ns.map((n) => n.id))
+    const edges = projectNav.app_flow.edges
+      .slice()
+      .sort((a, b) => {
+        if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
+        return a.edge_id.localeCompare(b.edge_id)
+      })
+    for (const e of edges) {
+      const mapped = mapAppFlowEdge(proj, e, nodeIds)
+      if (mapped) es.push(mapped)
+    }
+  } else if (layer === 'page_nav' && projectNav?.page_nav) {
+    const sorted = sortPageNavNodes(projectNav.page_nav.nodes)
+    sorted.forEach((n, i) => {
+      const id = clientPageNavNodeId(proj, n.page_id)
+      const def = defaultGridPos(i)
+      const pos = posMap[id] || def
+      const { meta, status } = journeyMetaFromFeature(
+        data,
+        n.feature_id,
+        proj,
+        n.area ? humanizeTitle(n.area) : 'Laman',
+      )
+      const routeHint = n.route
+        ? humanizeTitle(n.route.replace(/^\/+/, '').split('/')[0] || 'Laman')
+        : meta
+      ns.push({
+        id,
+        x: pos.x,
+        y: pos.y,
+        title: humanizeTitle(n.label_id || n.page_id),
+        meta: n.route ? routeHint : meta,
+        status,
+        project: proj,
+        featureId: n.feature_id,
+        kind: 'journey_page',
+        semanticRef: {
+          layer: 'page_nav',
+          exactId: n.page_id,
+          project: proj,
+        },
+      })
+    })
+    const nodeIds = new Set(ns.map((n) => n.id))
+    const edges = projectNav.page_nav.edges
+      .slice()
+      .sort((a, b) => {
+        if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
+        return a.edge_id.localeCompare(b.edge_id)
+      })
+    for (const e of edges) {
+      const mapped = mapPageNavEdge(proj, e, nodeIds)
+      if (mapped) es.push(mapped)
+    }
+  }
+
+  // Unconnected inventory (features) — never edges, never list-order fiction
+  const inv = buildInventoryNodes(data, proj, posMap, ns.length)
+  // Place inventory to the right of journey cards when both present
+  if (ns.length > 0 && inv.length > 0) {
+    let maxJourneyX = 0
+    for (const n of ns) maxJourneyX = Math.max(maxJourneyX, n.x + CARD_W)
+    inv.forEach((n, i) => {
+      if (!posMap[n.id]) {
+        const row = i % GRID_COL_CAP
+        const col = Math.floor(i / GRID_COL_CAP)
+        n.x = maxJourneyX + GAP_X + col * (CARD_W + GAP_X)
+        n.y = 40 + row * (CARD_H + GAP_Y)
+      }
+    })
+  }
+  ns.push(...inv)
+
   return { nodes: ns, edges: es }
+}
+
+/**
+ * @deprecated Prefer buildSemanticProjectGraph. Kept as alias for tests/callers.
+ * No list-order layout edges — inventory only when nav absent.
+ */
+export function buildProjectGraph(
+  data: FlowDataBundle,
+  projId: string,
+  saved?: PositionMap,
+  layer: FlowNavLayer = 'app_flow',
+): FlowGraph {
+  return buildSemanticProjectGraph(data, projId, layer, saved)
+}
+
+// ---------------------------------------------------------------------------
+// Cross graph — union of five projects' app_flow; no synthetic / inter-project
+// ---------------------------------------------------------------------------
+
+export function buildSemanticCrossGraph(
+  data: FlowDataBundle,
+  saved?: PositionMap,
+): FlowGraph {
+  const posMap = saved || loadPositions(positionStorageKey('cross', 'app_flow'))
+  const ns: FlowNode[] = []
+  const es: FlowEdge[] = []
+  const nav = data.nav
+  if (!nav?.by_project) {
+    // No semantic source: zero journey nodes, zero edges (never invent premium/auth fiction)
+    return { nodes: ns, edges: es }
+  }
+
+  let row = 0
+  for (const proj of CROSS_PROJECT_ORDER) {
+    const projectNav = nav.by_project[proj]
+    if (!projectNav?.app_flow?.nodes?.length) {
+      row += 1
+      continue
+    }
+    const baseY = row * (CARD_H + GAP_Y + 48) + 40
+    const sorted = sortAppFlowNodes(projectNav.app_flow.nodes)
+    const projectNodeIds = new Set<string>()
+    sorted.forEach((n, i) => {
+      const id = clientAppFlowNodeId(proj, n.node_id)
+      projectNodeIds.add(id)
+      const defX = 40 + i * (CARD_W + GAP_X)
+      // Prefer layout_col within the project row when available
+      const def =
+        n.layout_col != null && Number.isFinite(n.layout_col)
+          ? {
+              x: 40 + Number(n.layout_col) * (CARD_W + GAP_X),
+              y: baseY + (Number(n.layout_row) || 0) * (CARD_H + GAP_Y),
+            }
+          : { x: defX, y: baseY }
+      const pos = posMap[id] || def
+      const { meta, status } = journeyMetaFromFeature(
+        data,
+        n.feature_id,
+        proj,
+        'Layar',
+      )
+      ns.push({
+        id,
+        x: pos.x,
+        y: pos.y,
+        title: humanizeTitle(n.label_id || n.node_id),
+        meta,
+        status,
+        project: proj,
+        featureId: n.feature_id,
+        kind: 'journey_app',
+        semanticRef: {
+          layer: 'app_flow',
+          exactId: n.node_id,
+          project: proj,
+        },
+      })
+    })
+    // Only exact per-project app_flow edges (no inter-project lines)
+    const edges = projectNav.app_flow.edges
+      .slice()
+      .sort((a, b) => {
+        if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
+        return a.edge_id.localeCompare(b.edge_id)
+      })
+    for (const e of edges) {
+      const mapped = mapAppFlowEdge(proj, e, projectNodeIds)
+      if (mapped) es.push(mapped)
+    }
+    row += 1
+  }
+
+  return { nodes: ns, edges: es }
+}
+
+/**
+ * @deprecated Prefer buildSemanticCrossGraph. Kept as alias for tests/callers.
+ * No premium/auth/aff/iap sequential fiction.
+ */
+export function buildCrossGraph(
+  data: FlowDataBundle,
+  saved?: PositionMap,
+): FlowGraph {
+  return buildSemanticCrossGraph(data, saved)
 }
 
 export function buildGraphForMode(
   data: FlowDataBundle,
   mode: FlowMode,
   saved?: PositionMap,
+  layer: FlowNavLayer = 'app_flow',
 ): FlowGraph {
   return mode === 'cross'
-    ? buildCrossGraph(data, saved)
-    : buildProjectGraph(data, mode, saved)
+    ? buildSemanticCrossGraph(data, saved)
+    : buildSemanticProjectGraph(data, mode, layer, saved)
 }
 
 export function clamp(n: number, a: number, b: number): number {
