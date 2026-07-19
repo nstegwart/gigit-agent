@@ -1,18 +1,32 @@
 /**
  * ART S13–S14 / S21 knowledge domain from pinned board data only.
+ * Canon-v3: control-center boards demote to /alur before knowledge loaders run.
  */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useMemo } from 'react'
 
 import { KnowledgeDomainScreen } from '#/components/control-center/knowledge'
 import { boardQueryOptions, useBoardId } from '#/lib/board-query'
 import { knowledgeDomainEnvelopeToViewModel } from '#/lib/control-center-route-adapters'
-import type { PinnedEnvelope } from '#/lib/control-center-query'
+import {
+  isControlCenterBoard,
+  type PinnedEnvelope,
+} from '#/lib/control-center-query'
 import { getControlCenterKnowledgeDomainFn } from '#/server/control-center-ui-fns'
 
 export const Route = createFileRoute('/b/$boardId/knowledge/domains/$domain')({
+  beforeLoad: ({ params }) => {
+    if (isControlCenterBoard(params.boardId)) {
+      throw redirect({
+        to: '/b/$boardId/alur',
+        params: { boardId: params.boardId },
+        replace: true,
+      })
+    }
+  },
   loader: async ({ context, params }) => {
+    // Control-center boards never reach here (beforeLoad → /alur).
     await context.queryClient.ensureQueryData(boardQueryOptions(params.boardId))
   },
   component: KnowledgeDomainRoute,
