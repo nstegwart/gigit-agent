@@ -226,6 +226,53 @@
   --shadow-lg: 0 1px 3px rgba(10, 10, 10, 0.06);
 }
 
+/*
+ * Canon-v3 dark surface + project identity tokens — alur document only.
+ * Authorized token host (modules consume var(...) only; no raw hex in screen CSS).
+ * Exact hex set preserved from flow-ultimate alur host (15 values).
+ */
+html[data-page='alur'] {
+  color-scheme: dark;
+  --bg: #0d1017;
+  --surface: #12161e;
+  --surface-2: #171c26;
+  --surface-3: #1b2130;
+  --surface-hover: #171c26;
+  --surface-active: #1b2130;
+  --border: #232a35;
+  --border-soft: #232a35;
+  --border-strong: #2f3a48;
+  --border-focus: #5b9dff;
+  --text: #e8edf3;
+  --text-dim: #8a95a3;
+  --text-faint: #586170;
+  --text-secondary: #8a95a3;
+  --text-tertiary: #586170;
+  --text-inverse: #0d1017;
+  --accent: #5b9dff;
+  --accent-bright: #5b9dff;
+  --accent-line: color-mix(in srgb, var(--accent) 33%, transparent);
+  --ok: #35c479;
+  --warn: #e5a54b;
+  --blocked: #e8635f;
+  --next: #f472b6;
+  /* project identity (canon tokens.css exact) */
+  --proj-rn: #f472b6;
+  --proj-web: #35c479;
+  --proj-sales: #e5a54b;
+  --proj-affiliate: #5b9dff;
+  --proj-backend: #a78bfa;
+}
+
+/* Project identity on canvas root — beats .flow-ultimate-root var() light fallbacks */
+html[data-page='alur'] .flow-ultimate-root {
+  --proj-rn: #f472b6;
+  --proj-web: #35c479;
+  --proj-sales: #e5a54b;
+  --proj-affiliate: #5b9dff;
+  --proj-backend: #a78bfa;
+}
+
 /* ---------- base ---------- */
 * {
   box-sizing: border-box;

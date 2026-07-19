@@ -23,35 +23,9 @@ body[data-page='alur'] {
 }
 
 /*
- * Canon-v3 dark surface tokens — scoped to alur document only.
- * Does not rewrite global styles.css for classic / public / admin.
+ * Alur dark surface + project identity hex live in src/styles.css (token host).
+ * This module consumes var(...) only (design-token-lint raw-color fence).
  */
-html[data-page='alur'] {
-  color-scheme: dark;
-  --bg: #0d1017;
-  --surface: #12161e;
-  --surface-2: #171c26;
-  --surface-3: #1b2130;
-  --surface-hover: #171c26;
-  --surface-active: #1b2130;
-  --border: #232a35;
-  --border-soft: #232a35;
-  --border-strong: #2f3a48;
-  --border-focus: #5b9dff;
-  --text: #e8edf3;
-  --text-dim: #8a95a3;
-  --text-faint: #586170;
-  --text-secondary: #8a95a3;
-  --text-tertiary: #586170;
-  --text-inverse: #0d1017;
-  --accent: #5b9dff;
-  --accent-bright: #5b9dff;
-  --accent-line: color-mix(in srgb, #5b9dff 33%, transparent);
-  --ok: #35c479;
-  --warn: #e5a54b;
-  --blocked: #e8635f;
-  --next: #f472b6;
-}
 
 .flow-ultimate-root {
   /* Canon → app design-system bridge (no raw hex/px fallbacks — token fence) */
@@ -110,13 +84,8 @@ html[data-page='alur'] {
   position: relative;
 }
 
-/* Canon project identity under primary alur shell (exact design tokens) */
+/* Primary alur shell layout lock (project identity hex hosted in styles.css) */
 html[data-page='alur'] .flow-ultimate-root {
-  --proj-rn: #f472b6;
-  --proj-web: #35c479;
-  --proj-sales: #e5a54b;
-  --proj-affiliate: #5b9dff;
-  --proj-backend: #a78bfa;
   height: 100dvh;
   width: 100vw;
   max-width: 100vw;
@@ -926,7 +895,6 @@ html[data-page='alur'] .app {
   width: 1px;
   height: 1px;
   padding: 0;
-  margin: -1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;

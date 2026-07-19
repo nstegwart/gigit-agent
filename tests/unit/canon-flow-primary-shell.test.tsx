@@ -25,6 +25,7 @@ const boardLayoutSrc = readSrc('src/routes/b.$boardId.tsx')
 const boardIndexSrc = readSrc('src/routes/b.$boardId.index.tsx')
 const alurSrc = readSrc('src/routes/b.$boardId.alur.tsx')
 const flowCss = readSrc('src/components/flow-ultimate/flow-ultimate.css')
+const stylesCss = readSrc('src/styles.css')
 const appShellSrc = readSrc('src/components/AppShell.tsx')
 
 describe('canon-v3 primary shell — pure helpers', () => {
@@ -144,13 +145,19 @@ describe('canon-v3 primary shell — alur layout excludes AppShell', () => {
   })
 
   it('flow CSS scopes full viewport + dark canon to alur only', () => {
+    // Layout / shell geometry remain module concerns
     expect(flowCss).toMatch(/100dvh/)
     expect(flowCss).toMatch(/100vw/)
     expect(flowCss).toMatch(/html\[data-page=['"]alur['"]\]/)
     expect(flowCss).toMatch(/\.alur-primary-shell/)
-    // Dark canon bg token present under alur scope
-    expect(flowCss).toMatch(/--bg:\s*#0d1017/)
+    // Dark canon --bg lives on the sanctioned host (styles.css), scoped to alur only
+    expect(stylesCss).toMatch(
+      /html\[data-page=['"]alur['"]\][\s\S]*?--bg:\s*#0d1017/,
+    )
+    // Module must not redeclare raw dark --bg (lint host/module split)
+    expect(flowCss).not.toMatch(/--bg:\s*#0d1017/)
     // Must not claim global body rewrite without data-page guard
+    expect(stylesCss).not.toMatch(/^body\s*\{[^}]*--bg:\s*#0d1017/m)
     expect(flowCss).not.toMatch(/^body\s*\{[^}]*--bg:\s*#0d1017/m)
   })
 
