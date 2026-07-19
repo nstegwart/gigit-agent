@@ -57,3 +57,26 @@ describe('canon-flow-fidelity-tokens — graph summary copy source', () => {
     expect(tsx).not.toMatch(/node\$\{count === 1 \? ['"]['"] : ['"]s['"]\}/)
   })
 })
+
+describe('canon-flow-fidelity-tokens — id-ID chrome node/zoom residuals', () => {
+  it('graph text-alt list aria uses Daftar simpul alur (not node)', () => {
+    expect(tsx).toMatch(
+      /data-testid="flow-graph-text-alt"[^>]*aria-label="Daftar simpul alur"/,
+    )
+    expect(tsx).not.toMatch(
+      /data-testid="flow-graph-text-alt"[^>]*aria-label="Daftar node alur"/,
+    )
+  })
+
+  it('visible hint uses seret/klik simpul (not English node jargon)', () => {
+    expect(tsx).toMatch(/seret simpul untuk pindah/)
+    expect(tsx).toMatch(/klik simpul untuk/)
+    expect(tsx).not.toMatch(/seret node untuk pindah/)
+    expect(tsx).not.toMatch(/klik node untuk/)
+  })
+
+  it('zoom control group aria uses Kontrol perbesaran (not zoom loanword)', () => {
+    expect(tsx).toMatch(/className="flow-zoom"[\s\S]*?aria-label="Kontrol perbesaran"/)
+    expect(tsx).not.toMatch(/aria-label="Kontrol zoom"/)
+  })
+})

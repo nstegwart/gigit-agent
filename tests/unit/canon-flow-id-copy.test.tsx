@@ -568,4 +568,31 @@ describe('canon-flow-id-copy — rendered chrome', () => {
     expect(text).not.toMatch(/\bnodes?\b/i)
     expect(text).not.toMatch(/\d+\s+node/i)
   })
+
+  it('chrome list/hint/zoom use simpul + perbesaran (reject residual EN node/zoom)', () => {
+    render(<FlowUltimateScreen data={fixture} boardId="mfs-rebuild" />)
+    // Graph text-alt list aria (was "Daftar node alur")
+    const textAlt = screen.getByTestId('flow-graph-text-alt')
+    const listLabel = textAlt.getAttribute('aria-label') || ''
+    expect(listLabel).toBe('Daftar simpul alur')
+    expect(listLabel).not.toMatch(/\bnode\b/i)
+    expect(listLabel).not.toContain('Daftar node alur')
+
+    // Visible canvas hint (was "seret node" / "klik node")
+    const hint = document.getElementById('flow-hint')
+    expect(hint).toBeTruthy()
+    const hintText = hint!.textContent || ''
+    expect(hintText).toMatch(/seret simpul/i)
+    expect(hintText).toMatch(/klik simpul/i)
+    expect(hintText).not.toMatch(/\bnode\b/i)
+    expect(hintText).not.toMatch(/seret node/i)
+    expect(hintText).not.toMatch(/klik node/i)
+
+    // Zoom group aria (was "Kontrol zoom")
+    const zoomGroup = document.querySelector('.flow-zoom')
+    const zoomLabel = zoomGroup?.getAttribute('aria-label') || ''
+    expect(zoomLabel).toBe('Kontrol perbesaran')
+    expect(zoomLabel).not.toMatch(/\bzoom\b/i)
+    expect(zoomLabel).not.toBe('Kontrol zoom')
+  })
 })

@@ -865,7 +865,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
       >
         {graphSummary}
       </div>
-      <ol className="flow-sr-only" data-testid="flow-graph-text-alt" aria-label="Daftar node alur">
+      <ol className="flow-sr-only" data-testid="flow-graph-text-alt" aria-label="Daftar simpul alur">
         {nodes.map((n) => (
           <li key={n.id}>
             {n.title}, {statusLabel(n.status)}
@@ -967,14 +967,14 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           className={`flow-hint${hintHidden ? ' is-hidden' : ''}`}
           id="flow-hint"
         >
-          Seret kanvas untuk geser · seret node untuk pindah · klik node untuk
+          Seret kanvas untuk geser · seret simpul untuk pindah · klik simpul untuk
           detail · panah untuk geser kanvas
         </div>
       </main>
 
       <div
         className="flow-zoom"
-        aria-label="Kontrol zoom"
+        aria-label="Kontrol perbesaran"
         inert={sheetOpen ? true : undefined}
       >
         <button
