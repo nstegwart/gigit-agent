@@ -268,6 +268,68 @@ export function parseEntityRevCell(value: unknown): number | null {
 }
 
 /**
+ * Format an instant as MySQL `DATETIME(3)` UTC literal: `YYYY-MM-DD HH:mm:ss.SSS`.
+ *
+ * Fail-closed: returns `null` for invalid/ambiguous input — never invents epoch,
+ * never uses locale, never emits `T`/`Z`. Preserves the exact UTC millisecond.
+ *
+ * Accepts:
+ * - finite epoch ms (number)
+ * - finite Date
+ * - ISO-8601 with explicit zone (`Z` or `±HH:MM`) — the P2 candidate shape from
+ *   `Date#toISOString()` that live staging rejected as `ER_TRUNCATED_WRONG_VALUE`
+ * - already-correct MySQL DATETIME(3) form (re-normalized via UTC)
+ */
+const MYSQL_DATETIME3_RE =
+  /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3})$/
+const HAS_EXPLICIT_TZ_RE = /(?:[zZ]|[+-]\d{2}:?\d{2})$/
+
+export function formatUtcMysqlDatetime3(
+  input: string | Date | number,
+): string | null {
+  let ms: number
+  if (typeof input === 'number') {
+    if (!Number.isFinite(input)) return null
+    ms = input
+  } else if (input instanceof Date) {
+    ms = input.getTime()
+    if (!Number.isFinite(ms)) return null
+  } else if (typeof input === 'string') {
+    // Bound + control-char gate before any parse (match CAS input hygiene).
+    if (input.length === 0 || input.length > 40) return null
+    if (/[\u0000-\u001f\u007f]/.test(input)) return null
+    if (MYSQL_DATETIME3_RE.test(input)) {
+      // Treat bare DATETIME(3) as UTC (no local-time Date.parse ambiguity).
+      ms = Date.parse(input.replace(' ', 'T') + 'Z')
+    } else if (HAS_EXPLICIT_TZ_RE.test(input)) {
+      ms = Date.parse(input)
+    } else {
+      // Ambiguous local / zone-less strings → fail closed.
+      return null
+    }
+    if (!Number.isFinite(ms)) return null
+  } else {
+    return null
+  }
+  return formatUtcMsAsMysqlDatetime3(ms)
+}
+
+function formatUtcMsAsMysqlDatetime3(ms: number): string | null {
+  if (!Number.isFinite(ms)) return null
+  const iso = new Date(ms).toISOString()
+  // Always `YYYY-MM-DDTHH:mm:ss.sssZ` for finite Dates.
+  if (
+    iso.length !== 24 ||
+    iso[10] !== 'T' ||
+    iso[iso.length - 1] !== 'Z'
+  ) {
+    return null
+  }
+  // YYYY-MM-DD + space + HH:mm:ss.sss  (no T, no Z)
+  return `${iso.slice(0, 10)} ${iso.slice(11, 23)}`
+}
+
+/**
  * Canonical pin hash (migration CHAR(64) / SHA-256 hex contract).
  * Trim once + lowercase; accept only exactly 64 lowercase hex digits.
  * Validate and persist this same normalized value (no raw-space drift).
@@ -490,7 +552,7 @@ function validateCandidateCountIntegrity(
 function validateCandidateForCas(
   candidate: Cp0SyncStatusPublishCandidate,
   expectedEntityRev: number | null,
-): { normalizedHash: string } {
+): { normalizedHash: string; mysqlFreshness: string } {
   if (candidate == null || typeof candidate !== 'object') {
     throw new Cp0PublisherMysqlError('INVALID_INPUT', 'candidate_missing')
   }
@@ -562,21 +624,23 @@ function validateCandidateForCas(
       )
     }
   }
-  // Freshness: nonempty ISO-ish string, hard bound 40 (DATETIME(3) / ISO8601).
-  if (
-    typeof candidate.freshness_at !== 'string' ||
-    candidate.freshness_at.length === 0 ||
-    candidate.freshness_at.length > 40 ||
-    /[\u0000-\u001f\u007f]/.test(candidate.freshness_at)
-  ) {
+  // Freshness bound for DATETIME(3): convert to UTC MySQL form before query.
+  // Candidate may still carry ISO-8601 (`…T…Z` from Date#toISOString); MySQL
+  // strict mode rejects that as ER_TRUNCATED_WRONG_VALUE on datetime(3).
+  if (typeof candidate.freshness_at !== 'string') {
     throw new Cp0PublisherMysqlError('INVALID_INPUT', 'freshness_at_invalid')
   }
-  return { normalizedHash }
+  const mysqlFreshness = formatUtcMysqlDatetime3(candidate.freshness_at)
+  if (mysqlFreshness == null) {
+    throw new Cp0PublisherMysqlError('INVALID_INPUT', 'freshness_at_invalid')
+  }
+  return { normalizedHash, mysqlFreshness }
 }
 
 function rowWriteParams(
   candidate: Cp0SyncStatusPublishCandidate,
   normalizedHash: string,
+  mysqlFreshness: string,
 ): {
   status: Cp0PublisherRawStatus
   outbox: number | null
@@ -600,7 +664,8 @@ function rowWriteParams(
     // Persist exactly the validated normalized hash (D2) — never raw padded input.
     hash: normalizedHash,
     lastAck: candidate.last_ack_revision,
-    freshness: candidate.freshness_at,
+    // DATETIME(3) UTC literal only — never raw ISO T/Z.
+    freshness: mysqlFreshness,
     entityRev: candidate.nextEntityRev,
     recordJson: serializeRecordJson(candidate.record),
   }
@@ -798,12 +863,12 @@ async function casPublishImpl(
   },
 ): Promise<Cp0PublisherCasOutcome> {
   try {
-    const { normalizedHash } = validateCandidateForCas(
+    const { normalizedHash, mysqlFreshness } = validateCandidateForCas(
       input.candidate,
       input.expectedEntityRev,
     )
     const c = input.candidate
-    const w = rowWriteParams(c, normalizedHash)
+    const w = rowWriteParams(c, normalizedHash, mysqlFreshness)
 
     if (input.expectedEntityRev === null) {
       // Plain INSERT only — never ON DUPLICATE KEY UPDATE.

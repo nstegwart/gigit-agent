@@ -15,6 +15,7 @@ import {
   assertValidPublisherBoardId,
   buildCp0PublisherLockName,
   createCp0SyncStatusPublisherMysqlDeps,
+  formatUtcMysqlDatetime3,
   freezeCp0Pin,
   isMysqlLockAcquiredScalar,
   parseBoundedHash,
@@ -1497,6 +1498,180 @@ describe('cp0-sync-status-publisher-mysql (PACKET-P3A)', () => {
         expectedEntityRev: null,
       })
       expect(dup).toEqual({ ok: false, conflict: true })
+    })
+  })
+
+  describe('formatUtcMysqlDatetime3 (DATETIME(3) UTC bind)', () => {
+    // Live a288 staging failure shape (no secrets): ISO from Date#toISOString()
+    // rejected by MySQL 8.4 strict as ER_TRUNCATED_WRONG_VALUE on datetime(3).
+    const LIVE_FAIL_ISO = '2026-07-19T07:24:36.554Z'
+    const LIVE_FAIL_MYSQL = '2026-07-19 07:24:36.554'
+
+    it('converts ISO T/Z to MySQL DATETIME(3) UTC (exact instant + ms)', () => {
+      expect(formatUtcMysqlDatetime3(LIVE_FAIL_ISO)).toBe(LIVE_FAIL_MYSQL)
+      expect(formatUtcMysqlDatetime3(NOW_ISO)).toBe('2026-07-18 18:00:00.000')
+      const ms = Date.parse(LIVE_FAIL_ISO)
+      expect(formatUtcMysqlDatetime3(ms)).toBe(LIVE_FAIL_MYSQL)
+      expect(formatUtcMysqlDatetime3(new Date(ms))).toBe(LIVE_FAIL_MYSQL)
+    })
+
+    it('emits no T, no Z; preserves millisecond precision', () => {
+      const out = formatUtcMysqlDatetime3('2026-07-19T07:24:36.554Z')
+      expect(out).toBe('2026-07-19 07:24:36.554')
+      expect(out).not.toMatch(/[TZ]/)
+      expect(out).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/)
+      // Non-zero fractional ms survive (not rounded to whole seconds).
+      expect(out!.endsWith('.554')).toBe(true)
+    })
+
+    it('re-normalizes already-correct MySQL DATETIME(3) as UTC', () => {
+      expect(formatUtcMysqlDatetime3('2026-07-19 07:24:36.554')).toBe(
+        '2026-07-19 07:24:36.554',
+      )
+    })
+
+    it('fail-closed on invalid / ambiguous / control-char input', () => {
+      expect(formatUtcMysqlDatetime3('')).toBeNull()
+      expect(formatUtcMysqlDatetime3('not-a-date')).toBeNull()
+      expect(formatUtcMysqlDatetime3('2026-07-19T07:24:36.554')).toBeNull() // no zone
+      expect(formatUtcMysqlDatetime3('2026-07-19T07:24:36.554Z\n')).toBeNull()
+      expect(formatUtcMysqlDatetime3(Number.NaN)).toBeNull()
+      expect(formatUtcMysqlDatetime3(new Date(Number.NaN))).toBeNull()
+      expect(formatUtcMysqlDatetime3('x'.repeat(41))).toBeNull()
+    })
+  })
+
+  describe('casPublish DATETIME(3) bind regression (a288 ISO shape)', () => {
+    // Live a288: every CAS failed ER_TRUNCATED_WRONG_VALUE because freshness_at
+    // was bound as YYYY-MM-DDTHH:mm:ss.sssZ. Prove query args are MySQL form.
+    const LIVE_FAIL_ISO = '2026-07-19T07:24:36.554Z'
+    const LIVE_FAIL_MYSQL = '2026-07-19 07:24:36.554'
+
+    it('INSERT binds freshness_at as UTC MySQL DATETIME(3) (no T/Z)', async () => {
+      const client = createScriptedMysql()
+      const deps = createCp0SyncStatusPublisherMysqlDeps(client)
+      const out = await deps.casPublish!({
+        candidate: baseCandidate({
+          freshness_at: LIVE_FAIL_ISO,
+          measuredAtMs: Date.parse(LIVE_FAIL_ISO),
+          expectedEntityRev: null,
+          nextEntityRev: 1,
+        }),
+        expectedEntityRev: null,
+      })
+      expect(out).toEqual({ ok: true })
+      const insert = client.calls.find((c) =>
+        /INSERT INTO control_plane_sync_status/i.test(c.sql),
+      )
+      expect(insert).toBeTruthy()
+      // INSERT param order: board_id … last_ack, freshness_at, entity_rev, record_json
+      const bound = insert!.params[9]
+      expect(bound).toBe(LIVE_FAIL_MYSQL)
+      expect(String(bound)).not.toMatch(/[TZ]/)
+      expect(String(bound)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/)
+      // Instant preserved: parse MySQL form as UTC equals original ms.
+      expect(Date.parse(String(bound).replace(' ', 'T') + 'Z')).toBe(
+        Date.parse(LIVE_FAIL_ISO),
+      )
+      expect(client.rows.get(BOARD)?.freshness_at).toBe(LIVE_FAIL_MYSQL)
+    })
+
+    it('UPDATE CAS binds freshness_at as UTC MySQL DATETIME(3); CAS fence unchanged', async () => {
+      const client = createScriptedMysql({
+        rows: new Map([
+          [
+            BOARD,
+            {
+              board_id: BOARD,
+              status: 'READBACK_REQUIRED',
+              entity_rev: 2,
+              outbox_pending: null,
+              legacy_unreplayed: null,
+              effective_backlog: null,
+              board_rev: 9,
+              lifecycle_rev: 1,
+              canonical_hash: PIN_HASH,
+              last_ack_revision: null,
+              freshness_at: '2026-07-19 07:00:00.000',
+            },
+          ],
+        ]),
+      })
+      const deps = createCp0SyncStatusPublisherMysqlDeps(client)
+      const out = await deps.casPublish!({
+        candidate: baseCandidate({
+          freshness_at: LIVE_FAIL_ISO,
+          measuredAtMs: Date.parse(LIVE_FAIL_ISO),
+          expectedEntityRev: 2,
+          nextEntityRev: 3,
+          rawStatus: 'READBACK_REQUIRED',
+        }),
+        expectedEntityRev: 2,
+      })
+      expect(out).toEqual({ ok: true })
+      const upd = client.calls.find((c) =>
+        /^UPDATE control_plane_sync_status/i.test(c.sql.trim()),
+      )
+      expect(upd).toBeTruthy()
+      // UPDATE: status…last_ack, freshness_at, entity_rev, record_json, board_id, expected_rev
+      expect(upd!.params[8]).toBe(LIVE_FAIL_MYSQL)
+      expect(String(upd!.params[8])).not.toMatch(/[TZ]/)
+      expect(upd!.params[9]).toBe(3) // next entity_rev
+      expect(upd!.params[11]).toBe(BOARD)
+      expect(upd!.params[12]).toBe(2) // CAS expected entity_rev fence
+      expect(upd!.sql).toMatch(/WHERE board_id=\? AND entity_rev=\?/)
+      expect(client.rows.get(BOARD)?.entity_rev).toBe(3)
+      expect(client.rows.get(BOARD)?.freshness_at).toBe(LIVE_FAIL_MYSQL)
+    })
+
+    it('invalid freshness_at fails before any write query', async () => {
+      const client = createScriptedMysql()
+      const deps = createCp0SyncStatusPublisherMysqlDeps(client)
+      const before = client.calls.length
+      const out = await deps.casPublish!({
+        candidate: baseCandidate({
+          freshness_at: 'not-a-datetime',
+          expectedEntityRev: null,
+          nextEntityRev: 1,
+        }),
+        expectedEntityRev: null,
+      })
+      expect(out.ok).toBe(false)
+      if (!out.ok && out.conflict !== true) {
+        expect(out.error).toMatchObject({
+          name: 'Cp0PublisherMysqlError',
+          code: 'INVALID_INPUT',
+          message: 'freshness_at_invalid',
+        })
+      } else {
+        expect.fail('expected INVALID_INPUT non-conflict reject')
+      }
+      const writes = client.calls.filter(
+        (c) =>
+          /INSERT INTO control_plane_sync_status/i.test(c.sql) ||
+          /^UPDATE control_plane_sync_status/i.test(c.sql.trim()),
+      )
+      expect(writes).toHaveLength(0)
+      expect(client.calls.length).toBe(before)
+    })
+
+    it('NOW_ISO candidate still inserts; bound value is MySQL form not ISO', async () => {
+      const client = createScriptedMysql()
+      const deps = createCp0SyncStatusPublisherMysqlDeps(client)
+      const out = await deps.casPublish!({
+        candidate: baseCandidate({
+          freshness_at: NOW_ISO,
+          expectedEntityRev: null,
+          nextEntityRev: 1,
+        }),
+        expectedEntityRev: null,
+      })
+      expect(out).toEqual({ ok: true })
+      const insert = client.calls.find((c) =>
+        /INSERT INTO control_plane_sync_status/i.test(c.sql),
+      )
+      expect(insert!.params[9]).toBe('2026-07-18 18:00:00.000')
+      expect(insert!.params[9]).not.toBe(NOW_ISO)
     })
   })
 
