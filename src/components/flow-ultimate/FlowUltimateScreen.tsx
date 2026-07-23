@@ -77,6 +77,45 @@ const PAN_STEP_FAST = 80
 /** Project-mode layer tabs (hidden in cross — no hidden-focus target). */
 const FLOW_NAV_LAYERS: FlowNavLayer[] = ['app_flow', 'page_nav']
 
+/**
+ * Screen-space edge stroke width in CSS pixels.
+ * Kept constant under zoom so edges stay ~1.5px on the viewport (not world-scaled).
+ */
+export const EDGE_LINE_WIDTH_PX = 1.5
+
+/**
+ * Map a world-space point through the active pan+zoom transform into stage
+ * (viewport) CSS pixels. Used so a stage-sized edge canvas can stroke edges
+ * that align with CSS-transformed HTML nodes.
+ */
+export function worldToViewport(
+  wx: number,
+  wy: number,
+  t: Pick<FlowTransform, 'x' | 'y' | 'scale'>,
+): { x: number; y: number } {
+  return { x: wx * t.scale + t.x, y: wy * t.scale + t.y }
+}
+
+/**
+ * Stage/viewport-sized canvas backing store. Never uses world layout extents —
+ * that was the multi-GiB OOM path on large app-flow graphs (e.g. 28880×19284).
+ */
+export function edgeCanvasBackingSize(
+  stageW: number,
+  stageH: number,
+  dpr: number,
+): { cssW: number; cssH: number; bufW: number; bufH: number } {
+  const cssW = Math.max(1, Math.floor(stageW) || 1)
+  const cssH = Math.max(1, Math.floor(stageH) || 1)
+  const ratio = Number.isFinite(dpr) && dpr > 0 ? dpr : 1
+  return {
+    cssW,
+    cssH,
+    bufW: Math.ceil(cssW * ratio),
+    bufH: Math.ceil(cssH * ratio),
+  }
+}
+
 const SHEET_FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
@@ -286,6 +325,10 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     [mode, layer, rebuild, closeSheet, resolveFocusInitiator],
   )
 
+  /**
+   * World layout extents only — HTML node layer + fit bounds.
+   * Must NOT size the edge canvas (world can be ~29k×19k → multi-GiB bitmap).
+   */
   const worldSize = useMemo(() => {
     let maxX = 800
     let maxY = 600
@@ -296,40 +339,77 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     return { w: maxX, h: maxY }
   }, [nodes])
 
-  // Draw edges whenever nodes/edges/size change
+  /** Stage CSS size for viewport-sized edge canvas (ResizeObserver). */
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0 })
+
+  useEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    const read = () => {
+      setStageSize({
+        w: Math.max(0, Math.floor(stage.clientWidth)),
+        h: Math.max(0, Math.floor(stage.clientHeight)),
+      })
+    }
+    read()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', read)
+      return () => window.removeEventListener('resize', read)
+    }
+    const ro = new ResizeObserver(() => read())
+    ro.observe(stage)
+    return () => ro.disconnect()
+  }, [])
+
+  /**
+   * Draw semantic edges on a stage-sized DPR canvas.
+   * World anchors are mapped through pan+zoom so strokes align with CSS-scaled
+   * HTML nodes. Natural clip = canvas bounds. Redraw on stage resize, pan,
+   * zoom, node positions/drag, and mode/data edge sets.
+   */
   useEffect(() => {
     const canvas = edgesRef.current
-    if (!canvas) return
+    const stage = stageRef.current
+    if (!canvas || !stage) return
     const dpr = window.devicePixelRatio || 1
-    canvas.width = Math.ceil(worldSize.w * dpr)
-    canvas.height = Math.ceil(worldSize.h * dpr)
-    canvas.style.width = `${worldSize.w}px`
-    canvas.style.height = `${worldSize.h}px`
+    const stageW = stageSize.w || stage.clientWidth || 1
+    const stageH = stageSize.h || stage.clientHeight || 1
+    const { cssW, cssH, bufW, bufH } = edgeCanvasBackingSize(stageW, stageH, dpr)
+    canvas.width = bufW
+    canvas.height = bufH
+    canvas.style.width = `${cssW}px`
+    canvas.style.height = `${cssH}px`
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    // Device-pixel transform; stroke in CSS/viewport pixels thereafter.
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, worldSize.w, worldSize.h)
+    ctx.clearRect(0, 0, cssW, cssH)
     const line =
       getComputedStyle(document.documentElement)
         .getPropertyValue('--border-strong')
         .trim() || '#e0e0e0'
     ctx.strokeStyle = line
-    ctx.lineWidth = 1.5
+    // Screen-space width (not multiplied by transform.scale).
+    ctx.lineWidth = EDGE_LINE_WIDTH_PX
     ctx.lineCap = 'round'
     const byId = Object.fromEntries(nodes.map((n) => [n.id, n]))
+    const t = transform
     for (const e of edges) {
       const a = byId[e.from]
       const b = byId[e.to]
       if (!a || !b) continue
       const p0 = nodeCenter(a)
       const p1 = nodeCenter(b)
-      const dx = Math.abs(p1.x - p0.x) * 0.45
+      const v0 = worldToViewport(p0.x, p0.y, t)
+      const v1 = worldToViewport(p1.x, p1.y, t)
+      // Control offset in viewport space (same relative shape as world dx*0.45).
+      const dx = Math.abs(v1.x - v0.x) * 0.45
       ctx.beginPath()
-      ctx.moveTo(p0.x, p0.y)
-      ctx.bezierCurveTo(p0.x + dx, p0.y, p1.x - dx, p1.y, p1.x, p1.y)
+      ctx.moveTo(v0.x, v0.y)
+      ctx.bezierCurveTo(v0.x + dx, v0.y, v1.x - dx, v1.y, v1.x, v1.y)
       ctx.stroke()
     }
-  }, [nodes, edges, worldSize])
+  }, [nodes, edges, transform, stageSize])
 
   const centerOnNode = useCallback(
     (id: string, open = true) => {
@@ -891,6 +971,16 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
         onKeyDown={onStageKeyDown}
         inert={sheetOpen ? true : undefined}
       >
+        {/*
+          Stage-sized edge canvas (not inside scaled .flow-world).
+          Backing store = stage CSS × DPR; edges drawn in viewport coords.
+        */}
+        <canvas
+          className="flow-edges"
+          ref={edgesRef}
+          aria-hidden="true"
+          data-testid="flow-edges"
+        />
         <div
           className="flow-world"
           data-testid="flow-world"
@@ -900,12 +990,6 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
             transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
           }}
         >
-          <canvas
-            className="flow-edges"
-            ref={edgesRef}
-            aria-hidden="true"
-            data-testid="flow-edges"
-          />
           <div
             className="flow-nodes"
             data-testid="flow-nodes"

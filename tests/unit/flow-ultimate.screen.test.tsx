@@ -10,11 +10,17 @@ import {
 } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { FlowUltimateScreen } from '#/components/flow-ultimate'
+import {
+  EDGE_LINE_WIDTH_PX,
+  edgeCanvasBackingSize,
+  FlowUltimateScreen,
+  worldToViewport,
+} from '#/components/flow-ultimate/FlowUltimateScreen'
 import {
   hasTechIdLeak,
   hasVisibleTechIdLeak,
 } from '#/components/flow-ultimate/humanize'
+import { nodeCenter } from '#/components/flow-ultimate/graph'
 import type {
   FlowDataBundle,
   FlowDataSemanticNav,
@@ -940,5 +946,473 @@ describe('FlowUltimateScreen a11y (D-A11Y)', () => {
     expect(screen.getByTestId('flow-brand').getAttribute('aria-label')).toMatch(
       /Alur/i,
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Viewport-sized edge canvas (B-FUNC-OOM repair) — stage × DPR, never world
+// Authority: a309 / v306. Live layout extremes ~28880×19284 (~2.07 GiB @ DPR1).
+// ---------------------------------------------------------------------------
+
+/** Live staging extremes (investigation a309): world CSS 28880×19284. */
+const GIANT_WORLD_W = 28880
+const GIANT_WORLD_H = 19284
+const STAGE_W = 1440
+const STAGE_H = 839
+/** Hard cap: never allow multi-GiB product allocation in unit proofs. */
+const MAX_BACKING_BYTES = 64 * 1024 * 1024 // 64 MiB
+
+/**
+ * layout_col 105 / layout_row 191 → x=28600 y=19140 (rn baseY=40) →
+ * worldSize w=28880 h=19284 matching live OOM bitmap.
+ */
+const giantLayoutNav: FlowDataSemanticNav = {
+  version: 1,
+  source: 'mysql',
+  state: 'OK',
+  sourceHash: 'viewport-oom-fixture',
+  boardId: 'mfs-rebuild',
+  by_project: {
+    rn: {
+      project_id: 'rn',
+      app_flow: {
+        nodes: [
+          {
+            node_id: 'origin',
+            project_id_storage: 'rn',
+            project_id: 'rn',
+            feature_id: null,
+            label_id: 'Asal raksasa',
+            kind: 'screen',
+            sort_order: 1,
+            layout_col: 0,
+            layout_row: 0,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+          {
+            node_id: 'far',
+            project_id_storage: 'rn',
+            project_id: 'rn',
+            feature_id: null,
+            label_id: 'Ujung raksasa',
+            kind: 'screen',
+            sort_order: 2,
+            layout_col: 105,
+            layout_row: 191,
+            source_ref: null,
+            provenance: 'app_flow_nodes',
+          },
+        ],
+        edges: [
+          {
+            edge_id: 'origin->far',
+            from_node: 'origin',
+            to_node: 'far',
+            edge_kind: 'nav',
+            edge_class: 'nav',
+            sort_order: 1,
+            project_id_storage: 'rn',
+            project_id: 'rn',
+            provenance: 'app_flow_edges',
+          },
+        ],
+      },
+      page_nav: { nodes: [], edges: [] },
+    },
+    'web-member': emptyProject('web-member'),
+    'panel-sales': emptyProject('panel-sales'),
+    affiliate: emptyProject('affiliate'),
+    backend: emptyProject('backend'),
+  },
+  layers: {
+    app_flow: layerMeta('app_flow', 'OK'),
+    page_nav: layerMeta('page_nav', 'OK'),
+  },
+}
+
+const giantFixture: FlowDataBundle = {
+  ...fixture,
+  nav: giantLayoutNav,
+  features: { rn: [], 'web-member': [], 'panel-sales': [], affiliate: [], backend: [] },
+  tasks_by_feature: {},
+  apis_by_feature: {},
+}
+
+type CanvasStrokeLog = {
+  moveTo: Array<[number, number]>
+  bezier: Array<[number, number, number, number, number, number]>
+  lineWidths: number[]
+  clearRects: Array<[number, number, number, number]>
+}
+
+function installRecordingCanvasContext(): {
+  log: CanvasStrokeLog
+  restore: () => void
+} {
+  const log: CanvasStrokeLog = {
+    moveTo: [],
+    bezier: [],
+    lineWidths: [],
+    clearRects: [],
+  }
+  const prev = HTMLCanvasElement.prototype.getContext
+  // jsdom has no real 2d context; record calls from product draw path.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  HTMLCanvasElement.prototype.getContext = function getContextMock(
+    this: HTMLCanvasElement,
+    type: string,
+  ): any {
+    if (type !== '2d') return null
+    const ctx: Record<string, unknown> = {
+      strokeStyle: '',
+      lineCap: '',
+      setTransform() {},
+      clearRect(x: number, y: number, w: number, h: number) {
+        log.clearRects.push([x, y, w, h])
+      },
+      beginPath() {},
+      moveTo(x: number, y: number) {
+        log.moveTo.push([x, y])
+      },
+      bezierCurveTo(
+        cp1x: number,
+        cp1y: number,
+        cp2x: number,
+        cp2y: number,
+        x: number,
+        y: number,
+      ) {
+        log.bezier.push([cp1x, cp1y, cp2x, cp2y, x, y])
+      },
+      stroke() {},
+    }
+    Object.defineProperty(ctx, 'lineWidth', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return (ctx as { _lw?: number })._lw ?? 1
+      },
+      set(v: number) {
+        ;(ctx as { _lw?: number })._lw = v
+        log.lineWidths.push(v)
+      },
+    })
+    return ctx
+  }
+  return {
+    log,
+    restore: () => {
+      HTMLCanvasElement.prototype.getContext = prev
+    },
+  }
+}
+
+function mockStageClientSize(w: number, h: number): () => void {
+  const prevW = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+  const prevH = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+  Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (
+        this.getAttribute?.('data-testid') === 'flow-stage' ||
+        this.id === 'flow-stage' ||
+        this.classList?.contains('flow-stage')
+      ) {
+        return w
+      }
+      return 0
+    },
+  })
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (
+        this.getAttribute?.('data-testid') === 'flow-stage' ||
+        this.id === 'flow-stage' ||
+        this.classList?.contains('flow-stage')
+      ) {
+        return h
+      }
+      return 0
+    },
+  })
+  return () => {
+    if (prevW) Object.defineProperty(HTMLElement.prototype, 'clientWidth', prevW)
+    else delete (HTMLElement.prototype as { clientWidth?: unknown }).clientWidth
+    if (prevH) Object.defineProperty(HTMLElement.prototype, 'clientHeight', prevH)
+    else delete (HTMLElement.prototype as { clientHeight?: unknown }).clientHeight
+  }
+}
+
+function mockDevicePixelRatio(dpr: number): () => void {
+  const prev = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio')
+  Object.defineProperty(window, 'devicePixelRatio', {
+    configurable: true,
+    get: () => dpr,
+  })
+  return () => {
+    if (prev) Object.defineProperty(window, 'devicePixelRatio', prev)
+    else delete (window as { devicePixelRatio?: number }).devicePixelRatio
+  }
+}
+
+describe('edgeCanvasBackingSize / worldToViewport pure helpers', () => {
+  it('binds backing pixels to stage × DPR never world (DPR1 and DPR2)', () => {
+    for (const dpr of [1, 2] as const) {
+      const b = edgeCanvasBackingSize(STAGE_W, STAGE_H, dpr)
+      expect(b.cssW).toBe(STAGE_W)
+      expect(b.cssH).toBe(STAGE_H)
+      expect(b.bufW).toBe(Math.ceil(STAGE_W * dpr))
+      expect(b.bufH).toBe(Math.ceil(STAGE_H * dpr))
+      // Explicitly not world-sized
+      expect(b.bufW).toBeLessThan(GIANT_WORLD_W)
+      expect(b.bufH).toBeLessThan(GIANT_WORLD_H)
+      const bytes = b.bufW * b.bufH * 4
+      expect(bytes).toBeLessThan(MAX_BACKING_BYTES)
+      // Old path would be ~2.07 GiB @ DPR1 / ~8.3 GiB @ DPR2
+      const oldBytes = GIANT_WORLD_W * GIANT_WORLD_H * dpr * dpr * 4
+      expect(oldBytes).toBeGreaterThan(2 * 1024 * 1024 * 1024)
+      expect(bytes).toBeLessThan(oldBytes / 100)
+    }
+  })
+
+  it('maps world anchors through pan+zoom into viewport coords', () => {
+    const t = { x: -100, y: 50, scale: 0.5 }
+    expect(worldToViewport(200, 400, t)).toEqual({ x: 0, y: 250 })
+    expect(worldToViewport(0, 0, { x: 80, y: 60, scale: 1 })).toEqual({
+      x: 80,
+      y: 60,
+    })
+  })
+
+  it('exports constant screen-space edge width 1.5', () => {
+    expect(EDGE_LINE_WIDTH_PX).toBe(1.5)
+  })
+})
+
+describe('FlowUltimateScreen viewport edge canvas (OOM repair)', () => {
+  it('large 28880×19284 layout: canvas = stage×DPR; world keeps layout bounds', async () => {
+    const restoreStage = mockStageClientSize(STAGE_W, STAGE_H)
+    const restoreDpr = mockDevicePixelRatio(1)
+    const { log, restore: restoreCtx } = installRecordingCanvasContext()
+    try {
+      render(<FlowUltimateScreen data={giantFixture} boardId="mfs-rebuild" />)
+      await flushRaf()
+      await flushRaf()
+
+      const world = screen.getByTestId('flow-world')
+      const canvas = screen.getByTestId('flow-edges') as HTMLCanvasElement
+      const stage = screen.getByTestId('flow-stage')
+
+      // Fit / layout still uses world node extents
+      expect(world.style.width).toBe(`${GIANT_WORLD_W}px`)
+      expect(world.style.height).toBe(`${GIANT_WORLD_H}px`)
+
+      // Backing store bound to stage, never world
+      expect(canvas.width).toBe(STAGE_W) // DPR1
+      expect(canvas.height).toBe(STAGE_H)
+      expect(canvas.style.width).toBe(`${STAGE_W}px`)
+      expect(canvas.style.height).toBe(`${STAGE_H}px`)
+      expect(canvas.width).not.toBe(GIANT_WORLD_W)
+      expect(canvas.height).not.toBe(GIANT_WORLD_H)
+
+      const bytes = canvas.width * canvas.height * 4
+      expect(bytes).toBe(STAGE_W * STAGE_H * 4)
+      expect(bytes).toBeLessThan(MAX_BACKING_BYTES)
+      expect(bytes).toBeLessThan(50 * 1024 * 1024)
+
+      // Canvas is stage child (not inside scaled world)
+      expect(canvas.parentElement).toBe(stage)
+      expect(world.contains(canvas)).toBe(false)
+
+      // Screen-space line width preserved
+      expect(log.lineWidths.length).toBeGreaterThan(0)
+      expect(log.lineWidths.every((w) => w === EDGE_LINE_WIDTH_PX)).toBe(true)
+      expect(EDGE_LINE_WIDTH_PX).toBe(1.5)
+
+      // One semantic edge drawn with transformed anchors
+      expect(log.moveTo.length).toBeGreaterThanOrEqual(1)
+      expect(log.bezier.length).toBeGreaterThanOrEqual(1)
+
+      // pointer-events:none is in flow-ultimate.css (.flow-edges); class present
+      expect(canvas.className).toContain('flow-edges')
+      expect(canvas.getAttribute('aria-hidden')).toBe('true')
+    } finally {
+      restoreCtx()
+      restoreDpr()
+      restoreStage()
+    }
+  })
+
+  it('DPR2: backing is stage×2, still far below world multi-GiB', async () => {
+    const restoreStage = mockStageClientSize(STAGE_W, STAGE_H)
+    const restoreDpr = mockDevicePixelRatio(2)
+    const { log, restore: restoreCtx } = installRecordingCanvasContext()
+    try {
+      render(<FlowUltimateScreen data={giantFixture} boardId="mfs-rebuild" />)
+      await flushRaf()
+      await flushRaf()
+
+      const canvas = screen.getByTestId('flow-edges') as HTMLCanvasElement
+      const expected = edgeCanvasBackingSize(STAGE_W, STAGE_H, 2)
+      expect(canvas.width).toBe(expected.bufW)
+      expect(canvas.height).toBe(expected.bufH)
+      expect(canvas.style.width).toBe(`${STAGE_W}px`)
+      expect(canvas.style.height).toBe(`${STAGE_H}px`)
+      const bytes = canvas.width * canvas.height * 4
+      expect(bytes).toBe(STAGE_W * 2 * STAGE_H * 2 * 4)
+      expect(bytes).toBeLessThan(MAX_BACKING_BYTES)
+      // Old world×DPR2 path ~8.3 GiB
+      expect(GIANT_WORLD_W * GIANT_WORLD_H * 4 * 4).toBeGreaterThan(
+        8 * 1024 * 1024 * 1024,
+      )
+      expect(log.lineWidths.every((w) => w === 1.5)).toBe(true)
+    } finally {
+      restoreCtx()
+      restoreDpr()
+      restoreStage()
+    }
+  })
+
+  it('draws edges in viewport coords via pan+zoom transform of world anchors', async () => {
+    const restoreStage = mockStageClientSize(STAGE_W, STAGE_H)
+    const restoreDpr = mockDevicePixelRatio(1)
+    const { log, restore: restoreCtx } = installRecordingCanvasContext()
+    try {
+      render(<FlowUltimateScreen data={giantFixture} boardId="mfs-rebuild" />)
+      await flushRaf()
+      await flushRaf()
+
+      const world = screen.getByTestId('flow-world')
+      // Parse CSS transform translate(tx) scale(s) from fit
+      const tf = world.style.transform || ''
+      const m = tf.match(
+        /translate\(([-\d.]+)px,\s*([-\d.]+)px\)\s*scale\(([-\d.]+)\)/,
+      )
+      expect(m).toBeTruthy()
+      const tx = Number(m![1])
+      const ty = Number(m![2])
+      const scale = Number(m![3])
+      expect(scale).toBeGreaterThan(0)
+      // Fit clamps scale floor 0.35 for giant world
+      expect(scale).toBeLessThanOrEqual(1.25)
+
+      const originEl = screen
+        .getAllByTestId('flow-node')
+        .find((n) => n.getAttribute('data-node-id') === 'af:rn:origin')
+      const farEl = screen
+        .getAllByTestId('flow-node')
+        .find((n) => n.getAttribute('data-node-id') === 'af:rn:far')
+      expect(originEl && farEl).toBeTruthy()
+
+      const originNode = {
+        id: 'af:rn:origin',
+        x: Number.parseFloat(originEl!.style.left || '0'),
+        y: Number.parseFloat(originEl!.style.top || '0'),
+        title: '',
+        meta: '',
+        status: 'sebagian',
+      }
+      const farNode = {
+        id: 'af:rn:far',
+        x: Number.parseFloat(farEl!.style.left || '0'),
+        y: Number.parseFloat(farEl!.style.top || '0'),
+        title: '',
+        meta: '',
+        status: 'sebagian',
+      }
+      expect(originNode.x).toBe(40)
+      expect(farNode.x).toBe(28600)
+      expect(farNode.y).toBe(19140)
+
+      const p0 = nodeCenter(originNode as never)
+      const p1 = nodeCenter(farNode as never)
+      const v0 = worldToViewport(p0.x, p0.y, { x: tx, y: ty, scale })
+      const v1 = worldToViewport(p1.x, p1.y, { x: tx, y: ty, scale })
+
+      // Use last stroke after fitTransform rAF (earlier draws use default pan/zoom)
+      expect(log.moveTo.length).toBeGreaterThan(0)
+      expect(log.bezier.length).toBeGreaterThan(0)
+      const lastMove = log.moveTo[log.moveTo.length - 1]
+      const bez = log.bezier[log.bezier.length - 1]
+      expect(lastMove[0]).toBeCloseTo(v0.x, 4)
+      expect(lastMove[1]).toBeCloseTo(v0.y, 4)
+      expect(bez[4]).toBeCloseTo(v1.x, 4)
+      expect(bez[5]).toBeCloseTo(v1.y, 4)
+      // Control points use viewport-space dx
+      const dx = Math.abs(v1.x - v0.x) * 0.45
+      expect(bez[0]).toBeCloseTo(v0.x + dx, 4)
+      expect(bez[2]).toBeCloseTo(v1.x - dx, 4)
+    } finally {
+      restoreCtx()
+      restoreDpr()
+      restoreStage()
+    }
+  })
+
+  it('redraws on zoom (interaction dep) while staying stage-sized', async () => {
+    const restoreStage = mockStageClientSize(STAGE_W, STAGE_H)
+    const restoreDpr = mockDevicePixelRatio(1)
+    const { log, restore: restoreCtx } = installRecordingCanvasContext()
+    try {
+      render(<FlowUltimateScreen data={giantFixture} boardId="mfs-rebuild" />)
+      await flushRaf()
+      await flushRaf()
+
+      const strokesBefore = log.moveTo.length
+      expect(strokesBefore).toBeGreaterThan(0)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Perbesar' }))
+      await flushRaf()
+
+      const canvas = screen.getByTestId('flow-edges') as HTMLCanvasElement
+      expect(canvas.width).toBe(STAGE_W)
+      expect(canvas.height).toBe(STAGE_H)
+      // Zoom changed transform → another draw pass
+      expect(log.moveTo.length).toBeGreaterThan(strokesBefore)
+      expect(log.lineWidths[log.lineWidths.length - 1]).toBe(1.5)
+    } finally {
+      restoreCtx()
+      restoreDpr()
+      restoreStage()
+    }
+  })
+
+  it('fit (Muat) still uses world bounds; canvas remains stage-sized', async () => {
+    const restoreStage = mockStageClientSize(STAGE_W, STAGE_H)
+    const restoreDpr = mockDevicePixelRatio(1)
+    const { restore: restoreCtx } = installRecordingCanvasContext()
+    try {
+      render(<FlowUltimateScreen data={giantFixture} boardId="mfs-rebuild" />)
+      await flushRaf()
+      await flushRaf()
+
+      // Zoom in first so fit must recompute from world extents
+      fireEvent.click(screen.getByRole('button', { name: 'Perbesar' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Perbesar' }))
+      await flushRaf()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Muat semua' }))
+      await flushRaf()
+
+      const world = screen.getByTestId('flow-world')
+      const canvas = screen.getByTestId('flow-edges') as HTMLCanvasElement
+      expect(world.style.width).toBe(`${GIANT_WORLD_W}px`)
+      expect(world.style.height).toBe(`${GIANT_WORLD_H}px`)
+      expect(canvas.width).toBe(STAGE_W)
+      expect(canvas.height).toBe(STAGE_H)
+
+      const tf = world.style.transform || ''
+      const m = tf.match(/scale\(([-\d.]+)\)/)
+      expect(m).toBeTruthy()
+      // Fit floor for giant graph
+      expect(Number(m![1])).toBeGreaterThanOrEqual(0.35)
+      expect(Number(m![1])).toBeLessThanOrEqual(1.25)
+    } finally {
+      restoreCtx()
+      restoreDpr()
+      restoreStage()
+    }
   })
 })
