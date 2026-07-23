@@ -546,6 +546,16 @@ export function nodeCenter(n: FlowNode): { x: number; y: number } {
   return { x: n.x + 12 + 5, y: n.y + CARD_H / 2 }
 }
 
+/**
+ * Fit scale floor — keep HTML nodes interactive/readable.
+ * CARD_H (64) × 0.5 = 32 CSS px ≥ WCAG 2.2 AA 24px target-size.
+ * Giant app-flow worlds (~29k×19k) cannot fully fit at this floor; see
+ * fitTransform origin pin below (never center content off-viewport).
+ */
+export const FIT_MIN_SCALE = 0.5
+export const FIT_MAX_SCALE = 1.25
+export const FIT_PAD = 48
+
 export function fitTransform(
   nodes: FlowNode[],
   vw: number,
@@ -562,15 +572,29 @@ export function fitTransform(
     maxX = Math.max(maxX, n.x + CARD_W)
     maxY = Math.max(maxY, n.y + CARD_H)
   }
-  const pad = 48
+  const pad = FIT_PAD
   const bw = maxX - minX + pad * 2
   const bh = maxY - minY + pad * 2
-  const s = clamp(Math.min(vw / bw, vh / bh, 1.15), 0.35, 1.25)
-  return {
-    scale: s,
-    x: (vw - bw * s) / 2 - (minX - pad) * s,
-    y: (vh - bh * s) / 2 - (minY - pad) * s,
+  // Prefer true fit, but never drop below FIT_MIN_SCALE (tiny/off-screen nodes).
+  const s = clamp(Math.min(vw / bw, vh / bh, 1.15), FIT_MIN_SCALE, FIT_MAX_SCALE)
+  const contentW = bw * s
+  const contentH = bh * s
+  // Center when the padded bounds fit; otherwise pin top-left so the origin
+  // cluster stays inside the stage (drag/click/axe targets remain hittable).
+  let x: number
+  let y: number
+  if (contentW <= vw) {
+    x = (vw - contentW) / 2 - (minX - pad) * s
+  } else {
+    // screen(minX) = pad  ⇒  minX * s + x = pad
+    x = pad - minX * s
   }
+  if (contentH <= vh) {
+    y = (vh - contentH) / 2 - (minY - pad) * s
+  } else {
+    y = pad - minY * s
+  }
+  return { scale: s, x, y }
 }
 
 export function centerTransform(
