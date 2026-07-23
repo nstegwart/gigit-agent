@@ -186,18 +186,38 @@ function isSessionOperation(request: Request): boolean {
   return !!sid && sid.trim().length > 0
 }
 
+/**
+ * MCP Streamable HTTP (2025-06-18) requires Accept to list both application/json
+ * and text/event-stream. JSON-RPC clients that only set content-type (or omit
+ * Accept) otherwise get a hard 406 from the SDK transport before tools run.
+ * With enableJsonResponse:true we still return JSON; normalize Accept so
+ * authenticated JSON-RPC tools/call is not rejected solely for a missing header.
+ * Content negotiation only — does not weaken auth/RBAC.
+ */
+const MCP_STREAMABLE_ACCEPT = 'application/json, text/event-stream'
+
+function mcpAcceptHeaders(request: Request): Headers {
+  const headers = new Headers(request.headers)
+  const accept = (headers.get('accept') ?? '').toLowerCase()
+  if (!accept.includes('application/json') || !accept.includes('text/event-stream')) {
+    headers.set('accept', MCP_STREAMABLE_ACCEPT)
+  }
+  return headers
+}
+
 function rebuildRequest(request: Request, body: string): Request {
   const method = request.method.toUpperCase()
+  const headers = mcpAcceptHeaders(request)
   // GET/HEAD must not carry a body under Fetch rules.
   if (method === 'GET' || method === 'HEAD') {
     return new Request(request.url, {
       method: request.method,
-      headers: request.headers,
+      headers,
     })
   }
   return new Request(request.url, {
     method: request.method,
-    headers: request.headers,
+    headers,
     body,
   })
 }
@@ -343,7 +363,11 @@ export async function authGate(request: Request): Promise<Request | Response> {
     // GET/DELETE without body / session id: transport-level only (no tools/call surface).
     // Unauth protocol negotiation remains POST initialize/ping (handled above when body present).
     void cookiePresent
-    return request
+    // Still pin Streamable HTTP Accept so SDK transport does not 406.
+    return new Request(request.url, {
+      method: request.method,
+      headers: mcpAcceptHeaders(request),
+    })
   }
 
   let body: string

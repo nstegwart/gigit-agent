@@ -238,8 +238,10 @@ import {
 } from '#/server/classification-sync'
 import { createHash } from 'node:crypto'
 import { registerDomainKnowledgeTools } from '#/server/domain-knowledge-mcp'
+import { loadDomainBundle } from '#/server/domain-knowledge'
 import { registerKnowledgeTools } from '#/server/knowledge-tools'
 import { registerExportDocumentationTool } from '#/server/mcp-register-export-documentation'
+import type { ResolvedExportSource } from '#/server/mcp-register-export-documentation'
 import { registerRebuildParityTools } from '#/server/rebuild-parity-mcp'
 
 // Stable aliases are exported from the live registration module so tests and
@@ -4358,7 +4360,102 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
   // domain-knowledge then skips the duplicate name via secureTool already-registered.
   registerKnowledgeTools({ secureTool: secureTool as never, jsonText })
   registerDomainKnowledgeTools({ secureTool: secureTool as never, jsonText })
-  registerExportDocumentationTool({ secureTool: secureTool as never, jsonText })
+  // Wire pinned DomainKnowledgeBundle → export_documentation so domain-scope
+  // calls (e.g. format=md scope=domain scopeId=AFFILIATE) resolve SSOT without
+  // the client re-supplying pin+bundle. Fail-closed: unknown domain → null → MISSING_PIN.
+  registerExportDocumentationTool({
+    secureTool: secureTool as never,
+    jsonText,
+    resolveBundle: (args): ResolvedExportSource | null => {
+      if (args.scope !== 'domain') return null
+      const domainId = (args.scopeId || '').trim()
+      if (!domainId) return null
+      try {
+        const bundle = loadDomainBundle(domainId, {
+          snapshotId: args.snapshotId,
+          sourceHash: args.sourceHash,
+          refuseStale: true,
+        })
+        return {
+          pin: {
+            snapshotId: bundle.snapshotId,
+            sourceHash: bundle.sourceHash,
+            boardRev: undefined,
+            lifecycleRev: bundle.revision,
+            stale: bundle.freshness?.stale,
+            staleReason: bundle.freshness?.staleReason ?? null,
+          },
+          bundle: {
+            title:
+              bundle.humanDisplay?.title ||
+              bundle.domainId ||
+              domainId,
+            domainId: bundle.domainId,
+            executiveSummary:
+              bundle.humanDisplay?.summary ||
+              bundle.humanDisplay?.boundarySentence ||
+              undefined,
+            projects: bundle.projects?.map((p) => ({
+              id: p.id,
+              name: p.name ?? p.id,
+              status: p.knowledgeState,
+            })),
+            features: bundle.features?.map((f) => ({
+              id: f.id,
+              name: f.name ?? f.id,
+              status: f.knowledgeState,
+            })),
+            flows: bundle.flows?.map((fl) => ({
+              id: fl.id,
+              name: fl.name ?? fl.id,
+              nodes: fl.nodes?.map((n) => n.label ?? n.id),
+            })),
+            tasks: undefined,
+            decisions: bundle.decisions?.map((d) => ({
+              id: d.id,
+              title: d.title ?? d.id,
+            })),
+            blockers: bundle.blockers?.map((b) => ({
+              id: b.id,
+              title: b.title ?? b.id,
+            })),
+            gaps: bundle.knowledgeGaps?.map((g) => `${g.code}: ${g.message}`),
+            citations: bundle.citations?.map((c) => ({
+              field: c.field,
+              path: c.path,
+              note: c.note,
+            })),
+            redactions: bundle.redactions?.map((r) => ({
+              field: r.field,
+              reason: r.reason,
+            })),
+            relations: bundle.relations?.map((r) => ({
+              fromId: r.fromId,
+              toId: r.toId,
+              type: r.type,
+            })),
+            statusBuckets: {
+              featureCount: bundle.statusRollup?.featureCount ?? 0,
+              flowCount: bundle.statusRollup?.flowCount ?? 0,
+              projectCount: bundle.statusRollup?.projectCount ?? 0,
+              gapCount: bundle.statusRollup?.gapCount ?? 0,
+            },
+            knowledgeState: bundle.statusRollup?.knowledgeState,
+            technicalAppendix: {
+              schemaVersion: bundle.schemaVersion,
+              availability: bundle.availability,
+              coverageManifest: bundle.coverageManifest,
+            },
+          },
+          scope: 'domain',
+          scopeId: bundle.domainId,
+        }
+      } catch {
+        // Domain not found / stale pin — leave unresolved so tool returns typed MISSING_PIN/STALE.
+        return null
+      }
+    },
+  })
   registerRebuildParityTools({ secureTool: secureTool as never, jsonText })
 
 
@@ -7736,7 +7833,14 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           idempotencyKey: `acct-sched-wave-launch-${env.idempotencyKey}`,
           actorId: actorIdOf(),
         })
-        return jsonText({ ok: true, ...result, accountSyncNotify: notify })
+        // Notify may publish account-sync and bump boardRev — return post-notify CAS pin.
+        const boardAfterNotify = await sharedAtomic().getBoardState(id)
+        return jsonText({
+          ok: true,
+          ...result,
+          boardRev: boardAfterNotify.boardRev,
+          accountSyncNotify: notify,
+        })
       } catch (e) {
         return jsonText(typedError(e))
       }
@@ -7823,9 +7927,13 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
           idempotencyKey: `acct-sched-register-${env.idempotencyKey}`,
           actorId: agentId,
         })
+        // AGENT_LAUNCH notify may bump boardRev after register; expose post-notify pin
+        // so dual-principal heartbeat CAS does not immediately STALE_REVISION.
+        const boardAfterNotify = await sharedAtomic().getBoardState(id)
         return jsonText({
           ok: true,
           ...result,
+          boardRev: boardAfterNotify.boardRev,
           accountSyncNotify: notify,
         })
       } catch (e) {
@@ -7896,9 +8004,12 @@ export function registerBoardTools(server: McpServer, auth: McpAuthContext = { p
             actorId: agentId,
           })
         }
+        // Post-notify boardRev is the live CAS pin (notify may publish + bump).
+        const boardAfterNotify = await sharedAtomic().getBoardState(id)
         return jsonText({
           ok: true,
           ...result,
+          boardRev: boardAfterNotify.boardRev,
           accountSyncNotify: notify,
           ...(materialNotify ? { materialAccountSyncNotify: materialNotify } : {}),
         })

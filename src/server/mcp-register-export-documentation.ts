@@ -27,9 +27,33 @@ import type {
 /** Canonical MCP tool name — must match MCP_TOOL_SPECS when catalog is extended. */
 export const EXPORT_DOCUMENTATION_TOOL_NAME = 'export_documentation' as const
 
+/** Wire aliases accepted at the MCP boundary (canonical formats stay in DOCUMENTATION_EXPORT_FORMATS). */
+const FORMAT_ALIASES: Record<string, DocumentationExportFormat> = {
+  md: 'markdown',
+  'text/markdown': 'markdown',
+  markdown: 'markdown',
+  html: 'html',
+  pdf: 'pdf',
+  csv: 'csv',
+  json: 'json',
+}
+
+/** Wire-level format tokens (canonical + short aliases). Kept as a plain enum for MCP JSON Schema. */
+const EXPORT_FORMAT_WIRE = [
+  ...DOCUMENTATION_EXPORT_FORMATS,
+  'md',
+] as const
+
+function normalizeExportFormat(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw
+  const key = raw.trim().toLowerCase()
+  return FORMAT_ALIASES[key] ?? raw
+}
+
 export const exportDocumentationInputSchema = {
   boardId: z.string().optional(),
-  format: z.enum(DOCUMENTATION_EXPORT_FORMATS),
+  // Accept short alias "md" at the wire; handler normalizes to canonical "markdown".
+  format: z.enum(EXPORT_FORMAT_WIRE),
   scope: z.enum(DOCUMENTATION_EXPORT_SCOPES).optional(),
   scopeId: z.string().optional(),
   /** Pinned SSOT identity (required unless deps.resolveBundle supplies pin). */
@@ -57,7 +81,8 @@ export const exportDocumentationInputSchema = {
 
 export type ExportDocumentationToolArgs = {
   boardId?: string
-  format: DocumentationExportFormat
+  /** Canonical format or wire alias (e.g. "md"); handler normalizes to DocumentationExportFormat. */
+  format: DocumentationExportFormat | 'md'
   scope?: DocumentationExportScope
   scopeId?: string
   snapshotId?: string
@@ -323,7 +348,13 @@ export function buildExportRequestFromToolArgs(
   args: ExportDocumentationToolArgs,
   resolved?: ResolvedExportSource | null,
 ): DocumentationExportRequest | DocumentationExportResult {
-  const format = args.format
+  const formatNorm = normalizeExportFormat(args.format)
+  const format = (
+    typeof formatNorm === 'string' &&
+    (DOCUMENTATION_EXPORT_FORMATS as readonly string[]).includes(formatNorm)
+      ? formatNorm
+      : args.format
+  ) as DocumentationExportFormat
   const scope: DocumentationExportScope =
     args.scope ?? resolved?.scope ?? 'domain'
   const scopeId =
@@ -421,6 +452,14 @@ export async function handleExportDocumentationTool(
   args: ExportDocumentationToolArgs,
   deps: Pick<ExportDocumentationRegisterDeps, 'resolveBundle'> = {},
 ): Promise<DocumentationExportResult> {
+  // Normalize wire aliases (e.g. "md" → "markdown") even when called outside Zod parse.
+  const normalizedFormat = normalizeExportFormat(args.format)
+  if (
+    typeof normalizedFormat === 'string' &&
+    (DOCUMENTATION_EXPORT_FORMATS as readonly string[]).includes(normalizedFormat)
+  ) {
+    args = { ...args, format: normalizedFormat as DocumentationExportFormat }
+  }
   const runtimeArgs = args as Partial<ExportDocumentationToolArgs>
   if (!runtimeArgs.format) {
     return {
@@ -471,7 +510,7 @@ export function registerExportDocumentationTool(
     {
       title: 'Export documentation',
       description:
-        'Deterministic snapshot-pinned documentation export (markdown | html | pdf-print | csv | json). ' +
+        'Deterministic snapshot-pinned documentation export (markdown|md | html | pdf-print | csv | json). ' +
         'Exports from pinned SSOT / DomainKnowledgeBundle only — never screen scrapes. ' +
         'Two snapshots yield human changelog + machine delta. Stale pins fail closed when refuseStale.',
       inputSchema: exportDocumentationInputSchema,

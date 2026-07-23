@@ -1821,17 +1821,17 @@ export async function syncAccounts(
         accounts,
         readbackSurfaces: { mcp: null, api: null, ui: null, ops: null },
         publishedAtMs: now,
-        lastPeriodicHealthAtMs: req.trigger === 'PERIODIC_HEALTH' ? now : null,
+        // Any successful authority publish is a live health checkpoint. PERIODIC_HEALTH
+        // always stamps now; other triggers also stamp now so dual-principal MCP smoke
+        // (ORCHESTRATOR_LAUNCH / WAVE_LAUNCH / AGENT_LAUNCH) does not immediately
+        // fail-close under PERIODIC_HEALTH_MISS_60S when the prior checkpoint is old.
+        // Preserve only when we somehow lack a clock (should not happen).
+        lastPeriodicHealthAtMs: now,
         stale: false,
         staleReason: null,
         usableCapacity: capacity.usableCapacity,
         capacity,
         entityRev: prev ? prev.entityRev + 1 : 1,
-      }
-
-      // Preserve lastPeriodic if not this trigger
-      if (prev && req.trigger !== 'PERIODIC_HEALTH') {
-        snap.lastPeriodicHealthAtMs = prev.lastPeriodicHealthAtMs
       }
 
       await deps.accounts.put(snap)
