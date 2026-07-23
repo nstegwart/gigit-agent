@@ -1,10 +1,10 @@
 @import 'tailwindcss';
 
 /*
- * Task Manager — Cairn redesign v2 design system (SPEC-CAIRN-REDESIGN-V2).
- * Source of truth: design/tokens/task-manager.tokens.json.
- * Class API preserved. Dark mode CSS parity intentionally NOT shipped.
- * data-theme / prefers-color-scheme therefore reassert the same light tokens.
+ * Task Manager — Cairn redesign v2 design system (SPEC-CAIRN-REDESIGN-V2)
+ * recolored to DESIGN-CANON-V3 dark tokens (owner directive 2026-07-19).
+ * Dark canon V3 is the sole shipped theme on every route; light parity retired.
+ * data-theme / prefers-color-scheme therefore reassert the same dark tokens.
  * AppShell initializes persisted/URL theme state but renders no theme control.
  */
 
@@ -72,158 +72,160 @@
   /* elevation: near-zero — 1px border is the primary separator */
   --shadow-sm: 0 0 0 1px var(--border);
   --shadow-md: 0 0 0 1px var(--border-strong);
-  --shadow-pop: 0 1px 2px rgba(10, 10, 10, 0.04);
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 1px 3px rgba(0, 0, 0, 0.45);
 
-  /* canvas / surfaces — Direction B exact */
-  --bg: #fafafa;
+  color-scheme: dark;
+
+  /* canvas / surfaces — dark canon V3 exact (DESIGN-CANON-V3 tokens.css) */
+  --bg: #0d1017;
   --bg-hero: none;
-  --surface: #ffffff;
-  --surface-2: #f7f7f7;
-  --surface-3: #f0f0f0;
-  --surface-hover: #f7f7f7;
-  --surface-active: #f0f0f0;
-  --border: #ececec;
-  --border-soft: #ececec;
-  --border-strong: #e0e0e0;
-  --border-focus: #0a0a0a;
+  --surface: #12161e;
+  --surface-2: #171c26;
+  --surface-3: #1b2130;
+  --surface-hover: #171c26;
+  --surface-active: #1b2130;
+  --border: #232a35;
+  --border-soft: #232a35;
+  --border-strong: #2f3a48;
+  --border-focus: #5b9dff;
 
-  /* text roles — Direction B (+ AA tertiary for faint body text on white) */
-  --text: #0a0a0a;
-  --text-dim: #666666;
-  --text-faint: #71717a;
-  --text-secondary: #666666;
-  --text-tertiary: #999999;
-  --text-inverse: #ffffff;
+  /* text roles — canon tx/t2/t3 (+ AA faint for tertiary body text on dark) */
+  --text: #e8edf3;
+  --text-dim: #8a95a3;
+  --text-faint: #7a8494;
+  --text-secondary: #8a95a3;
+  --text-tertiary: #586170;
+  --text-inverse: #0d1017;
 
-  /* brand accent — Vercel blue (single accent, sparingly); fill stays vibrant */
-  --accent: #0070f3;
-  --accent-bright: #0070f3;
-  --accent-2: #0060df;
-  --accent-soft: rgba(0, 112, 243, 0.08);
-  --accent-line: color-mix(in srgb, var(--accent) 28%, transparent);
-  /* AA text/foreground on white + soft-12% tint (measured ≥4.5:1) */
-  --accent-fg: #4f3fd4;
-  --focus-ring: #0a0a0a;
-  --on-action: #ffffff;
+  /* brand accent — canon blue (single accent, sparingly); fill stays vibrant */
+  --accent: #5b9dff;
+  --accent-bright: #5b9dff;
+  --accent-2: #79b0ff;
+  --accent-soft: rgba(91, 157, 255, 0.12);
+  --accent-line: color-mix(in srgb, var(--accent) 33%, transparent);
+  /* AA text/foreground on --surface #12161e + soft-14% tint (measured ≥4.5:1) */
+  --accent-fg: #5b9dff;
+  --focus-ring: #5b9dff;
+  --on-action: #0d1017;
 
   /*
-   * semantic status — Direction B dual tokens:
-   *   --ok/--warn/… = vibrant fill/dot (Direction B exact)
-   *   --ok-fg/--warn-fg/… = dark AA text FG (measured ≥4.5:1 on #fff + soft-12%)
-   * Measured (same relative-luminance as visual-contract test):
-   *   ok-fg #0a6e48  white 6.29 soft 5.29
-   *   warn-fg #8a5200 white 6.39 soft 5.35
-   *   blocked-fg #c62828 white 5.62 soft 4.64
-   *   done-fg #08665e white 6.84 soft 5.70
-   *   info-fg #1a5fb4 white 6.29 soft 5.28
-   *   accent-fg #4f3fd4 white 7.01 soft 5.82
+   * semantic status — canon vibrant values double as AA text FG on dark panels:
+   * Measured vs --surface #12161e (same relative-luminance as visual-contract test):
+   *   ok/done #35c479 8.0 soft 6.4 · warn #e5a54b 8.4 soft 6.5
+   *   blocked #e8635f 5.5 soft 4.6 · info/accent #5b9dff 6.6 soft 5.4
+   * -bg chip tints are solid 14%-over-panel composites, replacing light pastels.
    */
-  --ok: #16a34a;
-  --ok-fg: #0a6e48;
-  --ok-bg: #ecfdf3;
-  --done: #16a34a;
-  --done-fg: #08665e;
-  --done-bg: #ecfdf3;
-  --info: #0070f3;
-  --info-fg: #1a5fb4;
-  --info-bg: #eff8ff;
-  --ongoing: #0070f3;
-  --ongoing-bg: #eff8ff;
-  --running: #0070f3;
-  --next: #6d28d9;
-  --next-bg: #f5f3ff;
-  --parked: #999999;
-  --parked-bg: #f7f7f7;
-  --queued: #999999;
-  --queued-bg: #f7f7f7;
-  --pending: #999999;
-  --blocked: #dc2626;
-  --blocked-fg: #c62828;
-  --blocked-bg: #fef2f2;
-  --warn: #d97706;
-  --warn-fg: #8a5200;
-  --warn-bg: #fffbeb;
-  --reconcile: #d97706;
-  --reconcile-bg: #fffbeb;
+  --ok: #35c479;
+  --ok-fg: #35c479;
+  --ok-bg: #172e2b;
+  --done: #35c479;
+  --done-fg: #35c479;
+  --done-bg: #172e2b;
+  --info: #5b9dff;
+  --info-fg: #5b9dff;
+  --info-bg: #1c293e;
+  --ongoing: #5b9dff;
+  --ongoing-bg: #1c293e;
+  --running: #5b9dff;
+  --next: #f472b6;
+  --next-bg: #322333;
+  --parked: #7a8494;
+  --parked-bg: #171c26;
+  --queued: #7a8494;
+  --queued-bg: #171c26;
+  --pending: #7a8494;
+  --blocked: #e8635f;
+  --blocked-fg: #e8635f;
+  --blocked-bg: #302127;
+  --warn: #e5a54b;
+  --warn-fg: #e5a54b;
+  --warn-bg: #302a24;
+  --reconcile: #e5a54b;
+  --reconcile-bg: #302a24;
 
   /* agent tint chips (secondary identity only) */
-  --t-claude: #6d28d9;
-  --t-grok: #0070f3;
-  --t-codex: #d97706;
+  --t-claude: #a78bfa;
+  --t-grok: #5b9dff;
+  --t-codex: #e5a54b;
 }
 
 /*
- * Light-only lock: initTheme may apply data-theme from URL/localStorage, while
- * auto may follow OS dark. Without full dark product parity we reassert the same
- * light ART tokens so the UI never half-switches into an incomplete dark palette.
- * AppShell exposes no theme toggle. Full dark mapping remains out of scope until
- * route/state/contrast parity exists — see docs/design/task-manager/ART_DIRECTION.md.
- * Selector uses double quotes so visual-contract lightRootBlock can slice at
- * :root[data-theme="dark"].
+ * Dark-canon lock (owner directive 2026-07-19): dark canon V3 is the only shipped
+ * theme on EVERY route — board, tasks, projects, control-center, ops, docs, login.
+ * initTheme may apply data-theme from URL/localStorage and auto may follow OS
+ * light; we reassert the same dark tokens for data-theme=light, auto, and absent
+ * so SSR stays deterministic and the UI can never half-switch back into the
+ * retired light palette. AppShell exposes no theme toggle.
+ * Selector uses double quotes so visual-contract darkRootBlock can slice at
+ * :root[data-theme="light"].
+ * No alur carve-out is needed anymore: the html[data-page='alur'] host below
+ * declares these same canon values (plus project identity tokens), so every
+ * cascade path lands on identical dark tokens.
  */
-:root[data-theme="dark"],
-:root:not([data-theme="light"]) {
-  color-scheme: light;
-  /* Direction B light lock (same values as :root) */
-  --bg: #fafafa;
+:root[data-theme="light"],
+:root:not([data-theme="dark"]) {
+  color-scheme: dark;
+  /* Dark canon V3 lock (same values as :root) */
+  --bg: #0d1017;
   --bg-hero: none;
-  --surface: #ffffff;
-  --surface-2: #f7f7f7;
-  --surface-3: #f0f0f0;
-  --surface-hover: #f7f7f7;
-  --surface-active: #f0f0f0;
-  --border: #ececec;
-  --border-soft: #ececec;
-  --border-strong: #e0e0e0;
-  --border-focus: #0a0a0a;
-  --text: #0a0a0a;
-  --text-dim: #666666;
-  --text-faint: #71717a;
-  --text-secondary: #666666;
-  --text-tertiary: #999999;
-  --text-inverse: #ffffff;
-  --accent: #0070f3;
-  --accent-bright: #0070f3;
-  --accent-2: #0060df;
-  --accent-soft: rgba(0, 112, 243, 0.08);
-  --accent-line: color-mix(in srgb, var(--accent) 28%, transparent);
-  --accent-fg: #4f3fd4;
-  --focus-ring: #0a0a0a;
-  --on-action: #ffffff;
-  --ok: #16a34a;
-  --ok-fg: #0a6e48;
-  --ok-bg: #ecfdf3;
-  --done: #16a34a;
-  --done-fg: #08665e;
-  --done-bg: #ecfdf3;
-  --info: #0070f3;
-  --info-fg: #1a5fb4;
-  --info-bg: #eff8ff;
-  --ongoing: #0070f3;
-  --ongoing-bg: #eff8ff;
-  --running: #0070f3;
-  --next: #6d28d9;
-  --next-bg: #f5f3ff;
-  --parked: #999999;
-  --parked-bg: #f7f7f7;
-  --queued: #999999;
-  --queued-bg: #f7f7f7;
-  --pending: #999999;
-  --blocked: #dc2626;
-  --blocked-fg: #c62828;
-  --blocked-bg: #fef2f2;
-  --warn: #d97706;
-  --warn-fg: #8a5200;
-  --warn-bg: #fffbeb;
-  --reconcile: #d97706;
-  --reconcile-bg: #fffbeb;
-  --t-claude: #6d28d9;
-  --t-grok: #0070f3;
-  --t-codex: #d97706;
+  --surface: #12161e;
+  --surface-2: #171c26;
+  --surface-3: #1b2130;
+  --surface-hover: #171c26;
+  --surface-active: #1b2130;
+  --border: #232a35;
+  --border-soft: #232a35;
+  --border-strong: #2f3a48;
+  --border-focus: #5b9dff;
+  --text: #e8edf3;
+  --text-dim: #8a95a3;
+  --text-faint: #7a8494;
+  --text-secondary: #8a95a3;
+  --text-tertiary: #586170;
+  --text-inverse: #0d1017;
+  --accent: #5b9dff;
+  --accent-bright: #5b9dff;
+  --accent-2: #79b0ff;
+  --accent-soft: rgba(91, 157, 255, 0.12);
+  --accent-line: color-mix(in srgb, var(--accent) 33%, transparent);
+  --accent-fg: #5b9dff;
+  --focus-ring: #5b9dff;
+  --on-action: #0d1017;
+  --ok: #35c479;
+  --ok-fg: #35c479;
+  --ok-bg: #172e2b;
+  --done: #35c479;
+  --done-fg: #35c479;
+  --done-bg: #172e2b;
+  --info: #5b9dff;
+  --info-fg: #5b9dff;
+  --info-bg: #1c293e;
+  --ongoing: #5b9dff;
+  --ongoing-bg: #1c293e;
+  --running: #5b9dff;
+  --next: #f472b6;
+  --next-bg: #322333;
+  --parked: #7a8494;
+  --parked-bg: #171c26;
+  --queued: #7a8494;
+  --queued-bg: #171c26;
+  --pending: #7a8494;
+  --blocked: #e8635f;
+  --blocked-fg: #e8635f;
+  --blocked-bg: #302127;
+  --warn: #e5a54b;
+  --warn-fg: #e5a54b;
+  --warn-bg: #302a24;
+  --reconcile: #e5a54b;
+  --reconcile-bg: #302a24;
+  --t-claude: #a78bfa;
+  --t-grok: #5b9dff;
+  --t-codex: #e5a54b;
   --shadow-sm: 0 0 0 1px var(--border);
   --shadow-md: 0 0 0 1px var(--border-strong);
-  --shadow-pop: 0 1px 2px rgba(10, 10, 10, 0.04);
-  --shadow-lg: 0 1px 3px rgba(10, 10, 10, 0.06);
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 1px 3px rgba(0, 0, 0, 0.45);
 }
 
 /*

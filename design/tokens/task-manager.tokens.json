@@ -2,73 +2,73 @@
   "$schema": "https://task-manager.local/schemas/design-tokens-v1.json",
   "meta": {
     "name": "task-manager",
-    "version": "2.1.0-direction-b",
-    "colorMode": "light-first",
+    "version": "3.0.0-dark-canon-v3",
+    "colorMode": "dark-only",
     "darkMode": {
-      "status": "not-shipped",
-      "reason": "SPEC-CAIRN-REDESIGN-V2 \u00a71.1 \u2014 light-first perfection; dark tokens reserved, CSS reasserts light."
+      "status": "shipped-sole-theme",
+      "reason": "Owner directive 2026-07-19 — dark canon V3 is the only shipped theme on every route; light Direction B palette retired."
     },
-    "authority": "Direction B (Vercel/Geist-grade) mockup winner + DESIGN-CANON/tokens.css",
+    "authority": "DESIGN-CANON-V3 tokens.css over Direction B structure (class API preserved)",
     "generatedBy": "W-DS-B1",
     "generatedAt": "2026-07-17T12:22:04.000Z",
-    "lastReconciledDate": "2026-07-17",
+    "lastReconciledDate": "2026-07-19",
     "pinnedAuthoritySha256": "direction-b-vercel-geist-w-ds-b1",
     "classApiPreserved": true,
     "cssEntry": "src/styles.css",
-    "notes": "Direction B exact: surfaces #FAFAFA/#FFF/#F7F7F7/#F0F0F0; border #ECECEC/#E0E0E0; text #0A0A0A/#666/#999; accent #0070F3 + soft rgba(0,112,243,.08); status ok#16A34A warn#D97706 blocked#DC2626 pending#999 running#0070F3; fonts Inter/Geist + Geist Mono; near-zero shadow; 1px border separator."
+    "notes": "Dark canon V3 exact: canvas #0D1017, panel #12161E/#171C26, line #232A35/#2F3A48, tx #E8EDF3/#8A95A3, accent #5B9DFF, ok #35C479, warn #E5A54B, bad #E8635F. -bg chips are solid 14%-over-panel composites. Direction B class API and scales preserved."
   },
   "color": {
     "canvas": {
       "role": "canvas",
-      "value": "#FAFAFA",
+      "value": "#0D1017",
       "type": "color",
-      "source": "Direction B",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "App background",
       "contrast": {
-        "against": "#FAFAFA",
+        "against": "#0D1017",
         "ratio": 1,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--bg",
       "aliases": []
     },
     "surface": {
       "role": "surface",
-      "value": "#FFFFFF",
+      "value": "#12161E",
       "type": "color",
-      "source": "Direction B",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Card / panel surface",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1,
+        "against": "#0D1017",
+        "ratio": 1.05,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--surface",
       "aliases": []
     },
     "surfaceSubtle": {
       "role": "surfaceSubtle",
-      "value": "#F7F7F7",
+      "value": "#171C26",
       "type": "color",
-      "source": "Direction B --surface-hover",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Subtle fill / hover rail",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.1,
+        "against": "#0D1017",
+        "ratio": 1.12,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--surface-2",
       "aliases": [
         "--surface-hover"
@@ -76,19 +76,19 @@
     },
     "surfaceChrome": {
       "role": "surfaceChrome",
-      "value": "#F0F0F0",
+      "value": "#1B2130",
       "type": "color",
-      "source": "Direction B --surface-active",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Chrome / denser fill / active",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.27,
+        "against": "#0D1017",
+        "ratio": 1.18,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--surface-3",
       "aliases": [
         "--surface-active"
@@ -96,37 +96,37 @@
     },
     "textStrong": {
       "role": "textStrong",
-      "value": "#0A0A0A",
+      "value": "#E8EDF3",
       "type": "color",
-      "source": "Direction B",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Primary text",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 19.56,
+        "against": "#12161E",
+        "ratio": 15.39,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--text",
       "aliases": []
     },
     "textDefault": {
       "role": "textDefault",
-      "value": "#666666",
+      "value": "#8A95A3",
       "type": "color",
-      "source": "Direction B --text-secondary",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Secondary body",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 5.74,
+        "against": "#12161E",
+        "ratio": 5.96,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--text-dim",
       "aliases": [
         "--text-secondary"
@@ -134,37 +134,37 @@
     },
     "textMuted": {
       "role": "textMuted",
-      "value": "#71717A",
+      "value": "#7A8494",
       "type": "color",
-      "source": "W-FIX-A11Y AA tertiary on white (zinc-500)",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Muted meta / faint body text — measured ≥4.5:1 on #fff (Direction B #999 failed AA)",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 4.83,
+        "against": "#12161E",
+        "ratio": 4.79,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-FIX-A11Y",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--text-faint",
       "aliases": []
     },
     "textTertiary": {
       "role": "textTertiary",
-      "value": "#999999",
+      "value": "#586170",
       "type": "color",
-      "source": "Direction B --text-tertiary",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Non-text / decorative tertiary (pending chips); not body text FG",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 2.85,
+        "against": "#12161E",
+        "ratio": 2.9,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--text-tertiary",
       "aliases": [
         "--pending"
@@ -172,19 +172,19 @@
     },
     "borderDefault": {
       "role": "borderDefault",
-      "value": "#ECECEC",
+      "value": "#232A35",
       "type": "color",
-      "source": "Direction B",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Fine 1px border (primary separator)",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.27,
+        "against": "#12161E",
+        "ratio": 1.25,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--border",
       "aliases": [
         "--border-soft"
@@ -192,55 +192,55 @@
     },
     "borderSoft": {
       "role": "borderSoft",
-      "value": "#ECECEC",
+      "value": "#232A35",
       "type": "color",
-      "source": "Direction B",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Softer divider (same as border in Direction B)",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.18,
+        "against": "#12161E",
+        "ratio": 1.25,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--border-soft",
       "aliases": []
     },
     "borderStrong": {
       "role": "borderStrong",
-      "value": "#E0E0E0",
+      "value": "#2F3A48",
       "type": "color",
-      "source": "Direction B",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Emphasized control outline",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 2.56,
+        "against": "#12161E",
+        "ratio": 1.57,
         "wcag22_aa_normal_text": "FAIL",
         "wcag22_aa_large_or_ui": "FAIL"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--border-strong",
       "aliases": []
     },
     "action": {
       "role": "action",
-      "value": "#0070F3",
+      "value": "#5B9DFF",
       "type": "color",
-      "source": "Direction B Vercel blue",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Single brand accent for action/active/link",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 4.56,
+        "against": "#12161E",
+        "ratio": 6.65,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--accent",
       "aliases": [
         "--t-grok",
@@ -251,37 +251,37 @@
     },
     "actionHover": {
       "role": "actionHover",
-      "value": "#0060DF",
+      "value": "#79B0FF",
       "type": "color",
-      "source": "Direction B accent hover",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Action hover",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 5.2,
+        "against": "#12161E",
+        "ratio": 8.17,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--accent-2",
       "aliases": []
     },
     "focusRing": {
       "role": "focusRing",
-      "value": "#0A0A0A",
+      "value": "#5B9DFF",
       "type": "color",
-      "source": "Direction B --border-focus",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Focus ring / border-focus",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 19.56,
+        "against": "#12161E",
+        "ratio": 6.65,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--focus-ring",
       "aliases": [
         "--accent-bright",
@@ -290,19 +290,19 @@
     },
     "onAction": {
       "role": "onAction",
-      "value": "#FFFFFF",
+      "value": "#0D1017",
       "type": "color",
-      "source": "Direction B --text-inverse",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Text on solid action",
       "contrast": {
-        "against": "#0070F3",
-        "ratio": 4.56,
+        "against": "#5B9DFF",
+        "ratio": 6.99,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--on-action",
       "aliases": [
         "--text-inverse"
@@ -310,37 +310,31 @@
     },
     "actionSoft": {
       "role": "actionSoft",
-      "value": "rgba(0, 112, 243, 0.08)",
+      "value": "rgba(91, 157, 255, 0.12)",
       "type": "color",
-      "source": "Direction B --accent-soft",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Soft fill for active nav / chips",
-      "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.05,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
-      },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--accent-soft",
       "aliases": []
     },
     "doneFill": {
       "role": "doneFill",
-      "value": "#16A34A",
+      "value": "#35C479",
       "type": "color",
-      "source": "Direction B --ok",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Selesai/terbukti fill/dot (Direction B vibrant; not text FG)",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 3.30,
-        "wcag22_aa_normal_text": "FAIL",
+        "against": "#12161E",
+        "ratio": 8.04,
+        "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--done",
       "aliases": [
         "--ok"
@@ -348,111 +342,91 @@
     },
     "doneFg": {
       "role": "doneFg",
-      "value": "#08665E",
+      "value": "#35C479",
       "type": "color",
-      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Selesai/terbukti text FG — measured white 6.84 soft 5.70",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 6.84,
+        "against": "#12161E",
+        "ratio": 8.04,
         "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS",
-        "soft12_self": {
-          "bg": "#e1edec",
-          "ratio": 5.70,
-          "wcag22_aa_normal_text": "PASS"
-        }
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-FIX-A11Y",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--done-fg",
       "aliases": []
     },
     "okFg": {
       "role": "okFg",
-      "value": "#0A6E48",
+      "value": "#35C479",
       "type": "color",
-      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "OK/success text FG — measured white 6.29 soft 5.29",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 6.29,
+        "against": "#12161E",
+        "ratio": 8.04,
         "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS",
-        "soft12_self": {
-          "bg": "#e2eee9",
-          "ratio": 5.29,
-          "wcag22_aa_normal_text": "PASS"
-        }
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-FIX-A11Y",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--ok-fg",
       "aliases": []
     },
     "infoFg": {
       "role": "infoFg",
-      "value": "#1A5FB4",
+      "value": "#5B9DFF",
       "type": "color",
-      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Info/ongoing text FG — measured white 6.29 soft 5.28",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 6.29,
+        "against": "#12161E",
+        "ratio": 6.65,
         "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS",
-        "soft12_self": {
-          "bg": "#e4ecf6",
-          "ratio": 5.28,
-          "wcag22_aa_normal_text": "PASS"
-        }
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-FIX-A11Y",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--info-fg",
       "aliases": []
     },
     "accentFg": {
       "role": "accentFg",
-      "value": "#4F3FD4",
+      "value": "#5B9DFF",
       "type": "color",
-      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Brand accent text FG — measured white 7.01 soft 5.82 (fill stays --accent #0070F3)",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 7.01,
+        "against": "#12161E",
+        "ratio": 6.65,
         "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS",
-        "soft12_self": {
-          "bg": "#eae8fa",
-          "ratio": 5.82,
-          "wcag22_aa_normal_text": "PASS"
-        }
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-FIX-A11Y",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--accent-fg",
       "aliases": []
     },
     "doneBg": {
       "role": "doneBg",
-      "value": "#ECFDF3",
+      "value": "#172E2B",
       "type": "color",
-      "source": "green-50",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Done soft surface",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.05,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
+        "against": "#35C479",
+        "ratio": 6.38,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--done-bg",
       "aliases": [
         "--ok-bg"
@@ -460,19 +434,19 @@
     },
     "ongoingFg": {
       "role": "ongoingFg",
-      "value": "#0070F3",
+      "value": "#5B9DFF",
       "type": "color",
-      "source": "Direction B --running",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Sedang berjalan / running",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 4.56,
+        "against": "#12161E",
+        "ratio": 6.65,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--ongoing",
       "aliases": [
         "--info",
@@ -481,19 +455,19 @@
     },
     "ongoingBg": {
       "role": "ongoingBg",
-      "value": "#EFF8FF",
+      "value": "#1C293E",
       "type": "color",
-      "source": "blue soft",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Ongoing soft surface",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.09,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
+        "against": "#5B9DFF",
+        "ratio": 5.37,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--ongoing-bg",
       "aliases": [
         "--info-bg"
@@ -501,19 +475,19 @@
     },
     "nextFg": {
       "role": "nextFg",
-      "value": "#6D28D9",
+      "value": "#F472B6",
       "type": "color",
-      "source": "violet-700 (retained component alias)",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Berikutnya",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 7.1,
+        "against": "#12161E",
+        "ratio": 6.84,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--next",
       "aliases": [
         "--t-claude"
@@ -521,37 +495,37 @@
     },
     "nextBg": {
       "role": "nextBg",
-      "value": "#F5F3FF",
+      "value": "#322333",
       "type": "color",
-      "source": "violet-50",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Next soft surface",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.1,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
+        "against": "#F472B6",
+        "ratio": 5.57,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--next-bg",
       "aliases": []
     },
     "queuedFg": {
       "role": "queuedFg",
-      "value": "#999999",
+      "value": "#7A8494",
       "type": "color",
-      "source": "Direction B --pending",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Pending / antrian",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 2.85,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
+        "against": "#12161E",
+        "ratio": 4.79,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--queued",
       "aliases": [
         "--parked",
@@ -560,19 +534,19 @@
     },
     "queuedBg": {
       "role": "queuedBg",
-      "value": "#F7F7F7",
+      "value": "#171C26",
       "type": "color",
-      "source": "Direction B surface-hover",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Queued soft surface",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.1,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
+        "against": "#7A8494",
+        "ratio": 4.51,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--queued-bg",
       "aliases": [
         "--parked-bg"
@@ -580,78 +554,73 @@
     },
     "blockedFill": {
       "role": "blockedFill",
-      "value": "#DC2626",
+      "value": "#E8635F",
       "type": "color",
-      "source": "Direction B --blocked",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Terhambat fill/dot (Direction B vibrant)",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 4.83,
+        "against": "#12161E",
+        "ratio": 5.5,
         "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--blocked",
       "aliases": []
     },
     "blockedFg": {
       "role": "blockedFg",
-      "value": "#C62828",
+      "value": "#E8635F",
       "type": "color",
-      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Terhambat text FG — measured white 5.62 soft 4.64 (badge softs use #991B1B)",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 5.62,
+        "against": "#12161E",
+        "ratio": 5.5,
         "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS",
-        "soft12_self": {
-          "bg": "#f8e5e5",
-          "ratio": 4.64,
-          "wcag22_aa_normal_text": "PASS"
-        }
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-FIX-A11Y",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--blocked-fg",
       "aliases": []
     },
     "blockedBg": {
       "role": "blockedBg",
-      "value": "#FEF2F2",
+      "value": "#302127",
       "type": "color",
-      "source": "red-50",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Blocked soft surface",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.09,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
+        "against": "#E8635F",
+        "ratio": 4.65,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--blocked-bg",
       "aliases": []
     },
     "warnFill": {
       "role": "warnFill",
-      "value": "#D97706",
+      "value": "#E5A54B",
       "type": "color",
-      "source": "Direction B --warn",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Warn fill/dot (Direction B vibrant; not text FG)",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 3.19,
-        "wcag22_aa_normal_text": "FAIL",
+        "against": "#12161E",
+        "ratio": 8.47,
+        "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--warn",
       "aliases": [
         "--reconcile",
@@ -660,60 +629,55 @@
     },
     "warnFg": {
       "role": "warnFg",
-      "value": "#8A5200",
+      "value": "#E5A54B",
       "type": "color",
-      "source": "W-FIX-A11Y AA text on white + soft-12%",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Warn text FG — measured white 6.39 soft 5.35",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 6.39,
+        "against": "#12161E",
+        "ratio": 8.47,
         "wcag22_aa_normal_text": "PASS",
-        "wcag22_aa_large_or_ui": "PASS",
-        "soft12_self": {
-          "bg": "#f1eae0",
-          "ratio": 5.35,
-          "wcag22_aa_normal_text": "PASS"
-        }
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-FIX-A11Y",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--warn-fg",
       "aliases": []
     },
     "reconcileFg": {
       "role": "reconcileFg",
-      "value": "#D97706",
+      "value": "#E5A54B",
       "type": "color",
-      "source": "Direction B --warn",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Sebagian / tinjauan fill alias (Direction B exact); text uses --warn-fg",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 3.19,
-        "wcag22_aa_normal_text": "FAIL",
+        "against": "#12161E",
+        "ratio": 8.47,
+        "wcag22_aa_normal_text": "PASS",
         "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--reconcile",
       "aliases": []
     },
     "reconcileBg": {
       "role": "reconcileBg",
-      "value": "#FFFBEB",
+      "value": "#302A24",
       "type": "color",
-      "source": "amber-50",
+      "source": "DESIGN-CANON-V3 dark tokens (owner 2026-07-19 global dark)",
       "reason": "Reconcile soft surface",
       "contrast": {
-        "against": "#FFFFFF",
-        "ratio": 1.04,
-        "wcag22_aa_normal_text": "FAIL",
-        "wcag22_aa_large_or_ui": "FAIL"
+        "against": "#E5A54B",
+        "ratio": 6.62,
+        "wcag22_aa_normal_text": "PASS",
+        "wcag22_aa_large_or_ui": "PASS"
       },
-      "reviewer": "W-DS-B1",
+      "reviewer": "L0-DARK-FLIP",
       "replacementOwner": "art-director",
-      "reviewDate": "2026-07-17",
+      "reviewDate": "2026-07-19",
       "cssVar": "--reconcile-bg",
       "aliases": [
         "--warn-bg"
@@ -724,147 +688,147 @@
     {
       "fg": "textStrong",
       "bg": "surface",
-      "ratio": 19.56,
+      "ratio": 15.39,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "textDefault",
       "bg": "surface",
-      "ratio": 5.74,
+      "ratio": 5.96,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "textMuted",
       "bg": "surface",
-      "ratio": 2.85,
-      "aa_normal_4_5": "FAIL",
-      "aa_ui_3_0": "FAIL"
+      "ratio": 4.79,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
     },
     {
       "fg": "action",
       "bg": "surface",
-      "ratio": 4.56,
+      "ratio": 6.65,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "actionHover",
       "bg": "surface",
-      "ratio": 5.2,
+      "ratio": 8.17,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "focusRing",
       "bg": "surface",
-      "ratio": 19.56,
+      "ratio": 6.65,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "onAction",
       "bg": "action",
-      "ratio": 4.56,
+      "ratio": 6.99,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "doneFg",
       "bg": "surface",
-      "ratio": 3.36,
-      "aa_normal_4_5": "FAIL",
+      "ratio": 8.04,
+      "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "doneFg",
       "bg": "doneBg",
-      "ratio": 3.0,
-      "aa_normal_4_5": "FAIL",
+      "ratio": 6.38,
+      "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "ongoingFg",
       "bg": "surface",
-      "ratio": 4.56,
+      "ratio": 6.65,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "ongoingFg",
       "bg": "ongoingBg",
-      "ratio": 4.2,
-      "aa_normal_4_5": "FAIL",
+      "ratio": 5.37,
+      "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "nextFg",
       "bg": "surface",
-      "ratio": 7.1,
+      "ratio": 6.84,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "nextFg",
       "bg": "nextBg",
-      "ratio": 6.48,
+      "ratio": 5.57,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "queuedFg",
       "bg": "surface",
-      "ratio": 2.85,
-      "aa_normal_4_5": "FAIL",
-      "aa_ui_3_0": "FAIL"
+      "ratio": 4.79,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
     },
     {
       "fg": "queuedFg",
       "bg": "queuedBg",
-      "ratio": 2.6,
-      "aa_normal_4_5": "FAIL",
-      "aa_ui_3_0": "FAIL"
+      "ratio": 4.51,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
     },
     {
       "fg": "blockedFg",
       "bg": "surface",
-      "ratio": 4.83,
+      "ratio": 5.5,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "blockedFg",
       "bg": "blockedBg",
-      "ratio": 4.4,
-      "aa_normal_4_5": "FAIL",
+      "ratio": 4.65,
+      "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "reconcileFg",
       "bg": "surface",
-      "ratio": 3.03,
-      "aa_normal_4_5": "FAIL",
+      "ratio": 8.47,
+      "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "reconcileFg",
       "bg": "reconcileBg",
-      "ratio": 2.8,
-      "aa_normal_4_5": "FAIL",
-      "aa_ui_3_0": "FAIL"
+      "ratio": 6.62,
+      "aa_normal_4_5": "PASS",
+      "aa_ui_3_0": "PASS"
     },
     {
       "fg": "textStrong",
       "bg": "canvas",
-      "ratio": 18.8,
+      "ratio": 16.16,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     },
     {
       "fg": "textStrong",
       "bg": "surfaceSubtle",
-      "ratio": 18.4,
+      "ratio": 14.5,
       "aa_normal_4_5": "PASS",
       "aa_ui_3_0": "PASS"
     }
@@ -997,8 +961,8 @@
     "cssMap": {
       "--shadow-sm": "0 0 0 1px var(--border)",
       "--shadow-md": "0 0 0 1px var(--border-strong)",
-      "--shadow-pop": "0 1px 2px rgba(10, 10, 10, 0.04)",
-      "--shadow-lg": "0 1px 3px rgba(10, 10, 10, 0.06)"
+      "--shadow-pop": "0 1px 2px rgba(0, 0, 0, 0.35)",
+      "--shadow-lg": "0 1px 3px rgba(0, 0, 0, 0.45)"
     }
   },
   "motion": {
@@ -1063,7 +1027,7 @@
     "business logic inside ui primitives"
   ],
   "directionB": {
-    "name": "Direction B \u2014 Vercel/Geist-grade",
+    "name": "Direction B — Vercel/Geist-grade",
     "cssExact": {
       "--bg": "#fafafa",
       "--surface": "#ffffff",

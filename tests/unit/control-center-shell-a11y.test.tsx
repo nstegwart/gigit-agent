@@ -213,11 +213,11 @@ describe('control-center shell a11y — contrast tokens (shell chrome)', () => {
     )
   })
 
-  it('light --text-dim contrast on white meets WCAG AA (≥4.5)', () => {
-    // Token value from :root in styles.css
+  it('dark --text-dim contrast on panel surface meets WCAG AA (≥4.5)', () => {
+    // Token value from :root in styles.css, measured on dark canon --surface.
     const m = stylesSrc.match(/:root\s*\{[^}]*--text-dim:\s*(#[0-9a-fA-F]{6})/s)
     expect(m?.[1]).toBeTruthy()
-    const ratio = contrastRatio(m![1], '#ffffff')
+    const ratio = contrastRatio(m![1], '#12161e')
     expect(ratio).toBeGreaterThanOrEqual(4.5)
   })
 })

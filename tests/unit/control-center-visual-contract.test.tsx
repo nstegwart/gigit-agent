@@ -3,7 +3,7 @@
  * Support evidence only (LOCAL ONLY) — not authenticated browser/axe DONE.
  *
  * Asserts class/markup/token invariants for shell + primary CC modules.
- * Contrast ratios for light semantic tokens are computed from styles.css
+ * Contrast ratios for dark canon V3 semantic tokens are computed from styles.css
  * with a real relative-luminance function (not hand-typed PASS).
  */
 import { readFileSync } from 'node:fs'
@@ -54,13 +54,13 @@ const decisionsScreenSrc = readFileSync(
   'utf8',
 )
 
-/** Extract light :root token block only (before dark theme). */
-function lightRootBlock(css: string): string {
+/** Extract dark-canon :root token block only (before the dark-canon lock). */
+function darkRootBlock(css: string): string {
   const start = css.indexOf(':root {')
-  const dark = css.indexOf(':root[data-theme="dark"]')
+  const lock = css.indexOf(':root[data-theme="light"]')
   expect(start).toBeGreaterThan(-1)
-  expect(dark).toBeGreaterThan(start)
-  return css.slice(start, dark)
+  expect(lock).toBeGreaterThan(start)
+  return css.slice(start, lock)
 }
 
 function tokenHex(block: string, name: string): string {
@@ -88,75 +88,91 @@ function contrastRatio(fg: string, bg: string): number {
   return (hi + 0.05) / (lo + 0.05)
 }
 
-/** Approx soft tint: FG @ 12% over white (matches design soft chips). */
-function softOnWhite(fg: string, alpha = 0.12): string {
-  const c = fg.replace('#', '')
-  const r = parseInt(c.slice(0, 2), 16)
-  const g = parseInt(c.slice(2, 4), 16)
-  const b = parseInt(c.slice(4, 6), 16)
-  const mix = (ch: number) => Math.round(255 * (1 - alpha) + ch * alpha)
+/** Dark canon fixed surfaces (must match styles.css :root). */
+const CANVAS = '#0d1017'
+const SURFACE = '#12161e'
+
+/** Approx soft tint: FG @ 14% over --surface (matches dark -bg rgba chips). */
+function softOnSurface(fg: string, alpha = 0.14): string {
+  const parse = (hex: string) => {
+    const c = hex.replace('#', '')
+    return [0, 2, 4].map((i) => parseInt(c.slice(i, i + 2), 16))
+  }
+  const cf = parse(fg)
+  const cs = parse(SURFACE)
+  const mix = (i: number) => Math.round(cs[i] * (1 - alpha) + cf[i] * alpha)
   return (
     '#' +
-    [mix(r), mix(g), mix(b)]
+    [mix(0), mix(1), mix(2)]
       .map((x) => x.toString(16).padStart(2, '0'))
       .join('')
   )
 }
 
-describe('C3-R2A light semantic tokens — computed AA (≥4.5:1)', () => {
-  const light = lightRootBlock(stylesSrc)
+describe('C3-R2A dark canon semantic tokens — computed AA (≥4.5:1)', () => {
+  const dark = darkRootBlock(stylesSrc)
   /*
-   * Direction B dual tokens (W-FIX-A11Y / L0):
-   *   --ok/--warn/… stay vibrant for dots/fills
-   *   --ok-fg/--warn-fg/… are measured AA text FOREGROUND on white + soft-12%
-   * text-faint is body tertiary (AA on white only).
+   * Dark canon V3 dual tokens (owner 2026-07-19 global dark):
+   *   --ok/--warn/… vibrant canon values double as measured AA text FG on
+   *   dark panels, so --ok-fg/--warn-fg/… alias the same values.
+   * text-faint is body tertiary (AA on canvas + surface); text-tertiary is
+   * decorative canon t3 and intentionally not AA-gated.
    */
   const tokens = {
-    accent: tokenHex(light, 'accent-fg'),
-    ok: tokenHex(light, 'ok-fg'),
-    blocked: tokenHex(light, 'blocked-fg'),
-    warn: tokenHex(light, 'warn-fg'),
-    info: tokenHex(light, 'info-fg'),
-    done: tokenHex(light, 'done-fg'),
-    textFaint: tokenHex(light, 'text-faint'),
+    accent: tokenHex(dark, 'accent-fg'),
+    ok: tokenHex(dark, 'ok-fg'),
+    blocked: tokenHex(dark, 'blocked-fg'),
+    warn: tokenHex(dark, 'warn-fg'),
+    info: tokenHex(dark, 'info-fg'),
+    done: tokenHex(dark, 'done-fg'),
+    textFaint: tokenHex(dark, 'text-faint'),
   } as const
 
-  it.each(Object.entries(tokens))('%s on white ≥ 4.5:1', (_name, fg) => {
-    const ratio = contrastRatio(fg, '#ffffff')
+  it.each(Object.entries(tokens))('%s on canvas ≥ 4.5:1', (_name, fg) => {
+    const ratio = contrastRatio(fg, CANVAS)
+    expect(ratio).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it.each(Object.entries(tokens))('%s on surface ≥ 4.5:1', (_name, fg) => {
+    const ratio = contrastRatio(fg, SURFACE)
     expect(ratio).toBeGreaterThanOrEqual(4.5)
   })
 
   it.each(['accent', 'ok', 'blocked', 'warn', 'info', 'done'] as const)(
-    '%s on soft-12% tint ≥ 4.5:1',
+    '%s on soft-14% tint ≥ 4.5:1',
     (name) => {
       const fg = tokens[name]
-      const soft = softOnWhite(fg, 0.12)
+      const soft = softOnSurface(fg, 0.14)
       const ratio = contrastRatio(fg, soft)
       expect(ratio).toBeGreaterThanOrEqual(4.5)
     },
   )
 
-  it('does not use legacy low-contrast bright tokens in light :root', () => {
-    // Pre-repair fails measured by Spark axe.
-    expect(light).not.toMatch(/--blocked:\s*#e5484d/)
-    expect(light).not.toMatch(/--ok:\s*#12a06a/)
-    expect(light).not.toMatch(/--warn:\s*#c77b16/)
-    expect(light).not.toMatch(/--info:\s*#2f7fe0/)
-    expect(light).not.toMatch(/--done:\s*#0d9488/)
-    expect(light).not.toMatch(/--accent:\s*#6d5efc/)
-    expect(light).not.toMatch(/--text-faint:\s*#98a1af/)
-    // Faint tertiary must not regress to Direction-B #999 (fails AA on white).
-    expect(light).not.toMatch(/--text-faint:\s*#999999/)
+  it('does not regress to the retired light palette in dark :root', () => {
+    // Owner 2026-07-19: light Direction B is retired; dark canon V3 only.
+    expect(dark).not.toMatch(/--bg:\s*#fafafa/)
+    expect(dark).not.toMatch(/--surface:\s*#ffffff/)
+    expect(dark).not.toMatch(/--text:\s*#0a0a0a/)
+    expect(dark).not.toMatch(/--accent:\s*#0070f3/)
+    expect(dark).not.toMatch(/--ok:\s*#16a34a/)
+    expect(dark).not.toMatch(/--blocked:\s*#dc2626/)
+    expect(dark).not.toMatch(/--warn:\s*#d97706/)
+    // Faint tertiary must not regress to Direction-B #999 (not AA on dark either).
+    expect(dark).not.toMatch(/--text-faint:\s*#999999/)
+    expect(dark).toMatch(/color-scheme:\s*dark/)
   })
 
-  it('keeps Direction B vibrant fill tokens alongside AA -fg text tokens', () => {
-    expect(tokenHex(light, 'ok').toLowerCase()).toBe('#16a34a')
-    expect(tokenHex(light, 'warn').toLowerCase()).toBe('#d97706')
-    expect(tokenHex(light, 'blocked').toLowerCase()).toBe('#dc2626')
-    expect(tokenHex(light, 'accent').toLowerCase()).toBe('#0070f3')
-    expect(tokenHex(light, 'ok-fg').toLowerCase()).toBe('#0a6e48')
-    expect(tokenHex(light, 'warn-fg').toLowerCase()).toBe('#8a5200')
-    expect(tokenHex(light, 'blocked-fg').toLowerCase()).toBe('#c62828')
+  it('keeps canon vibrant fill tokens alongside AA -fg text tokens', () => {
+    expect(tokenHex(dark, 'bg').toLowerCase()).toBe('#0d1017')
+    expect(tokenHex(dark, 'surface').toLowerCase()).toBe('#12161e')
+    expect(tokenHex(dark, 'text').toLowerCase()).toBe('#e8edf3')
+    expect(tokenHex(dark, 'ok').toLowerCase()).toBe('#35c479')
+    expect(tokenHex(dark, 'warn').toLowerCase()).toBe('#e5a54b')
+    expect(tokenHex(dark, 'blocked').toLowerCase()).toBe('#e8635f')
+    expect(tokenHex(dark, 'accent').toLowerCase()).toBe('#5b9dff')
+    expect(tokenHex(dark, 'ok-fg').toLowerCase()).toBe('#35c479')
+    expect(tokenHex(dark, 'warn-fg').toLowerCase()).toBe('#e5a54b')
+    expect(tokenHex(dark, 'blocked-fg').toLowerCase()).toBe('#e8635f')
   })
 
   it('chip-admin uses accent color on soft (token path)', () => {
@@ -212,38 +228,46 @@ describe('C3-R2A module AA hard-locals (no var pass-through trap)', () => {
     expect(workCss).toMatch(/--wk-done:\s*var\(--done-fg\)/)
   })
 
-  it('badgeBlocked uses darker token mix that AA-passes measured soft #eedde0', () => {
-    // Root defect: Work-BLOCKED_1440x900 axe — #c62828 on #eedde0 = 4.29.
-    // Local alias uses --blocked-fg; badge text darkens via color-mix with --text.
+  it('badgeBlocked uses token mix toward --text that AA-passes dark soft tint', () => {
+    // Historical root defect (light era): #c62828 on #eedde0 = 4.29 (axe fail).
+    // Local alias uses --blocked-fg; badge text mixes toward --text, which on
+    // dark canon LIGHTENS the red and keeps AA on the 14% soft tint.
     expect(workCss).toMatch(/--wk-blocked:\s*var\(--blocked-fg\)/)
     const badge = workCss.match(/\.badgeBlocked\s*\{([^}]+)\}/)
     expect(badge?.[1]).toBeTruthy()
     expect(badge![1]).toMatch(
       /color:\s*color-mix\(\s*in\s+srgb\s*,\s*var\(--blocked-fg\)\s+75%\s*,\s*var\(--text\)\s*\)/,
     )
-    // Resolve mix against live global token values (blocked-fg #c62828, text #0a0a0a).
-    const fg = mixHex('#c62828', '#0a0a0a', 0.75)
-    const measuredSoft = '#eedde0'
+    // Resolve mix against live global token values from styles.css dark :root.
+    const dark = darkRootBlock(stylesSrc)
+    const blockedFg = tokenHex(dark, 'blocked-fg')
+    const text = tokenHex(dark, 'text')
+    const fg = mixHex(blockedFg, text, 0.75)
+    const measuredSoft = softOnSurface(tokenHex(dark, 'blocked'), 0.14)
     const ratio = contrastRatio(fg, measuredSoft)
     expect(ratio).toBeGreaterThanOrEqual(4.5)
-    expect(fg.toLowerCase()).not.toBe('#c62828')
+    expect(fg.toLowerCase()).not.toBe(blockedFg.toLowerCase())
   })
 
-  it('summaryChipBlocking uses darker token mix that AA-passes measured soft #f1dfe1', () => {
-    // Root defect: Decisions_* axe — #c62828 on #f1dfe1 = 4.38 (decisions-blocking-count).
+  it('summaryChipBlocking uses token mix toward --text that AA-passes dark soft tint', () => {
+    // Historical root defect (light era): #c62828 on #f1dfe1 = 4.38
+    // (decisions-blocking-count axe). Documented pair stays failing below.
     expect(decisionsCss).toMatch(/--dec-blocked:\s*var\(--blocked-fg\)/)
     const chip = decisionsCss.match(/\.summaryChipBlocking\s*\{([^}]+)\}/)
     expect(chip?.[1]).toBeTruthy()
     expect(chip![1]).toMatch(
       /color:\s*color-mix\(\s*in\s+srgb\s*,\s*var\(--blocked-fg\)\s+75%\s*,\s*var\(--text\)\s*\)/,
     )
-    const fg = mixHex('#c62828', '#0a0a0a', 0.75)
-    const measuredSoft = '#f1dfe1'
+    const dark = darkRootBlock(stylesSrc)
+    const blockedFg = tokenHex(dark, 'blocked-fg')
+    const text = tokenHex(dark, 'text')
+    const fg = mixHex(blockedFg, text, 0.75)
+    const measuredSoft = softOnSurface(tokenHex(dark, 'blocked'), 0.14)
     const ratio = contrastRatio(fg, measuredSoft)
     expect(ratio).toBeGreaterThanOrEqual(4.5)
-    expect(fg.toLowerCase()).not.toBe('#c62828')
-    // Pre-fix pair must remain failing so the test documents the defect pair
-    expect(contrastRatio('#c62828', measuredSoft)).toBeLessThan(4.5)
+    expect(fg.toLowerCase()).not.toBe(blockedFg.toLowerCase())
+    // Historical light-era defect pair must remain failing (documents the defect)
+    expect(contrastRatio('#c62828', '#f1dfe1')).toBeLessThan(4.5)
   })
 })
 

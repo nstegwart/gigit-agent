@@ -60,8 +60,9 @@ const {
 } = require('../../scripts/design-token-lint.mjs') as DesignTokenLintModule
 
 /**
- * Honest baseline after W-TOKEN-2 (2026-07-17):
- * - REQUIRED_COLORS pinned to Direction B (accent #0070F3, surfaces/text/borders B).
+ * Honest baseline after the dark canon V3 flip (owner 2026-07-19 global dark):
+ * - REQUIRED_COLORS pinned to dark canon (accent #5B9DFF, canvas #0D1017, panel
+ *   #12161E); vibrant canon status values double as AA text FG on dark panels.
  * - Screen module.css raw hex → var(--*-fg) aliases; soft-chip darker FG via color-mix.
  * - styles.css is the authorized token host and is excluded from residual counts.
  * - tokenVerdict PASS: live AA honesty (false PASS claims only) + primary cssVar parity.
@@ -95,28 +96,25 @@ describe('design-token-lint', () => {
     const result = auditTokens(tokens, css)
     expect(result.issues.length).toBe(BASELINE.tokenIssues)
     expect(result.contrast.length).toBeGreaterThanOrEqual(19)
-    // Direction-B queuedFg (#999) fails both AA thresholds on surface/queuedBg
-    // (2.85 / 2.66). Other pairs pass at least UI AA (3:1). Documented palette debt.
+    // Dark canon V3: every pinned matrix pair passes at least UI AA, and — unlike
+    // the retired light palette (queuedFg #999 dual-fail) — none dual-fails.
     const dualFail = result.contrast.filter(
       (row) => !row.normalPass && !row.uiPass,
     )
-    expect(dualFail.map((row) => row.pair)).toEqual([
-      'queuedFg/surface',
-      'queuedFg/queuedBg',
-    ])
+    expect(dualFail.map((row) => row.pair)).toEqual([])
     expect(
       result.contrast.filter((row) => row.normalPass || row.uiPass).length,
-    ).toBe(result.contrast.length - 2)
-    // Direction B accent + focus ring (program-emitted AA checks; must stay ≥4.5:1)
-    expect(Number(contrastRatio('#0070F3', '#FFFFFF').toFixed(2))).toBe(4.55)
-    expect(Number(contrastRatio('#0A0A0A', '#FFFFFF').toFixed(2))).toBe(19.8)
-    expect(Number(contrastRatio('#0070F3', '#FFFFFF').toFixed(2))).toBeGreaterThanOrEqual(
+    ).toBe(result.contrast.length)
+    // Dark canon accent + text (program-emitted AA checks; must stay ≥4.5:1)
+    expect(Number(contrastRatio('#5B9DFF', '#12161E').toFixed(2))).toBe(6.65)
+    expect(Number(contrastRatio('#E8EDF3', '#12161E').toFixed(2))).toBe(15.39)
+    expect(Number(contrastRatio('#5B9DFF', '#12161E').toFixed(2))).toBeGreaterThanOrEqual(
       4.5,
     )
-    expect(Number(contrastRatio('#666666', '#FFFFFF').toFixed(2))).toBeGreaterThanOrEqual(
+    expect(Number(contrastRatio('#8A95A3', '#12161E').toFixed(2))).toBeGreaterThanOrEqual(
       4.5,
     )
-    expect(Number(contrastRatio('#71717A', '#FFFFFF').toFixed(2))).toBeGreaterThanOrEqual(
+    expect(Number(contrastRatio('#7A8494', '#12161E').toFixed(2))).toBeGreaterThanOrEqual(
       4.5,
     )
   })

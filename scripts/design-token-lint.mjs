@@ -10,35 +10,36 @@ export const TOKEN_PATH = 'design/tokens/task-manager.tokens.json'
 export const GLOBAL_CSS_PATH = 'src/styles.css'
 
 /**
- * Direction B (Vercel/Geist-grade) pinned palette — authority
- * `direction-b-vercel-geist-w-ds-b1` / tokens meta version 2.1.0-direction-b.
- * textMuted remains AA-adjusted zinc-500 (#71717A ≥4.5:1 on white).
+ * Dark canon V3 pinned palette (owner 2026-07-19 global dark) — authority
+ * DESIGN-CANON-V3 tokens.css / tokens meta version 3.0.0-dark-canon-v3.
+ * Vibrant canon status values double as AA text FG on dark panels;
+ * -bg chips are solid 14%-over-panel composites.
  */
 const REQUIRED_COLORS = Object.freeze({
-  canvas: '#FAFAFA',
-  surface: '#FFFFFF',
-  surfaceSubtle: '#F7F7F7',
-  textStrong: '#0A0A0A',
-  textDefault: '#666666',
-  textMuted: '#71717A',
-  borderDefault: '#ECECEC',
-  borderStrong: '#E0E0E0',
-  action: '#0070F3',
-  actionHover: '#0060DF',
-  focusRing: '#0A0A0A',
-  // Semantic FG/BG pairs (Direction B + AA hard-locals where applied)
-  doneFg: '#08665E',
-  doneBg: '#ECFDF3',
-  ongoingFg: '#0070F3',
-  ongoingBg: '#EFF8FF',
-  nextFg: '#6D28D9',
-  nextBg: '#F5F3FF',
-  queuedFg: '#999999',
-  queuedBg: '#F7F7F7',
-  blockedFg: '#C62828',
-  blockedBg: '#FEF2F2',
-  reconcileFg: '#D97706',
-  reconcileBg: '#FFFBEB',
+  canvas: '#0D1017',
+  surface: '#12161E',
+  surfaceSubtle: '#171C26',
+  textStrong: '#E8EDF3',
+  textDefault: '#8A95A3',
+  textMuted: '#7A8494',
+  borderDefault: '#232A35',
+  borderStrong: '#2F3A48',
+  action: '#5B9DFF',
+  actionHover: '#79B0FF',
+  focusRing: '#5B9DFF',
+  // Semantic FG/BG pairs (canon + solid soft composites)
+  doneFg: '#35C479',
+  doneBg: '#172E2B',
+  ongoingFg: '#5B9DFF',
+  ongoingBg: '#1C293E',
+  nextFg: '#F472B6',
+  nextBg: '#322333',
+  queuedFg: '#7A8494',
+  queuedBg: '#171C26',
+  blockedFg: '#E8635F',
+  blockedBg: '#302127',
+  reconcileFg: '#E5A54B',
+  reconcileBg: '#302A24',
 })
 
 /** SPEC §1.2 type steps + statement alias 32. */
