@@ -410,8 +410,15 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   border-color: var(--line2);
 }
 
+/* Keep last-interacted / selected nodes above later DOM siblings so
+   pointer hit-testing still reaches the card after drag/overlap. */
+.flow-ultimate-root .fnode.is-raised {
+  z-index: 5;
+}
+
 .flow-ultimate-root .fnode.is-hl,
 .flow-ultimate-root .fnode.on {
+  z-index: 6;
   border-color: var(--acc);
   box-shadow: 0 0 0 2px var(--acc-ring);
   background: var(--panel2);
@@ -496,6 +503,19 @@ body[data-page='alur'] .alur-primary-shell > .flow-ultimate-root {
   color: var(--proj-c, var(--t2));
   margin-top: 0;
   font-weight: var(--fw-medium);
+}
+
+/*
+ * Decorative node chrome must not steal hit-testing from the card.
+ * Overlapping later siblings still need is-raised / is-hl z-index; this only
+ * keeps labels/dots from being the intercepting target inside a card.
+ */
+.flow-ultimate-root .fnode .ft,
+.flow-ultimate-root .fnode .flow-meta,
+.flow-ultimate-root .fnode .flow-proj-tag,
+.flow-ultimate-root .fnode .flow-inv-badge,
+.flow-ultimate-root .fnode .fdot {
+  pointer-events: none;
 }
 
 .flow-ultimate-root .flow-zoom {

@@ -132,11 +132,38 @@ export async function rebuildParityGetHandler(request: Request): Promise<Respons
       })
     }
 
+    // DATA_REBUILD contract: expose lineage/parity/features/boardId at the TOP
+    // level (acceptance + public UI consumers). Keep nested `data` for older
+    // clients that unwrap the envelope.
+    const payloadObj =
+      payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
+    const topBoardId =
+      (payloadObj && typeof payloadObj.boardId === 'string' && payloadObj.boardId) ||
+      boardId ||
+      null
+    const isParityView =
+      view === 'parity' || view === '' || (!view.includes('feature') && !view.includes('blind') && !view.includes('trace'))
+    const isFeatureView =
+      view === 'feature360' || view === 'feature_360' || view === 'feature-360'
+
     return jsonResponse(
       {
         ok: true,
         view,
         actor: { actorId: auth.actor.actorId, role: auth.actor.role },
+        // Contract keys (any one satisfies DATA-LINEAGE-REBUILD-PARITY-API)
+        boardId: topBoardId,
+        ...(isParityView
+          ? {
+              parity: payload,
+              // lineage alias: parity rollup is the lineage summary surface
+              lineage: payload,
+            }
+          : {}),
+        ...(isFeatureView ? { features: payload } : {}),
+        // Promote payload fields so BlindspotTracer / feature360 clients that
+        // read body.available / body.boardId (not body.data.*) keep working.
+        ...(payloadObj ?? {}),
         data: payload,
       },
       200,

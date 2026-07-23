@@ -184,6 +184,8 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
   const [hintHidden, setHintHidden] = useState(false)
   const [panning, setPanning] = useState(false)
   const [draggingId, setDraggingId] = useState<string | null>(null)
+  /** Last pointer/keyboard-interacted node — stays above later DOM siblings after drag. */
+  const [raisedId, setRaisedId] = useState<string | null>(null)
   const dragRef = useRef<NodeDragState | null>(null)
   const panRef = useRef<PanState | null>(null)
   const nodesRef = useRef(nodes)
@@ -246,6 +248,12 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
       // Focus policy is applied by closeSheet when the sheet was open
       // (switchMode / brand paths); pure rebuild must not leave a stale opener.
       setActiveNodeId(null)
+      // Keep raised z-index across mode/layer rebuilds when the node still
+      // exists — drag can leave cards overlapping later DOM siblings, and
+      // clearing raise made the later sibling intercept pointer hits.
+      setRaisedId((prev) =>
+        prev && g.nodes.some((n) => n.id === prev) ? prev : null,
+      )
       setSheetOpen(false)
       openerRef.current = null
       // fit after layout
@@ -463,6 +471,9 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
           openerRef.current = document.activeElement
         }
       }
+      // Raise target so post-drag overlaps cannot bury the active card under
+      // later DOM siblings (related nav + keyboard open share this path).
+      setRaisedId(id)
       setActiveNodeId(id)
       setSheetOpen(true)
       centerOnNode(id, true)
@@ -540,6 +551,9 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
       if (!id) return
       const n = nodesRef.current.find((x) => x.id === id)
       if (!n) return
+      // Raise immediately so subsequent pointer hit-tests (and post-drag
+      // re-clicks) land on this card even when it overlaps later siblings.
+      setRaisedId(id)
       const w = clientToWorld(e.clientX, e.clientY)
       dragRef.current = {
         id,
@@ -689,6 +703,7 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
       e.stopPropagation()
+      setRaisedId(id)
       openSheetForNode(id, e.currentTarget)
     }
   }
@@ -1008,14 +1023,19 @@ export function FlowUltimateScreen({ data, boardId }: FlowUltimateScreenProps) {
                   key={n.id}
                   role="button"
                   tabIndex={0}
-                  className={`fnode${mode === 'cross' || n.project ? ' has-proj' : ''}${isInv ? ' is-inventory' : ''}${on ? ' on is-hl' : ''}${draggingId === n.id ? ' is-dragging' : ''}`}
+                  className={`fnode${mode === 'cross' || n.project ? ' has-proj' : ''}${isInv ? ' is-inventory' : ''}${on ? ' on is-hl' : ''}${draggingId === n.id ? ' is-dragging' : ''}${raisedId === n.id && !on && draggingId !== n.id ? ' is-raised' : ''}`}
                   data-node-id={n.id}
                   data-node-kind={n.kind}
                   data-testid="flow-node"
                   aria-label={accessibleName}
                   aria-pressed={on || undefined}
                   onKeyDown={(e) => onNodeKeyDown(e, n.id)}
-                  onFocus={() => panToNode(n.id)}
+                  onFocus={() => {
+                    // Raise on focus so keyboard/tab targets stay clickable even
+                    // when a prior drag left this card under a later sibling.
+                    setRaisedId(n.id)
+                    panToNode(n.id)
+                  }}
                   style={{
                     left: n.x,
                     top: n.y,
